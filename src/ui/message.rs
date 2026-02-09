@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+use crate::app::{BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ToolCallInfo};
 use crate::ui::theme;
-use agent_client_protocol as acp;
+use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -169,6 +169,74 @@ fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16) -> Vec<Line<'stati
 /// TODO: make configurable (see ROADMAP.md)
 const TERMINAL_MAX_LINES: usize = 12;
 
+/// Render inline permission options on a single compact line.
+/// Format: `▸ ✓ Allow once (y)  ·  ✓ Allow always (a)  ·  ✗ Reject (n)`
+fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
+
+    for (i, opt) in perm.options.iter().enumerate() {
+        let is_selected = i == perm.selected_index;
+        let is_allow = matches!(
+            opt.kind,
+            PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+        );
+
+        let (icon, icon_color) = if is_allow {
+            ("\u{2713}", Color::Green) // ✓
+        } else {
+            ("\u{2717}", Color::Red) // ✗
+        };
+
+        // Separator between options
+        if i > 0 {
+            spans.push(dot.clone());
+        }
+
+        // Selection indicator
+        if is_selected {
+            spans.push(Span::styled(
+                "\u{25b8} ",
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        spans.push(Span::styled(
+            format!("{icon} "),
+            Style::default().fg(icon_color),
+        ));
+
+        let name_style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(opt.name.clone(), name_style));
+
+        let shortcut = match opt.kind {
+            PermissionOptionKind::AllowOnce => " (y)",
+            PermissionOptionKind::AllowAlways => " (a)",
+            PermissionOptionKind::RejectOnce => " (n)",
+            PermissionOptionKind::RejectAlways => " (N)",
+            _ => "",
+        };
+        spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
+    }
+
+    vec![
+        Line::default(),
+        Line::from(spans),
+        Line::from(Span::styled(
+            "\u{2190}\u{2192} select  enter confirm  esc reject",
+            Style::default().fg(theme::DIM),
+        )),
+    ]
+}
+
 fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     // Execute/Bash tool calls get a distinct rendering
     if matches!(tc.kind, acp::ToolKind::Execute) {
@@ -198,12 +266,8 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
 
     let mut lines = vec![Line::from(title_spans)];
 
-    // Content area below the title with corner bracket prefix
     let pipe_style = Style::default().fg(theme::DIM);
-
-    if tc.content.is_empty() {
-        return lines;
-    }
+    let has_permission = tc.pending_permission.is_some();
 
     // Diffs (Edit tool) are always shown — user needs to see changes
     let has_diff = tc
@@ -211,7 +275,14 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         .iter()
         .any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
 
-    if tc.collapsed && !has_diff {
+    if tc.content.is_empty() && !has_permission {
+        return lines;
+    }
+
+    // Force expanded when permission is pending (user needs to see context)
+    let effectively_collapsed = tc.collapsed && !has_diff && !has_permission;
+
+    if effectively_collapsed {
         // Collapsed: show summary + ctrl+o hint
         let summary = content_summary(tc);
         lines.push(Line::from(vec![
@@ -221,7 +292,13 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         ]));
     } else {
         // Expanded: render full content with │ prefix on each line
-        let content_lines = render_tool_content(tc);
+        let mut content_lines = render_tool_content(tc);
+
+        // Append inline permission controls if pending
+        if let Some(ref perm) = tc.pending_permission {
+            content_lines.extend(render_permission_lines(perm));
+        }
+
         let last_idx = content_lines.len().saturating_sub(1);
         for (i, content_line) in content_lines.into_iter().enumerate() {
             let prefix = if i == last_idx {
@@ -346,6 +423,15 @@ fn render_execute_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>>
         let mut spans = vec![Span::styled("  \u{2502} ", border)];
         spans.extend(content_line.spans);
         lines.push(Line::from(spans));
+    }
+
+    // ── Inline permission controls (inside the box) ──
+    if let Some(ref perm) = tc.pending_permission {
+        for perm_line in render_permission_lines(perm) {
+            let mut spans = vec![Span::styled("  \u{2502} ", border)];
+            spans.extend(perm_line.spans);
+            lines.push(Line::from(spans));
+        }
     }
 
     // ── Bottom border: ╰────────────────────────────────────────╯

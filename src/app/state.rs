@@ -47,7 +47,9 @@ pub struct App {
     pub cwd_raw: String,
     pub files_accessed: usize,
     pub mode: Option<ModeState>,
-    pub permission_pending: Option<PendingPermission>,
+    /// ID of the tool call that currently has a pending permission prompt.
+    /// Used for keyboard routing — only one permission can be active at a time.
+    pub permission_pending_tool_id: Option<String>,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
@@ -177,10 +179,14 @@ pub struct ToolCallInfo {
     pub terminal_output_len: usize,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
+    /// Inline permission prompt — rendered inside this tool call block.
+    pub pending_permission: Option<InlinePermission>,
 }
 
-pub struct PendingPermission {
-    pub request: acp::RequestPermissionRequest,
+/// Permission state stored inline on a ToolCallInfo, so the permission
+/// controls render inside the tool call block (unified edit/permission UX).
+pub struct InlinePermission {
+    pub options: Vec<acp::PermissionOption>,
     pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
     pub selected_index: usize,
 }
