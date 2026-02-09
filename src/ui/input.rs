@@ -20,7 +20,7 @@
 use crate::app::App;
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -28,7 +28,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
 
-/// Prompt prefix width: "❯ " = 2 columns
+/// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
@@ -42,47 +42,44 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         height: area.height,
     };
 
+    // Split into prompt icon column (fixed) and input column (remaining)
+    let [prompt_area, input_area] =
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)])
+            .areas(padded);
+
+    // Render prompt icon
+    let prompt = Line::from(Span::styled(
+        format!("{} ", theme::PROMPT_CHAR),
+        Style::default().fg(theme::RUST_ORANGE),
+    ));
+    frame.render_widget(Paragraph::new(prompt), prompt_area);
+
     if app.input.is_empty() {
         // Placeholder
-        let line = Line::from(vec![
-            Span::styled(
-                format!("{} ", theme::PROMPT_CHAR),
-                Style::default().fg(theme::RUST_ORANGE),
-            ),
-            Span::styled("Type a message...", Style::default().fg(theme::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(line), padded);
+        let placeholder = Line::from(Span::styled(
+            "Type a message...",
+            Style::default().fg(theme::DIM),
+        ));
+        frame.render_widget(Paragraph::new(placeholder), input_area);
 
-        // Cursor after prompt char
-        frame.set_cursor_position((padded.x + PROMPT_WIDTH, padded.y));
+        // Cursor at start of input area
+        frame.set_cursor_position((input_area.x, input_area.y));
         return;
     }
 
-    // Build lines with prompt on first line, indent on continuation lines
+    // Build input lines (no prefix needed -- icon is in its own column)
     let lines: Vec<Line> = app
         .input
         .lines
         .iter()
-        .enumerate()
-        .map(|(row, text)| {
-            let prefix = if row == 0 {
-                Span::styled(
-                    format!("{} ", theme::PROMPT_CHAR),
-                    Style::default().fg(theme::RUST_ORANGE),
-                )
-            } else {
-                // Indent continuation lines to align with content after "❯ "
-                Span::raw("  ")
-            };
-            Line::from(vec![prefix, Span::raw(text.clone())])
-        })
+        .map(|text| Line::from(Span::raw(text.clone())))
         .collect();
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, padded);
+    frame.render_widget(paragraph, input_area);
 
     // Place terminal cursor accounting for visual wrapping.
-    let content_width = padded.width.saturating_sub(PROMPT_WIDTH) as usize;
+    let content_width = input_area.width as usize;
     if content_width == 0 {
         return;
     }
@@ -91,22 +88,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     for row in 0..app.input.lines.len() {
         let line_chars = app.input.lines[row].chars().count();
         let wrapped_lines = if content_width > 0 {
-            // Each logical line takes ceil(chars / content_width) visual lines, at least 1
             ((line_chars + content_width) / content_width).max(1) as u16
         } else {
             1
         };
 
         if row == app.input.cursor_row {
-            // Cursor is on this logical line — find the visual position within it
             let cursor_col = app.input.cursor_col;
             let wrap_row = (cursor_col / content_width) as u16;
             let wrap_col = (cursor_col % content_width) as u16;
 
-            let cursor_x = padded.x + PROMPT_WIDTH + wrap_col;
-            let cursor_y = padded.y + visual_row + wrap_row;
+            let cursor_x = input_area.x + wrap_col;
+            let cursor_y = input_area.y + visual_row + wrap_row;
 
-            if cursor_x < padded.right() && cursor_y < padded.bottom() {
+            if cursor_x < input_area.right() && cursor_y < input_area.bottom() {
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
             return;
@@ -121,6 +116,7 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     if app.input.is_empty() {
         return 1;
     }
+    // Input content width = total area minus horizontal padding minus prompt column
     let content_width = area_width
         .saturating_sub(INPUT_PAD * 2)
         .saturating_sub(PROMPT_WIDTH) as usize;
