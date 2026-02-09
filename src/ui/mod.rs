@@ -19,7 +19,6 @@ mod header;
 mod input;
 mod layout;
 mod message;
-mod permission_dialog;
 pub mod theme;
 mod welcome;
 
@@ -31,11 +30,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let perm_height = permission_dialog::required_height(app);
     let areas = layout::compute(
         frame.area(),
         input::visual_line_count(app, frame.area().width),
-        perm_height,
         !app.messages.is_empty(),
     );
 
@@ -54,11 +51,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Input separator (above)
     render_separator(frame, areas.input_sep);
-
-    // Permission dialog (inline, pushes messages up)
-    if let Some(perm_area) = areas.permission {
-        permission_dialog::render(frame, perm_area, app);
-    }
 
     // Input
     input::render(frame, areas.input, app);

@@ -20,8 +20,8 @@ mod state;
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use input::InputState;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, ModeInfo, ModeState,
-    PendingPermission, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeInfo,
+    ModeState, ToolCallInfo,
 };
 
 use crate::Cli;
@@ -257,7 +257,7 @@ pub async fn connect(
         cwd: cwd_display,
         files_accessed: 0,
         mode,
-        permission_pending: None,
+        permission_pending_tool_id: None,
         event_tx,
         event_rx,
         spinner_frame: 0,
@@ -316,17 +316,20 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
 
     // --- Graceful shutdown ---
 
-    // Dismiss any pending permission dialog (reject)
-    if let Some(pending) = app.permission_pending.take() {
-        if let Some(last_opt) = pending.request.options.last() {
-            let _ = pending
-                .response_tx
-                .send(acp::RequestPermissionResponse::new(
-                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                        last_opt.option_id.clone(),
-                    )),
-                ));
+    // Dismiss any pending inline permission (reject via last option)
+    if app.permission_pending_tool_id.is_some() {
+        if let Some(tc) = get_pending_permission_tc(app) {
+            if let Some(pending) = tc.pending_permission.take() {
+                if let Some(last_opt) = pending.options.last() {
+                    let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
+                        acp::RequestPermissionOutcome::Selected(
+                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                        ),
+                    ));
+                }
+            }
         }
+        app.permission_pending_tool_id = None;
     }
 
     // Cancel any active turn and give the adapter a moment to clean up
@@ -392,7 +395,7 @@ fn update_terminal_outputs(app: &mut App) {
 fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, event: Event) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if app.permission_pending.is_some() {
+            if app.permission_pending_tool_id.is_some() {
                 handle_permission_key(app, key);
             } else {
                 handle_normal_key(app, conn, key);
@@ -531,23 +534,39 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
     }
 }
 
+/// Look up the tool call that currently has a pending permission.
+/// Returns mutable reference to its `ToolCallInfo`.
+fn get_pending_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
+    let tool_id = app.permission_pending_tool_id.as_ref()?;
+    let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
+    match app.messages.get_mut(mi)?.blocks.get_mut(bi)? {
+        MessageBlock::ToolCall(tc) if tc.pending_permission.is_some() => Some(tc),
+        _ => None,
+    }
+}
+
 fn handle_permission_key(app: &mut App, key: KeyEvent) {
-    let option_count = app
-        .permission_pending
-        .as_ref()
-        .map(|p| p.request.options.len())
+    let option_count = get_pending_permission_tc(app)
+        .and_then(|tc| tc.pending_permission.as_ref())
+        .map(|p| p.options.len())
         .unwrap_or(0);
 
     match key.code {
-        KeyCode::Up => {
-            if let Some(ref mut p) = app.permission_pending {
-                p.selected_index = p.selected_index.saturating_sub(1);
+        KeyCode::Left => {
+            if let Some(tc) = get_pending_permission_tc(app) {
+                if let Some(ref mut p) = tc.pending_permission {
+                    p.selected_index = p.selected_index.saturating_sub(1);
+                    tc.cache.invalidate();
+                }
             }
         }
-        KeyCode::Down => {
-            if let Some(ref mut p) = app.permission_pending {
-                if p.selected_index + 1 < option_count {
-                    p.selected_index += 1;
+        KeyCode::Right => {
+            if let Some(tc) = get_pending_permission_tc(app) {
+                if let Some(ref mut p) = tc.pending_permission {
+                    if p.selected_index + 1 < option_count {
+                        p.selected_index += 1;
+                        tc.cache.invalidate();
+                    }
                 }
             }
         }
@@ -555,23 +574,19 @@ fn handle_permission_key(app: &mut App, key: KeyEvent) {
             respond_permission(app, None);
         }
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            // Select first option (typically "Allow once")
             respond_permission(app, Some(0));
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
-            // Select second option if it exists (typically "Allow always")
             if option_count > 1 {
                 respond_permission(app, Some(1));
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            // Select last option (typically "Reject")
             if option_count > 0 {
                 respond_permission(app, Some(option_count - 1));
             }
         }
         KeyCode::Esc => {
-            // Reject by selecting last option
             if option_count > 0 {
                 respond_permission(app, Some(option_count - 1));
             }
@@ -581,9 +596,23 @@ fn handle_permission_key(app: &mut App, key: KeyEvent) {
 }
 
 fn respond_permission(app: &mut App, override_index: Option<usize>) {
-    if let Some(pending) = app.permission_pending.take() {
+    let tool_id = match app.permission_pending_tool_id.take() {
+        Some(id) => id,
+        None => return,
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+        return;
+    };
+    let Some(MessageBlock::ToolCall(tc)) = app
+        .messages
+        .get_mut(mi)
+        .and_then(|m| m.blocks.get_mut(bi))
+    else {
+        return;
+    };
+    if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
-        if let Some(opt) = pending.request.options.get(idx) {
+        if let Some(opt) = pending.options.get(idx) {
             let _ = pending
                 .response_tx
                 .send(acp::RequestPermissionResponse::new(
@@ -592,6 +621,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                     )),
                 ));
         }
+        tc.cache.invalidate();
     }
 }
 
@@ -665,11 +695,33 @@ fn handle_acp_event(app: &mut App, event: ClientEvent) {
             request,
             response_tx,
         } => {
-            app.permission_pending = Some(PendingPermission {
-                request,
-                response_tx,
-                selected_index: 0,
-            });
+            let tool_id = request.tool_call.tool_call_id.to_string();
+            if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
+                if let Some(MessageBlock::ToolCall(tc)) =
+                    app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                {
+                    tc.pending_permission = Some(InlinePermission {
+                        options: request.options,
+                        response_tx,
+                        selected_index: 0,
+                    });
+                    tc.cache.invalidate();
+                    app.permission_pending_tool_id = Some(tool_id);
+                    app.auto_scroll = true;
+                }
+            } else {
+                tracing::warn!(
+                    "Permission request for unknown tool call: {tool_id}; auto-rejecting"
+                );
+                // Tool call not found — reject by selecting last option
+                if let Some(last_opt) = request.options.last() {
+                    let _ = response_tx.send(acp::RequestPermissionResponse::new(
+                        acp::RequestPermissionOutcome::Selected(
+                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                        ),
+                    ));
+                }
+            }
         }
         ClientEvent::TurnComplete => {
             app.status = AppStatus::Ready;
@@ -776,6 +828,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         terminal_output: None,
         terminal_output_len: 0,
         cache: BlockCache::default(),
+        pending_permission: None,
     };
 
     // Attach to current assistant message — update existing or add new
