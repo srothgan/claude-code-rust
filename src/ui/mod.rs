@@ -16,6 +16,7 @@
 
 mod chat;
 mod header;
+mod help;
 mod input;
 mod layout;
 mod message;
@@ -25,18 +26,20 @@ mod todo;
 
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let todo_height = todo::compute_height(app);
+    let help_height = help::compute_height(app, frame.area().width);
     let areas = layout::compute(
         frame.area(),
         input::visual_line_count(app, frame.area().width),
         true,
         todo_height,
+        help_height,
     );
 
     // Header bar (always visible)
@@ -59,8 +62,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Input
     input::render(frame, areas.input, app);
 
-    // Input separator (below)
+    // Input separator (below input)
     render_separator(frame, areas.input_bottom_sep);
+
+    // Help overlay (below input separator)
+    if areas.help.height > 0 {
+        help::render(frame, areas.help, app);
+    }
 
     // Footer: mode pill left, command hints right
     if let Some(footer_area) = areas.footer {
@@ -69,17 +77,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 const FOOTER_PAD: u16 = 2;
-
-/// Returns a color for the given mode ID.
-fn mode_color(mode_id: &str) -> Color {
-    match mode_id {
-        "default" => theme::DIM,
-        "plan" => Color::Blue,
-        "acceptEdits" => Color::Yellow,
-        "bypassPermissions" | "dontAsk" => Color::Red,
-        _ => Color::Magenta,
-    }
-}
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let padded = Rect {
@@ -96,66 +93,29 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("[", Style::default().fg(color)),
             Span::styled(&mode.current_mode_name, Style::default().fg(color)),
             Span::styled("]", Style::default().fg(color)),
+            Span::raw("  "),
+            Span::styled("?", Style::default().fg(Color::White)),
+            Span::styled(" : help", Style::default().fg(theme::DIM)),
         ])
     } else {
-        Line::default()
+        Line::from(vec![
+            Span::styled("?", Style::default().fg(Color::White)),
+            Span::styled(" : help", Style::default().fg(theme::DIM)),
+        ])
     };
 
-    // Right side: only novel keybindings (not enter/quit/etc)
-    let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
-    let mut hints: Vec<Span> = Vec::new();
-    if matches!(
-        app.status,
-        crate::app::AppStatus::Thinking | crate::app::AppStatus::Running
-    ) {
-        hints.push(Span::styled("esc", Style::default().fg(Color::White)));
-        hints.push(Span::styled(": cancel", Style::default().fg(theme::DIM)));
-    }
-    // Mode cycling hint (only if multiple modes available)
-    if app
-        .mode
-        .as_ref()
-        .is_some_and(|m| m.available_modes.len() > 1)
-    {
-        if !hints.is_empty() {
-            hints.push(dot.clone());
-        }
-        hints.push(Span::styled("shift+tab", Style::default().fg(Color::White)));
-        hints.push(Span::styled(": mode", Style::default().fg(theme::DIM)));
-    }
-    if !app.todos.is_empty() {
-        if !hints.is_empty() {
-            hints.push(dot.clone());
-        }
-        hints.push(Span::styled("ctrl+t", Style::default().fg(Color::White)));
-        let todo_hint = if app.show_todo_panel {
-            ": hide todos"
-        } else {
-            ": show todos"
-        };
-        hints.push(Span::styled(todo_hint, Style::default().fg(theme::DIM)));
-    }
-    if !hints.is_empty() {
-        hints.push(dot.clone());
-    }
-    hints.push(Span::styled("ctrl+o", Style::default().fg(Color::White)));
-    let tool_hint = if app.tools_collapsed {
-        ": expand tools"
-    } else {
-        ": collapse tools"
-    };
-    hints.push(Span::styled(tool_hint, Style::default().fg(theme::DIM)));
-    let right = Line::from(hints);
+    frame.render_widget(Paragraph::new(left), padded);
+}
 
-    let left_width = left.width() as u16;
-    let [left_area, right_area] =
-        Layout::horizontal([Constraint::Length(left_width), Constraint::Fill(1)]).areas(padded);
-
-    frame.render_widget(Paragraph::new(left), left_area);
-    frame.render_widget(
-        Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
-        right_area,
-    );
+/// Returns a color for the given mode ID.
+fn mode_color(mode_id: &str) -> Color {
+    match mode_id {
+        "default" => theme::DIM,
+        "plan" => Color::Blue,
+        "acceptEdits" => Color::Yellow,
+        "bypassPermissions" | "dontAsk" => Color::Red,
+        _ => Color::Magenta,
+    }
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {

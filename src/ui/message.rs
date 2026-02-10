@@ -60,7 +60,13 @@ pub fn render_message(
             // User message: markdown-rendered with background overlay
             for block in &mut msg.blocks {
                 if let MessageBlock::Text(text, cache) = block {
-                    lines.extend(render_text_cached(text, cache, width, Some(theme::USER_MSG_BG)));
+                    lines.extend(render_text_cached(
+                        text,
+                        cache,
+                        width,
+                        Some(theme::USER_MSG_BG),
+                        true,
+                    ));
                 }
             }
         }
@@ -93,7 +99,7 @@ pub fn render_message(
                         if prev_was_tool {
                             lines.push(Line::default());
                         }
-                        lines.extend(render_text_cached(text, cache, width, None));
+                        lines.extend(render_text_cached(text, cache, width, None, false));
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
@@ -159,6 +165,7 @@ fn render_text_cached(
     cache: &mut BlockCache,
     width: u16,
     bg: Option<Color>,
+    preserve_newlines: bool,
 ) -> Vec<Line<'static>> {
     if let Some(cached_lines) = cache.get() {
         return cached_lines.clone();
@@ -166,13 +173,35 @@ fn render_text_cached(
 
     // Cache miss — preprocess headings (tui_markdown doesn't handle them well),
     // then render from markdown.
-    let preprocessed = preprocess_markdown(text);
+    let mut preprocessed = preprocess_markdown(text);
+    if preserve_newlines {
+        preprocessed = force_markdown_line_breaks(&preprocessed);
+    }
     let fresh: Vec<Line<'static>> =
         tables::render_markdown_with_tables(&preprocessed, width, bg);
 
     cache.store(fresh);
     // unwrap is safe: we just stored the lines above
     cache.get().unwrap().clone()
+}
+
+/// Convert single line breaks into hard breaks so user-entered newlines persist.
+fn force_markdown_line_breaks(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in lines.iter().enumerate() {
+        if !line.is_empty() {
+            out.push_str(line);
+            out.push_str("  ");
+        }
+        if i + 1 < lines.len() || text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if text.ends_with('\n') {
+        // preserve trailing newline
+    }
+    out
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
