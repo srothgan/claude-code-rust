@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ToolCallInfo};
+use crate::ui::tables;
 use crate::ui::theme;
 use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
@@ -59,7 +60,7 @@ pub fn render_message(
             // User message: markdown-rendered with background overlay
             for block in &mut msg.blocks {
                 if let MessageBlock::Text(text, cache) = block {
-                    lines.extend(render_text_cached(text, cache, Some(theme::USER_MSG_BG)));
+                    lines.extend(render_text_cached(text, cache, width, Some(theme::USER_MSG_BG)));
                 }
             }
         }
@@ -92,7 +93,7 @@ pub fn render_message(
                         if prev_was_tool {
                             lines.push(Line::default());
                         }
-                        lines.extend(render_text_cached(text, cache, None));
+                        lines.extend(render_text_cached(text, cache, width, None));
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
@@ -153,7 +154,12 @@ fn preprocess_markdown(text: &str) -> String {
 
 /// Render a text block with caching. Only calls tui_markdown when cache is stale.
 /// `bg` is an optional background color overlay (used for user messages).
-fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> Vec<Line<'static>> {
+fn render_text_cached(
+    text: &str,
+    cache: &mut BlockCache,
+    width: u16,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
     if let Some(cached_lines) = cache.get() {
         return cached_lines.clone();
     }
@@ -161,26 +167,8 @@ fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> 
     // Cache miss — preprocess headings (tui_markdown doesn't handle them well),
     // then render from markdown.
     let preprocessed = preprocess_markdown(text);
-    let rendered = tui_markdown::from_str(&preprocessed);
-    let fresh: Vec<Line<'static>> = rendered
-        .lines
-        .into_iter()
-        .map(|line| {
-            let owned_spans: Vec<Span<'static>> = line
-                .spans
-                .into_iter()
-                .map(|s| {
-                    let style = if let Some(bg_color) = bg {
-                        s.style.bg(bg_color)
-                    } else {
-                        s.style
-                    };
-                    Span::styled(s.content.into_owned(), style)
-                })
-                .collect();
-            Line::from(owned_spans).style(line.style)
-        })
-        .collect();
+    let fresh: Vec<Line<'static>> =
+        tables::render_markdown_with_tables(&preprocessed, width, bg);
 
     cache.store(fresh);
     // unwrap is safe: we just stored the lines above
