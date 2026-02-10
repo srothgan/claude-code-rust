@@ -30,6 +30,7 @@ use crate::acp::connection;
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags, KeyboardEnhancementFlags,
 };
 use futures::{FutureExt as _, StreamExt};
 use std::collections::{HashMap, HashSet};
@@ -261,6 +262,7 @@ pub async fn connect(
         todos: Vec::new(),
         show_todo_panel: false,
         todo_scroll: 0,
+        available_commands: Vec::new(),
     };
 
     Ok((app, conn, child, terminals))
@@ -277,7 +279,13 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        // Enable enhanced keyboard protocol for reliable modifier detection (e.g. Shift+Enter)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
     );
 
     let mut events = EventStream::new();
@@ -363,7 +371,8 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableBracketedPaste,
-        crossterm::event::DisableMouseCapture
+        crossterm::event::DisableMouseCapture,
+        PopKeyboardEnhancementFlags
     );
     ratatui::restore();
 
@@ -1134,6 +1143,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 "Available commands: {} commands",
                 cmds.available_commands.len()
             );
+            app.available_commands = cmds.available_commands;
         }
         acp::SessionUpdate::CurrentModeUpdate(update) => {
             if let Some(ref mut mode) = app.mode {

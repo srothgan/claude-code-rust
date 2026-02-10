@@ -89,6 +89,8 @@ pub struct App {
     pub show_todo_panel: bool,
     /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
     pub todo_scroll: usize,
+    /// Commands advertised by the agent via AvailableCommandsUpdate.
+    pub available_commands: Vec<acp::AvailableCommand>,
 }
 
 impl App {
