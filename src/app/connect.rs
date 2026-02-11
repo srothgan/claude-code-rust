@@ -16,199 +16,37 @@
 
 use super::{App, AppStatus, ModeInfo, ModeState, SelectionState, TodoItem};
 use crate::Cli;
-use crate::acp::client::{ClaudeClient, TerminalMap};
+use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
 use crate::acp::connection;
 use agent_client_protocol::{self as acp, Agent as _};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use tokio::process::Child;
 use tokio::sync::mpsc;
 
-/// Connect to the ACP adapter, handshake, authenticate, and create a session.
-/// Runs before `ratatui::init()` so errors print to stderr normally.
-/// Returns `(App, Rc<Connection>, Child, TerminalMap)`. The `Child` handle must be
-/// kept alive for the adapter process lifetime -- dropping it kills the process.
-/// The `TerminalMap` is used for cleanup on exit.
-#[allow(clippy::too_many_lines, clippy::items_after_statements, clippy::similar_names)]
-pub async fn connect(
-    cli: Cli,
-    npx_path: PathBuf,
-) -> anyhow::Result<(App, Rc<acp::ClientSideConnection>, Child, TerminalMap)> {
-    let cwd = match cli.dir {
-        Some(dir) => dir,
-        None => std::env::current_dir()?,
-    };
+/// Shorten cwd for display: use `~` for the home directory prefix.
+fn shorten_cwd(cwd: &std::path::Path) -> String {
+    let cwd_str = cwd.to_string_lossy().to_string();
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy().to_string();
+        if cwd_str.starts_with(&home_str) {
+            return format!("~{}", &cwd_str[home_str.len()..]);
+        }
+    }
+    cwd_str
+}
+
+/// Create the `App` struct in `Connecting` state. No I/O — returns immediately.
+pub fn create_app(cli: &Cli) -> App {
+    let cwd = cli
+        .dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let (client, terminals) = ClaudeClient::new(event_tx.clone(), cli.yolo, cwd.clone());
+    let terminals: TerminalMap = Rc::new(std::cell::RefCell::new(HashMap::new()));
 
-    eprintln!("Spawning ACP adapter...");
-    let adapter = connection::spawn_adapter(client, &npx_path, &cwd).await?;
-    let child = adapter.child;
-    let conn = Rc::new(adapter.connection);
-
-    // Initialize handshake
-    let init_response = conn
-        .initialize(
-            acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
-                .client_capabilities(
-                    acp::ClientCapabilities::new()
-                        .fs(acp::FileSystemCapability::new()
-                            .read_text_file(true)
-                            .write_text_file(true))
-                        .terminal(true),
-                )
-                .client_info(acp::Implementation::new("claude-rust", env!("CARGO_PKG_VERSION"))),
-        )
-        .await?;
-
-    tracing::info!("Connected to agent: {:?}", init_response);
-
-    // Helper: authenticate if needed and retry the given async operation.
-    async fn authenticate_and_retry<F, Fut, T>(
-        conn: &acp::ClientSideConnection,
-        init_response: &acp::InitializeResponse,
-        f: F,
-    ) -> anyhow::Result<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, agent_client_protocol::Error>>,
-    {
-        tracing::info!("Authentication required, triggering auth flow...");
-        let method = init_response.auth_methods.first().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Agent requires authentication but advertised no auth methods.\n\
-                 Try running `claude /login` first."
-            )
-        })?;
-        eprintln!(
-            "Authentication required. Method: {} ({})",
-            method.name,
-            method.description.as_deref().unwrap_or("no description")
-        );
-        conn.authenticate(acp::AuthenticateRequest::new(method.id.clone())).await?;
-        Ok(f().await?)
-    }
-
-    // Create or resume session
-    let (session_id, resp_models, resp_modes) = if let Some(ref sid) = cli.resume {
-        // --resume <session_id>: load existing session
-        eprintln!("Resuming session {sid}...");
-        let session_id = acp::SessionId::new(sid.as_str());
-        let load_req = acp::LoadSessionRequest::new(session_id.clone(), &cwd);
-        let resp = match conn.load_session(load_req).await {
-            Ok(resp) => resp,
-            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
-                let cwd = cwd.clone();
-                let sid = session_id.clone();
-                authenticate_and_retry(&conn, &init_response, || {
-                    conn.load_session(acp::LoadSessionRequest::new(sid, &cwd))
-                })
-                .await?
-            }
-            Err(err) => return Err(err.into()),
-        };
-        (session_id, resp.models, resp.modes)
-    } else {
-        // New session (with auth retry)
-        match conn.new_session(acp::NewSessionRequest::new(&cwd)).await {
-            Ok(resp) => (resp.session_id, resp.models, resp.modes),
-            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
-                let cwd = cwd.clone();
-                let resp = authenticate_and_retry(&conn, &init_response, || {
-                    conn.new_session(acp::NewSessionRequest::new(&cwd))
-                })
-                .await?;
-                (resp.session_id, resp.models, resp.modes)
-            }
-            Err(err) => return Err(err.into()),
-        }
-    };
-
-    // Extract model name from session response
-    let mut model_name = resp_models
-        .as_ref()
-        .and_then(|m| {
-            m.available_models
-                .iter()
-                .find(|info| info.model_id == m.current_model_id)
-                .map(|info| info.name.clone())
-        })
-        .unwrap_or_else(|| "Unknown model".to_owned());
-
-    // --model override: switch after session creation
-    if let Some(ref model_str) = cli.model {
-        conn.set_session_model(acp::SetSessionModelRequest::new(
-            session_id.clone(),
-            acp::ModelId::new(model_str.as_str()),
-        ))
-        .await?;
-        model_name.clone_from(model_str);
-    }
-
-    // Extract mode state from session response
-    let mut mode = resp_modes.map(|ms| {
-        let current_id = ms.current_mode_id.to_string();
-        let available: Vec<ModeInfo> = ms
-            .available_modes
-            .iter()
-            .map(|m| ModeInfo { id: m.id.to_string(), name: m.name.clone() })
-            .collect();
-        let current_name = available
-            .iter()
-            .find(|m| m.id == current_id)
-            .map_or_else(|| current_id.clone(), |m| m.name.clone());
-        ModeState {
-            current_mode_id: current_id,
-            current_mode_name: current_name,
-            available_modes: available,
-        }
-    });
-
-    // Log available modes for debugging
-    if let Some(ref m) = mode {
-        tracing::info!(
-            "Available modes: {:?}",
-            m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>()
-        );
-        tracing::info!("Current mode: {}", m.current_mode_id);
-    }
-
-    // --yolo: switch to bypass-permissions mode via the adapter
-    if cli.yolo
-        && let Some(ref mut ms) = mode
-    {
-        let target_id = "bypassPermissions".to_owned();
-        let mode_id = acp::SessionModeId::new(target_id.as_str());
-        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id)).await?;
-        tracing::info!("YOLO: switched to mode '{}'", target_id);
-        // Update local mode state to reflect the switch
-        let target_name = ms
-            .available_modes
-            .iter()
-            .find(|mi| mi.id == target_id)
-            .map_or_else(|| target_id.clone(), |mi| mi.name.clone());
-        ms.current_mode_id = target_id;
-        ms.current_mode_name = target_name;
-    }
-
-    tracing::info!("Session created: {:?}", session_id);
-
-    // Shorten cwd for display: use ~ for home dir
-    let cwd_display = {
-        let cwd_str = cwd.to_string_lossy().to_string();
-        if let Some(home) = dirs::home_dir() {
-            let home_str = home.to_string_lossy().to_string();
-            if cwd_str.starts_with(&home_str) {
-                format!("~{}", &cwd_str[home_str.len()..])
-            } else {
-                cwd_str
-            }
-        } else {
-            cwd_str
-        }
-    };
+    let cwd_display = shorten_cwd(&cwd);
 
     let mut app = App {
         messages: Vec::new(),
@@ -217,21 +55,24 @@ pub async fn connect(
         scroll_pos: 0.0,
         auto_scroll: true,
         input: super::InputState::new(),
-        status: AppStatus::Ready,
+        status: AppStatus::Connecting,
         should_quit: false,
-        session_id: Some(session_id),
-        model_name,
+        session_id: None,
+        conn: None,
+        adapter_child: None,
+        model_name: "Connecting...".into(),
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
-        mode,
+        mode: None,
+        login_hint: None,
         pending_permission_ids: Vec::new(),
         event_tx,
         event_rx,
         spinner_frame: 0,
         tools_collapsed: true,
         active_task_ids: HashSet::new(),
-        terminals: std::rc::Rc::clone(&terminals),
+        terminals,
         force_redraw: false,
         tool_call_index: HashMap::new(),
         todos: Vec::<TodoItem>::new(),
@@ -255,6 +96,252 @@ pub async fn connect(
     };
 
     app.refresh_git_branch();
+    app
+}
 
-    Ok((app, conn, child, terminals))
+/// Spawn the background connection task. Uses `spawn_local` so it runs on the
+/// same `LocalSet` as the TUI — `Rc<Connection>` stays on one thread.
+///
+/// On success, stores the connection in `app.conn` via a shared slot and sends
+/// `ClientEvent::Connected`. On auth error, sends `ClientEvent::AuthRequired`.
+/// On failure, sends `ClientEvent::ConnectionFailed`.
+#[allow(clippy::too_many_lines, clippy::items_after_statements, clippy::similar_names)]
+pub fn start_connection(app: &App, cli: &Cli, npx_path: PathBuf) {
+    let event_tx = app.event_tx.clone();
+    let terminals = Rc::clone(&app.terminals);
+    let cwd_raw = app.cwd_raw.clone();
+    let cwd = PathBuf::from(&cwd_raw);
+    let yolo = cli.yolo;
+    let model_override = cli.model.clone();
+    let resume_id = cli.resume.clone();
+
+    // Rc<Connection> is !Send, so it can't be sent through the mpsc channel.
+    // Instead, the task deposits it into a thread-local slot, then signals
+    // via ClientEvent::Connected. The event handler calls take_connection_slot().
+    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let conn_slot_writer = Rc::clone(&conn_slot);
+
+    tokio::task::spawn_local(async move {
+        let result = connect_impl(
+            &event_tx,
+            &terminals,
+            &cwd,
+            &npx_path,
+            yolo,
+            model_override.as_deref(),
+            resume_id.as_deref(),
+        )
+        .await;
+
+        match result {
+            Ok((conn, child, session_id, model_name, mode)) => {
+                // Deposit connection + child in the shared slot
+                *conn_slot_writer.borrow_mut() =
+                    Some(ConnectionSlot { conn: Rc::clone(&conn), child });
+                let _ = event_tx.send(ClientEvent::Connected { session_id, model_name, mode });
+            }
+            Err(ConnectError::AuthRequired { method_name, method_description }) => {
+                let _ =
+                    event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+            }
+            Err(ConnectError::Failed(msg)) => {
+                let _ = event_tx.send(ClientEvent::ConnectionFailed(msg));
+            }
+        }
+    });
+
+    // Store the slot in a thread-local so handle_acp_event can retrieve the
+    // Rc<Connection> when ClientEvent::Connected arrives. This is safe because
+    // start_connection() must only be called once per app lifetime.
+    CONN_SLOT.with(|slot| {
+        debug_assert!(
+            slot.borrow().is_none(),
+            "CONN_SLOT already populated -- start_connection() called twice?"
+        );
+        *slot.borrow_mut() = Some(conn_slot);
+    });
+}
+
+/// Shared slot for passing `Rc<Connection>` from the background task to the event loop.
+pub struct ConnectionSlot {
+    pub conn: Rc<acp::ClientSideConnection>,
+    pub child: tokio::process::Child,
+}
+
+// Thread-local storage for the connection slot. Used by start_connection() to deposit
+// and by handle_acp_event() to retrieve the Rc<Connection>.
+thread_local! {
+    pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take the connection data from the thread-local slot. Called once when
+/// `ClientEvent::Connected` is received.
+pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
+    CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
+}
+
+/// Internal error type for the connection task.
+enum ConnectError {
+    AuthRequired { method_name: String, method_description: String },
+    Failed(String),
+}
+
+/// The actual connection logic, extracted from the old `connect()`.
+/// Runs inside `spawn_local` — can use `Rc`, `!Send` types freely.
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+async fn connect_impl(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    terminals: &crate::acp::client::TerminalMap,
+    cwd: &std::path::Path,
+    npx_path: &std::path::Path,
+    yolo: bool,
+    model_override: Option<&str>,
+    resume_id: Option<&str>,
+) -> Result<
+    (
+        Rc<acp::ClientSideConnection>,
+        tokio::process::Child,
+        acp::SessionId,
+        String,
+        Option<ModeState>,
+    ),
+    ConnectError,
+> {
+    let client = ClaudeClient::with_terminals(
+        event_tx.clone(),
+        yolo,
+        cwd.to_path_buf(),
+        Rc::clone(terminals),
+    );
+
+    let adapter = connection::spawn_adapter(client, npx_path, cwd)
+        .await
+        .map_err(|e| ConnectError::Failed(format!("Failed to spawn adapter: {e}")))?;
+    let child = adapter.child;
+    let conn = Rc::new(adapter.connection);
+
+    // Initialize handshake
+    let init_response = conn
+        .initialize(
+            acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
+                .client_capabilities(
+                    acp::ClientCapabilities::new()
+                        .fs(acp::FileSystemCapability::new()
+                            .read_text_file(true)
+                            .write_text_file(true))
+                        .terminal(true),
+                )
+                .client_info(acp::Implementation::new("claude-rust", env!("CARGO_PKG_VERSION"))),
+        )
+        .await
+        .map_err(|e| ConnectError::Failed(format!("Handshake failed: {e}")))?;
+
+    tracing::info!("Connected to agent: {:?}", init_response);
+
+    // Create or resume session — on AuthRequired, signal back instead of blocking
+    let session_result = if let Some(sid) = resume_id {
+        let session_id = acp::SessionId::new(sid);
+        let load_req = acp::LoadSessionRequest::new(session_id.clone(), cwd);
+        match conn.load_session(load_req).await {
+            Ok(resp) => Ok((session_id, resp.models, resp.modes)),
+            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
+                return Err(auth_required_error(&init_response));
+            }
+            Err(err) => Err(err),
+        }
+    } else {
+        match conn.new_session(acp::NewSessionRequest::new(cwd)).await {
+            Ok(resp) => Ok((resp.session_id, resp.models, resp.modes)),
+            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
+                return Err(auth_required_error(&init_response));
+            }
+            Err(err) => Err(err),
+        }
+    };
+
+    let (session_id, resp_models, resp_modes) = session_result
+        .map_err(|e| ConnectError::Failed(format!("Session creation failed: {e}")))?;
+
+    // Extract model name
+    let mut model_name = resp_models
+        .as_ref()
+        .and_then(|m| {
+            m.available_models
+                .iter()
+                .find(|info| info.model_id == m.current_model_id)
+                .map(|info| info.name.clone())
+        })
+        .unwrap_or_else(|| "Unknown model".to_owned());
+
+    // --model override
+    if let Some(model_str) = model_override {
+        conn.set_session_model(acp::SetSessionModelRequest::new(
+            session_id.clone(),
+            acp::ModelId::new(model_str),
+        ))
+        .await
+        .map_err(|e| ConnectError::Failed(format!("Model switch failed: {e}")))?;
+        model_str.clone_into(&mut model_name);
+    }
+
+    // Extract mode state
+    let mut mode = resp_modes.map(|ms| {
+        let current_id = ms.current_mode_id.to_string();
+        let available: Vec<ModeInfo> = ms
+            .available_modes
+            .iter()
+            .map(|m| ModeInfo { id: m.id.to_string(), name: m.name.clone() })
+            .collect();
+        let current_name = available
+            .iter()
+            .find(|m| m.id == current_id)
+            .map_or_else(|| current_id.clone(), |m| m.name.clone());
+        ModeState {
+            current_mode_id: current_id,
+            current_mode_name: current_name,
+            available_modes: available,
+        }
+    });
+
+    if let Some(ref m) = mode {
+        tracing::info!(
+            "Available modes: {:?}",
+            m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+        tracing::info!("Current mode: {}", m.current_mode_id);
+    }
+
+    // --yolo: switch to bypass-permissions mode
+    if yolo && let Some(ref mut ms) = mode {
+        let target_id = "bypassPermissions".to_owned();
+        let mode_id = acp::SessionModeId::new(target_id.as_str());
+        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
+            .await
+            .map_err(|e| ConnectError::Failed(format!("Mode switch failed: {e}")))?;
+        tracing::info!("YOLO: switched to mode '{}'", target_id);
+        let target_name = ms
+            .available_modes
+            .iter()
+            .find(|mi| mi.id == target_id)
+            .map_or_else(|| target_id.clone(), |mi| mi.name.clone());
+        ms.current_mode_id = target_id;
+        ms.current_mode_name = target_name;
+    }
+
+    tracing::info!("Session created: {:?}", session_id);
+
+    Ok((conn, child, session_id, model_name, mode))
+}
+
+/// Build a `ConnectError::AuthRequired` from the adapter's init response.
+fn auth_required_error(init_response: &acp::InitializeResponse) -> ConnectError {
+    let method = init_response.auth_methods.first();
+    ConnectError::AuthRequired {
+        method_name: method.map_or_else(|| "unknown".into(), |m| m.name.clone()),
+        method_description: method
+            .and_then(|m| m.description.clone())
+            .unwrap_or_else(|| "Sign in to continue".into()),
+    }
 }

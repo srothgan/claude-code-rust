@@ -43,6 +43,16 @@ pub enum ClientEvent {
     TurnComplete,
     /// A prompt turn failed with an error.
     TurnError(String),
+    /// Background connection completed successfully.
+    Connected {
+        session_id: acp::SessionId,
+        model_name: String,
+        mode: Option<crate::app::ModeState>,
+    },
+    /// Background connection failed.
+    ConnectionFailed(String),
+    /// Authentication is required before a session can be created.
+    AuthRequired { method_name: String, method_description: String },
 }
 
 /// Shared handle to all spawned terminal processes.
@@ -102,6 +112,17 @@ impl ClaudeClient {
     ) -> (Self, TerminalMap) {
         let terminals = Rc::new(RefCell::new(HashMap::new()));
         (Self { event_tx, auto_approve, terminals: Rc::clone(&terminals), cwd }, terminals)
+    }
+
+    /// Create a `ClaudeClient` that shares an existing `TerminalMap`.
+    /// Used by the background connection task to reuse `App`'s terminal map.
+    pub fn with_terminals(
+        event_tx: mpsc::UnboundedSender<ClientEvent>,
+        auto_approve: bool,
+        cwd: PathBuf,
+        terminals: TerminalMap,
+    ) -> Self {
+        Self { event_tx, auto_approve, terminals, cwd }
     }
 }
 

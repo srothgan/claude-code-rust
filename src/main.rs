@@ -39,14 +39,15 @@ fn main() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
 
     rt.block_on(local_set.run_until(async move {
-        // Phase 1: connect (pre-TUI, errors to stderr)
-        let (mut app, conn, _child, terminals) = claude_rust::app::connect(cli, npx_path).await?;
+        // Phase 1: create app in Connecting state (instant, no I/O)
+        let mut app = claude_rust::app::create_app(&cli);
 
-        // Phase 2: TUI event loop
-        let result = claude_rust::app::run_tui(&mut app, conn).await;
+        // Phase 2: start background connection + TUI in parallel
+        claude_rust::app::start_connection(&app, &cli, npx_path);
+        let result = claude_rust::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting
-        claude_rust::acp::client::kill_all_terminals(&terminals);
+        claude_rust::acp::client::kill_all_terminals(&app.terminals);
 
         result
     }))

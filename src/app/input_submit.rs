@@ -21,9 +21,12 @@ use agent_client_protocol::{self as acp, Agent as _};
 use std::path::Path;
 use std::rc::Rc;
 
-pub(super) fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) {
+pub(super) fn submit_input(app: &mut App) {
     // Dismiss any open mention dropdown
     app.mention = None;
+
+    // No connection yet — can't submit
+    let Some(ref conn) = app.conn else { return };
 
     let text = app.input.text();
     if text.trim().is_empty() {

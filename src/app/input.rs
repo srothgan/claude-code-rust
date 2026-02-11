@@ -46,6 +46,17 @@ impl InputState {
         self.version += 1;
     }
 
+    /// Replace the input with the given text, placing the cursor at the end.
+    pub fn set_text(&mut self, text: &str) {
+        self.lines = text.split('\n').map(String::from).collect();
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.cursor_row = self.lines.len() - 1;
+        self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.version += 1;
+    }
+
     pub fn insert_char(&mut self, c: char) {
         let line = &mut self.lines[self.cursor_row];
         let byte_idx = char_to_byte_index(line, self.cursor_col);
