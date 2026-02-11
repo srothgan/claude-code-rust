@@ -18,7 +18,7 @@
 // Track: https://github.com/rhysd/tui-textarea/pull/118
 
 use crate::app::mention;
-use crate::app::{App, InputWrapCache};
+use crate::app::{App, AppStatus, InputWrapCache};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -38,14 +38,80 @@ const PROMPT_WIDTH: u16 = 2;
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
 
+/// Braille spinner frames (same as message.rs) for the connecting animation.
+const SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
+
+/// Height of the login hint banner in lines (0 when no hint is active).
+/// Used internally by `visual_line_count` and `render` so the layout
+/// calculation and rendering stay in sync.
+const LOGIN_HINT_LINES: u16 = 2;
+
+/// Whether a login hint banner is active.
+fn has_login_hint(app: &App) -> bool {
+    app.login_hint.is_some()
+}
+
 #[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let padded = Rect {
-        x: area.x + INPUT_PAD,
-        y: area.y,
-        width: area.width.saturating_sub(INPUT_PAD * 2),
-        height: area.height,
+    // If there's a login hint, split off top rows for the hint banner
+    let (hint_area, input_main_area) = if has_login_hint(app) {
+        let [hint, main] =
+            Layout::vertical([Constraint::Length(LOGIN_HINT_LINES), Constraint::Min(1)])
+                .areas(area);
+        (Some(hint), main)
+    } else {
+        (None, area)
     };
+
+    // Render login hint banner if present
+    if let (Some(hint_area), Some(hint)) = (hint_area, &app.login_hint) {
+        let hint_pad = Rect {
+            x: hint_area.x + INPUT_PAD,
+            y: hint_area.y,
+            width: hint_area.width.saturating_sub(INPUT_PAD * 2),
+            height: hint_area.height,
+        };
+        let lines = vec![
+            Line::from(Span::styled(
+                format!(
+                    "Authentication required: {} -- {}",
+                    hint.method_name, hint.method_description
+                ),
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(Span::styled(
+                "Type /login and press Enter to authenticate",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), hint_pad);
+    }
+
+    let padded = Rect {
+        x: input_main_area.x + INPUT_PAD,
+        y: input_main_area.y,
+        width: input_main_area.width.saturating_sub(INPUT_PAD * 2),
+        height: input_main_area.height,
+    };
+
+    // During Connecting state, show a pulsing spinner instead of the input prompt
+    if app.status == AppStatus::Connecting {
+        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let pulse_style = if app.spinner_frame % 4 < 2 {
+            Style::default().fg(theme::RUST_ORANGE)
+        } else {
+            Style::default().fg(theme::DIM)
+        };
+        let line = Line::from(vec![
+            Span::styled(format!("{spinner_ch} "), pulse_style),
+            Span::styled("Connecting to Claude Code...", pulse_style),
+        ]);
+        frame.render_widget(Paragraph::new(line), padded);
+        return;
+    }
 
     // Split into prompt icon column (fixed) and input column (remaining)
     let [prompt_area, input_area] =
@@ -175,21 +241,25 @@ fn get_or_compute_wrap(app: &mut App, content_width: u16) {
     }
 }
 
-/// Compute the number of visual lines the input occupies, accounting for wrapping.
-/// Used by the layout to allocate the correct input area height.
+/// Total visual height for the input area: input lines + login hint banner.
+/// Called by the layout to allocate the correct input area height.
 #[allow(clippy::cast_possible_truncation)]
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
-    if app.input.is_empty() {
-        return 1;
-    }
-    let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
-    if content_width == 0 {
-        return app.input.line_count();
-    }
-    get_or_compute_wrap(app, content_width);
-    app.input_wrap_cache
-        .as_ref()
-        .map_or(1, |c| (c.wrapped_lines.len() as u16).min(MAX_INPUT_HEIGHT))
+    let hint = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
+    let input_lines = if app.input.is_empty() {
+        1
+    } else {
+        let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
+        if content_width == 0 {
+            app.input.line_count()
+        } else {
+            get_or_compute_wrap(app, content_width);
+            app.input_wrap_cache
+                .as_ref()
+                .map_or(1, |c| (c.wrapped_lines.len() as u16).min(MAX_INPUT_HEIGHT))
+        }
+    };
+    hint + input_lines
 }
 
 #[allow(clippy::cast_possible_truncation)]

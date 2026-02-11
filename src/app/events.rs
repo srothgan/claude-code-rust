@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::connect::take_connection_slot;
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeInfo,
-    ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, InlinePermission, LoginHint, MessageBlock,
+    MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
 };
 use crate::acp::client::ClientEvent;
 use crate::app::input_submit::submit_input;
@@ -30,13 +31,13 @@ use crossterm::event::{
 };
 use std::rc::Rc;
 
-pub fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, event: Event) {
+pub fn handle_terminal_event(app: &mut App, event: Event) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if app.mention.is_some() {
-                handle_mention_key(app, conn, key);
+                handle_mention_key(app, key);
             } else if app.pending_permission_ids.is_empty() {
-                handle_normal_key(app, conn, key);
+                handle_normal_key(app, key);
             } else {
                 handle_permission_key(app, key);
             }
@@ -45,7 +46,9 @@ pub fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>
             handle_mouse_event(app, mouse);
         }
         Event::Paste(text) => {
-            app.input.insert_str(&text);
+            if app.status != AppStatus::Connecting {
+                app.input.insert_str(&text);
+            }
         }
         Event::FocusGained => {
             app.refresh_git_branch();
@@ -131,7 +134,18 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
     None
 }
 
-fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: KeyEvent) {
+#[allow(clippy::too_many_lines)]
+fn handle_normal_key(app: &mut App, key: KeyEvent) {
+    // During Connecting state, only allow Ctrl+C to quit
+    if app.status == AppStatus::Connecting {
+        if let (KeyCode::Char('c'), m) = (key.code, key.modifiers)
+            && m.contains(KeyModifiers::CONTROL)
+        {
+            app.should_quit = true;
+        }
+        return;
+    }
+
     match (key.code, key.modifiers) {
         // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -143,6 +157,7 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         // Esc: cancel current turn if thinking/running
         (KeyCode::Esc, _) => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+                && let Some(ref conn) = app.conn
                 && let Some(sid) = app.session_id.clone()
             {
                 let conn = Rc::clone(conn);
@@ -156,7 +171,7 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         }
         // Enter (no shift): submit input
         (KeyCode::Enter, m) if !m.contains(KeyModifiers::SHIFT) => {
-            submit_input(app, conn);
+            submit_input(app);
         }
         // Shift+Enter: insert newline
         (KeyCode::Enter, _) => {
@@ -204,7 +219,9 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
                 let next = &mode.available_modes[next_idx];
 
                 // Fire-and-forget mode switch
-                if let Some(sid) = app.session_id.clone() {
+                if let Some(ref conn) = app.conn
+                    && let Some(sid) = app.session_id.clone()
+                {
                     let mode_id = acp::SessionModeId::new(next.id.as_str());
                     let conn = Rc::clone(conn);
                     tokio::task::spawn_local(async move {
@@ -248,7 +265,7 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
 }
 
 /// Handle keystrokes while the `@` mention autocomplete dropdown is active.
-fn handle_mention_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: KeyEvent) {
+fn handle_mention_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) => mention::move_up(app),
         (KeyCode::Down, _) => mention::move_down(app),
@@ -269,7 +286,7 @@ fn handle_mention_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: 
         // Any other key: deactivate mention and forward to normal handling
         _ => {
             mention::deactivate(app);
-            handle_normal_key(app, conn, key);
+            handle_normal_key(app, key);
         }
     }
 }
@@ -333,6 +350,40 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnError(msg) => {
             tracing::error!("Turn error: {msg}");
             app.status = AppStatus::Error;
+        }
+        ClientEvent::Connected { session_id, model_name, mode } => {
+            // Grab connection + child from the shared slot
+            if let Some(slot) = take_connection_slot() {
+                app.conn = Some(slot.conn);
+                app.adapter_child = Some(slot.child);
+            }
+            app.session_id = Some(session_id);
+            app.model_name = model_name;
+            app.mode = mode;
+            app.status = AppStatus::Ready;
+            app.login_hint = None;
+            app.cached_header_line = None;
+            app.cached_footer_line = None;
+            app.cached_welcome_lines = None;
+        }
+        ClientEvent::AuthRequired { method_name, method_description } => {
+            // Allow typing so the user can submit /login, which the ACP
+            // adapter recognises as a slash command to start the auth flow.
+            app.status = AppStatus::Ready;
+            app.login_hint = Some(LoginHint { method_name, method_description });
+            app.input.set_text("/login");
+        }
+        ClientEvent::ConnectionFailed(msg) => {
+            app.status = AppStatus::Error;
+            app.messages.push(ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![MessageBlock::Text(
+                    format!("Connection failed: {msg}"),
+                    BlockCache::default(),
+                )],
+                cached_visual_height: 0,
+                cached_visual_width: 0,
+            });
         }
     }
 }

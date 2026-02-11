@@ -17,6 +17,7 @@
 use crate::acp::client::ClientEvent;
 use agent_client_protocol as acp;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use tokio::sync::mpsc;
 
 use super::input::InputState;
@@ -33,6 +34,13 @@ pub struct ModeState {
     pub current_mode_id: String,
     pub current_mode_name: String,
     pub available_modes: Vec<ModeInfo>,
+}
+
+/// Login hint displayed when authentication is required during connection.
+/// Rendered as a banner above the input field.
+pub struct LoginHint {
+    pub method_name: String,
+    pub method_description: String,
 }
 
 /// A single todo item from Claude's `TodoWrite` tool call.
@@ -64,11 +72,18 @@ pub struct App {
     pub status: AppStatus,
     pub should_quit: bool,
     pub session_id: Option<acp::SessionId>,
+    /// ACP connection handle. `None` while connecting (before adapter is ready).
+    pub conn: Option<Rc<acp::ClientSideConnection>>,
+    /// Adapter child process handle. Held solely to keep the process alive --
+    /// dropping `Child` kills the subprocess. Never read after being stored.
+    pub adapter_child: Option<tokio::process::Child>,
     pub model_name: String,
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
     pub mode: Option<ModeState>,
+    /// Login hint shown when authentication is required. Rendered above the input field.
+    pub login_hint: Option<LoginHint>,
     /// Tool call IDs with pending permission prompts, ordered by arrival.
     /// The first entry is the "focused" permission that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -166,11 +181,14 @@ impl App {
             status: AppStatus::Ready,
             should_quit: false,
             session_id: None,
+            conn: None,
+            adapter_child: None,
             model_name: "test-model".into(),
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
             files_accessed: 0,
             mode: None,
+            login_hint: None,
             pending_permission_ids: Vec::new(),
             event_tx: tx,
             event_rx: rx,
@@ -223,8 +241,10 @@ impl App {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AppStatus {
+    /// Waiting for ACP adapter connection (TUI shown, input disabled).
+    Connecting,
     Ready,
     Thinking,
     Running,

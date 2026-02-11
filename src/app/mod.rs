@@ -26,14 +26,14 @@ mod terminal;
 mod todos;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
-pub use connect::connect;
+pub use connect::{create_app, start_connection};
 pub use events::{handle_acp_event, handle_terminal_event};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, InlinePermission, InputWrapCache, MessageBlock,
-    MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, SelectionState, TodoItem,
-    TodoStatus, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, InlinePermission, InputWrapCache, LoginHint,
+    MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, SelectionState,
+    TodoItem, TodoStatus, ToolCallInfo,
 };
 
 use agent_client_protocol::{self as acp, Agent as _};
@@ -42,14 +42,13 @@ use crossterm::event::{
     PushKeyboardEnhancementFlags,
 };
 use futures::{FutureExt as _, StreamExt};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // TUI event loop
 // ---------------------------------------------------------------------------
 
-pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyhow::Result<()> {
+pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
 
     // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
@@ -75,7 +74,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
-                events::handle_terminal_event(app, &conn, event);
+                events::handle_terminal_event(app, event);
             }
             Some(event) = app.event_rx.recv() => {
                 events::handle_acp_event(app, event);
@@ -87,7 +86,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
         loop {
             // Try terminal events first (keeps typing responsive)
             if let Some(Some(Ok(event))) = events.next().now_or_never() {
-                events::handle_terminal_event(app, &conn, event);
+                events::handle_terminal_event(app, event);
                 continue;
             }
             // Then ACP events
@@ -104,7 +103,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
         }
 
         // Phase 3: render once
-        if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+        if matches!(app.status, AppStatus::Connecting | AppStatus::Thinking | AppStatus::Running) {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
         }
         terminal::update_terminal_outputs(app);
@@ -139,6 +138,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
 
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        && let Some(ref conn) = app.conn
         && let Some(sid) = app.session_id.clone()
     {
         let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
