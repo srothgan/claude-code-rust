@@ -351,6 +351,7 @@ dependencies = [
  "dirs",
  "futures",
  "ignore",
+ "pretty_assertions",
  "pulldown-cmark",
  "ratatui",
  "serde",

@@ -35,6 +35,9 @@ unicode-width = "0.2.2"
 uuid = { version = "1.20.0", features = ["v4"] }
 which = "8.0.0"
 
+[dev-dependencies]
+pretty_assertions = "1.4"
+
 [lints.clippy]
 # Deny panic-prone operations in production code (tests exempted via clippy.toml)
 unwrap_used = "deny"

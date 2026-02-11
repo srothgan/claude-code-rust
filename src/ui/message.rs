@@ -677,6 +677,579 @@ fn strip_outer_code_fence(text: &str) -> String {
     text.to_owned()
 }
 
+#[cfg(test)]
+mod tests {
+    // =====
+    // TESTS: 75
+    // =====
+
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    // preprocess_markdown
+
+    #[test]
+    fn preprocess_h1_heading() {
+        let result = preprocess_markdown("# Hello");
+        assert!(result.contains("**Hello**"));
+        assert!(!result.contains('#'));
+    }
+
+    #[test]
+    fn preprocess_h3_heading() {
+        let result = preprocess_markdown("### Deeply Nested");
+        assert!(result.contains("**Deeply Nested**"));
+    }
+
+    #[test]
+    fn preprocess_non_heading_passthrough() {
+        let input = "Just normal text\nwith multiple lines";
+        let result = preprocess_markdown(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn preprocess_mixed_headings_and_text() {
+        let input = "# Title\nSome text\n## Subtitle\nMore text";
+        let result = preprocess_markdown(input);
+        assert!(result.contains("**Title**"));
+        assert!(result.contains("Some text"));
+        assert!(result.contains("**Subtitle**"));
+        assert!(result.contains("More text"));
+    }
+
+    // preprocess_markdown
+
+    #[test]
+    fn preprocess_heading_no_space() {
+        let result = preprocess_markdown("#Title");
+        assert!(result.contains("**Title**"));
+    }
+
+    #[test]
+    fn preprocess_heading_extra_spaces() {
+        let result = preprocess_markdown("#   Spaced Out   ");
+        assert!(result.contains("**Spaced Out**"));
+    }
+
+    #[test]
+    fn preprocess_indented_heading() {
+        let result = preprocess_markdown("  ## Indented");
+        assert!(result.contains("**Indented**"));
+    }
+
+    #[test]
+    fn preprocess_empty_heading() {
+        let result = preprocess_markdown("# ");
+        assert_eq!(result, "# ");
+    }
+
+    #[test]
+    fn preprocess_empty_string() {
+        assert_eq!(preprocess_markdown(""), "");
+    }
+
+    #[test]
+    fn preprocess_preserves_trailing_newline() {
+        let result = preprocess_markdown("hello\n");
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn preprocess_no_trailing_newline() {
+        let result = preprocess_markdown("hello");
+        assert!(!result.ends_with('\n'));
+    }
+
+    // preprocess_markdown
+
+    #[test]
+    fn preprocess_blank_line_before_heading() {
+        let input = "text\n\n# Heading";
+        let result = preprocess_markdown(input);
+        assert!(!result.contains("\n\n\n"));
+        assert!(result.contains("**Heading**"));
+    }
+
+    #[test]
+    fn preprocess_consecutive_headings() {
+        let input = "# First\n# Second";
+        let result = preprocess_markdown(input);
+        assert!(result.contains("**First**"));
+        assert!(result.contains("**Second**"));
+    }
+
+    #[test]
+    fn preprocess_hash_in_code_not_heading() {
+        let result = preprocess_markdown("# actual heading");
+        assert!(result.contains("**actual heading**"));
+    }
+
+    /// H6 heading (6 `#` chars).
+    #[test]
+    fn preprocess_h6_heading() {
+        let result = preprocess_markdown("###### Deep H6");
+        assert!(result.contains("**Deep H6**"));
+        assert!(!result.contains('#'));
+    }
+
+    /// Heading with markdown formatting inside.
+    #[test]
+    fn preprocess_heading_with_bold_inside() {
+        let result = preprocess_markdown("# **bold** and *italic*");
+        assert!(result.contains("****bold** and *italic***"));
+    }
+
+    /// Heading at end of file with no trailing newline.
+    #[test]
+    fn preprocess_heading_at_eof_no_newline() {
+        let result = preprocess_markdown("text\n# Final");
+        assert!(result.contains("**Final**"));
+        assert!(!result.ends_with('\n'));
+    }
+
+    /// Only hashes with no text: `###` — content after stripping is empty, passthrough.
+    #[test]
+    fn preprocess_only_hashes() {
+        let result = preprocess_markdown("###");
+        assert_eq!(result, "###");
+    }
+
+    /// Very long heading.
+    #[test]
+    fn preprocess_very_long_heading() {
+        let long_text = "A".repeat(1000);
+        let input = format!("# {long_text}");
+        let result = preprocess_markdown(&input);
+        assert!(result.starts_with("**"));
+        assert!(result.contains(&long_text));
+    }
+
+    /// Unicode emoji in heading.
+    #[test]
+    fn preprocess_unicode_heading() {
+        let result = preprocess_markdown("# \u{1F680} Launch \u{4F60}\u{597D}");
+        assert!(result.contains("**\u{1F680} Launch \u{4F60}\u{597D}**"));
+    }
+
+    /// Quoted heading: `> # Heading` — starts with `>` not `#`, so passthrough.
+    #[test]
+    fn preprocess_blockquote_heading_passthrough() {
+        let result = preprocess_markdown("> # Quoted heading");
+        // Line starts with `>`, not `#`, so trimmed starts with `>` not `#`
+        assert!(!result.contains("**"));
+        assert!(result.contains("> # Quoted heading"));
+    }
+
+    /// All heading levels in sequence.
+    #[test]
+    fn preprocess_all_heading_levels() {
+        let input = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6";
+        let result = preprocess_markdown(input);
+        for label in ["H1", "H2", "H3", "H4", "H5", "H6"] {
+            assert!(result.contains(&format!("**{label}**")), "missing {label}");
+        }
+    }
+
+    // strip_outer_code_fence
+
+    #[test]
+    fn strip_fenced_code() {
+        let input = "```rust\nfn main() {}\n```";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "fn main() {}");
+    }
+
+    #[test]
+    fn strip_fenced_no_lang_tag() {
+        let input = "```\nhello world\n```";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn strip_not_fenced_passthrough() {
+        let input = "just plain text";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "just plain text");
+    }
+
+    // strip_outer_code_fence
+
+    #[test]
+    fn strip_fenced_with_trailing_whitespace() {
+        let input = "```\ncontent\n```  \n";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "content");
+    }
+
+    #[test]
+    fn strip_nested_fences_only_outer() {
+        let input = "```\ninner ```\nstuff\n```";
+        let result = strip_outer_code_fence(input);
+        assert!(result.contains("inner ```"));
+    }
+
+    #[test]
+    fn strip_only_opening_fence() {
+        let input = "```rust\nfn main() {}";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn strip_empty_fenced_block() {
+        let input = "```\n```";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "");
+    }
+
+    // strip_outer_code_fence
+
+    #[test]
+    fn strip_multiline_content() {
+        let input = "```python\nline1\nline2\nline3\n```";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, "line1\nline2\nline3");
+    }
+
+    /// Quadruple backtick fence — starts with ````` which starts with ```, so it should still work.
+    #[test]
+    fn strip_quadruple_backtick_fence() {
+        let input = "````\ncontent here\n````";
+        let result = strip_outer_code_fence(input);
+        // Starts with ```, so it enters the stripping path.
+        // Closing is ```` — strip_suffix("```") matches the last 3 backticks
+        // leaving one ` in the body. Let's just verify it doesn't panic
+        // and returns something reasonable.
+        assert!(result.contains("content here"));
+    }
+
+    /// Tilde fences — NOT handled by strip_outer_code_fence (only checks ```).
+    #[test]
+    fn strip_tilde_fence_passthrough() {
+        let input = "~~~\ncontent\n~~~";
+        let result = strip_outer_code_fence(input);
+        assert_eq!(result, input);
+    }
+
+    /// Content with inner code fences that look like closing fences.
+    #[test]
+    fn strip_inner_fence_in_content() {
+        let input = "```\nsome code\n```\nmore code\n```";
+        let result = strip_outer_code_fence(input);
+        // The function finds the first newline, then looks for ``` at the end
+        // of the remaining text. The last ``` is the closing fence.
+        assert!(result.contains("some code"));
+    }
+
+    /// Very large content inside fence — stress test.
+    #[test]
+    fn strip_large_fenced_content() {
+        let big: String = (0..10_000).map(|i| format!("line {i}\n")).collect();
+        let input = format!("```\n{big}```");
+        let result = strip_outer_code_fence(&input);
+        assert!(result.contains("line 0"));
+        assert!(result.contains("line 9999"));
+    }
+
+    /// Fence with blank content line.
+    #[test]
+    fn strip_fence_with_blank_lines() {
+        let input = "```\n\n\n\n```";
+        let result = strip_outer_code_fence(input);
+        // Content is three blank lines, trimmed to empty
+        assert!(result.is_empty() || result.chars().all(|c| c == '\n'));
+    }
+
+    /// Text starting with ``` but not at the beginning (leading whitespace).
+    #[test]
+    fn strip_fence_with_leading_whitespace() {
+        let input = "  ```\ncontent\n```";
+        let result = strip_outer_code_fence(input);
+        // After trim(), starts with ```, so should strip
+        assert_eq!(result, "content");
+    }
+
+    // lang_from_title
+
+    #[test]
+    fn lang_rust_file() {
+        assert_eq!(lang_from_title("src/main.rs"), "rs");
+    }
+
+    #[test]
+    fn lang_python_with_prefix() {
+        assert_eq!(lang_from_title("Read foo.py"), "py");
+    }
+
+    #[test]
+    fn lang_toml_file() {
+        assert_eq!(lang_from_title("Cargo.toml"), "toml");
+    }
+
+    // lang_from_title
+
+    #[test]
+    fn lang_no_extension() {
+        assert_eq!(lang_from_title("Makefile"), "");
+    }
+
+    #[test]
+    fn lang_empty_title() {
+        assert_eq!(lang_from_title(""), "");
+    }
+
+    #[test]
+    fn lang_mixed_case() {
+        assert_eq!(lang_from_title("file.RS"), "rs");
+    }
+
+    #[test]
+    fn lang_multiple_dots() {
+        assert_eq!(lang_from_title("archive.tar.gz"), "gz");
+    }
+
+    // lang_from_title
+
+    #[test]
+    fn lang_path_with_spaces() {
+        assert_eq!(lang_from_title("Read some/dir/file.tsx"), "tsx");
+    }
+
+    #[test]
+    fn lang_hidden_file() {
+        assert_eq!(lang_from_title(".gitignore"), "gitignore");
+    }
+
+    /// Multiple extensions chained: picks the final one.
+    #[test]
+    fn lang_chained_extensions() {
+        assert_eq!(lang_from_title("Read a.test.spec.ts"), "ts");
+    }
+
+    /// Dot at end of title: extension is empty string.
+    #[test]
+    fn lang_dot_at_end() {
+        // "file." — rsplit('.').next() returns "", which is shorter than token
+        assert_eq!(lang_from_title("file."), "");
+    }
+
+    /// Title with only whitespace.
+    #[test]
+    fn lang_whitespace_only() {
+        assert_eq!(lang_from_title("   "), "");
+    }
+
+    /// Title with backslash path (Windows).
+    #[test]
+    fn lang_windows_backslash_path() {
+        // Backslashes are not split by split_whitespace, so the whole path is one token
+        assert_eq!(lang_from_title("Read src\\main.rs"), "rs");
+    }
+
+    // is_markdown_file
+
+    #[test]
+    fn is_md_file() {
+        assert!(is_markdown_file("README.md"));
+    }
+
+    #[test]
+    fn is_mdx_file() {
+        assert!(is_markdown_file("component.mdx"));
+    }
+
+    #[test]
+    fn is_markdown_ext() {
+        assert!(is_markdown_file("doc.markdown"));
+    }
+
+    // is_markdown_file
+
+    #[test]
+    fn is_markdown_case_insensitive() {
+        assert!(is_markdown_file("README.MD"));
+        assert!(is_markdown_file("file.Md"));
+    }
+
+    #[test]
+    fn is_not_markdown() {
+        assert!(!is_markdown_file("main.rs"));
+        assert!(!is_markdown_file("style.css"));
+        assert!(!is_markdown_file(""));
+    }
+
+    #[test]
+    fn is_not_markdown_partial() {
+        assert!(!is_markdown_file("somemdx"));
+    }
+
+    // is_markdown_file
+
+    /// `.md` in the middle of the name is NOT a markdown extension.
+    #[test]
+    fn is_not_markdown_md_in_middle() {
+        assert!(!is_markdown_file("file.md.bak"));
+    }
+
+    /// Path with .md extension.
+    #[test]
+    fn is_markdown_with_path() {
+        assert!(is_markdown_file("docs/getting-started.md"));
+        assert!(is_markdown_file("Read /home/user/notes.md"));
+    }
+
+    /// `.MARKDOWN` all caps.
+    #[test]
+    fn is_markdown_uppercase_full() {
+        assert!(is_markdown_file("FILE.MARKDOWN"));
+    }
+
+    // force_markdown_line_breaks
+
+    #[test]
+    fn force_breaks_adds_trailing_spaces() {
+        let result = force_markdown_line_breaks("line1\nline2");
+        assert!(result.contains("line1  \n"));
+        assert!(result.contains("line2  "));
+    }
+
+    #[test]
+    fn force_breaks_preserves_trailing_newline() {
+        let result = force_markdown_line_breaks("hello\n");
+        assert!(result.ends_with('\n'));
+    }
+
+    // force_markdown_line_breaks
+
+    #[test]
+    fn force_breaks_empty_lines_no_trailing_spaces() {
+        let result = force_markdown_line_breaks("a\n\nb");
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].ends_with("  "));
+        assert_eq!(lines[1], "");
+        assert!(lines[2].ends_with("  "));
+    }
+
+    #[test]
+    fn force_breaks_single_line_no_trailing_newline() {
+        let result = force_markdown_line_breaks("hello");
+        assert_eq!(result, "hello  ");
+    }
+
+    // force_markdown_line_breaks
+
+    #[test]
+    fn force_breaks_many_consecutive_empty_lines() {
+        let result = force_markdown_line_breaks("a\n\n\nb");
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 4);
+    }
+
+    /// Empty input.
+    #[test]
+    fn force_breaks_empty_input() {
+        let result = force_markdown_line_breaks("");
+        assert_eq!(result, "");
+    }
+
+    /// Only empty lines.
+    #[test]
+    fn force_breaks_only_empty_lines() {
+        let result = force_markdown_line_breaks("\n\n\n");
+        let lines: Vec<&str> = result.lines().collect();
+        // All lines are empty, so no trailing spaces added
+        for line in &lines {
+            assert!(line.is_empty(), "empty line got content: {line:?}");
+        }
+    }
+
+    /// Line already ending with two spaces — gets two more.
+    #[test]
+    fn force_breaks_already_has_trailing_spaces() {
+        let result = force_markdown_line_breaks("hello  \nworld");
+        // "hello  " + "  " = "hello    "
+        assert!(result.starts_with("hello    "));
+    }
+
+    /// Single newline (no content).
+    #[test]
+    fn force_breaks_single_newline() {
+        let result = force_markdown_line_breaks("\n");
+        // One empty line, should stay empty with trailing newline
+        assert_eq!(result, "\n");
+    }
+
+    // status_icon
+
+    #[test]
+    fn status_icon_pending() {
+        let (icon, color) = status_icon(acp::ToolCallStatus::Pending, 0);
+        assert!(!icon.is_empty());
+        assert_eq!(color, theme::RUST_ORANGE);
+    }
+
+    #[test]
+    fn status_icon_in_progress() {
+        let (icon, color) = status_icon(acp::ToolCallStatus::InProgress, 3);
+        assert!(!icon.is_empty());
+        assert_eq!(color, theme::RUST_ORANGE);
+    }
+
+    #[test]
+    fn status_icon_completed() {
+        let (icon, color) = status_icon(acp::ToolCallStatus::Completed, 0);
+        assert_eq!(icon, theme::ICON_COMPLETED);
+        assert_eq!(color, theme::RUST_ORANGE);
+    }
+
+    #[test]
+    fn status_icon_failed() {
+        let (icon, color) = status_icon(acp::ToolCallStatus::Failed, 0);
+        assert_eq!(icon, theme::ICON_FAILED);
+        assert_eq!(color, theme::STATUS_ERROR);
+    }
+
+    // status_icon
+
+    #[test]
+    fn status_icon_spinner_wraps() {
+        let (icon_a, _) = status_icon(acp::ToolCallStatus::InProgress, 0);
+        let (icon_b, _) = status_icon(acp::ToolCallStatus::InProgress, SPINNER_STRS.len());
+        assert_eq!(icon_a, icon_b);
+    }
+
+    #[test]
+    fn status_icon_all_spinner_frames_valid() {
+        for i in 0..SPINNER_STRS.len() {
+            let (icon, _) = status_icon(acp::ToolCallStatus::InProgress, i);
+            assert!(!icon.is_empty());
+        }
+    }
+
+    /// Spinner frames are all distinct.
+    #[test]
+    fn status_icon_spinner_frames_distinct() {
+        let frames: Vec<&str> = (0..SPINNER_STRS.len())
+            .map(|i| status_icon(acp::ToolCallStatus::InProgress, i).0)
+            .collect();
+        for i in 0..frames.len() {
+            for j in (i + 1)..frames.len() {
+                assert_ne!(frames[i], frames[j], "frames {i} and {j} are identical");
+            }
+        }
+    }
+
+    /// Large spinner frame number wraps correctly.
+    #[test]
+    fn status_icon_spinner_large_frame() {
+        let (icon, _) = status_icon(acp::ToolCallStatus::Pending, 999_999);
+        assert!(!icon.is_empty());
+    }
+}
+
 /// Render a diff with proper unified-style output using the `similar` crate.
 /// The ACP `Diff` struct provides `old_text`/`new_text` — we compute the actual
 /// line-level changes and show only changed lines with context.

@@ -268,6 +268,345 @@ pub struct ToolCallInfo {
     pub pending_permission: Option<InlinePermission>,
 }
 
+#[cfg(test)]
+mod tests {
+    // =====
+    // TESTS: 26
+    // =====
+
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use ratatui::text::{Line, Span};
+    use ratatui::style::{Color, Style};
+
+    // BlockCache
+
+    #[test]
+    fn cache_default_returns_none() {
+        let cache = BlockCache::default();
+        assert!(cache.get().is_none());
+    }
+
+    #[test]
+    fn cache_store_then_get() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        assert!(cache.get().is_some());
+        assert_eq!(cache.get().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cache_invalidate_then_get_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.invalidate();
+        assert!(cache.get().is_none());
+    }
+
+    // BlockCache
+
+    #[test]
+    fn cache_store_after_invalidate() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("old")]);
+        cache.invalidate();
+        assert!(cache.get().is_none());
+        cache.store(vec![Line::from("new")]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines.len(), 1);
+        let span_content: String =
+            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(span_content, "new");
+    }
+
+    #[test]
+    fn cache_multiple_invalidations() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.invalidate();
+        cache.invalidate();
+        cache.invalidate();
+        assert!(cache.get().is_none());
+        cache.store(vec![Line::from("fresh")]);
+        assert!(cache.get().is_some());
+    }
+
+    #[test]
+    fn cache_store_empty_lines() {
+        let mut cache = BlockCache::default();
+        cache.store(Vec::new());
+        let lines = cache.get().unwrap();
+        assert!(lines.is_empty());
+    }
+
+    /// Store twice without invalidating — second store overwrites first.
+    #[test]
+    fn cache_store_overwrite_without_invalidate() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("first")]);
+        cache.store(vec![Line::from("second"), Line::from("line2")]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines.len(), 2);
+        let content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(content, "second");
+    }
+
+    /// get() called twice returns consistent data.
+    #[test]
+    fn cache_get_twice_consistent() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("stable")]);
+        let first = cache.get().unwrap().len();
+        let second = cache.get().unwrap().len();
+        assert_eq!(first, second);
+    }
+
+    // BlockCache
+
+    #[test]
+    fn cache_store_many_lines() {
+        let mut cache = BlockCache::default();
+        let lines: Vec<Line<'static>> = (0..1000)
+            .map(|i| Line::from(Span::raw(format!("line {i}"))))
+            .collect();
+        cache.store(lines);
+        assert_eq!(cache.get().unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn cache_invalidate_without_store() {
+        let mut cache = BlockCache::default();
+        cache.invalidate();
+        assert!(cache.get().is_none());
+    }
+
+    #[test]
+    fn cache_rapid_store_invalidate_cycle() {
+        let mut cache = BlockCache::default();
+        for i in 0..50 {
+            cache.store(vec![Line::from(format!("v{i}"))]);
+            assert!(cache.get().is_some());
+            cache.invalidate();
+            assert!(cache.get().is_none());
+        }
+        cache.store(vec![Line::from("final")]);
+        assert!(cache.get().is_some());
+    }
+
+    /// Store styled lines with multiple spans per line.
+    #[test]
+    fn cache_store_styled_lines() {
+        let mut cache = BlockCache::default();
+        let line = Line::from(vec![
+            Span::styled("bold", Style::default().fg(Color::Red)),
+            Span::raw(" normal "),
+            Span::styled("blue", Style::default().fg(Color::Blue)),
+        ]);
+        cache.store(vec![line]);
+        let lines = cache.get().unwrap();
+        assert_eq!(lines[0].spans.len(), 3);
+    }
+
+    /// Version counter after many invalidations — verify it doesn't
+    /// accidentally wrap to 0 (which would make stale data appear fresh).
+    /// With u64, 10K invalidations is nowhere near overflow.
+    #[test]
+    fn cache_version_no_false_fresh_after_many_invalidations() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        for _ in 0..10_000 {
+            cache.invalidate();
+        }
+        // Cache was invalidated 10K times without re-storing — must be stale
+        assert!(cache.get().is_none());
+    }
+
+    /// Invalidate, store, invalidate, store — alternating pattern.
+    #[test]
+    fn cache_alternating_invalidate_store() {
+        let mut cache = BlockCache::default();
+        for i in 0..100 {
+            cache.invalidate();
+            assert!(cache.get().is_none(), "stale after invalidate at iter {i}");
+            cache.store(vec![Line::from(format!("v{i}"))]);
+            assert!(cache.get().is_some(), "fresh after store at iter {i}");
+        }
+    }
+
+    // App tool_call_index
+
+    fn make_test_app() -> App {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        App {
+            messages: Vec::new(),
+            scroll_offset: 0,
+            scroll_target: 0,
+            scroll_pos: 0.0,
+            auto_scroll: true,
+            input: InputState::new(),
+            status: AppStatus::Ready,
+            should_quit: false,
+            session_id: None,
+            model_name: "test".into(),
+            cwd: "/test".into(),
+            cwd_raw: "/test".into(),
+            files_accessed: 0,
+            mode: None,
+            pending_permission_ids: Vec::new(),
+            event_tx: tx,
+            event_rx: rx,
+            spinner_frame: 0,
+            tools_collapsed: false,
+            active_task_ids: Default::default(),
+            terminals: Default::default(),
+            force_redraw: false,
+            tool_call_index: Default::default(),
+            todos: Vec::new(),
+            show_todo_panel: false,
+            todo_scroll: 0,
+            available_commands: Vec::new(),
+            cached_frame_area: Default::default(),
+            selection: None,
+            rendered_chat_lines: Vec::new(),
+            rendered_chat_area: Default::default(),
+            rendered_input_lines: Vec::new(),
+            rendered_input_area: Default::default(),
+            mention: None,
+            file_cache: None,
+            cached_welcome_lines: None,
+            input_wrap_cache: None,
+            cached_todo_compact: None,
+            cached_header_line: None,
+            cached_footer_line: None,
+        }
+    }
+
+    #[test]
+    fn lookup_missing_returns_none() {
+        let app = make_test_app();
+        assert!(app.lookup_tool_call("nonexistent").is_none());
+    }
+
+    #[test]
+    fn index_and_lookup() {
+        let mut app = make_test_app();
+        app.index_tool_call("tc-123".into(), 2, 5);
+        assert_eq!(app.lookup_tool_call("tc-123"), Some((2, 5)));
+    }
+
+    // App tool_call_index
+
+    /// Index same ID twice — second write overwrites first.
+    #[test]
+    fn index_overwrite_existing() {
+        let mut app = make_test_app();
+        app.index_tool_call("tc-1".into(), 0, 0);
+        app.index_tool_call("tc-1".into(), 5, 10);
+        assert_eq!(app.lookup_tool_call("tc-1"), Some((5, 10)));
+    }
+
+    /// Empty string as tool call ID.
+    #[test]
+    fn index_empty_string_id() {
+        let mut app = make_test_app();
+        app.index_tool_call(String::new(), 1, 2);
+        assert_eq!(app.lookup_tool_call(""), Some((1, 2)));
+    }
+
+    /// Stress: 1000 tool calls indexed and looked up.
+    #[test]
+    fn index_stress_1000_entries() {
+        let mut app = make_test_app();
+        for i in 0..1000 {
+            app.index_tool_call(format!("tc-{i}"), i, i * 2);
+        }
+        // Spot check first, middle, last
+        assert_eq!(app.lookup_tool_call("tc-0"), Some((0, 0)));
+        assert_eq!(app.lookup_tool_call("tc-500"), Some((500, 1000)));
+        assert_eq!(app.lookup_tool_call("tc-999"), Some((999, 1998)));
+        // Non-existent still returns None
+        assert!(app.lookup_tool_call("tc-1000").is_none());
+    }
+
+    /// Unicode in tool call ID.
+    #[test]
+    fn index_unicode_id() {
+        let mut app = make_test_app();
+        app.index_tool_call("\u{1F600}-tool".into(), 3, 7);
+        assert_eq!(app.lookup_tool_call("\u{1F600}-tool"), Some((3, 7)));
+    }
+
+    // active_task_ids
+
+    #[test]
+    fn active_task_insert_remove() {
+        let mut app = make_test_app();
+        app.insert_active_task("task-1".into());
+        assert!(app.active_task_ids.contains("task-1"));
+        app.remove_active_task("task-1");
+        assert!(!app.active_task_ids.contains("task-1"));
+    }
+
+    #[test]
+    fn remove_nonexistent_task_is_noop() {
+        let mut app = make_test_app();
+        app.remove_active_task("does-not-exist");
+        assert!(app.active_task_ids.is_empty());
+    }
+
+    // active_task_ids
+
+    /// Insert same ID twice — set deduplicates; one remove clears it.
+    #[test]
+    fn active_task_insert_duplicate() {
+        let mut app = make_test_app();
+        app.insert_active_task("task-1".into());
+        app.insert_active_task("task-1".into());
+        assert_eq!(app.active_task_ids.len(), 1);
+        app.remove_active_task("task-1");
+        assert!(app.active_task_ids.is_empty());
+    }
+
+    /// Insert many tasks, remove in different order.
+    #[test]
+    fn active_task_insert_many_remove_out_of_order() {
+        let mut app = make_test_app();
+        for i in 0..100 {
+            app.insert_active_task(format!("task-{i}"));
+        }
+        assert_eq!(app.active_task_ids.len(), 100);
+        // Remove in reverse order
+        for i in (0..100).rev() {
+            app.remove_active_task(&format!("task-{i}"));
+        }
+        assert!(app.active_task_ids.is_empty());
+    }
+
+    /// Mixed insert/remove interleaving.
+    #[test]
+    fn active_task_interleaved_insert_remove() {
+        let mut app = make_test_app();
+        app.insert_active_task("a".into());
+        app.insert_active_task("b".into());
+        app.remove_active_task("a");
+        app.insert_active_task("c".into());
+        assert!(!app.active_task_ids.contains("a"));
+        assert!(app.active_task_ids.contains("b"));
+        assert!(app.active_task_ids.contains("c"));
+        assert_eq!(app.active_task_ids.len(), 2);
+    }
+
+    /// Remove from empty set multiple times — no panic.
+    #[test]
+    fn active_task_remove_from_empty_repeatedly() {
+        let mut app = make_test_app();
+        for i in 0..100 {
+            app.remove_active_task(&format!("ghost-{i}"));
+        }
+        assert!(app.active_task_ids.is_empty());
+    }
+}
+
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
 /// controls render inside the tool call block (unified edit/permission UX).
 pub struct InlinePermission {
