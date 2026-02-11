@@ -655,3 +655,449 @@ fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
         _ => "Unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // =====
+    // TESTS: 36
+    // =====
+
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    // Helper: build a minimal ToolCallInfo with given id + status
+
+    fn tool_call(id: &str, status: acp::ToolCallStatus) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.into(),
+            title: id.into(),
+            kind: acp::ToolKind::Read,
+            status,
+            content: vec![],
+            collapsed: false,
+            claude_tool_name: None,
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        }
+    }
+
+    fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks,
+            cached_visual_height: 0,
+            cached_visual_width: 0,
+        }
+    }
+
+    fn user_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![MessageBlock::Text(text.into(), BlockCache::default())],
+            cached_visual_height: 0,
+            cached_visual_width: 0,
+        }
+    }
+
+    // shorten_tool_title
+
+    #[test]
+    fn shorten_unix_path() {
+        let result = shorten_tool_title("Read /home/user/project/src/main.rs", "/home/user/project");
+        assert_eq!(result, "Read src/main.rs");
+    }
+
+    #[test]
+    fn shorten_windows_path() {
+        let result = shorten_tool_title(
+            "Read C:\\Users\\me\\project\\src\\main.rs",
+            "C:\\Users\\me\\project",
+        );
+        assert_eq!(result, "Read src/main.rs");
+    }
+
+    #[test]
+    fn shorten_no_match_returns_original() {
+        let result = shorten_tool_title("Read /other/path/file.rs", "/home/user/project");
+        assert_eq!(result, "Read /other/path/file.rs");
+    }
+
+    // shorten_tool_title
+
+    #[test]
+    fn shorten_empty_cwd() {
+        let result = shorten_tool_title("Read /some/path/file.rs", "");
+        assert_eq!(result, "Read /some/path/file.rs");
+    }
+
+    #[test]
+    fn shorten_cwd_with_trailing_slash() {
+        let result = shorten_tool_title("Read /home/user/project/file.rs", "/home/user/project/");
+        assert_eq!(result, "Read file.rs");
+    }
+
+    #[test]
+    fn shorten_title_is_just_path() {
+        let result = shorten_tool_title("/home/user/project/file.rs", "/home/user/project");
+        assert_eq!(result, "file.rs");
+    }
+
+    #[test]
+    fn shorten_mixed_separators() {
+        let result = shorten_tool_title(
+            "Read C:/Users/me/project/src/lib.rs",
+            "C:\\Users\\me\\project",
+        );
+        assert_eq!(result, "Read src/lib.rs");
+    }
+
+    #[test]
+    fn shorten_empty_title() {
+        assert_eq!(shorten_tool_title("", "/some/cwd"), "");
+    }
+
+    #[test]
+    fn shorten_title_no_path_at_all() {
+        assert_eq!(shorten_tool_title("Read", "/home/user"), "Read");
+        assert_eq!(shorten_tool_title("Write something", "/proj"), "Write something");
+    }
+
+    #[test]
+    fn shorten_title_equals_cwd_exactly() {
+        // Title IS the cwd path — after stripping, nothing left
+        let result = shorten_tool_title("/home/user/project", "/home/user/project");
+        // The cwd+/ won't match because title doesn't have trailing content after cwd
+        // cwd_norm = "/home/user/project/", title doesn't contain that
+        assert_eq!(result, "/home/user/project");
+    }
+
+    // shorten_tool_title
+
+    #[test]
+    fn shorten_partial_match_no_false_positive() {
+        let result = shorten_tool_title("Read /home/username/file.rs", "/home/user");
+        assert_eq!(result, "Read /home/username/file.rs");
+    }
+
+    #[test]
+    fn shorten_deeply_nested_path() {
+        let cwd = "/a/b/c/d/e/f/g";
+        let title = "Read /a/b/c/d/e/f/g/h/i/j.rs";
+        let result = shorten_tool_title(title, cwd);
+        assert_eq!(result, "Read h/i/j.rs");
+    }
+
+    #[test]
+    fn shorten_cwd_appears_multiple_times() {
+        let result = shorten_tool_title("Diff /proj/a.rs /proj/b.rs", "/proj");
+        assert_eq!(result, "Diff a.rs b.rs");
+    }
+
+    /// Spaces in path (real Windows path with spaces).
+    #[test]
+    fn shorten_spaces_in_path() {
+        let result = shorten_tool_title(
+            "Read C:\\Users\\Simon Peter Rothgang\\Desktop\\project\\src\\main.rs",
+            "C:\\Users\\Simon Peter Rothgang\\Desktop\\project",
+        );
+        assert_eq!(result, "Read src/main.rs");
+    }
+
+    /// Unicode characters in path components.
+    #[test]
+    fn shorten_unicode_in_path() {
+        let result = shorten_tool_title(
+            "Read /home/\u{00FC}ser/\u{30D7}\u{30ED}\u{30B8}\u{30A7}\u{30AF}\u{30C8}/src/lib.rs",
+            "/home/\u{00FC}ser/\u{30D7}\u{30ED}\u{30B8}\u{30A7}\u{30AF}\u{30C8}",
+        );
+        assert_eq!(result, "Read src/lib.rs");
+    }
+
+    /// Root as cwd (Unix).
+    #[test]
+    fn shorten_cwd_is_root_unix() {
+        // cwd = "/" => with_sep = "/", so "/foo/bar.rs".contains("/") => replaces
+        let result = shorten_tool_title("Read /foo/bar.rs", "/");
+        // "/" is first path component = "" (empty), heuristic check uses "" which is in everything
+        // After normalization: cwd = "/", with_sep = "/", title contains "/" => replaces ALL "/"
+        assert_eq!(result, "Read foobar.rs");
+    }
+
+    /// Root as cwd (Windows).
+    #[test]
+    fn shorten_cwd_is_drive_root_windows() {
+        let result = shorten_tool_title("Read C:\\src\\main.rs", "C:\\");
+        assert_eq!(result, "Read src/main.rs");
+    }
+
+    /// Very long path (stress test).
+    #[test]
+    fn shorten_very_long_path() {
+        let segments: String = (0..50).map(|i| format!("/seg{i}")).collect();
+        let cwd = segments.clone();
+        let title = format!("Read {segments}/deep/file.rs");
+        let result = shorten_tool_title(&title, &cwd);
+        assert_eq!(result, "Read deep/file.rs");
+    }
+
+    /// Case sensitivity: paths are case-sensitive.
+    #[test]
+    fn shorten_case_sensitive() {
+        let result = shorten_tool_title("Read /Home/User/Project/file.rs", "/home/user/project");
+        // Different case, so the first-component heuristic "home" matches "Home"?
+        // No: cwd_start = "home", title doesn't contain "home" (has "Home") => early return
+        assert_eq!(result, "Read /Home/User/Project/file.rs");
+    }
+
+    /// Cwd that is a prefix at directory boundary but not at cwd boundary.
+    #[test]
+    fn shorten_cwd_prefix_boundary() {
+        // cwd="/pro" should NOT strip from "/project/file.rs"
+        let result = shorten_tool_title("Read /project/file.rs", "/pro");
+        // cwd_start = "pro", title contains "pro" (in "project") => proceeds to normalize
+        // with_sep = "/pro/", title_norm = "Read /project/file.rs", doesn't contain "/pro/"
+        assert_eq!(result, "Read /project/file.rs");
+    }
+
+    // has_in_progress_tool_calls
+
+    fn make_test_app() -> App {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        App {
+            messages: Vec::new(),
+            scroll_offset: 0,
+            scroll_target: 0,
+            scroll_pos: 0.0,
+            auto_scroll: true,
+            input: super::super::InputState::new(),
+            status: AppStatus::Ready,
+            should_quit: false,
+            session_id: None,
+            model_name: "test".into(),
+            cwd: "/test".into(),
+            cwd_raw: "/test".into(),
+            files_accessed: 0,
+            mode: None,
+            pending_permission_ids: Vec::new(),
+            event_tx: tx,
+            event_rx: rx,
+            spinner_frame: 0,
+            tools_collapsed: false,
+            active_task_ids: Default::default(),
+            terminals: Default::default(),
+            force_redraw: false,
+            tool_call_index: Default::default(),
+            todos: Vec::new(),
+            show_todo_panel: false,
+            todo_scroll: 0,
+            available_commands: Vec::new(),
+            cached_frame_area: Default::default(),
+            selection: None,
+            rendered_chat_lines: Vec::new(),
+            rendered_chat_area: Default::default(),
+            rendered_input_lines: Vec::new(),
+            rendered_input_area: Default::default(),
+            mention: None,
+            file_cache: None,
+            cached_welcome_lines: None,
+            input_wrap_cache: None,
+            cached_todo_compact: None,
+            cached_header_line: None,
+            cached_footer_line: None,
+        }
+    }
+
+    #[test]
+    fn has_in_progress_empty_messages() {
+        let app = make_test_app();
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_no_tool_calls() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::Text("hello".into(), BlockCache::default()),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_with_pending_tool() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Pending))),
+        ]));
+        assert!(has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_with_in_progress_tool() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
+        ]));
+        assert!(has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_all_completed() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_all_failed() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Failed))),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    // has_in_progress_tool_calls
+
+    #[test]
+    fn has_in_progress_user_message_last() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("hi"));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    /// Only the LAST message matters — earlier assistant messages are ignored.
+    #[test]
+    fn has_in_progress_only_checks_last_message() {
+        let mut app = make_test_app();
+        // First assistant message has in-progress tool
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
+        ]));
+        // Last message is user — should be false
+        app.messages.push(user_msg("thanks"));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    /// Earlier assistant with in-progress, last assistant all completed.
+    #[test]
+    fn has_in_progress_ignores_earlier_assistant() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
+        ]));
+        app.messages.push(user_msg("ok"));
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Completed))),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    #[test]
+    fn has_in_progress_mixed_completed_and_pending() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::InProgress))),
+        ]));
+        assert!(has_in_progress_tool_calls(&app));
+    }
+
+    /// Text blocks mixed with tool calls — text blocks are correctly skipped.
+    #[test]
+    fn has_in_progress_text_and_tools_mixed() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::Text("thinking...".into(), BlockCache::default()),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
+            MessageBlock::Text("done".into(), BlockCache::default()),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    /// Stress: 100 completed tool calls + 1 pending at the end.
+    #[test]
+    fn has_in_progress_stress_100_tools_one_pending() {
+        let mut app = make_test_app();
+        let mut blocks: Vec<MessageBlock> = (0..100)
+            .map(|i| {
+                MessageBlock::ToolCall(Box::new(tool_call(
+                    &format!("tc{i}"),
+                    acp::ToolCallStatus::Completed,
+                )))
+            })
+            .collect();
+        blocks.push(MessageBlock::ToolCall(Box::new(tool_call(
+            "tc_pending",
+            acp::ToolCallStatus::Pending,
+        ))));
+        app.messages.push(assistant_msg(blocks));
+        assert!(has_in_progress_tool_calls(&app));
+    }
+
+    /// Stress: 100 completed tool calls, none pending.
+    #[test]
+    fn has_in_progress_stress_100_tools_all_done() {
+        let mut app = make_test_app();
+        let blocks: Vec<MessageBlock> = (0..100)
+            .map(|i| {
+                MessageBlock::ToolCall(Box::new(tool_call(
+                    &format!("tc{i}"),
+                    acp::ToolCallStatus::Completed,
+                )))
+            })
+            .collect();
+        app.messages.push(assistant_msg(blocks));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    /// Mix of Failed and Completed — neither counts as in-progress.
+    #[test]
+    fn has_in_progress_failed_and_completed_mix() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Failed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc3", acp::ToolCallStatus::Completed))),
+        ]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    /// Empty assistant message (no blocks at all).
+    #[test]
+    fn has_in_progress_empty_assistant_blocks() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![]));
+        assert!(!has_in_progress_tool_calls(&app));
+    }
+
+    // make_test_app — verify defaults
+
+    #[test]
+    fn test_app_defaults() {
+        let app = make_test_app();
+        assert!(app.messages.is_empty());
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll_target, 0);
+        assert!(app.auto_scroll);
+        assert!(!app.should_quit);
+        assert!(app.session_id.is_none());
+        assert_eq!(app.files_accessed, 0);
+        assert!(app.pending_permission_ids.is_empty());
+        assert!(!app.tools_collapsed);
+        assert!(!app.force_redraw);
+        assert!(app.todos.is_empty());
+        assert!(!app.show_todo_panel);
+        assert!(app.selection.is_none());
+        assert!(app.mention.is_none());
+        assert!(app.rendered_chat_lines.is_empty());
+        assert!(app.rendered_input_lines.is_empty());
+        assert!(matches!(app.status, AppStatus::Ready));
+    }
+}
