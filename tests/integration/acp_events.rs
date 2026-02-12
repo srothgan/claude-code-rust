@@ -7,7 +7,7 @@
 
 use agent_client_protocol as acp;
 use claude_rust::acp::client::ClientEvent;
-use claude_rust::app::{AppStatus, BlockCache, MessageBlock, MessageRole};
+use claude_rust::app::{AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};
@@ -27,7 +27,7 @@ async fn text_chunk_creates_assistant_message() {
 
     assert_eq!(app.messages.len(), 1);
     assert!(matches!(app.messages[0].role, MessageRole::Assistant));
-    if let MessageBlock::Text(t, _) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(t, ..) = &app.messages[0].blocks[0] {
         assert_eq!(t, "Hello");
     } else {
         panic!("expected Text block");
@@ -50,7 +50,7 @@ async fn text_chunk_appends_to_existing_assistant_message() {
     );
 
     assert_eq!(app.messages.len(), 1, "should still be one message");
-    if let MessageBlock::Text(t, _) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(t, ..) = &app.messages[0].blocks[0] {
         assert_eq!(t, "Hello world");
     } else {
         panic!("expected Text block");
@@ -84,7 +84,7 @@ async fn multiple_text_chunks_accumulate_in_single_block() {
     }
     assert_eq!(app.messages.len(), 1);
     assert_eq!(app.messages[0].blocks.len(), 1);
-    if let MessageBlock::Text(t, _) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(t, ..) = &app.messages[0].blocks[0] {
         assert_eq!(t, "0123456789");
     } else {
         panic!("expected Text block");
@@ -307,9 +307,10 @@ async fn text_chunk_after_user_message_creates_new_assistant_message() {
     // Simulate a user message already in the chat
     app.messages.push(claude_rust::app::ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text("user question".into(), BlockCache::default())],
+        blocks: vec![MessageBlock::Text("user question".into(), BlockCache::default(), IncrementalMarkdown::default())],
         cached_visual_height: 0,
         cached_visual_width: 0,
+
     });
 
     let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("answer")));
@@ -360,9 +361,10 @@ async fn tool_call_after_user_message_creates_assistant_message() {
 
     app.messages.push(claude_rust::app::ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text("question".into(), BlockCache::default())],
+        blocks: vec![MessageBlock::Text("question".into(), BlockCache::default(), IncrementalMarkdown::default())],
         cached_visual_height: 0,
         cached_visual_width: 0,
+
     });
 
     let tc =

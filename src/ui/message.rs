@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole};
+use crate::app::{BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
 use crate::ui::tables;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Paragraph, Wrap};
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
@@ -59,8 +60,8 @@ pub fn render_message(
 
             // User message: markdown-rendered with background overlay
             for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache) = block {
-                    render_text_cached(text, cache, width, Some(theme::USER_MSG_BG), true, out);
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
                 }
             }
         }
@@ -86,12 +87,12 @@ pub fn render_message(
             let mut prev_was_tool = false;
             for block in &mut msg.blocks {
                 match block {
-                    MessageBlock::Text(text, cache) => {
+                    MessageBlock::Text(text, cache, incr) => {
                         // Add half-spacing when transitioning from tools back to text
                         if prev_was_tool {
                             out.push(Line::default());
                         }
-                        render_text_cached(text, cache, width, None, false, out);
+                        render_text_cached(text, cache, incr, width, None, false, out);
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
@@ -159,31 +160,51 @@ fn preprocess_markdown(text: &str) -> String {
     result
 }
 
-/// Render a text block with caching. Only calls `tui_markdown` when cache is stale.
-/// `bg` is an optional background color overlay (used for user messages).
-fn render_text_cached(
-    text: &str,
+/// Render a text block with caching. Uses paragraph-level incremental markdown
+/// during streaming to avoid re-parsing the entire text every frame.
+///
+/// Cache hierarchy:
+/// 1. `BlockCache` (full block) -- hit for completed messages (no changes).
+/// 2. `IncrementalMarkdown` (per-paragraph) -- only tail paragraph re-parsed during streaming.
+pub(super) fn render_text_cached(
+    _text: &str,
     cache: &mut BlockCache,
+    incr: &mut IncrementalMarkdown,
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
 ) {
+    // Fast path: full block cache is valid (completed message, no changes)
     if let Some(cached_lines) = cache.get() {
         out.extend_from_slice(cached_lines);
         return;
     }
 
-    // Cache miss — preprocess headings (tui_markdown doesn't handle them well),
-    // then render from markdown.
-    let mut preprocessed = preprocess_markdown(text);
-    if preserve_newlines {
-        preprocessed = force_markdown_line_breaks(&preprocessed);
-    }
-    let fresh: Vec<Line<'static>> = tables::render_markdown_with_tables(&preprocessed, width, bg);
+    let _t = crate::perf::start("msg::render_text");
 
-    // Store first, then extend from stored ref to avoid double-clone.
-    cache.store(fresh);
+    // Build a render function that handles preprocessing + tui_markdown
+    let render_fn = |src: &str| -> Vec<Line<'static>> {
+        let mut preprocessed = preprocess_markdown(src);
+        if preserve_newlines {
+            preprocessed = force_markdown_line_breaks(&preprocessed);
+        }
+        tables::render_markdown_with_tables(&preprocessed, width, bg)
+    };
+
+    // Ensure any previously invalidated paragraph caches are re-rendered
+    incr.ensure_rendered(&render_fn);
+
+    // Render: cached paragraphs + fresh tail
+    let fresh = incr.lines(&render_fn);
+
+    // Store in the full block cache with wrapped height.
+    // For streaming messages this will be invalidated on the next chunk,
+    // but for completed messages it persists.
+    let h = Paragraph::new(Text::from(fresh.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    cache.store_with_height(fresh, h, width);
     if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }

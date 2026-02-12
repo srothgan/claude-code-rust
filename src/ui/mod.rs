@@ -35,6 +35,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let _t = app.perf.as_ref().map(|p| p.start("ui::render"));
     app.cached_frame_area = frame.area();
     let todo_height = todo::compute_height(app);
     let help_height = help::compute_height(app, frame.area().width);

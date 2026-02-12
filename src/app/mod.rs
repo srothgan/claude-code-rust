@@ -31,9 +31,9 @@ pub use events::{handle_acp_event, handle_terminal_event};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, InlinePermission, InputWrapCache, LoginHint,
-    MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, SelectionState,
-    TodoItem, TodoStatus, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission,
+    InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
+    SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
 };
 
 use agent_client_protocol::{self as acp, Agent as _};
@@ -48,6 +48,7 @@ use std::time::{Duration, Instant};
 // TUI event loop
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
 
@@ -102,17 +103,41 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             break;
         }
 
-        // Phase 3: render once
-        if matches!(app.status, AppStatus::Connecting | AppStatus::Thinking | AppStatus::Running) {
+        // Phase 3: render once (only when something changed)
+        let is_animating = matches!(
+            app.status,
+            AppStatus::Connecting | AppStatus::Thinking | AppStatus::Running
+        );
+        if is_animating {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            app.needs_redraw = true;
         }
-        terminal::update_terminal_outputs(app);
+        // Smooth scroll still settling
+        let scroll_delta = (app.scroll_target as f32 - app.scroll_pos).abs();
+        if scroll_delta >= 0.01 {
+            app.needs_redraw = true;
+        }
+        if terminal::update_terminal_outputs(app) {
+            app.needs_redraw = true;
+        }
         if app.force_redraw {
             terminal.clear()?;
             app.force_redraw = false;
+            app.needs_redraw = true;
         }
-        terminal.draw(|f| crate::ui::render(f, app))?;
-        last_render = Instant::now();
+        if app.needs_redraw {
+            if let Some(ref mut perf) = app.perf {
+                perf.next_frame();
+            }
+            #[allow(clippy::drop_non_drop)]
+            {
+                let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
+                terminal.draw(|f| crate::ui::render(f, app))?;
+                drop(timer);
+            }
+            app.needs_redraw = false;
+            last_render = Instant::now();
+        }
     }
 
     // --- Graceful shutdown ---

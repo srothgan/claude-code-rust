@@ -175,7 +175,7 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
 
     // Still one message — consecutive assistant chunks always merge
     assert_eq!(app.messages.len(), 1);
-    if let MessageBlock::Text(t, _) =
+    if let MessageBlock::Text(t, ..) =
         &app.messages.last().expect("message").blocks.last().expect("block")
     {
         assert!(t.contains("Turn 1"), "first turn text present");

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole};
+use super::{App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
 use crate::acp::client::ClientEvent;
 use crate::app::mention;
 use agent_client_protocol::{self as acp, Agent as _};
@@ -38,9 +38,14 @@ pub(super) fn submit_input(app: &mut App) {
 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(text.clone(), BlockCache::default())],
+        blocks: vec![MessageBlock::Text(
+            text.clone(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(&text),
+        )],
         cached_visual_height: 0,
         cached_visual_width: 0,
+
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator
     app.messages.push(ChatMessage {
@@ -48,6 +53,7 @@ pub(super) fn submit_input(app: &mut App) {
         blocks: Vec::new(),
         cached_visual_height: 0,
         cached_visual_width: 0,
+
     });
     app.input.clear();
     app.status = AppStatus::Thinking;

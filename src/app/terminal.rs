@@ -22,38 +22,46 @@ use super::{App, MessageBlock};
 /// The `output_buffer` is append-only (never cleared). The adapter's
 /// `terminal_output` uses a cursor to track what it already returned.
 /// We simply snapshot the full buffer for display each frame.
-pub(super) fn update_terminal_outputs(app: &mut App) {
+pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
+    let _t = app.perf.as_ref().map(|p| p.start("terminal::update"));
     let terminals = app.terminals.borrow();
     if terminals.is_empty() {
-        return;
+        return false;
     }
 
-    for msg in &mut app.messages {
-        for block in &mut msg.blocks {
-            if let MessageBlock::ToolCall(tc) = block {
-                let tc = tc.as_mut();
-                if let Some(ref tid) = tc.terminal_id
-                    && let Some(terminal) = terminals.get(tid.as_str())
-                {
-                    // Clone raw bytes under the lock, then convert outside
-                    // the critical section to avoid blocking output writers.
-                    let raw = {
-                        let Ok(buf) = terminal.output_buffer.lock() else {
-                            continue;
-                        };
-                        let current_len = buf.len();
-                        if current_len == 0 || current_len == tc.terminal_output_len {
-                            continue;
-                        }
-                        tc.terminal_output_len = current_len;
-                        buf.clone()
-                    };
-                    let snapshot = String::from_utf8_lossy(&raw).to_string();
+    let mut changed = false;
 
-                    tc.terminal_output = Some(snapshot);
-                    tc.cache.invalidate();
-                }
+    // Use the indexed terminal tool calls instead of scanning all messages/blocks.
+    for &(ref tid, mi, bi) in &app.terminal_tool_calls {
+        let Some(terminal) = terminals.get(tid.as_str()) else {
+            continue;
+        };
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        else {
+            continue;
+        };
+        let tc = tc.as_mut();
+
+        // Clone raw bytes under the lock, then convert outside
+        // the critical section to avoid blocking output writers.
+        let raw = {
+            let Ok(buf) = terminal.output_buffer.lock() else {
+                continue;
+            };
+            let current_len = buf.len();
+            if current_len == 0 || current_len == tc.terminal_output_len {
+                continue;
             }
-        }
+            tc.terminal_output_len = current_len;
+            buf.clone()
+        };
+        let snapshot = String::from_utf8_lossy(&raw).to_string();
+
+        tc.terminal_output = Some(snapshot);
+        tc.cache.invalidate();
+        changed = true;
     }
+
+    changed
 }
