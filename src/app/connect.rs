@@ -93,6 +93,12 @@ pub fn create_app(cli: &Cli) -> App {
         git_branch: None,
         cached_header_line: None,
         cached_footer_line: None,
+        cached_welcome_height: None,
+        terminal_tool_calls: Vec::new(),
+        needs_redraw: true,
+        perf: crate::perf::PerfLogger::open(std::path::Path::new("performance.log")),
+        height_prefix_sums: Vec::new(),
+        prefix_sums_width: 0,
     };
 
     app.refresh_git_branch();

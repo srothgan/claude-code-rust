@@ -16,8 +16,8 @@
 
 use super::connect::take_connection_slot;
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, InlinePermission, LoginHint, MessageBlock,
-    MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission, LoginHint,
+    MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
 };
 use crate::acp::client::ClientEvent;
 use crate::app::input_submit::submit_input;
@@ -32,6 +32,7 @@ use crossterm::event::{
 use std::rc::Rc;
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
+    app.needs_redraw = true;
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if app.mention.is_some() {
@@ -308,6 +309,7 @@ fn toggle_all_tool_calls(app: &mut App) {
 }
 
 pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
+    app.needs_redraw = true;
     match event {
         ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
@@ -380,9 +382,11 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 blocks: vec![MessageBlock::Text(
                     format!("Connection failed: {msg}"),
                     BlockCache::default(),
+                    IncrementalMarkdown::default(),
                 )],
                 cached_visual_height: 0,
                 cached_visual_width: 0,
+                
             });
         }
     }
@@ -480,6 +484,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
             blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
             cached_visual_height: 0,
             cached_visual_width: 0,
+
         });
         app.index_tool_call(tc_id, new_idx, 0);
     }
@@ -504,18 +509,30 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     && matches!(last.role, MessageRole::Assistant)
                 {
                     // Append to last Text block if it exists, else push new one
-                    if let Some(MessageBlock::Text(t, cache)) = last.blocks.last_mut() {
+                    if let Some(MessageBlock::Text(t, cache, incr)) = last.blocks.last_mut() {
                         t.push_str(&text.text);
+                        incr.append(&text.text);
                         cache.invalidate();
                     } else {
-                        last.blocks
-                            .push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
+                        let mut incr = IncrementalMarkdown::default();
+                        incr.append(&text.text);
+                        last.blocks.push(MessageBlock::Text(
+                            text.text.clone(),
+                            BlockCache::default(),
+                            incr,
+                        ));
                     }
                     return;
                 }
+                let mut incr = IncrementalMarkdown::default();
+                incr.append(&text.text);
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
-                    blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default())],
+                    blocks: vec![MessageBlock::Text(
+                        text.text.clone(),
+                        BlockCache::default(),
+                        incr,
+                    )],
                     cached_visual_height: 0,
                     cached_visual_width: 0,
                 });
@@ -562,7 +579,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                                 if let Some(terminal) = app.terminals.borrow().get(&tid) {
                                     tc.terminal_command = Some(terminal.command.clone());
                                 }
-                                tc.terminal_id = Some(tid);
+                                tc.terminal_id = Some(tid.clone());
+                                app.terminal_tool_calls.push((tid, mi, bi));
                             }
                         }
                         tc.content = content;
@@ -755,15 +773,21 @@ mod tests {
             blocks,
             cached_visual_height: 0,
             cached_visual_width: 0,
+
         }
     }
 
     fn user_msg(text: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(text.into(), BlockCache::default())],
+            blocks: vec![MessageBlock::Text(
+                text.into(),
+                BlockCache::default(),
+                IncrementalMarkdown::default(),
+            )],
             cached_visual_height: 0,
             cached_visual_width: 0,
+
         }
     }
 
@@ -946,7 +970,7 @@ mod tests {
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
         app.messages
-            .push(assistant_msg(vec![MessageBlock::Text("hello".into(), BlockCache::default())]));
+            .push(assistant_msg(vec![MessageBlock::Text("hello".into(), BlockCache::default(), IncrementalMarkdown::default())]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
@@ -1044,9 +1068,9 @@ mod tests {
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::Text("thinking...".into(), BlockCache::default()),
+            MessageBlock::Text("thinking...".into(), BlockCache::default(), IncrementalMarkdown::default()),
             MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
-            MessageBlock::Text("done".into(), BlockCache::default()),
+            MessageBlock::Text("done".into(), BlockCache::default(), IncrementalMarkdown::default()),
         ]));
         assert!(!has_in_progress_tool_calls(&app));
     }

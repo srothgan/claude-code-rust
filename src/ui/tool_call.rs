@@ -20,7 +20,8 @@ use crate::ui::theme;
 use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Paragraph, Wrap};
 
 /// Spinner frames as `&'static str` for use in `status_icon` return type.
 const SPINNER_STRS: &[&str] = &[
@@ -46,7 +47,11 @@ pub fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'stat
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
-/// `InProgress` tool calls skip caching because the icon color pulses each frame.
+///
+/// For in-progress tool calls, only the title line (containing the spinner icon)
+/// changes each frame. The body (content, diffs, terminal output) is cached
+/// separately and reused until invalidated. This avoids expensive markdown/ANSI
+/// parsing on every frame just for a spinner animation.
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     width: u16,
@@ -56,31 +61,49 @@ pub fn render_tool_call_cached(
     let is_in_progress =
         matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
 
-    // Skip cache for in-progress tool calls (icon pulses)
-    if !is_in_progress && let Some(cached_lines) = tc.cache.get() {
-        out.extend_from_slice(cached_lines);
+    // Completed/failed: full cache (title + body together)
+    if !is_in_progress {
+        if let Some(cached_lines) = tc.cache.get() {
+            out.extend_from_slice(cached_lines);
+            return;
+        }
+        let _t = crate::perf::start("tc::render");
+        let fresh = render_tool_call(tc, width, spinner_frame);
+        let h = Paragraph::new(Text::from(fresh.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        tc.cache.store_with_height(fresh, h, width);
+        if let Some(stored) = tc.cache.get() {
+            out.extend_from_slice(stored);
+        }
         return;
     }
 
-    let fresh = render_tool_call(tc, width, spinner_frame);
+    // In-progress: re-render only the title line (spinner), cache the body.
+    let fresh_title = render_tool_call_title(tc, width, spinner_frame);
+    out.push(fresh_title);
 
-    // Only cache completed/failed tool calls
-    if is_in_progress {
-        // In-progress: move directly, no caching needed.
-        out.extend(fresh);
+    // Body: use cache if valid, otherwise render and cache.
+    if let Some(cached_body) = tc.cache.get() {
+        out.extend_from_slice(cached_body);
     } else {
-        // Store first, then extend from stored ref to avoid double-clone.
-        tc.cache.store(fresh);
+        let _t = crate::perf::start("tc::render_body");
+        let body = render_tool_call_body(tc, width, spinner_frame);
+        let h = Paragraph::new(Text::from(body.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        tc.cache.store_with_height(body, h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
     }
 }
 
-fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
-    // Execute/Bash tool calls get a distinct rendering
+/// Render just the title line for a tool call (the line containing the spinner icon).
+/// Used for in-progress tool calls where only the spinner changes each frame.
+fn render_tool_call_title(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Line<'static> {
     if matches!(tc.kind, acp::ToolKind::Execute) {
-        return render_execute_tool_call(tc, width, spinner_frame);
+        return render_execute_title(tc, width, spinner_frame);
     }
 
     let (icon, icon_color) = status_icon(tc.status, spinner_frame);
@@ -94,7 +117,6 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
         ),
     ];
 
-    // Render the title with markdown (handles backticks, bold, etc.)
     let rendered = tui_markdown::from_str(&tc.title);
     if let Some(first_line) = rendered.lines.into_iter().next() {
         for span in first_line.spans {
@@ -102,16 +124,43 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
         }
     }
 
-    let mut lines = vec![Line::from(title_spans)];
+    Line::from(title_spans)
+}
 
+/// Render the body lines (everything after the title) for a tool call.
+/// Used for in-progress tool calls where the body is cached separately from the title.
+fn render_tool_call_body(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
+    if matches!(tc.kind, acp::ToolKind::Execute) {
+        return render_execute_body(tc, width, spinner_frame);
+    }
+
+    let mut lines = Vec::new();
+    render_standard_body(tc, &mut lines);
+    lines
+}
+
+fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
+    // Execute/Bash tool calls get a distinct rendering
+    if matches!(tc.kind, acp::ToolKind::Execute) {
+        return render_execute_tool_call(tc, width, spinner_frame);
+    }
+
+    let title = render_tool_call_title(tc, width, spinner_frame);
+    let mut lines = vec![title];
+    render_standard_body(tc, &mut lines);
+    lines
+}
+
+/// Render the body (everything after the title line) of a standard (non-Execute) tool call.
+fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     let pipe_style = Style::default().fg(theme::DIM);
     let has_permission = tc.pending_permission.is_some();
 
-    // Diffs (Edit tool) are always shown — user needs to see changes
+    // Diffs (Edit tool) are always shown -- user needs to see changes
     let has_diff = tc.content.iter().any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
 
     if tc.content.is_empty() && !has_permission {
-        return lines;
+        return;
     }
 
     // Force expanded when permission is pending (user needs to see context)
@@ -126,7 +175,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
             Span::styled("  ctrl+o to expand", Style::default().fg(theme::DIM)),
         ]));
     } else {
-        // Expanded: render full content with │ prefix on each line
+        // Expanded: render full content with | prefix on each line
         let mut content_lines = render_tool_content(tc);
 
         // Append inline permission controls if pending
@@ -137,57 +186,42 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
         let last_idx = content_lines.len().saturating_sub(1);
         for (i, content_line) in content_lines.into_iter().enumerate() {
             let prefix = if i == last_idx {
-                "  \u{2514}\u{2500} " // └─
+                "  \u{2514}\u{2500} " // corner
             } else {
-                "  \u{2502}  " // │
+                "  \u{2502}  " // pipe
             };
             let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
             spans.extend(content_line.spans);
             lines.push(Line::from(spans));
         }
     }
-
-    lines
 }
 
-/// Render an Execute/Bash tool call as a bordered terminal box:
-///
-///   ╭─ ✓ Bash  title ───────────────────────╮
-///   │ $ command
-///   │ output line 1
-///   │ ...
-///   ╰───────────────────────────────────────╯
-///
-/// Left border on all content lines, right border only on top/bottom rules.
-/// Top/bottom rules stretch to the full terminal width.
-/// Output is capped at `TERMINAL_MAX_LINES` (tail).
-fn render_execute_tool_call(
-    tc: &ToolCallInfo,
-    width: u16,
-    spinner_frame: usize,
-) -> Vec<Line<'static>> {
+/// Render the top border line of an Execute/Bash tool call box.
+fn render_execute_title(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Line<'static> {
     let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
     let border = Style::default().fg(theme::DIM);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Available width minus the 2-char left indent ("  ")
     let inner_w = (width as usize).saturating_sub(2);
-
-    // ── Top border: ╭─ ⏵ Bash  title ──────────────────────────╮
-    // Fixed parts: "╭─" (2) + " ⏵ " (3) + "Bash " (5) + title + " " (1) + rule + "╮" (1)
-    let label_overhead = 2 + 3 + 5 + 1 + 1; // chars consumed by fixed parts
+    let label_overhead = 2 + 3 + 5 + 1 + 1;
     let title_len = tc.title.chars().count();
     let fill = inner_w.saturating_sub(label_overhead + title_len);
     let top_fill: String = "\u{2500}".repeat(fill);
-    lines.push(Line::from(vec![
+    Line::from(vec![
         Span::styled("  \u{256D}\u{2500}", border),
         Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
         Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
         Span::styled(format!(" {top_fill}\u{256E}"), border),
-    ]));
+    ])
+}
 
-    // ── Command line: │ $ command
+/// Render the body of an Execute/Bash tool call (command + output + permissions + bottom border).
+fn render_execute_body(tc: &ToolCallInfo, width: u16, _spinner_frame: usize) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme::DIM);
+    let inner_w = (width as usize).saturating_sub(2);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Command line
     if let Some(ref cmd) = tc.terminal_command {
         lines.push(Line::from(vec![
             Span::styled("  \u{2502} ", border),
@@ -199,7 +233,7 @@ fn render_execute_tool_call(
         ]));
     }
 
-    // ── Output lines (capped) ──
+    // Output lines (capped)
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 
     if let Some(ref output) = tc.terminal_output {
@@ -241,7 +275,7 @@ fn render_execute_tool_call(
         lines.push(Line::from(spans));
     }
 
-    // ── Inline permission controls (inside the box) ──
+    // Inline permission controls (inside the box)
     if let Some(ref perm) = tc.pending_permission {
         for perm_line in render_permission_lines(perm) {
             let mut spans = vec![Span::styled("  \u{2502} ", border)];
@@ -250,11 +284,21 @@ fn render_execute_tool_call(
         }
     }
 
-    // ── Bottom border: ╰────────────────────────────────────────╯
-    // "╰" (1) + rule + "╯" (1) = inner_w
+    // Bottom border
     let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
     lines.push(Line::from(Span::styled(format!("  \u{2570}{bottom_fill}\u{256F}"), border)));
 
+    lines
+}
+
+fn render_execute_tool_call(
+    tc: &ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+) -> Vec<Line<'static>> {
+    let title = render_execute_title(tc, width, spinner_frame);
+    let mut lines = vec![title];
+    lines.extend(render_execute_body(tc, width, spinner_frame));
     lines
 }
 

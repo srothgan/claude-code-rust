@@ -16,6 +16,7 @@
 
 pub mod acp;
 pub mod app;
+pub mod perf;
 pub mod ui;
 
 use clap::Parser;

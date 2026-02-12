@@ -35,6 +35,9 @@ unicode-width = "0.2.2"
 uuid = { version = "1.20.0", features = ["v4"] }
 which = "8.0.0"
 
+[features]
+perf = []
+
 [dev-dependencies]
 pretty_assertions = "1.4"
 

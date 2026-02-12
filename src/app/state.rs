@@ -141,6 +141,25 @@ pub struct App {
     pub cached_header_line: Option<ratatui::text::Line<'static>>,
     /// Cached footer line (invalidated on mode change).
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
+    /// Cached welcome text height: `(width, height)`. Recomputed only on resize.
+    pub cached_welcome_height: Option<(u16, usize)>,
+    /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
+    /// Avoids O(n*m) scan of all messages/blocks every frame.
+    pub terminal_tool_calls: Vec<(String, usize, usize)>,
+    /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
+    pub needs_redraw: bool,
+    /// Performance logger. Present only when built with `--features perf`.
+    /// Taken out (`Option::take`) during render, used, then put back to avoid
+    /// borrow conflicts with `&mut App`.
+    pub perf: Option<crate::perf::PerfLogger>,
+    /// Prefix sums of message visual heights: `height_prefix_sums[i]` is the
+    /// cumulative height of messages `0..=i`. Length equals `messages.len()`.
+    /// Updated by `rebuild_prefix_sums()` after `update_visual_heights()`.
+    /// Enables O(log n) binary search for first visible message and O(1) content height.
+    pub height_prefix_sums: Vec<usize>,
+    /// The width at which `height_prefix_sums` was last computed.
+    /// Invalidated on resize (width change).
+    pub prefix_sums_width: u16,
 }
 
 impl App {
@@ -152,6 +171,60 @@ impl App {
     /// Remove a Task tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
         self.active_task_ids.remove(id);
+    }
+
+    /// Rebuild prefix sums from `cached_visual_height` values.
+    /// Call after `update_visual_heights()` each frame.
+    /// Runs in O(n) but only when heights actually changed (width change or streaming).
+    pub fn rebuild_prefix_sums(&mut self, width: u16) {
+        let n = self.messages.len();
+        // Fast path: if width unchanged and array length matches, only update
+        // from the last message that could have changed (streaming appends at tail).
+        if self.prefix_sums_width == width && self.height_prefix_sums.len() == n && n > 0 {
+            // During streaming, only the last message's height changes.
+            // Recompute just the last entry.
+            let prev = if n >= 2 { self.height_prefix_sums[n - 2] } else { 0 };
+            self.height_prefix_sums[n - 1] = prev + self.messages[n - 1].cached_visual_height;
+            return;
+        }
+        // Full rebuild (resize or new messages added)
+        self.height_prefix_sums.clear();
+        self.height_prefix_sums.reserve(n);
+        let mut acc = 0;
+        for msg in &self.messages {
+            acc += msg.cached_visual_height;
+            self.height_prefix_sums.push(acc);
+        }
+        self.prefix_sums_width = width;
+    }
+
+    /// Total height of all messages (O(1) via prefix sums).
+    #[must_use]
+    pub fn total_message_height(&self) -> usize {
+        self.height_prefix_sums.last().copied().unwrap_or(0)
+    }
+
+    /// Cumulative height of messages `0..idx` (O(1) via prefix sums).
+    #[must_use]
+    pub fn cumulative_height_before(&self, idx: usize) -> usize {
+        if idx == 0 { 0 } else { self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0) }
+    }
+
+    /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
+    /// Returns the message index. `welcome_height` is added as an offset before messages.
+    #[must_use]
+    pub fn find_first_visible(&self, scroll_offset: usize, welcome_height: usize) -> usize {
+        if self.height_prefix_sums.is_empty() {
+            return 0;
+        }
+        // We want the first i where welcome_height + prefix_sums[i] > scroll_offset
+        // i.e. prefix_sums[i] > scroll_offset - welcome_height
+        let target = scroll_offset.saturating_sub(welcome_height);
+        // partition_point returns first index where prefix_sums[i] > target
+        // (since prefix_sums is monotonically non-decreasing)
+        self.height_prefix_sums
+            .partition_point(|&h| h <= target)
+            .min(self.messages.len().saturating_sub(1))
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -216,6 +289,12 @@ impl App {
             git_branch: None,
             cached_header_line: None,
             cached_footer_line: None,
+            cached_welcome_height: None,
+            terminal_tool_calls: Vec::new(),
+            needs_redraw: true,
+            perf: None,
+            height_prefix_sums: Vec::new(),
+            prefix_sums_width: 0,
         }
     }
 
@@ -275,9 +354,9 @@ pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
     /// Approximate wrapped visual height (in terminal rows) at `cached_visual_width`.
-    /// Computed from the `Line` objects produced by `render_message` using
-    /// `Paragraph::line_count(width)`. Used for viewport culling -- messages outside
-    /// the visible window skip rendering and just contribute this height to the offset.
+    /// Sum of per-block heights plus role label (1) and trailing separator (1).
+    /// Used for viewport culling -- messages outside the visible window skip
+    /// rendering and just contribute this height to the offset.
     pub cached_visual_height: usize,
     /// The viewport width used to compute `cached_visual_height`.
     /// When the terminal is resized, heights are recomputed.
@@ -302,10 +381,15 @@ pub struct InputWrapCache {
 pub struct BlockCache {
     version: u64,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Wrapped line count of the cached lines at `wrapped_width`.
+    /// Computed via `Paragraph::line_count(width)` on the same lines stored in `lines`.
+    wrapped_height: usize,
+    /// The viewport width used to compute `wrapped_height`.
+    wrapped_width: u16,
 }
 
 impl BlockCache {
-    /// Bump the version to invalidate cached lines.
+    /// Bump the version to invalidate cached lines and height.
     pub fn invalidate(&mut self) {
         self.version += 1;
     }
@@ -317,15 +401,166 @@ impl BlockCache {
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
+    /// Does not store height — use `store_with_height` when width is available.
     pub fn store(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
         self.lines = Some(lines);
         self.version = 0;
+    }
+
+    /// Store freshly rendered lines together with their wrapped height.
+    /// `height` should be computed via `Paragraph::line_count(width)` on the same `lines`.
+    pub fn store_with_height(&mut self, lines: Vec<ratatui::text::Line<'static>>, height: usize, width: u16) {
+        self.lines = Some(lines);
+        self.wrapped_height = height;
+        self.wrapped_width = width;
+        self.version = 0;
+    }
+
+    /// Get the cached wrapped height if cache is valid and was computed at the given width.
+    #[must_use]
+    pub fn height_at(&self, width: u16) -> Option<usize> {
+        if self.version == 0 && self.wrapped_width == width {
+            Some(self.wrapped_height)
+        } else {
+            None
+        }
+    }
+}
+
+/// Paragraph-level incremental markdown cache.
+///
+/// During streaming, text arrives in small chunks appended to a growing block.
+/// Instead of re-parsing the entire block every frame, we split on paragraph
+/// boundaries (`\n\n` outside code fences) and cache rendered lines for each
+/// completed paragraph. Only the in-progress tail paragraph gets re-rendered.
+#[derive(Default)]
+pub struct IncrementalMarkdown {
+    /// Completed paragraphs: `(source_text, rendered_lines)`.
+    paragraphs: Vec<(String, Vec<ratatui::text::Line<'static>>)>,
+    /// The in-progress tail paragraph being streamed into.
+    tail: String,
+    /// Whether we are currently inside a code fence.
+    in_code_fence: bool,
+    /// Byte offset into `tail` where the next scan should start.
+    /// Avoids re-scanning already-processed bytes (which would re-toggle fence state).
+    scan_offset: usize,
+}
+
+impl IncrementalMarkdown {
+    /// Create from existing full text (e.g. user messages, connection errors).
+    /// Treats the entire text as a single completed paragraph.
+    #[must_use]
+    pub fn from_complete(text: &str) -> Self {
+        Self { paragraphs: Vec::new(), tail: text.to_owned(), in_code_fence: false, scan_offset: 0 }
+    }
+
+    /// Append a streaming text chunk. Splits completed paragraphs off the tail.
+    pub fn append(&mut self, chunk: &str) {
+        // Back up scan_offset by 1 to catch \n\n spanning old/new boundary
+        self.scan_offset = self.scan_offset.min(self.tail.len().saturating_sub(1));
+        self.tail.push_str(chunk);
+        self.split_completed_paragraphs();
+    }
+
+    /// Get the full source text (all paragraphs + tail).
+    #[must_use]
+    pub fn full_text(&self) -> String {
+        let mut out = String::new();
+        for (src, _) in &self.paragraphs {
+            out.push_str(src);
+            out.push_str("\n\n");
+        }
+        out.push_str(&self.tail);
+        out
+    }
+
+    /// Render all lines: cached paragraphs + fresh tail.
+    /// `render_fn` converts a markdown source string into `Vec<Line>`.
+    /// Lazily renders any paragraph whose cache is still empty.
+    pub fn lines(&mut self, render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>) -> Vec<ratatui::text::Line<'static>>
+    {
+        let mut out = Vec::new();
+        for (src, lines) in &mut self.paragraphs {
+            if lines.is_empty() {
+                *lines = render_fn(src);
+            }
+            out.extend(lines.iter().cloned());
+        }
+        if !self.tail.is_empty() {
+            out.extend(render_fn(&self.tail));
+        }
+        out
+    }
+
+    /// Clear all cached paragraph renders (e.g. after toggle collapse).
+    /// Source text is preserved; re-rendering will rebuild caches.
+    pub fn invalidate_renders(&mut self) {
+        for (src, lines) in &mut self.paragraphs {
+            let _ = src; // keep source
+            lines.clear();
+        }
+    }
+
+    /// Re-render any paragraph whose cached lines are empty (after `invalidate_renders`).
+    pub fn ensure_rendered(&mut self, render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>) {
+        for (src, lines) in &mut self.paragraphs {
+            if lines.is_empty() {
+                *lines = render_fn(src);
+            }
+        }
+    }
+
+    /// Split completed paragraphs off the tail.
+    /// A paragraph boundary is `\n\n` that is NOT inside a code fence.
+    fn split_completed_paragraphs(&mut self) {
+        loop {
+            let (boundary, fence_state, scanned_to) = self.scan_tail_for_boundary();
+            if let Some(offset) = boundary {
+                let completed = self.tail[..offset].to_owned();
+                self.tail = self.tail[offset + 2..].to_owned();
+                self.in_code_fence = fence_state;
+                // Reset scan_offset: the split removed bytes before the boundary,
+                // so scanned_to is no longer valid. Start from 0 for the new tail.
+                self.scan_offset = 0;
+                self.paragraphs.push((completed, Vec::new()));
+            } else {
+                // No more boundaries -- save the final fence state + scan position
+                self.in_code_fence = fence_state;
+                self.scan_offset = scanned_to;
+                break;
+            }
+        }
+    }
+
+    /// Scan `self.tail` starting from `self.scan_offset` for the first `\n\n`
+    /// outside a code fence.
+    /// Returns `(boundary, fence_state, scanned_to)`.
+    fn scan_tail_for_boundary(&self) -> (Option<usize>, bool, usize) {
+        let bytes = self.tail.as_bytes();
+        let mut in_fence = self.in_code_fence;
+        let mut i = self.scan_offset;
+        while i < bytes.len() {
+            // Check for code fence: line starting with ```
+            if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
+                in_fence = !in_fence;
+            }
+            // Check for \n\n paragraph boundary (only outside code fences)
+            if !in_fence
+                && i + 1 < bytes.len()
+                && bytes[i] == b'\n'
+                && bytes[i + 1] == b'\n'
+            {
+                return (Some(i), in_fence, i);
+            }
+            i += 1;
+        }
+        (None, in_fence, i)
     }
 }
 
 /// Ordered content block — text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
-    Text(String, BlockCache),
+    Text(String, BlockCache, IncrementalMarkdown),
     ToolCall(Box<ToolCallInfo>),
 }
 
@@ -537,6 +772,55 @@ mod tests {
         }
     }
 
+    // BlockCache height
+
+    #[test]
+    fn cache_height_default_returns_none() {
+        let cache = BlockCache::default();
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_with_height_then_height_at() {
+        let mut cache = BlockCache::default();
+        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        assert!(cache.get().is_some());
+    }
+
+    #[test]
+    fn cache_height_at_wrong_width_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        assert!(cache.height_at(120).is_none());
+    }
+
+    #[test]
+    fn cache_height_invalidated_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.invalidate();
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_without_height_has_no_height() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        // store() without height leaves wrapped_width at 0
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_with_height_overwrite() {
+        let mut cache = BlockCache::default();
+        cache.store_with_height(vec![Line::from("old")], 1, 80);
+        cache.invalidate();
+        cache.store_with_height(vec![Line::from("new long line")], 3, 120);
+        assert_eq!(cache.height_at(120), Some(3));
+        assert!(cache.height_at(80).is_none());
+    }
+
     // App tool_call_index
 
     fn make_test_app() -> App {
@@ -666,5 +950,165 @@ mod tests {
             app.remove_active_task(&format!("ghost-{i}"));
         }
         assert!(app.active_task_ids.is_empty());
+    }
+
+    // IncrementalMarkdown
+
+    /// Simple render function for tests: wraps each line in a `Line`.
+    fn test_render(src: &str) -> Vec<Line<'static>> {
+        src.lines().map(|l| Line::from(l.to_owned())).collect()
+    }
+
+    #[test]
+    fn incr_default_empty() {
+        let incr = IncrementalMarkdown::default();
+        assert!(incr.full_text().is_empty());
+    }
+
+    #[test]
+    fn incr_from_complete() {
+        let incr = IncrementalMarkdown::from_complete("hello world");
+        assert_eq!(incr.full_text(), "hello world");
+    }
+
+    #[test]
+    fn incr_append_single_chunk() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("hello");
+        assert_eq!(incr.full_text(), "hello");
+    }
+
+    #[test]
+    fn incr_append_no_paragraph_break() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("line1\nline2\nline3");
+        assert_eq!(incr.paragraphs.len(), 0);
+        assert_eq!(incr.tail, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn incr_append_splits_on_double_newline() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("para1\n\npara2");
+        assert_eq!(incr.paragraphs.len(), 1);
+        assert_eq!(incr.paragraphs[0].0, "para1");
+        assert_eq!(incr.tail, "para2");
+    }
+
+    #[test]
+    fn incr_append_multiple_paragraphs() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\np3\n\np4");
+        assert_eq!(incr.paragraphs.len(), 3);
+        assert_eq!(incr.paragraphs[0].0, "p1");
+        assert_eq!(incr.paragraphs[1].0, "p2");
+        assert_eq!(incr.paragraphs[2].0, "p3");
+        assert_eq!(incr.tail, "p4");
+    }
+
+    #[test]
+    fn incr_append_incremental_chunks() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("hel");
+        incr.append("lo\n");
+        incr.append("\nworld");
+        assert_eq!(incr.paragraphs.len(), 1);
+        assert_eq!(incr.paragraphs[0].0, "hello");
+        assert_eq!(incr.tail, "world");
+    }
+
+    #[test]
+    fn incr_code_fence_preserves_double_newlines() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("before\n\n```\ncode\n\nmore code\n```\n\nafter");
+        // "before" split off, then code fence block stays as one paragraph
+        assert_eq!(incr.paragraphs.len(), 2);
+        assert_eq!(incr.paragraphs[0].0, "before");
+        assert_eq!(incr.paragraphs[1].0, "```\ncode\n\nmore code\n```");
+        assert_eq!(incr.tail, "after");
+    }
+
+    #[test]
+    fn incr_code_fence_incremental() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("text\n\n```\nfn main() {\n");
+        assert_eq!(incr.paragraphs.len(), 1); // "text" split off
+        assert!(incr.in_code_fence); // inside fence
+        incr.append("    println!(\"hi\");\n\n}\n```\n\nafter");
+        assert!(!incr.in_code_fence); // fence closed
+        assert_eq!(incr.tail, "after");
+    }
+
+    #[test]
+    fn incr_full_text_reconstruction() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\np3");
+        assert_eq!(incr.full_text(), "p1\n\np2\n\np3");
+    }
+
+    #[test]
+    fn incr_lines_renders_all() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("line1\n\nline2\n\nline3");
+        let lines = incr.lines(&test_render);
+        // 3 paragraphs total (2 completed + 1 tail), each has 1 line
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn incr_lines_caches_paragraphs() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\ntail");
+        // First call renders all paragraphs
+        let _ = incr.lines(&test_render);
+        assert!(!incr.paragraphs[0].1.is_empty());
+        assert!(!incr.paragraphs[1].1.is_empty());
+        // Second call reuses cached paragraph renders
+        let lines = incr.lines(&test_render);
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn incr_ensure_rendered_fills_empty() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\ntail");
+        // Paragraphs have empty renders initially
+        assert!(incr.paragraphs[0].1.is_empty());
+        incr.ensure_rendered(&test_render);
+        assert!(!incr.paragraphs[0].1.is_empty());
+        assert!(!incr.paragraphs[1].1.is_empty());
+    }
+
+    #[test]
+    fn incr_invalidate_clears_renders() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\ntail");
+        incr.ensure_rendered(&test_render);
+        assert!(!incr.paragraphs[0].1.is_empty());
+        incr.invalidate_renders();
+        assert!(incr.paragraphs[0].1.is_empty());
+        assert!(incr.paragraphs[1].1.is_empty());
+    }
+
+    #[test]
+    fn incr_streaming_simulation() {
+        // Simulate a realistic streaming scenario
+        let mut incr = IncrementalMarkdown::default();
+        let chunks = ["Here is ", "some text.\n", "\nNext para", "graph here.\n\n", "Final."];
+        for chunk in chunks {
+            incr.append(chunk);
+        }
+        assert_eq!(incr.paragraphs.len(), 2);
+        assert_eq!(incr.paragraphs[0].0, "Here is some text.");
+        assert_eq!(incr.paragraphs[1].0, "Next paragraph here.");
+        assert_eq!(incr.tail, "Final.");
+    }
+
+    #[test]
+    fn incr_empty_paragraphs() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("\n\n\n\n");
+        // Two \n\n boundaries: empty string before first, empty between, remaining empty tail
+        assert!(incr.paragraphs.len() >= 1);
     }
 }
