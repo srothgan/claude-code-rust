@@ -17,6 +17,7 @@
 // TODO: Replace custom InputState with tui-textarea when it supports ratatui 0.30
 // Track: https://github.com/rhysd/tui-textarea/pull/118
 
+use crate::app::input::parse_paste_placeholder_with_suffix;
 use crate::app::mention;
 use crate::app::{App, AppStatus, InputWrapCache};
 use crate::ui::theme;
@@ -142,8 +143,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         None => return,
     };
 
-    // Post-process: highlight @mentions in cyan
+    // Post-process: highlight @mentions in cyan, paste placeholders in green
     let lines = highlight_mentions(lines);
+    let lines = highlight_paste_placeholders(lines);
 
     let paragraph = Paragraph::new(lines);
     app.rendered_input_area = input_area;
@@ -334,8 +336,31 @@ fn wrap_lines_and_cursor(
     (wrapped, cursor_pos)
 }
 
+/// Style paste placeholder lines (e.g. `[Pasted Text 1 - 25 lines]`) as green.
+fn highlight_paste_placeholders(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let paste_style = Style::default().fg(Color::Green);
+
+    lines
+        .into_iter()
+        .map(|line| {
+            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if let Some((_, suffix_end)) = parse_paste_placeholder_with_suffix(&raw) {
+                if suffix_end == raw.len() {
+                    Line::from(Span::styled(raw, paste_style))
+                } else {
+                    Line::from(vec![
+                        Span::styled(raw[..suffix_end].to_owned(), paste_style),
+                        Span::raw(raw[suffix_end..].to_owned()),
+                    ])
+                }
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
 /// Post-process wrapped lines to highlight `@path` mentions in cyan.
-/// Each `Line` is scanned for `@` patterns and split into styled spans.
 fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let mention_style = Style::default().fg(Color::Cyan);
 

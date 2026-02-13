@@ -22,16 +22,54 @@ pub struct InputState {
     /// Monotonically increasing version counter. Bumped on every content or cursor change
     /// so that downstream caches (e.g. wrap result) can detect staleness cheaply.
     pub version: u64,
+    /// Stored paste blocks: each entry holds the full text of a large paste (>10 lines).
+    /// A placeholder line `[Pasted Text N]` is inserted into `lines` at the paste point.
+    /// On `text()`, placeholders are expanded back to the original pasted content.
+    pub paste_blocks: Vec<String>,
 }
+
+/// Prefix/suffix used to identify paste placeholder lines in the input buffer.
+const PASTE_PREFIX: &str = "[Pasted Text ";
+const PASTE_SUFFIX: &str = "]";
+/// Line threshold above which pasted content is collapsed to a placeholder.
+pub const PASTE_PLACEHOLDER_LINE_THRESHOLD: usize = 10;
 
 impl InputState {
     pub fn new() -> Self {
-        Self { lines: vec![String::new()], cursor_row: 0, cursor_col: 0, version: 0 }
+        Self {
+            lines: vec![String::new()],
+            cursor_row: 0,
+            cursor_col: 0,
+            version: 0,
+            paste_blocks: Vec::new(),
+        }
     }
 
     #[must_use]
     pub fn text(&self) -> String {
-        self.lines.join("\n")
+        if self.paste_blocks.is_empty() {
+            return self.lines.join("\n");
+        }
+        // Expand paste placeholders back to their full content
+        let mut result = String::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            if let Some((idx, suffix_end)) = parse_paste_placeholder_with_suffix(line) {
+                if let Some(content) = self.paste_blocks.get(idx) {
+                    result.push_str(content);
+                    if suffix_end < line.len() {
+                        result.push_str(&line[suffix_end..]);
+                    }
+                } else {
+                    result.push_str(line);
+                }
+            } else {
+                result.push_str(line);
+            }
+        }
+        result
     }
 
     #[must_use]
@@ -43,6 +81,7 @@ impl InputState {
         self.lines = vec![String::new()];
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.paste_blocks.clear();
         self.version += 1;
     }
 
@@ -54,6 +93,7 @@ impl InputState {
         }
         self.cursor_row = self.lines.len() - 1;
         self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.paste_blocks.clear();
         self.version += 1;
     }
 
@@ -84,6 +124,71 @@ impl InputState {
                 self.insert_char(c);
             }
         }
+    }
+
+    /// Insert a large paste as a compact placeholder line.
+    /// The full text is stored in `paste_blocks` and expanded by `text()` on submit.
+    /// Returns the placeholder label for display purposes.
+    pub fn insert_paste_block(&mut self, text: &str) -> String {
+        let idx = self.paste_blocks.len();
+        let placeholder = paste_placeholder_label(idx, count_text_lines(text));
+        self.paste_blocks.push(text.to_owned());
+
+        // Insert the placeholder at the current cursor position.
+        // If cursor is mid-line, split the current line around the placeholder.
+        let current_line = &mut self.lines[self.cursor_row];
+        let byte_idx = char_to_byte_index(current_line, self.cursor_col);
+        let after = current_line[byte_idx..].to_string();
+        current_line.truncate(byte_idx);
+        let before_empty = current_line.is_empty();
+
+        if before_empty {
+            // Replace current empty/start-of-line with placeholder
+            current_line.clone_from(&placeholder);
+            if !after.is_empty() {
+                self.lines.insert(self.cursor_row + 1, after);
+            }
+            self.cursor_col = placeholder.chars().count();
+        } else {
+            // Insert placeholder on a new line after the current content
+            self.cursor_row += 1;
+            self.lines.insert(self.cursor_row, placeholder.clone());
+            if !after.is_empty() {
+                self.lines.insert(self.cursor_row + 1, after);
+            }
+            self.cursor_col = placeholder.chars().count();
+        }
+
+        self.version += 1;
+        placeholder
+    }
+
+    /// Append text to the paste block under the cursor if the cursor currently
+    /// sits at the end of a standalone placeholder line.
+    ///
+    /// This handles terminals that deliver one clipboard paste as multiple
+    /// `Event::Paste` chunks.
+    pub fn append_to_active_paste_block(&mut self, text: &str) -> bool {
+        let Some(current_line) = self.lines.get(self.cursor_row) else {
+            return false;
+        };
+        let Some(idx) = parse_paste_placeholder(current_line) else {
+            return false;
+        };
+        // Only merge chunks when cursor is at the end of that placeholder line.
+        if self.cursor_col != current_line.chars().count() {
+            return false;
+        }
+
+        let Some(block) = self.paste_blocks.get_mut(idx) else {
+            return false;
+        };
+        block.push_str(text);
+
+        self.lines[self.cursor_row] = paste_placeholder_label(idx, count_text_lines(block));
+        self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.version += 1;
+        true
     }
 
     pub fn delete_char_before(&mut self) {
@@ -184,10 +289,68 @@ fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
     s.char_indices().nth(char_idx).map_or(s.len(), |(i, _)| i)
 }
 
+/// Count logical lines for text containing mixed `\n`, `\r`, and `\r\n` endings.
+#[must_use]
+pub fn count_text_lines(text: &str) -> usize {
+    // Count universal newlines (\n, \r, and \r\n as a single break).
+    let mut lines = 1;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => lines += 1,
+            b'\r' => {
+                lines += 1;
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    lines
+}
+
+/// Trim trailing line-break characters (`\n` and `\r`) from text.
+#[must_use]
+pub fn trim_trailing_line_breaks(mut text: &str) -> &str {
+    while let Some(stripped) = text.strip_suffix('\n').or_else(|| text.strip_suffix('\r')) {
+        text = stripped;
+    }
+    text
+}
+
+fn paste_placeholder_label(idx: usize, line_count: usize) -> String {
+    format!("{PASTE_PREFIX}{} - {line_count} lines{PASTE_SUFFIX}", idx + 1)
+}
+
+/// Parse a placeholder at the start of a line.
+///
+/// Returns `(paste_block_index, placeholder_end_byte_index)`.
+pub fn parse_paste_placeholder_with_suffix(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix(PASTE_PREFIX)?;
+    let close_rel = rest.find(PASTE_SUFFIX)?;
+    let rest = &rest[..close_rel];
+    let num_str = rest.split(" - ").next()?;
+    let n: usize = num_str.parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    let end = PASTE_PREFIX.len() + close_rel + PASTE_SUFFIX.len();
+    Some((n - 1, end))
+}
+
+/// Check if a line is a paste placeholder. Returns the 0-based paste block index if so.
+pub fn parse_paste_placeholder(line: &str) -> Option<usize> {
+    let (idx, suffix_end) = parse_paste_placeholder_with_suffix(line)?;
+    if suffix_end == line.len() { Some(idx) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     // =====
-    // TESTS: 79
+    // TESTS: 83
     // =====
 
     use super::*;
@@ -1097,5 +1260,56 @@ mod tests {
         assert_eq!(input.lines.last().unwrap(), "d");
         // The key point: it doesn't crash and 'd' ends up somewhere
         assert!(input.text().contains('d'));
+    }
+
+    #[test]
+    fn parse_placeholder_with_trailing_suffix_text() {
+        let line = "[Pasted Text 2 - 42 lines]tail";
+        let parsed = parse_paste_placeholder_with_suffix(line).unwrap();
+        assert_eq!(parsed.0, 1);
+        assert_eq!(&line[..parsed.1], "[Pasted Text 2 - 42 lines]");
+    }
+
+    #[test]
+    fn text_expands_placeholder_even_with_trailing_text() {
+        let mut input = InputState::new();
+        input.insert_paste_block("line1\nline2");
+        input.lines[0].push_str(" + extra");
+        input.cursor_col = input.lines[0].chars().count();
+        assert_eq!(input.text(), "line1\nline2 + extra");
+    }
+
+    #[test]
+    fn append_to_active_paste_block_merges_chunks_and_updates_label() {
+        let mut input = InputState::new();
+        let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk";
+        input.insert_paste_block(original);
+        assert!(input.append_to_active_paste_block("\nl\nm"));
+        assert_eq!(input.lines[0], "[Pasted Text 1 - 13 lines]");
+        assert_eq!(input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
+    }
+
+    #[test]
+    fn append_to_active_paste_block_rejects_dirty_placeholder_line() {
+        let mut input = InputState::new();
+        input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
+        input.lines[0].push_str("tail");
+        input.cursor_col = input.lines[0].chars().count();
+        assert!(!input.append_to_active_paste_block("x"));
+    }
+
+    #[test]
+    fn count_text_lines_handles_mixed_line_endings() {
+        assert_eq!(count_text_lines("a\r\nb\nc\rd"), 4);
+        assert_eq!(count_text_lines("single"), 1);
+        assert_eq!(count_text_lines("x\r\n"), 2);
+    }
+
+    #[test]
+    fn trim_trailing_line_breaks_handles_crlf_and_lf() {
+        assert_eq!(trim_trailing_line_breaks("a\r\n\r\n"), "a");
+        assert_eq!(trim_trailing_line_breaks("a\n\n"), "a");
+        assert_eq!(trim_trailing_line_breaks("a\r\r"), "a");
+        assert_eq!(trim_trailing_line_breaks("a"), "a");
     }
 }

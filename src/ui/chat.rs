@@ -64,10 +64,7 @@ fn update_visual_heights(app: &mut App, base: SpinnerState, is_thinking: bool, w
     let width_valid = app.viewport.message_heights_width == width;
     for i in (0..msg_count).rev() {
         let is_last = i + 1 == msg_count;
-        if width_valid
-            && app.viewport.message_height(i) > 0
-            && !(is_last && is_streaming)
-        {
+        if width_valid && app.viewport.message_height(i) > 0 && !(is_last && is_streaming) {
             break;
         }
         let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
@@ -93,9 +90,7 @@ fn measure_message_height(
 ) -> usize {
     let mut scratch = Vec::new();
     message::render_message(msg, spinner, width, &mut scratch);
-    Paragraph::new(Text::from(scratch))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
+    Paragraph::new(Text::from(scratch)).wrap(Wrap { trim: false }).line_count(width)
 }
 
 /// Render all messages into `out` (no culling). Used when content fits in the viewport.
@@ -272,7 +267,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     tracing::trace!(
         "RENDER: width={}, content_height={}, viewport_height={}, scroll_target={}, auto_scroll={}",
-        width, content_height, viewport_height, app.viewport.scroll_target, app.viewport.auto_scroll
+        width,
+        content_height,
+        viewport_height,
+        app.viewport.scroll_target,
+        app.viewport.auto_scroll
     );
 
     if content_height <= viewport_height {

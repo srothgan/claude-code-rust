@@ -16,9 +16,10 @@
 
 mod connect;
 mod events;
-mod input;
+pub(crate) mod input;
 mod input_submit;
 pub(crate) mod mention;
+pub(crate) mod paste_burst;
 mod permissions;
 mod selection;
 mod state;
@@ -99,8 +100,38 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             }
         }
 
+        // Merge and process `Event::Paste` chunks as one paste action.
+        if !app.pending_paste_text.is_empty() {
+            finalize_pending_paste_event(app);
+        }
+
+        // Post-drain paste handling:
+        // - while a detected paste burst is still active, defer rendering to avoid
+        //   showing raw pasted text before placeholder collapse.
+        // - once the burst settles, collapse large paste content to placeholder.
+        let suppress_render_for_active_paste =
+            app.paste_burst.is_paste() && app.paste_burst.is_active();
+        if app.paste_burst.is_paste() {
+            app.pending_submit = false;
+            if app.paste_burst.is_settled() {
+                finalize_paste_burst(app);
+                app.paste_burst.reset();
+            }
+        }
+
+        // Deferred submit: if Enter was pressed and no rapid keys followed
+        // (not a paste), strip the trailing newline and submit.
+        if app.pending_submit {
+            app.pending_submit = false;
+            finalize_deferred_submit(app);
+        }
+        app.drain_key_count = 0;
+
         if app.should_quit {
             break;
+        }
+        if suppress_render_for_active_paste {
+            continue;
         }
 
         // Phase 3: render once (only when something changed)
@@ -178,4 +209,96 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+/// Finalize queued `Event::Paste` chunks for this drain cycle.
+fn finalize_pending_paste_event(app: &mut App) {
+    let pasted = std::mem::take(&mut app.pending_paste_text);
+    if pasted.is_empty() {
+        return;
+    }
+
+    // Continuation chunk of an already collapsed placeholder.
+    if app.input.append_to_active_paste_block(&pasted) {
+        return;
+    }
+
+    let line_count = input::count_text_lines(&pasted);
+    if line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD {
+        app.input.insert_paste_block(&pasted);
+    } else {
+        app.input.insert_str(&pasted);
+    }
+}
+
+/// After a paste burst is detected (rapid key events), clean up the pasted
+/// content: strip trailing empty lines and convert large pastes (>10 lines)
+/// into a compact placeholder.
+fn finalize_paste_burst(app: &mut App) {
+    // Work on the fully expanded text so placeholders + trailing chunk artifacts
+    // are normalized back into a single coherent paste block.
+    let full_text = app.input.text();
+    let full_text = input::trim_trailing_line_breaks(&full_text);
+
+    if full_text.is_empty() {
+        app.input.clear();
+        return;
+    }
+
+    let line_count = input::count_text_lines(full_text);
+    if line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD {
+        app.input.clear();
+        app.input.insert_paste_block(full_text);
+    } else {
+        app.input.set_text(full_text);
+    }
+}
+
+/// Finalize a deferred Enter: strip trailing empty lines that were optimistically
+/// inserted by the deferred-submit Enter handler, then submit the input.
+fn finalize_deferred_submit(app: &mut App) {
+    // Remove trailing empty lines added by deferred Enter presses.
+    while app.input.lines.len() > 1 && app.input.lines.last().is_some_and(String::is_empty) {
+        app.input.lines.pop();
+    }
+    // Place cursor at end of last line
+    app.input.cursor_row = app.input.lines.len().saturating_sub(1);
+    app.input.cursor_col = app.input.lines.last().map_or(0, |l| l.chars().count());
+    app.input.version += 1;
+
+    input_submit::submit_input(app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::Event;
+
+    #[test]
+    fn pending_paste_chunks_are_merged_before_threshold_check() {
+        let mut app = App::test_default();
+        events::handle_terminal_event(&mut app, Event::Paste("a\nb\nc\nd\ne\nf".to_owned()));
+        events::handle_terminal_event(&mut app, Event::Paste("\ng\nh\ni\nj\nk".to_owned()));
+
+        // Not applied until post-drain finalization.
+        assert!(app.input.is_empty());
+        assert!(!app.pending_paste_text.is_empty());
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 lines]"]);
+        assert_eq!(app.input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
+    }
+
+    #[test]
+    fn pending_paste_chunk_appends_to_existing_placeholder() {
+        let mut app = App::test_default();
+        app.input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
+        app.pending_paste_text = "\nl\nm".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 13 lines]"]);
+        assert_eq!(app.input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
+    }
 }
