@@ -20,7 +20,7 @@ use super::{
     MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
 };
 use crate::acp::client::ClientEvent;
-use crate::app::input_submit::submit_input;
+use crate::app::input::parse_paste_placeholder;
 use crate::app::mention;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::try_copy_selection;
@@ -48,7 +48,9 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         }
         Event::Paste(text) => {
             if app.status != AppStatus::Connecting {
-                app.input.insert_str(&text);
+                // Queue paste chunks for this drain cycle. Some terminals split a
+                // single clipboard paste into multiple `Event::Paste` payloads.
+                app.pending_paste_text.push_str(&text);
             }
         }
         Event::FocusGained => {
@@ -152,6 +154,36 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Timing-based paste detection: if key events arrive faster than the
+    // burst interval, this is a paste (not typing). Cancel any pending submit.
+    app.drain_key_count += 1;
+    let was_paste = app.paste_burst.is_paste();
+    let in_paste = app.paste_burst.on_key_event(app.input.lines.len());
+    if in_paste && app.pending_submit {
+        app.pending_submit = false;
+    }
+    let on_placeholder_line = app
+        .input
+        .lines
+        .get(app.input.cursor_row)
+        .and_then(|line| parse_paste_placeholder(line))
+        .is_some();
+    if in_paste && on_placeholder_line {
+        // First transition into paste mode: remove the known leaked leading key
+        // pattern (`<one char line>` + `<placeholder line>`).
+        if !was_paste {
+            cleanup_leaked_char_before_placeholder(app);
+        }
+        // While burst mode is active and a placeholder already represents the paste,
+        // ignore burst key payload so no extra characters leak into the input.
+        if matches!(
+            key.code,
+            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
+        ) {
+            return;
+        }
+    }
+
     match (key.code, key.modifiers) {
         // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -175,12 +207,18 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 app.status = AppStatus::Ready;
             }
         }
-        // Enter (no shift): submit input
-        (KeyCode::Enter, m) if !m.contains(KeyModifiers::SHIFT) => {
-            submit_input(app);
+        // Enter (no modifiers): deferred submit for paste detection.
+        // Insert a newline now; if no more keys arrive in this drain cycle
+        // the main loop strips the trailing newline and calls submit_input().
+        (KeyCode::Enter, m)
+            if !m.contains(KeyModifiers::SHIFT) && !m.contains(KeyModifiers::CONTROL) =>
+        {
+            app.input.insert_newline();
+            app.pending_submit = true;
         }
-        // Shift+Enter: insert newline
+        // Ctrl+Enter or Shift+Enter: explicit newline (never submits)
         (KeyCode::Enter, _) => {
+            app.pending_submit = false;
             app.input.insert_newline();
         }
         // Navigation
@@ -259,7 +297,7 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Backspace, _) => app.input.delete_char_before(),
         (KeyCode::Delete, _) => app.input.delete_char_after(),
         // Printable characters
-        (KeyCode::Char(c), _) => {
+        (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             app.input.insert_char(c);
             if c == '@' {
                 mention::activate(app);
@@ -267,6 +305,22 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+/// Remove a leaked pre-placeholder character caused by key-burst + paste-event
+/// overlap. We only touch the narrow shape:
+/// line 0 = exactly one char, line 1 = placeholder (cursor on placeholder).
+fn cleanup_leaked_char_before_placeholder(app: &mut App) {
+    if app.input.lines.len() != 2 || app.input.cursor_row != 1 {
+        return;
+    }
+    if app.input.lines[0].chars().count() != 1 {
+        return;
+    }
+    app.input.lines.remove(0);
+    app.input.cursor_row = 0;
+    app.input.cursor_col = app.input.lines[0].chars().count();
+    app.input.version += 1;
 }
 
 /// Handle keystrokes while the `@` mention autocomplete dropdown is active.
@@ -280,7 +334,7 @@ fn handle_mention_key(app: &mut App, key: KeyEvent) {
             app.input.delete_char_before();
             mention::update_query(app);
         }
-        (KeyCode::Char(c), _) => {
+        (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             app.input.insert_char(c);
             if c.is_whitespace() {
                 mention::deactivate(app);
@@ -1150,5 +1204,33 @@ mod tests {
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
+    }
+
+    #[test]
+    fn ctrl_v_not_inserted_as_text() {
+        let mut app = make_test_app();
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn ctrl_v_not_inserted_when_mention_key_handler_is_active() {
+        let mut app = make_test_app();
+        handle_mention_key(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn cleanup_leaked_char_before_placeholder_removes_prefix_line() {
+        let mut app = make_test_app();
+        app.input.lines = vec!["C".into(), "[Pasted Text 1 - 11 lines]".into()];
+        app.input.cursor_row = 1;
+        app.input.cursor_col = app.input.lines[1].chars().count();
+
+        cleanup_leaked_char_before_placeholder(&mut app);
+
+        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 lines]"]);
+        assert_eq!(app.input.cursor_row, 0);
+        assert_eq!(app.input.cursor_col, "[Pasted Text 1 - 11 lines]".chars().count());
     }
 }

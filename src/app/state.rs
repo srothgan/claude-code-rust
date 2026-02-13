@@ -122,6 +122,22 @@ pub struct App {
     pub rendered_input_area: ratatui::layout::Rect,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
+    /// Deferred submit: set `true` when Enter is pressed. If another key event
+    /// arrives during the same drain cycle (paste), this is cleared and the Enter
+    /// becomes a newline. After the drain, the main loop checks: if still `true`,
+    /// strips the trailing newline and submits.
+    pub pending_submit: bool,
+    /// Count of key events processed in the current drain cycle. Used to detect
+    /// paste: if >1 key events arrive in a single cycle, Enter is treated as a
+    /// newline rather than submit.
+    pub drain_key_count: usize,
+    /// Timing-based paste burst detector. Tracks rapid key events to distinguish
+    /// paste from typing when `Event::Paste` is not available (Windows).
+    pub paste_burst: super::paste_burst::PasteBurstDetector,
+    /// Buffered `Event::Paste` payload for this drain cycle.
+    /// Some terminals split one clipboard paste into multiple chunks; we merge
+    /// them and apply placeholder threshold to the merged content once per cycle.
+    pub pending_paste_text: String,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
     /// Cached welcome text lines (populated once, never changes after init).
@@ -211,6 +227,10 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             mention: None,
+            pending_submit: false,
+            drain_key_count: 0,
+            paste_burst: super::paste_burst::PasteBurstDetector::new(),
+            pending_paste_text: String::new(),
             file_cache: None,
             cached_welcome_lines: None,
             input_wrap_cache: None,
@@ -285,7 +305,6 @@ pub struct ChatViewport {
     pub height_prefix_sums: Vec<usize>,
     /// Width at which prefix sums were last computed.
     pub prefix_sums_width: u16,
-
 }
 
 impl ChatViewport {
@@ -312,7 +331,10 @@ impl ChatViewport {
         if self.width != 0 && self.width != width {
             tracing::debug!(
                 "RESIZE: width {} -> {}, scroll_target={}, auto_scroll={}",
-                self.width, width, self.scroll_target, self.auto_scroll
+                self.width,
+                width,
+                self.scroll_target,
+                self.auto_scroll
             );
             self.handle_resize();
         }
