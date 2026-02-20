@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -16,16 +16,21 @@
 
 use crate::app::{App, AppStatus, MessageRole, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
+use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 /// Minimum number of messages to render above/below the visible range as a margin.
 /// Heights are now exact (block-level wrapped heights), so no safety margin is needed.
 const CULLING_MARGIN: usize = 0;
+const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
+const SCROLLBAR_TOP_EASE: f32 = 0.35;
+const SCROLLBAR_SIZE_EASE: f32 = 0.2;
+const SCROLLBAR_EASE_EPSILON: f32 = 0.01;
 
 #[derive(Clone, Copy, Default)]
 struct HeightUpdateStats {
@@ -42,6 +47,11 @@ struct CulledRenderStats {
     rendered_msgs: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScrollbarGeometry {
+    thumb_top: usize,
+    thumb_size: usize,
+}
 /// Build a `SpinnerState` for a specific message index.
 fn msg_spinner(
     base: SpinnerState,
@@ -211,7 +221,105 @@ fn render_scrolled(
     }
 }
 
-/// Render only the visible message range into `out` (viewport culling).
+/// Compute overlay scrollbar geometry for a single-column track.
+///
+/// Returns None when content fits in the viewport.
+fn compute_scrollbar_geometry(
+    content_height: usize,
+    viewport_height: usize,
+    scroll_pos: f32,
+) -> Option<ScrollbarGeometry> {
+    if viewport_height == 0 || content_height <= viewport_height {
+        return None;
+    }
+    let max_scroll = content_height.saturating_sub(viewport_height) as f32;
+    let thumb_size = viewport_height
+        .saturating_mul(viewport_height)
+        .checked_div(content_height)
+        .unwrap_or(0)
+        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
+        .min(viewport_height);
+    let track_space = viewport_height.saturating_sub(thumb_size) as f32;
+    let thumb_top = if max_scroll <= f32::EPSILON || track_space <= 0.0 {
+        0
+    } else {
+        ((scroll_pos.clamp(0.0, max_scroll) / max_scroll) * track_space).round() as usize
+    };
+    Some(ScrollbarGeometry { thumb_top, thumb_size })
+}
+
+fn ease_value(current: &mut f32, target: f32, factor: f32) {
+    let delta = target - *current;
+    if delta.abs() < SCROLLBAR_EASE_EPSILON {
+        *current = target;
+    } else {
+        *current += delta * factor;
+    }
+}
+
+fn smooth_scrollbar_geometry(
+    viewport: &mut crate::app::ChatViewport,
+    target: ScrollbarGeometry,
+    viewport_height: usize,
+) -> ScrollbarGeometry {
+    let target_top = target.thumb_top as f32;
+    let target_size = target.thumb_size as f32;
+
+    if viewport.scrollbar_thumb_size <= 0.0 {
+        viewport.scrollbar_thumb_top = target_top;
+        viewport.scrollbar_thumb_size = target_size;
+    } else {
+        ease_value(&mut viewport.scrollbar_thumb_top, target_top, SCROLLBAR_TOP_EASE);
+        ease_value(&mut viewport.scrollbar_thumb_size, target_size, SCROLLBAR_SIZE_EASE);
+    }
+
+    let mut thumb_size = viewport.scrollbar_thumb_size.round() as usize;
+    thumb_size = thumb_size.max(SCROLLBAR_MIN_THUMB_HEIGHT).min(viewport_height);
+    let max_top = viewport_height.saturating_sub(thumb_size);
+    let thumb_top = viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
+
+    ScrollbarGeometry { thumb_top, thumb_size }
+}
+fn render_scrollbar_overlay(
+    frame: &mut Frame,
+    viewport: &mut crate::app::ChatViewport,
+    area: Rect,
+    content_height: usize,
+    viewport_height: usize,
+) {
+    let Some(target) =
+        compute_scrollbar_geometry(content_height, viewport_height, viewport.scroll_pos)
+    else {
+        viewport.scrollbar_thumb_top = 0.0;
+        viewport.scrollbar_thumb_size = 0.0;
+        return;
+    };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height);
+    let rail_style = Style::default().add_modifier(Modifier::DIM);
+    let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
+    let rail_x = area.right().saturating_sub(1);
+    let buf = frame.buffer_mut();
+    for row in 0..area.height as usize {
+        let y = area.y.saturating_add(row as u16);
+        if let Some(cell) = buf.cell_mut((rail_x, y)) {
+            cell.set_symbol("\u{2595}");
+            cell.set_style(rail_style);
+        }
+    }
+    let thumb_top = geometry.thumb_top.min(area.height.saturating_sub(1) as usize);
+    let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area.height as usize);
+    for row in thumb_top..thumb_end {
+        let y = area.y.saturating_add(row as u16);
+        if let Some(cell) = buf.cell_mut((rail_x, y)) {
+            cell.set_symbol("\u{2590}");
+            cell.set_style(thumb_style);
+        }
+    }
+}
+/// Render only the visible message range into out (viewport culling).
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn render_culled_messages(
@@ -354,6 +462,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         frame.render_widget(SelectionOverlay { selection: sel }, app.rendered_chat_area);
     }
+
+    render_scrollbar_overlay(frame, &mut app.viewport, area, content_height, viewport_height);
 }
 
 struct SelectionOverlay {
@@ -405,4 +515,50 @@ fn render_lines_from_paragraph(
         lines.push(line.trim_end().to_owned());
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, compute_scrollbar_geometry};
+    #[test]
+    fn scrollbar_hidden_when_content_fits() {
+        assert_eq!(compute_scrollbar_geometry(10, 10, 0.0), None);
+        assert_eq!(compute_scrollbar_geometry(8, 10, 0.0), None);
+    }
+    #[test]
+    fn scrollbar_thumb_positions_are_stable() {
+        assert_eq!(
+            compute_scrollbar_geometry(50, 10, 0.0),
+            Some(ScrollbarGeometry { thumb_top: 0, thumb_size: 2 })
+        );
+        assert_eq!(
+            compute_scrollbar_geometry(50, 10, 20.0),
+            Some(ScrollbarGeometry { thumb_top: 4, thumb_size: 2 })
+        );
+        assert_eq!(
+            compute_scrollbar_geometry(50, 10, 40.0),
+            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2 })
+        );
+    }
+    #[test]
+    fn scrollbar_scroll_offset_is_clamped() {
+        assert_eq!(
+            compute_scrollbar_geometry(50, 10, 999.0),
+            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2 })
+        );
+    }
+    #[test]
+    fn scrollbar_handles_small_overflow() {
+        assert_eq!(
+            compute_scrollbar_geometry(11, 10, 1.0),
+            Some(ScrollbarGeometry { thumb_top: 1, thumb_size: 9 })
+        );
+    }
+    #[test]
+    fn scrollbar_respects_min_thumb_height() {
+        assert_eq!(
+            compute_scrollbar_geometry(10_000, 10, 0.0),
+            Some(ScrollbarGeometry { thumb_top: 0, thumb_size: SCROLLBAR_MIN_THUMB_HEIGHT })
+        );
+    }
 }

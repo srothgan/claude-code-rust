@@ -440,6 +440,10 @@ pub struct ChatViewport {
     pub scroll_target: usize,
     /// Smooth scroll position (fractional) for animation.
     pub scroll_pos: f32,
+    /// Smoothed scrollbar thumb top row (fractional) for animation.
+    pub scrollbar_thumb_top: f32,
+    /// Smoothed scrollbar thumb height (fractional) for animation.
+    pub scrollbar_thumb_size: f32,
     /// Whether to auto-scroll to bottom on new content.
     pub auto_scroll: bool,
 
@@ -470,6 +474,8 @@ impl ChatViewport {
             scroll_offset: 0,
             scroll_target: 0,
             scroll_pos: 0.0,
+            scrollbar_thumb_top: 0.0,
+            scrollbar_thumb_size: 0.0,
             auto_scroll: true,
             width: 0,
             message_heights: Vec::new(),
