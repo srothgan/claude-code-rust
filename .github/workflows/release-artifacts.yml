@@ -38,19 +38,19 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin claude-rs
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin claude-rust
       - name: Stage release asset
         shell: pwsh
         run: |
-          $binaryName = "claude-rs${{ matrix.exe_suffix }}"
+          $binaryName = "claude-rust${{ matrix.exe_suffix }}"
           $sourcePath = "target/${{ matrix.target }}/release/$binaryName"
-          $assetName = "claude-rs-${{ matrix.target }}${{ matrix.exe_suffix }}"
+          $assetName = "claude-rust-${{ matrix.target }}${{ matrix.exe_suffix }}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item $sourcePath "dist/$assetName"
       - name: Upload staged asset
         uses: actions/upload-artifact@v4
         with:
-          name: claude-rs-${{ matrix.target }}
+          name: claude-rust-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
@@ -62,7 +62,7 @@ jobs:
       - name: Download all assets
         uses: actions/download-artifact@v5
         with:
-          pattern: claude-rs-*
+          pattern: claude-rust-*
           merge-multiple: true
           path: dist
       - name: Publish release assets
