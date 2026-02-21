@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-02-21
+
+### CI and Release
+
+- Replace release-plz with direct cargo and npm publish workflows
+- `release-cargo.yml`: publishes to crates.io on Cargo.toml version bump
+- `release-npm.yml`: builds cross-platform binaries, creates verified GitHub Release, publishes to npm with provenance
+- Triggers based on Cargo.toml version changes instead of tag chaining
+- Tags created by github-actions[bot] for verified provenance
+- Remove release-plz.toml and cliff.toml
+
 ## [0.1.0] - 2026-02-20
 
 ### Release Summary
