@@ -108,7 +108,7 @@ mod enabled {
                 *value += 1;
                 *value
             });
-            if frame % 240 == 0 {
+            if frame.is_multiple_of(240) {
                 LOG_FILE.with(|f| {
                     if let Some(ref mut file) = *f.borrow_mut() {
                         let _ = file.flush();
