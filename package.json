@@ -2,6 +2,7 @@
   "name": "claude-rust",
   "version": "0.1.0",
   "description": "Native Rust terminal interface for Claude Code",
+  "keywords": ["cli", "tui", "claude", "ai", "terminal"],
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",

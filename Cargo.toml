@@ -1,6 +1,6 @@
 [package]
 name = "claude-rust"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
@@ -49,6 +49,7 @@ perf = []
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+tempfile = "3.25.0"
 
 [lints.clippy]
 # Deny panic-prone operations in production code (tests exempted via clippy.toml)
