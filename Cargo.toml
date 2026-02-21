@@ -78,5 +78,4 @@ style = { level = "warn", priority = -1 }
 exit = "deny"
 shadow_same = "warn"
 shadow_unrelated = "allow"
-string_to_string = "warn"
 str_to_string = "warn"
