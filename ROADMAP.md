@@ -43,7 +43,7 @@
 
 ## Near
 
-- [ ] User configuration system (`~/.claude-rs/config.toml` or similar)
+- [ ] User configuration system (`~/.claude-rust/config.toml` or similar)
     - Color/theme settings (currently hardcoded -- allow customizing accent, dim, error colors etc.)
     - Default model selection (avoid needing `/model` every session)
     - Edit diff display mode: always-show (default) vs collapsible with Ctrl+O

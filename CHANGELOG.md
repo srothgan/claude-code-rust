@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Release Summary
 
-`claude-rs` reaches a strong pre-1.0 baseline with near feature parity for core Claude Code terminal workflows:
+`claude-rust` reaches a strong pre-1.0 baseline with near feature parity for core Claude Code terminal workflows:
 
 - Native Rust TUI built with Ratatui and Crossterm
 - ACP protocol integration via `@zed-industries/claude-code-acp`
@@ -76,10 +76,10 @@ Performance optimization was a major release theme across recent commits:
 
 ### Release And Distribution Setup
 
-- Rust crate is now publish-ready for crates.io as `claude-rs`
-- CLI executable name is `claude-rs`
-- npm global package added as `claude-rs`:
-  - installs `claude-rs` command
+- Rust crate is now publish-ready for crates.io as `claude-rust`
+- CLI executable name is `claude-rust`
+- npm global package added as `claude-rust`:
+  - installs `claude-rust` command
   - downloads matching GitHub release binary during `postinstall`
 - Tag-based GitHub Actions release workflow added for:
   - cross-platform binary builds (Windows/macOS/Linux)

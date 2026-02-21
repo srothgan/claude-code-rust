@@ -1,4 +1,4 @@
-# claude-rs
+# claude-rust
 
 A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
 
@@ -8,7 +8,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-claude-rs replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-code-acp` adapter as a child process. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
+claude-rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-code-acp` adapter as a child process. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
 ## Why
 
@@ -20,7 +20,7 @@ The stock Claude Code TUI runs on Node.js with React Ink. This causes real probl
 - **Input latency**: Event queue delays on keystroke handling
 - **Copy/paste**: Custom implementation instead of native terminal support
 
-claude-rs fixes all of these by compiling to a single native binary with direct terminal control via Crossterm.
+claude-rust fixes all of these by compiling to a single native binary with direct terminal control via Crossterm.
 
 ## Architecture
 
@@ -43,22 +43,22 @@ Three-layer design:
 ### Cargo (crates.io)
 
 ```bash
-cargo install claude-rs
+cargo install claude-rust
 ```
 
 ### npm (global)
 
 ```bash
-npm install -g claude-rs
+npm install -g claude-rust
 ```
 
-The npm package installs a `claude-rs` command and downloads the matching
+The npm package installs a `claude-rust` command and downloads the matching
 prebuilt release binary for your platform during `postinstall`.
 
 ## Usage
 
 ```bash
-claude-rs
+claude-rust
 ```
 
 ## Known Limitations
@@ -74,5 +74,12 @@ This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONT
 ## License
 
 This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+This license was chosen because Claude Code is not publicly available, and this project is not intended as an alternative distribution of Anthropic's proprietary implementation.
 
 By using this software, you agree to the terms of the AGPL-3.0. If you modify this software and make it available over a network, you must offer the source code to users of that service.
+
+## Disclaimer
+
+This project is an unofficial terminal UI for Claude Code and is not affiliated with, endorsed by, or supported by Anthropic.
+Use it at your own risk.
+For official Claude documentation, see [https://claude.ai/docs](https://claude.ai/docs).
