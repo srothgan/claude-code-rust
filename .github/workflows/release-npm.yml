@@ -1,4 +1,4 @@
-name: Release npm
+name: Release
 
 on:
   workflow_dispatch:
@@ -18,6 +18,7 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
       tag: ${{ steps.get_version.outputs.tag }}
       tag-exists: ${{ steps.check_tag.outputs.exists }}
+      should-publish-cargo: ${{ steps.check_crates.outputs.should_publish }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -40,8 +41,39 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-  build-binaries:
+      - name: Check if version is already published on crates.io
+        id: check_crates
+        run: |
+          PUBLISHED=$(cargo search claude-code-rust --limit 1 | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+          if [ "$PUBLISHED" = "${{ steps.get_version.outputs.version }}" ]; then
+            echo "should_publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_publish=true" >> $GITHUB_OUTPUT
+          fi
+
+  publish-cargo:
     needs: verify
+    if: needs.verify.outputs.tag-exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        if: needs.verify.outputs.should-publish-cargo == 'true'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Skip cargo publish (already published)
+        if: needs.verify.outputs.should-publish-cargo != 'true'
+        run: echo "Cargo version already exists on crates.io, skipping publish."
+
+  build-binaries:
+    needs: [verify, publish-cargo]
     if: needs.verify.outputs.tag-exists == 'false'
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -91,7 +123,8 @@ jobs:
           if-no-files-found: error
 
   create-release:
-    needs: [verify, build-binaries]
+    needs: [verify, publish-cargo, build-binaries]
+    if: needs.verify.outputs.tag-exists == 'false'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -121,6 +154,7 @@ jobs:
 
   publish-npm:
     needs: [verify, create-release]
+    if: needs.verify.outputs.tag-exists == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
