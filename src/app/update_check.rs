@@ -17,15 +17,19 @@
 use super::App;
 use crate::Cli;
 use crate::acp::client::ClientEvent;
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::process::Command;
 
 const UPDATE_CHECK_DISABLE_ENV: &str = "CLAUDE_RUST_NO_UPDATE_CHECK";
 const UPDATE_CHECK_TTL_SECS: u64 = 24 * 60 * 60;
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(4);
-const REPO_URL: &str = "https://github.com/srothgan/claude-code-rust";
+const GITHUB_LATEST_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/srothgan/claude-code-rust/releases/latest";
+const GITHUB_API_ACCEPT_VALUE: &str = "application/vnd.github+json";
+const GITHUB_API_VERSION_VALUE: &str = "2022-11-28";
+const GITHUB_USER_AGENT_VALUE: &str = "claude-code-rust-update-check";
 const CACHE_FILE: &str = "update-check.json";
 const CACHE_DIR_NAME: &str = "claude-code-rust";
 
@@ -40,6 +44,11 @@ struct SimpleVersion {
 struct UpdateCheckCache {
     checked_at_unix_secs: u64,
     latest_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubLatestRelease {
+    tag_name: String,
 }
 
 pub fn start_update_check(app: &App, cli: &Cli) {
@@ -84,7 +93,7 @@ async fn resolve_latest_version() -> Option<String> {
         return Some(cache.latest_version.clone());
     }
 
-    match fetch_latest_repo_tag().await {
+    match fetch_latest_release_tag().await {
         Some(latest_version) => {
             let cache = UpdateCheckCache { checked_at_unix_secs: now, latest_version };
             if let Err(err) = write_cache(&cache_path, &cache).await {
@@ -120,35 +129,35 @@ async fn write_cache(path: &Path, cache: &UpdateCheckCache) -> anyhow::Result<()
     Ok(())
 }
 
-async fn fetch_latest_repo_tag() -> Option<String> {
-    let output = tokio::time::timeout(
-        UPDATE_CHECK_TIMEOUT,
-        Command::new("git").args(["ls-remote", "--tags", "--refs", REPO_URL]).output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+async fn fetch_latest_release_tag() -> Option<String> {
+    let client = reqwest::Client::builder().timeout(UPDATE_CHECK_TIMEOUT).build().ok()?;
 
-    if !output.status.success() {
+    let response = client
+        .get(GITHUB_LATEST_RELEASE_API_URL)
+        .headers(github_api_headers())
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        tracing::debug!("update-check request failed with status {}", response.status());
         return None;
     }
 
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    latest_version_from_git_ls_remote(&stdout)
+    let release = response.json::<GithubLatestRelease>().await.ok()?;
+    normalize_version_string(&release.tag_name)
 }
 
-fn latest_version_from_git_ls_remote(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .filter_map(parse_ls_remote_tag_ref)
-        .max()
-        .map(|v| format!("{}.{}.{}", v.major, v.minor, v.patch))
+fn github_api_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static(GITHUB_API_ACCEPT_VALUE));
+    headers.insert("X-GitHub-Api-Version", HeaderValue::from_static(GITHUB_API_VERSION_VALUE));
+    headers.insert(USER_AGENT, HeaderValue::from_static(GITHUB_USER_AGENT_VALUE));
+    headers
 }
 
-fn parse_ls_remote_tag_ref(line: &str) -> Option<SimpleVersion> {
-    let (_, ref_name) = line.split_once('\t')?;
-    let tag = ref_name.strip_prefix("refs/tags/")?;
-    parse_simple_version(tag)
+fn normalize_version_string(raw: &str) -> Option<String> {
+    parse_simple_version(raw).map(|v| format!("{}.{}.{}", v.major, v.minor, v.patch))
 }
 
 fn parse_simple_version(raw: &str) -> Option<SimpleVersion> {
@@ -208,10 +217,15 @@ mod tests {
     }
 
     #[test]
-    fn latest_version_from_git_output_picks_highest_semver() {
-        let output =
-            ["aaa\trefs/tags/v0.2.0", "bbb\trefs/tags/v0.10.0", "ccc\trefs/tags/v0.9.9"].join("\n");
-        assert_eq!(latest_version_from_git_ls_remote(&output).as_deref(), Some("0.10.0"));
+    fn normalize_version_string_accepts_release_tag() {
+        assert_eq!(normalize_version_string("v0.10.0").as_deref(), Some("0.10.0"));
+    }
+
+    #[test]
+    fn github_release_payload_parses_tag_name() {
+        let payload = r#"{"tag_name":"v0.11.0"}"#;
+        let parsed = serde_json::from_str::<GithubLatestRelease>(payload).ok();
+        assert_eq!(parsed.map(|r| r.tag_name), Some("v0.11.0".to_string()));
     }
 
     #[test]
