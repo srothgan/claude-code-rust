@@ -225,7 +225,7 @@ mod tests {
     fn github_release_payload_parses_tag_name() {
         let payload = r#"{"tag_name":"v0.11.0"}"#;
         let parsed = serde_json::from_str::<GithubLatestRelease>(payload).ok();
-        assert_eq!(parsed.map(|r| r.tag_name), Some("v0.11.0".to_string()));
+        assert_eq!(parsed.map(|r| r.tag_name), Some("v0.11.0".to_owned()));
     }
 
     #[test]
