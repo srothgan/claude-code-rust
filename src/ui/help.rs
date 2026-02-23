@@ -192,6 +192,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         let mut items: Vec<(String, String)> = vec![
             ("Left/Right".to_owned(), "Switch help tab".to_owned()),
             ("?".to_owned(), "Toggle help".to_owned()),
+            ("Ctrl+q".to_owned(), "Quit".to_owned()),
             ("Up/Down".to_owned(), "Scroll chat".to_owned()),
             ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
             ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
@@ -209,6 +210,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Left/Right".to_owned(), "Switch help tab".to_owned()),
         // Global
         ("Ctrl+c".to_owned(), "Quit".to_owned()),
+        ("Ctrl+q".to_owned(), "Quit".to_owned()),
         ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
@@ -533,6 +535,7 @@ mod tests {
 
         let items = build_help_items(&app);
         assert!(has_item(&items, "?", "Toggle help"));
+        assert!(has_item(&items, "Ctrl+q", "Quit"));
         assert!(has_item(&items, "Up/Down", "Scroll chat"));
         assert!(has_item(&items, "Input keys", "Unavailable while connecting"));
         assert!(!has_item(&items, "Ctrl+c", "Quit"));

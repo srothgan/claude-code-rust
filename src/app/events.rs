@@ -2278,6 +2278,37 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_q_quits_even_with_selection() {
+        let mut app = make_test_app();
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 0 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn connecting_state_ctrl_q_quits() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Connecting;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn mouse_scroll_clears_selection_before_scrolling() {
         let mut app = make_test_app();
         app.viewport.scroll_target = 2;

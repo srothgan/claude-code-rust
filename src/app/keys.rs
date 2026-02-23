@@ -68,6 +68,12 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 
 /// During startup, keep input disabled and only allow navigation/help shortcuts.
 fn handle_connecting_shortcuts(app: &mut App, key: KeyEvent) {
+    if is_ctrl_char_shortcut(key, 'q') {
+        app.should_quit = true;
+        sync_help_focus(app);
+        return;
+    }
+
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
         sync_help_focus(app);
@@ -114,6 +120,12 @@ fn handle_connecting_shortcuts(app: &mut App, key: KeyEvent) {
 
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
+    // Safe quit shortcut (always quits, never copies selection).
+    if is_ctrl_char_shortcut(key, 'q') {
+        app.should_quit = true;
+        return true;
+    }
+
     // Session-only dismiss for update hint.
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
