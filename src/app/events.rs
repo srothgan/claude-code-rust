@@ -761,7 +761,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         }
                         tc.content = content;
                     }
-                    // TODO(adapter): Revisit when claude-agent-acp starts forwarding
+                    // TODO(adapter): Revisit when claude-agent-acp reaches feature parity with claude-code-acp and starts forwarding
                     // incremental Bash output updates during long-running commands.
                     if matches!(tc.kind, acp::ToolKind::Execute)
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
