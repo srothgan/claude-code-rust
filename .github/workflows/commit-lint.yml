@@ -23,4 +23,5 @@ jobs:
             test
             chore
             ci
+            revert
           requireScope: false
