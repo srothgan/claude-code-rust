@@ -226,11 +226,7 @@ fn render_scrolled(
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 fn clamp_scroll_to_content(viewport: &mut crate::app::ChatViewport, max_scroll: usize) {
     viewport.scroll_target = viewport.scroll_target.min(max_scroll);
 
