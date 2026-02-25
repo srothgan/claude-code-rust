@@ -31,6 +31,7 @@ const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
 const SCROLLBAR_SIZE_EASE: f32 = 0.2;
 const SCROLLBAR_EASE_EPSILON: f32 = 0.01;
+const OVERSCROLL_CLAMP_EASE: f32 = 0.2;
 
 #[derive(Clone, Copy, Default)]
 struct HeightUpdateStats {
@@ -171,9 +172,7 @@ fn render_scrolled(
         }
     }
     vp.scroll_offset = vp.scroll_pos.round() as usize;
-    if vp.scroll_offset >= max_scroll {
-        vp.auto_scroll = true;
-    }
+    clamp_scroll_to_content(vp, max_scroll);
 
     let scroll_offset = vp.scroll_offset;
     crate::perf::mark_with("chat::max_scroll", "rows", max_scroll);
@@ -224,6 +223,26 @@ fn render_scrolled(
             .as_ref()
             .map(|p| p.start_with("chat::render_widget", "scroll", render_stats.local_scroll));
         frame.render_widget(paragraph.scroll((render_stats.local_scroll as u16, 0)), area);
+    }
+}
+
+fn clamp_scroll_to_content(viewport: &mut crate::app::ChatViewport, max_scroll: usize) {
+    viewport.scroll_target = viewport.scroll_target.min(max_scroll);
+
+    // Shrinks can leave the smoothed scroll position beyond new content end.
+    // Ease it back toward the valid bound while keeping rendered offset clamped.
+    let max_scroll_f = max_scroll as f32;
+    if viewport.scroll_pos > max_scroll_f {
+        let overshoot = viewport.scroll_pos - max_scroll_f;
+        viewport.scroll_pos = max_scroll_f + overshoot * OVERSCROLL_CLAMP_EASE;
+        if (viewport.scroll_pos - max_scroll_f).abs() < SCROLLBAR_EASE_EPSILON {
+            viewport.scroll_pos = max_scroll_f;
+        }
+    }
+
+    viewport.scroll_offset = (viewport.scroll_pos.round() as usize).min(max_scroll);
+    if viewport.scroll_offset >= max_scroll {
+        viewport.auto_scroll = true;
     }
 }
 
@@ -529,11 +548,12 @@ fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, compute_scrollbar_geometry,
-        update_visual_heights,
+        SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
+        compute_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
+        App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, MessageBlock,
+        MessageRole,
     };
     use crate::ui::message::SpinnerState;
 
@@ -624,5 +644,56 @@ mod tests {
             app.viewport.message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
         );
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_snaps_overscroll_after_shrink() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 120;
+        viewport.scroll_pos = 120.0;
+        viewport.scroll_offset = 120;
+
+        clamp_scroll_to_content(&mut viewport, 40);
+
+        assert!(viewport.auto_scroll);
+        assert_eq!(viewport.scroll_target, 40);
+        assert!(viewport.scroll_pos > 40.0);
+        assert!(viewport.scroll_pos < 120.0);
+        assert_eq!(viewport.scroll_offset, 40);
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_preserves_in_range_scroll() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 20;
+        viewport.scroll_pos = 20.0;
+        viewport.scroll_offset = 20;
+
+        clamp_scroll_to_content(&mut viewport, 40);
+
+        assert!(!viewport.auto_scroll);
+        assert_eq!(viewport.scroll_target, 20);
+        assert_eq!(viewport.scroll_pos, 20.0);
+        assert_eq!(viewport.scroll_offset, 20);
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_settles_to_max_over_frames() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 120;
+        viewport.scroll_pos = 120.0;
+        viewport.scroll_offset = 120;
+
+        for _ in 0..12 {
+            clamp_scroll_to_content(&mut viewport, 40);
+        }
+
+        assert_eq!(viewport.scroll_target, 40);
+        assert_eq!(viewport.scroll_offset, 40);
+        assert!(viewport.scroll_pos >= 40.0);
+        assert!(viewport.scroll_pos < 40.1);
     }
 }

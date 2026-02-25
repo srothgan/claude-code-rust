@@ -148,11 +148,16 @@ fn handle_permission_focus_cycle(
     key: KeyEvent,
     permission_has_focus: bool,
 ) -> Option<bool> {
-    if !permission_has_focus || app.pending_permission_ids.len() <= 1 {
+    if !permission_has_focus {
         return None;
     }
     if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
         return None;
+    }
+    if app.pending_permission_ids.len() <= 1 {
+        // Single pending permission: consume navigation keys so they do not
+        // leak into normal chat/input scrolling.
+        return Some(true);
     }
 
     // Unfocus the current (first) permission.
@@ -686,5 +691,27 @@ mod tests {
         let app = App::test_default();
         let _ = IncrementalMarkdown::default();
         assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn single_focused_permission_consumes_up_down_without_rotation() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
+        app.viewport.scroll_target = 7;
+
+        let consumed_up = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Up, crossterm::event::KeyModifiers::NONE),
+        );
+        let consumed_down = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE),
+        );
+
+        assert!(consumed_up);
+        assert!(consumed_down);
+        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.viewport.scroll_target, 7);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 }
