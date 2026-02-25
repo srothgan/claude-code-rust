@@ -3,8 +3,8 @@
 // that the pending_permission_ids queue is maintained, and that responses
 // are sent through the oneshot channel.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::protocol as acp;
 use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
@@ -90,7 +90,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     assert!(response.is_ok(), "auto-reject should send response immediately");
     let resp = response.unwrap();
     if let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome {
-        assert_eq!(selected.option_id.to_string(), "deny", "auto-reject should pick last option");
+        assert_eq!(selected.option_id.clone(), "deny", "auto-reject should pick last option");
     } else {
         panic!("expected Selected outcome from auto-reject");
     }
@@ -137,7 +137,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
         panic!("expected Selected outcome from duplicate auto-reject");
     };
-    assert_eq!(selected.option_id.to_string(), "deny");
+    assert_eq!(selected.option_id.clone(), "deny");
 }
 
 // --- Scroll interaction during streaming ---

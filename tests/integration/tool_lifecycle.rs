@@ -5,8 +5,8 @@
 // Tool call lifecycle integration tests.
 // Validates the full create -> update -> complete flow for tool calls.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::protocol as acp;
 use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 

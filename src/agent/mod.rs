@@ -14,5 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod bridge;
 pub mod client;
-pub mod connection;
+pub mod events;
+pub mod protocol;
+pub mod types;
+pub mod wire;

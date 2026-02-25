@@ -21,8 +21,8 @@ pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
 
 // UI chrome
 pub const DIM: Color = Color::DarkGray;
-pub const PROMPT_CHAR: &str = "❯";
-pub const SEPARATOR_CHAR: &str = "─";
+pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
 // Role header colors
 pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
@@ -31,8 +31,8 @@ pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
 // Tool status icons
-pub const ICON_COMPLETED: &str = "\u{2713}"; // ✓
-pub const ICON_FAILED: &str = "\u{2717}"; // ✗
+pub const ICON_COMPLETED: &str = "\u{2713}";
+pub const ICON_FAILED: &str = "\u{2717}";
 
 // Status colors
 pub const STATUS_ERROR: Color = Color::Red;
@@ -41,31 +41,32 @@ pub const SLASH_COMMAND: Color = Color::LightMagenta;
 /// Tool kind icon + label pair. Monochrome Unicode symbols.
 /// If `claude_tool_name` is provided, override icon/label for specific tools.
 pub fn tool_kind_label(
-    kind: agent_client_protocol::ToolKind,
+    kind: crate::agent::protocol::ToolKind,
     claude_tool_name: Option<&str>,
 ) -> (&'static str, &'static str) {
-    use agent_client_protocol::ToolKind;
+    use crate::agent::protocol::ToolKind;
 
-    // Override for specific Claude Code tool names
+    // Override for specific Claude Code tool names.
+    // TODO(ui): Evaluate removing claude_tool_name label overrides and using ToolKind labels only.
     if let Some(name) = claude_tool_name {
         match name {
-            "Task" => return ("◇", "Agent"),
-            "WebSearch" => return ("⊕", "Search"),
-            "WebFetch" => return ("⊕", "Fetch"),
+            "Task" => return ("\u{25c7}", "Agent"),
+            "WebSearch" => return ("\u{2295}", "WebSearch"),
+            "WebFetch" => return ("\u{2295}", "WebFetch"),
             _ => {}
         }
     }
 
     match kind {
-        ToolKind::Read => ("⬚", "Read"),
-        ToolKind::Edit => ("▣", "Edit"),
-        ToolKind::Delete => ("▣", "Delete"),
-        ToolKind::Move => ("⇄", "Move"),
-        ToolKind::Search => ("⌕", "Find"),
-        ToolKind::Execute => ("⟩", "Bash"),
-        ToolKind::Think => ("❖", "Think"),
-        ToolKind::Fetch => ("⊕", "Fetch"),
-        ToolKind::SwitchMode => ("⊙", "Mode"),
-        _ => ("○", "Tool"),
+        ToolKind::Read => ("\u{2b1a}", "Read"),
+        ToolKind::Edit => ("\u{25a3}", "Edit"),
+        ToolKind::Delete => ("\u{25a3}", "Delete"),
+        ToolKind::Move => ("\u{21c4}", "Move"),
+        ToolKind::Search => ("\u{2315}", "Find"),
+        ToolKind::Execute => ("\u{27e9}", "Bash"),
+        ToolKind::Think => ("\u{2756}", "Think"),
+        ToolKind::Fetch => ("\u{2295}", "Fetch"),
+        ToolKind::SwitchMode => ("\u{2299}", "Mode"),
+        ToolKind::Other => ("\u{25cb}", "Tool"),
     }
 }

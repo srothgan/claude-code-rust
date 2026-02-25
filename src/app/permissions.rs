@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, FocusTarget, MessageBlock, ToolCallInfo};
-use agent_client_protocol as acp;
-use agent_client_protocol::PermissionOptionKind;
+use crate::agent::protocol as acp;
+use crate::agent::protocol::PermissionOptionKind;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -87,7 +87,7 @@ fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
 
 fn normalized_option_tokens(option: &acp::PermissionOption) -> String {
     let mut out = String::new();
-    for ch in option.name.chars().chain(option.option_id.to_string().chars()) {
+    for ch in option.name.chars().chain(option.option_id.chars()) {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
         }
@@ -329,11 +329,25 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
+            tracing::debug!(
+                "permission selection: tool_call_id={} option_id={} option_name={} option_kind={:?}",
+                tool_id,
+                opt.option_id,
+                opt.name,
+                opt.kind
+            );
             let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
                 acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
                     opt.option_id.clone(),
                 )),
             ));
+        } else {
+            tracing::warn!(
+                "permission selection index out of bounds: tool_call_id={} selected_index={} options={}",
+                tool_id,
+                idx,
+                pending.options.len()
+            );
         }
         tc.cache.invalidate();
         invalidated = true;
@@ -461,7 +475,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(sel2.option_id.to_string(), "allow-once");
+        assert_eq!(sel2.option_id.clone(), "allow-once");
         assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
         assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
     }
@@ -518,7 +532,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(sel1) = resp1.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(sel1.option_id.to_string(), "allow-once");
+        assert_eq!(sel1.option_id.clone(), "allow-once");
         assert_eq!(app.pending_permission_ids, vec!["perm-2"]);
         assert!(matches!(rx2.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
@@ -559,7 +573,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(sel.option_id.to_string(), "reject-once");
+        assert_eq!(sel.option_id.clone(), "reject-once");
     }
 
     #[test]
@@ -628,7 +642,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(sel.option_id.to_string(), "allow-always");
+        assert_eq!(sel.option_id.clone(), "allow-always");
     }
 
     #[test]
@@ -649,7 +663,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(sel.option_id.to_string(), "allow-always");
+        assert_eq!(sel.option_id.clone(), "allow-always");
     }
 
     #[test]

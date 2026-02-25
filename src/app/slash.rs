@@ -18,9 +18,8 @@ use super::{
     App, AppStatus, BlockCache, ChatMessage, ChatViewport, FocusTarget, IncrementalMarkdown,
     MessageBlock, MessageRole, dialog::DialogState,
 };
-use crate::acp::client::ClientEvent;
-use crate::app::{ModeInfo, ModeState};
-use agent_client_protocol::{self as acp, Agent as _};
+use crate::agent::events::ClientEvent;
+use crate::agent::protocol as acp;
 use std::rc::Rc;
 
 pub const MAX_VISIBLE: usize = 8;
@@ -122,7 +121,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
 fn require_connection(
     app: &mut App,
     not_connected_msg: &'static str,
-) -> Option<Rc<acp::ClientSideConnection>> {
+) -> Option<Rc<crate::agent::client::AgentConnection>> {
     let Some(conn) = app.conn.as_ref() else {
         push_system_message(app, not_connected_msg);
         return None;
@@ -134,7 +133,7 @@ fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Rc<acp::ClientSideConnection>, acp::SessionId)> {
+) -> Option<(Rc<crate::agent::client::AgentConnection>, acp::SessionId)> {
     let conn = require_connection(app, not_connected_msg)?;
     let Some(session_id) = app.session_id.clone() else {
         push_system_message(app, no_session_msg);
@@ -387,7 +386,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 
             let tx = app.event_tx.clone();
             tokio::task::spawn_local(async move {
-                if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
+                if let Err(e) = conn.cancel(sid.to_string()) {
                     let _ = tx.send(ClientEvent::SlashCommandError(format!(
                         "Failed to run /cancel: {e}"
                     )));
@@ -427,6 +426,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
                 return true;
             };
             let requested_mode = *requested_mode_arg;
+            let requested_mode_owned = requested_mode.to_owned();
 
             let Some((conn, sid)) = require_active_session(
                 app,
@@ -453,11 +453,8 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             }
 
             let tx = app.event_tx.clone();
-            let mode_id = acp::SessionModeId::new(requested_mode);
             tokio::task::spawn_local(async move {
-                if let Err(e) =
-                    conn.set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id)).await
-                {
+                if let Err(e) = conn.set_mode(sid.to_string(), requested_mode_owned) {
                     let _ = tx
                         .send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
                 }
@@ -485,13 +482,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 
             let tx = app.event_tx.clone();
             tokio::task::spawn_local(async move {
-                if let Err(e) = conn
-                    .set_session_model(acp::SetSessionModelRequest::new(
-                        sid,
-                        acp::ModelId::new(model_name.as_str()),
-                    ))
-                    .await
-                {
+                if let Err(e) = conn.set_model(sid.to_string(), model_name) {
                     let _ = tx
                         .send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
                 }
@@ -513,48 +504,14 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
                 return true;
             };
             let tx = app.event_tx.clone();
-            let cwd = std::path::PathBuf::from(&app.cwd_raw);
+            let cwd = app.cwd_raw.clone();
+            let model_override = Some(app.model_name.clone());
+            let yolo = false;
             tokio::task::spawn_local(async move {
-                match conn.new_session(acp::NewSessionRequest::new(&cwd)).await {
-                    Ok(resp) => {
-                        let model_name = resp
-                            .models
-                            .as_ref()
-                            .and_then(|m| {
-                                m.available_models
-                                    .iter()
-                                    .find(|info| info.model_id == m.current_model_id)
-                                    .map(|info| info.name.clone())
-                            })
-                            .unwrap_or_else(|| "Unknown model".to_owned());
-                        let mode = resp.modes.map(|ms| {
-                            let current_id = ms.current_mode_id.to_string();
-                            let available: Vec<ModeInfo> = ms
-                                .available_modes
-                                .iter()
-                                .map(|m| ModeInfo { id: m.id.to_string(), name: m.name.clone() })
-                                .collect();
-                            let current_name = available
-                                .iter()
-                                .find(|m| m.id == current_id)
-                                .map_or_else(|| current_id.clone(), |m| m.name.clone());
-                            ModeState {
-                                current_mode_id: current_id,
-                                current_mode_name: current_name,
-                                available_modes: available,
-                            }
-                        });
-                        let _ = tx.send(ClientEvent::SessionReplaced {
-                            session_id: resp.session_id,
-                            model_name,
-                            mode,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                            "Failed to run /new-session: {e}"
-                        )));
-                    }
+                if let Err(e) = conn.new_session(cwd, yolo, model_override) {
+                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                        "Failed to run /new-session: {e}"
+                    )));
                 }
             });
             true

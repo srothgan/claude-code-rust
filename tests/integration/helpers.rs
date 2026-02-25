@@ -1,4 +1,4 @@
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::app::App;
 
 /// Build a minimal `App` for integration testing.

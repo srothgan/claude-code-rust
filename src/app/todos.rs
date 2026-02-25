@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, FocusTarget, TodoItem, TodoStatus};
-use agent_client_protocol as acp;
+use crate::agent::protocol as acp;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
 /// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`

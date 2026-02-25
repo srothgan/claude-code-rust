@@ -29,17 +29,18 @@ fn main() -> anyhow::Result<()> {
     }
 
     let resolve_started = Instant::now();
-    let launchers =
-        claude_code_rust::acp::connection::resolve_adapter_launchers(cli.adapter_bin.as_deref())?;
-    tracing::info!(
-        "Resolved {} adapter launcher(s) in {:?}: {:?}",
-        launchers.len(),
-        resolve_started.elapsed(),
-        launchers
-            .iter()
-            .map(claude_code_rust::acp::connection::AdapterLauncher::describe)
-            .collect::<Vec<_>>()
-    );
+    match claude_code_rust::agent::bridge::resolve_bridge_launcher(cli.bridge_script.as_deref()) {
+        Ok(bridge_launcher) => {
+            tracing::info!(
+                "Resolved agent bridge launcher in {:?}: {}",
+                resolve_started.elapsed(),
+                bridge_launcher.describe()
+            );
+        }
+        Err(err) => {
+            tracing::warn!("Agent bridge launcher unavailable: {err}");
+        }
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
@@ -49,12 +50,12 @@ fn main() -> anyhow::Result<()> {
         let mut app = claude_code_rust::app::create_app(&cli);
 
         // Phase 2: start background connection + TUI in parallel
-        claude_code_rust::app::start_connection(&app, &cli, launchers);
+        claude_code_rust::app::start_connection(&app, &cli);
         claude_code_rust::app::start_update_check(&app, &cli);
         let result = claude_code_rust::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting
-        claude_code_rust::acp::client::kill_all_terminals(&app.terminals);
+        claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
 
         result
     }))

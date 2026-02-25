@@ -19,13 +19,14 @@ use super::{
     TodoItem,
 };
 use crate::Cli;
-use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
-use crate::acp::connection;
-use agent_client_protocol::{self as acp, Agent as _};
+use crate::agent::client::{AgentConnection, BridgeClient};
+use crate::agent::events::{ClientEvent, TerminalMap};
+use crate::agent::protocol as acp;
+use crate::agent::types;
+use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Shorten cwd for display: use `~` for the home directory prefix.
@@ -120,61 +121,132 @@ pub fn create_app(cli: &Cli) -> App {
     app
 }
 
-/// Spawn the background connection task. Uses `spawn_local` so it runs on the
-/// same `LocalSet` as the TUI - `Rc<Connection>` stays on one thread.
-///
-/// On success, stores the connection in `app.conn` via a shared slot and sends
-/// `ClientEvent::Connected`. On auth error, sends `ClientEvent::AuthRequired`.
-/// On failure, sends `ClientEvent::ConnectionFailed`.
-#[allow(clippy::too_many_lines, clippy::items_after_statements, clippy::similar_names)]
-pub fn start_connection(app: &App, cli: &Cli, launchers: Vec<connection::AdapterLauncher>) {
+/// Spawn the background bridge task.
+#[allow(clippy::too_many_lines)]
+pub fn start_connection(app: &App, cli: &Cli) {
     let event_tx = app.event_tx.clone();
-    let terminals = Rc::clone(&app.terminals);
     let cwd_raw = app.cwd_raw.clone();
-    let cwd = PathBuf::from(&cwd_raw);
+    let bridge_script = cli.bridge_script.clone();
     let yolo = cli.yolo;
     let model_override = cli.model.clone();
     let resume_id = cli.resume.clone();
 
-    // Rc<Connection> is !Send, so it can't be sent through the mpsc channel.
-    // Instead, the task deposits it into a thread-local slot, then signals
-    // via ClientEvent::Connected. The event handler calls take_connection_slot().
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));
     let conn_slot_writer = Rc::clone(&conn_slot);
 
     tokio::task::spawn_local(async move {
-        let result = connect_impl(
-            &event_tx,
-            &terminals,
-            &cwd,
-            &launchers,
-            yolo,
-            model_override.as_deref(),
-            resume_id.as_deref(),
-        )
-        .await;
+        tracing::debug!("starting agent bridge connection task");
+        let launcher = match crate::agent::bridge::resolve_bridge_launcher(bridge_script.as_deref())
+        {
+            Ok(launcher) => launcher,
+            Err(err) => {
+                tracing::error!("failed to resolve bridge launcher: {err}");
+                let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
+                    "Failed to resolve bridge launcher: {err}"
+                )));
+                return;
+            }
+        };
+        tracing::info!("resolved bridge launcher: {}", launcher.describe());
 
-        match result {
-            Ok((conn, child, session_id, model_name, mode)) => {
-                // Deposit connection + child in the shared slot
-                *conn_slot_writer.borrow_mut() =
-                    Some(ConnectionSlot { conn: Rc::clone(&conn), child });
-                let _ = event_tx.send(ClientEvent::Connected { session_id, model_name, mode });
+        let mut bridge = match BridgeClient::spawn(&launcher) {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::error!("failed to spawn bridge process: {err}");
+                let _ = event_tx
+                    .send(ClientEvent::ConnectionFailed(format!("Failed to spawn bridge: {err}")));
+                return;
             }
-            Err(ConnectError::AuthRequired { method_name, method_description }) => {
-                let _ =
-                    event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+        };
+        tracing::debug!("bridge process spawned");
+
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
+        *conn_slot_writer.borrow_mut() =
+            Some(ConnectionSlot { conn: Rc::new(AgentConnection::new(cmd_tx.clone())) });
+
+        let init_cmd = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::Initialize {
+                cwd: cwd_raw.clone(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+        };
+        if let Err(err) = bridge.send(init_cmd).await {
+            tracing::error!("failed to send initialize command to bridge: {err}");
+            let _ = event_tx
+                .send(ClientEvent::ConnectionFailed(format!("Failed to initialize bridge: {err}")));
+            return;
+        }
+        tracing::debug!("sent initialize command to bridge");
+
+        let create_cmd = if let Some(resume) = resume_id {
+            CommandEnvelope {
+                request_id: None,
+                command: BridgeCommand::LoadSession {
+                    cwd: cwd_raw.clone(),
+                    session_id: resume,
+                    metadata: std::collections::BTreeMap::new(),
+                },
             }
-            Err(ConnectError::Failed(msg)) => {
-                let _ = event_tx.send(ClientEvent::ConnectionFailed(msg));
+        } else {
+            CommandEnvelope {
+                request_id: None,
+                command: BridgeCommand::CreateSession {
+                    cwd: cwd_raw.clone(),
+                    yolo,
+                    model: model_override.clone(),
+                    resume: None,
+                    metadata: std::collections::BTreeMap::new(),
+                },
+            }
+        };
+        if let Err(err) = bridge.send(create_cmd).await {
+            tracing::error!("failed to send create/load session command to bridge: {err}");
+            let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
+                "Failed to create bridge session: {err}"
+            )));
+            return;
+        }
+        tracing::debug!("sent create/load session command to bridge");
+
+        let mut connected_once = false;
+        loop {
+            tokio::select! {
+                Some(cmd) = cmd_rx.recv() => {
+                    if let Err(err) = bridge.send(cmd).await {
+                        tracing::error!("failed to forward command to bridge: {err}");
+                        let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
+                            "Failed to send bridge command: {err}"
+                        )));
+                        break;
+                    }
+                }
+                event = bridge.recv() => {
+                    match event {
+                        Ok(Some(envelope)) => {
+                            handle_bridge_event(&event_tx, &cmd_tx, &mut connected_once, envelope);
+                        }
+                        Ok(None) => {
+                            tracing::error!("bridge stdout closed unexpectedly");
+                            let _ = event_tx.send(ClientEvent::ConnectionFailed(
+                                "Bridge process exited unexpectedly".to_owned(),
+                            ));
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::error!("bridge communication failure: {err}");
+                            let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
+                                "Bridge communication failure: {err}"
+                            )));
+                            break;
+                        }
+                    }
+                }
             }
         }
     });
 
-    // Store the slot in a thread-local so handle_acp_event can retrieve the
-    // Rc<Connection> when ClientEvent::Connected arrives. This is safe because
-    // start_connection() must only be called once per app lifetime.
     CONN_SLOT.with(|slot| {
         debug_assert!(
             slot.borrow().is_none(),
@@ -184,251 +256,408 @@ pub fn start_connection(app: &App, cli: &Cli, launchers: Vec<connection::Adapter
     });
 }
 
-/// Shared slot for passing `Rc<Connection>` from the background task to the event loop.
-pub struct ConnectionSlot {
-    pub conn: Rc<acp::ClientSideConnection>,
-    pub child: tokio::process::Child,
+fn handle_bridge_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    connected_once: &mut bool,
+    envelope: EventEnvelope,
+) {
+    match envelope.event {
+        BridgeEvent::Connected { session_id, model_name, mode } => {
+            tracing::info!(
+                "bridge connected: session_id={} model={}",
+                session_id,
+                model_name
+            );
+            let mode = mode.map(convert_mode_state);
+            if *connected_once {
+                let _ = event_tx.send(ClientEvent::SessionReplaced {
+                    session_id: acp::SessionId::new(session_id),
+                    model_name,
+                    mode,
+                });
+            } else {
+                *connected_once = true;
+                let _ = event_tx.send(ClientEvent::Connected {
+                    session_id: acp::SessionId::new(session_id),
+                    model_name,
+                    mode,
+                });
+            }
+        }
+        BridgeEvent::AuthRequired { method_name, method_description } => {
+            tracing::warn!(
+                "bridge reported auth required: method={} desc={}",
+                method_name,
+                method_description
+            );
+            let _ = event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+        }
+        BridgeEvent::ConnectionFailed { message } => {
+            tracing::error!("bridge connection_failed: {message}");
+            let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
+        }
+        BridgeEvent::SessionUpdate { update, .. } => {
+            if let Some(update) = map_session_update(update) {
+                let _ = event_tx.send(ClientEvent::SessionUpdate(update));
+            }
+        }
+        BridgeEvent::PermissionRequest { session_id, request } => {
+            tracing::debug!(
+                "bridge permission_request: session_id={} tool_call_id={} options={}",
+                session_id,
+                request.tool_call.tool_call_id,
+                request.options.len()
+            );
+            let (request, tool_call_id) = map_permission_request(&session_id, request);
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+            if event_tx.send(ClientEvent::PermissionRequest { request, response_tx }).is_ok() {
+                let cmd_tx = cmd_tx.clone();
+                tokio::task::spawn_local(async move {
+                    let Ok(response) = response_rx.await else {
+                        return;
+                    };
+                    let outcome = match response.outcome {
+                        acp::RequestPermissionOutcome::Selected(selected) => {
+                            let option_id = selected.option_id.clone();
+                            tracing::debug!(
+                                "forward permission_response: session_id={} tool_call_id={} option_id={}",
+                                session_id,
+                                tool_call_id,
+                                option_id
+                            );
+                            types::PermissionOutcome::Selected { option_id }
+                        }
+                        acp::RequestPermissionOutcome::Cancelled => {
+                            tracing::debug!(
+                                "forward permission_response: session_id={} tool_call_id={} outcome=cancelled",
+                                session_id,
+                                tool_call_id
+                            );
+                            types::PermissionOutcome::Cancelled
+                        }
+                    };
+                    let _ = cmd_tx.send(CommandEnvelope {
+                        request_id: None,
+                        command: BridgeCommand::PermissionResponse {
+                            session_id,
+                            tool_call_id,
+                            outcome,
+                        },
+                    });
+                });
+            }
+        }
+        BridgeEvent::TurnComplete { .. } => {
+            let _ = event_tx.send(ClientEvent::TurnComplete);
+        }
+        BridgeEvent::TurnError { message, .. } => {
+            tracing::warn!("bridge turn_error: {message}");
+            let _ = event_tx.send(ClientEvent::TurnError(message));
+        }
+        BridgeEvent::SlashError { message, .. } => {
+            tracing::warn!("bridge slash_error: {message}");
+            let _ = event_tx.send(ClientEvent::SlashCommandError(message));
+        }
+        BridgeEvent::SessionReplaced { session_id, model_name, mode } => {
+            let _ = event_tx.send(ClientEvent::SessionReplaced {
+                session_id: acp::SessionId::new(session_id),
+                model_name,
+                mode: mode.map(convert_mode_state),
+            });
+        }
+        BridgeEvent::Initialized { .. } | BridgeEvent::SessionsListed { .. } => {}
+    }
 }
 
-// Thread-local storage for the connection slot. Used by start_connection() to deposit
-// and by handle_acp_event() to retrieve the Rc<Connection>.
+fn map_session_update(update: types::SessionUpdate) -> Option<acp::SessionUpdate> {
+    match update {
+        types::SessionUpdate::UserMessageChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::AgentMessageChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::AgentThoughtChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::ToolCall { tool_call } => {
+            Some(acp::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
+        }
+        types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
+            Some(acp::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
+        }
+        types::SessionUpdate::Plan { entries } => Some(acp::SessionUpdate::Plan(acp::Plan::new(
+            entries.into_iter().map(convert_plan_entry).collect(),
+        ))),
+        types::SessionUpdate::AvailableCommandsUpdate { commands } => {
+            Some(acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+                commands
+                    .into_iter()
+                    .map(|cmd| acp::AvailableCommand::new(cmd.name, cmd.description))
+                    .collect(),
+            )))
+        }
+        types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
+            Some(acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                acp::SessionModeId::new(current_mode_id),
+            )))
+        }
+        types::SessionUpdate::ConfigOptionUpdate { .. } => None,
+        types::SessionUpdate::UsageUpdate { usage } => {
+            let used = usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0);
+            let size =
+                used + usage.cache_read_tokens.unwrap_or(0) + usage.cache_write_tokens.unwrap_or(0);
+            Some(acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(used, size)))
+        }
+    }
+}
+
+fn map_permission_request(
+    session_id: &str,
+    request: types::PermissionRequest,
+) -> (acp::RequestPermissionRequest, String) {
+    let tool_call_id = request.tool_call.tool_call_id.clone();
+    let tool_call_meta = request.tool_call.meta.clone();
+    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
+    let mut tool_call_update = acp::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
+    if let Some(meta) = tool_call_meta {
+        tool_call_update = tool_call_update.meta(meta);
+    }
+    let options = request
+        .options
+        .into_iter()
+        .map(|opt| {
+            acp::PermissionOption::new(
+                opt.option_id,
+                opt.name,
+                match opt.kind.as_str() {
+                    "allow_once" => acp::PermissionOptionKind::AllowOnce,
+                    "allow_always" => acp::PermissionOptionKind::AllowAlways,
+                    "reject_always" => acp::PermissionOptionKind::RejectAlways,
+                    _ => acp::PermissionOptionKind::RejectOnce,
+                },
+            )
+        })
+        .collect();
+    (
+        acp::RequestPermissionRequest::new(
+            acp::SessionId::new(session_id),
+            tool_call_update,
+            options,
+        ),
+        tool_call_id,
+    )
+}
+
+fn convert_content_block(content: types::ContentBlock) -> Option<acp::ContentBlock> {
+    match content {
+        types::ContentBlock::Text { text } => {
+            Some(acp::ContentBlock::Text(acp::TextContent::new(text)))
+        }
+        // Deferred for parity follow-up per scope.
+        types::ContentBlock::Image { .. } => None,
+    }
+}
+
+fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
+    let types::ToolCall {
+        tool_call_id,
+        title,
+        kind,
+        status,
+        content,
+        raw_input,
+        raw_output,
+        locations,
+        meta,
+    } = tool_call;
+
+    let mut tc = acp::ToolCall::new(tool_call_id, title)
+        .kind(convert_tool_kind(&kind))
+        .status(convert_tool_status(&status))
+        .content(content.into_iter().filter_map(convert_tool_call_content).collect())
+        .locations(
+            locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect(),
+        );
+
+    if let Some(raw_input) = raw_input {
+        tc = tc.raw_input(raw_input);
+    }
+
+    if let Some(raw_output) = raw_output {
+        tc = tc.raw_output(serde_json::Value::String(raw_output));
+    }
+    if let Some(meta) = meta {
+        tc = tc.meta(meta);
+    }
+
+    tc
+}
+
+fn convert_tool_call_update(update: types::ToolCallUpdate) -> acp::ToolCallUpdate {
+    let update_meta = update.fields.meta.clone();
+    let mut out =
+        acp::ToolCallUpdate::new(update.tool_call_id, convert_tool_call_update_fields(update.fields));
+    if let Some(meta) = update_meta {
+        out = out.meta(meta);
+    }
+    out
+}
+
+fn convert_tool_call_to_fields(tool_call: types::ToolCall) -> acp::ToolCallUpdateFields {
+    let mut fields = acp::ToolCallUpdateFields::new()
+        .title(tool_call.title)
+        .kind(convert_tool_kind(&tool_call.kind))
+        .status(convert_tool_status(&tool_call.status))
+        .content(
+            tool_call.content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>(),
+        )
+        .locations(
+            tool_call
+                .locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect::<Vec<_>>(),
+        );
+
+    if let Some(raw_input) = tool_call.raw_input {
+        fields = fields.raw_input(raw_input);
+    }
+
+    if let Some(raw_output) = tool_call.raw_output {
+        fields = fields.raw_output(serde_json::Value::String(raw_output));
+    }
+
+    fields
+}
+
+fn convert_tool_call_update_fields(
+    fields: types::ToolCallUpdateFields,
+) -> acp::ToolCallUpdateFields {
+    let mut out = acp::ToolCallUpdateFields::new();
+
+    if let Some(title) = fields.title {
+        out = out.title(title);
+    }
+    if let Some(kind) = fields.kind {
+        out = out.kind(convert_tool_kind(&kind));
+    }
+    if let Some(status) = fields.status {
+        out = out.status(convert_tool_status(&status));
+    }
+    if let Some(content) = fields.content {
+        out = out
+            .content(content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>());
+    }
+    if let Some(raw_input) = fields.raw_input {
+        out = out.raw_input(raw_input);
+    }
+    if let Some(raw_output) = fields.raw_output {
+        out = out.raw_output(serde_json::Value::String(raw_output));
+    }
+    if let Some(locations) = fields.locations {
+        out = out.locations(
+            locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    out
+}
+
+fn convert_tool_call_content(tool_content: types::ToolCallContent) -> Option<acp::ToolCallContent> {
+    match tool_content {
+        types::ToolCallContent::Content { content } => {
+            let block = convert_content_block(content)?;
+            Some(acp::ToolCallContent::Content(acp::Content::new(block)))
+        }
+        types::ToolCallContent::Diff { old_path: _, new_path, old, new } => {
+            Some(acp::ToolCallContent::Diff(acp::Diff::new(new_path, new).old_text(Some(old))))
+        }
+    }
+}
+
+fn convert_tool_kind(kind: &str) -> acp::ToolKind {
+    match kind {
+        "read" => acp::ToolKind::Read,
+        "edit" => acp::ToolKind::Edit,
+        "delete" => acp::ToolKind::Delete,
+        "move" => acp::ToolKind::Move,
+        "execute" => acp::ToolKind::Execute,
+        "search" => acp::ToolKind::Search,
+        "fetch" => acp::ToolKind::Fetch,
+        "switch_mode" => acp::ToolKind::SwitchMode,
+        "other" => acp::ToolKind::Other,
+        _ => acp::ToolKind::Think,
+    }
+}
+
+fn convert_tool_status(status: &str) -> acp::ToolCallStatus {
+    match status {
+        "in_progress" => acp::ToolCallStatus::InProgress,
+        "completed" => acp::ToolCallStatus::Completed,
+        "failed" => acp::ToolCallStatus::Failed,
+        _ => acp::ToolCallStatus::Pending,
+    }
+}
+
+fn convert_plan_entry(entry: types::PlanEntry) -> acp::PlanEntry {
+    let status = match entry.status.as_str() {
+        "in_progress" => acp::PlanEntryStatus::InProgress,
+        "completed" => acp::PlanEntryStatus::Completed,
+        _ => acp::PlanEntryStatus::Pending,
+    };
+    acp::PlanEntry::new(entry.content, acp::PlanEntryPriority::Medium, status)
+}
+
+fn convert_mode_state(mode: types::ModeState) -> ModeState {
+    let available_modes: Vec<ModeInfo> =
+        mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
+    ModeState {
+        current_mode_id: mode.current_mode_id,
+        current_mode_name: mode.current_mode_name,
+        available_modes,
+    }
+}
+
+/// Shared slot for passing `Rc<AgentConnection>` from the background task to the event loop.
+pub struct ConnectionSlot {
+    pub conn: Rc<AgentConnection>,
+}
+
 thread_local! {
     pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Take the connection data from the thread-local slot. Called once when
-/// `ClientEvent::Connected` is received.
+/// Take the connection data from the thread-local slot.
 pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
     CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
-}
-
-/// Internal error type for the connection task.
-enum ConnectError {
-    AuthRequired { method_name: String, method_description: String },
-    Failed(String),
-}
-
-/// The actual connection logic, extracted from the old `connect()`.
-/// Runs inside `spawn_local` - can use `Rc`, `!Send` types freely.
-#[allow(clippy::too_many_lines, clippy::similar_names)]
-async fn connect_impl(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    terminals: &crate::acp::client::TerminalMap,
-    cwd: &std::path::Path,
-    launchers: &[connection::AdapterLauncher],
-    yolo: bool,
-    model_override: Option<&str>,
-    resume_id: Option<&str>,
-) -> Result<
-    (
-        Rc<acp::ClientSideConnection>,
-        tokio::process::Child,
-        acp::SessionId,
-        String,
-        Option<ModeState>,
-    ),
-    ConnectError,
-> {
-    if launchers.is_empty() {
-        return Err(ConnectError::Failed("No adapter launchers configured".into()));
-    }
-
-    let mut failures = Vec::new();
-    for launcher in launchers {
-        let started = Instant::now();
-        tracing::info!("Connecting with adapter launcher: {}", launcher.describe());
-        match connect_with_launcher(
-            event_tx,
-            terminals,
-            cwd,
-            launcher,
-            yolo,
-            model_override,
-            resume_id,
-        )
-        .await
-        {
-            Ok(result) => {
-                tracing::info!("Connected via {} in {:?}", launcher.describe(), started.elapsed());
-                return Ok(result);
-            }
-            Err(auth_required @ ConnectError::AuthRequired { .. }) => {
-                return Err(auth_required);
-            }
-            Err(ConnectError::Failed(msg)) => {
-                tracing::warn!("Launcher {} failed: {}", launcher.describe(), msg);
-                failures.push(format!("{}: {msg}", launcher.describe()));
-            }
-        }
-    }
-
-    Err(ConnectError::Failed(format!("All adapter launchers failed: {}", failures.join(" | "))))
-}
-
-#[allow(clippy::too_many_lines, clippy::similar_names)]
-async fn connect_with_launcher(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    terminals: &crate::acp::client::TerminalMap,
-    cwd: &std::path::Path,
-    launcher: &connection::AdapterLauncher,
-    yolo: bool,
-    model_override: Option<&str>,
-    resume_id: Option<&str>,
-) -> Result<
-    (
-        Rc<acp::ClientSideConnection>,
-        tokio::process::Child,
-        acp::SessionId,
-        String,
-        Option<ModeState>,
-    ),
-    ConnectError,
-> {
-    let client = ClaudeClient::with_terminals(
-        event_tx.clone(),
-        yolo,
-        cwd.to_path_buf(),
-        Rc::clone(terminals),
-    );
-
-    let adapter_start = Instant::now();
-    let adapter = connection::spawn_adapter(client, launcher, cwd)
-        .await
-        .map_err(|e| ConnectError::Failed(format!("Failed to spawn adapter: {e}")))?;
-    tracing::debug!("Spawned adapter via {} in {:?}", launcher.describe(), adapter_start.elapsed());
-    let child = adapter.child;
-    let conn = Rc::new(adapter.connection);
-
-    // Initialize handshake
-    let handshake_start = Instant::now();
-    let init_response = conn
-        .initialize(
-            acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
-                .client_capabilities(
-                    acp::ClientCapabilities::new()
-                        .fs(acp::FileSystemCapability::new()
-                            .read_text_file(true)
-                            .write_text_file(true))
-                        .terminal(true),
-                )
-                .client_info(acp::Implementation::new(
-                    "claude-code-rust",
-                    env!("CARGO_PKG_VERSION"),
-                )),
-        )
-        .await
-        .map_err(|e| ConnectError::Failed(format!("Handshake failed: {e}")))?;
-    tracing::debug!(
-        "Handshake via {} completed in {:?}",
-        launcher.describe(),
-        handshake_start.elapsed()
-    );
-
-    tracing::info!("Connected to agent: {:?}", init_response);
-
-    // Create or resume session - on AuthRequired, signal back instead of blocking
-    let session_result = if let Some(sid) = resume_id {
-        let session_id = acp::SessionId::new(sid);
-        let load_req = acp::LoadSessionRequest::new(session_id.clone(), cwd);
-        match conn.load_session(load_req).await {
-            Ok(resp) => Ok((session_id, resp.models, resp.modes)),
-            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
-                return Err(auth_required_error(&init_response));
-            }
-            Err(err) => Err(err),
-        }
-    } else {
-        match conn.new_session(acp::NewSessionRequest::new(cwd)).await {
-            Ok(resp) => Ok((resp.session_id, resp.models, resp.modes)),
-            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
-                return Err(auth_required_error(&init_response));
-            }
-            Err(err) => Err(err),
-        }
-    };
-
-    let (session_id, resp_models, resp_modes) = session_result
-        .map_err(|e| ConnectError::Failed(format!("Session creation failed: {e}")))?;
-
-    // Extract model name
-    let mut model_name = resp_models
-        .as_ref()
-        .and_then(|m| {
-            m.available_models
-                .iter()
-                .find(|info| info.model_id == m.current_model_id)
-                .map(|info| info.name.clone())
-        })
-        .unwrap_or_else(|| "Unknown model".to_owned());
-
-    // --model override
-    if let Some(model_str) = model_override {
-        conn.set_session_model(acp::SetSessionModelRequest::new(
-            session_id.clone(),
-            acp::ModelId::new(model_str),
-        ))
-        .await
-        .map_err(|e| ConnectError::Failed(format!("Model switch failed: {e}")))?;
-        model_str.clone_into(&mut model_name);
-    }
-
-    // Extract mode state
-    let mut mode = resp_modes.map(|ms| {
-        let current_id = ms.current_mode_id.to_string();
-        let available: Vec<ModeInfo> = ms
-            .available_modes
-            .iter()
-            .map(|m| ModeInfo { id: m.id.to_string(), name: m.name.clone() })
-            .collect();
-        let current_name = available
-            .iter()
-            .find(|m| m.id == current_id)
-            .map_or_else(|| current_id.clone(), |m| m.name.clone());
-        ModeState {
-            current_mode_id: current_id,
-            current_mode_name: current_name,
-            available_modes: available,
-        }
-    });
-
-    if let Some(ref m) = mode {
-        tracing::info!(
-            "Available modes: {:?}",
-            m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>()
-        );
-        tracing::info!("Current mode: {}", m.current_mode_id);
-    }
-
-    // --yolo: switch to bypass-permissions mode
-    if yolo && let Some(ref mut ms) = mode {
-        let target_id = "bypassPermissions".to_owned();
-        let mode_id = acp::SessionModeId::new(target_id.as_str());
-        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
-            .await
-            .map_err(|e| ConnectError::Failed(format!("Mode switch failed: {e}")))?;
-        tracing::info!("YOLO: switched to mode '{}'", target_id);
-        let target_name = ms
-            .available_modes
-            .iter()
-            .find(|mi| mi.id == target_id)
-            .map_or_else(|| target_id.clone(), |mi| mi.name.clone());
-        ms.current_mode_id = target_id;
-        ms.current_mode_name = target_name;
-    }
-
-    tracing::info!("Session created: {:?}", session_id);
-
-    Ok((conn, child, session_id, model_name, mode))
-}
-
-/// Build a `ConnectError::AuthRequired` from the adapter's init response.
-fn auth_required_error(init_response: &acp::InitializeResponse) -> ConnectError {
-    let method = init_response.auth_methods.first();
-    ConnectError::AuthRequired {
-        method_name: method.map_or_else(|| "unknown".into(), |m| m.name.clone()),
-        method_description: method
-            .and_then(|m| m.description.clone())
-            .unwrap_or_else(|| "Sign in to continue".into()),
-    }
 }

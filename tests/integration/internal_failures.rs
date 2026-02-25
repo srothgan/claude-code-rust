@@ -5,8 +5,8 @@
 // Internal-failure integration tests.
 // Validate ACP event processing + final UI render output for failed tool calls.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::protocol as acp;
 use claude_code_rust::app::MessageBlock;
 use pretty_assertions::assert_eq;
 use ratatui::Terminal;
@@ -116,7 +116,7 @@ fn tool_call_text_payload(app: &claude_code_rust::app::App, tool_id: &str) -> Op
     tc.content.iter().find_map(|content| match content {
         acp::ToolCallContent::Content(c) => match &c.content {
             acp::ContentBlock::Text(t) => Some(t.text.clone()),
-            _ => None,
+            acp::ContentBlock::Image(_) => None,
         },
         _ => None,
     })

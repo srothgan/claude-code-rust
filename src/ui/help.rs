@@ -504,8 +504,8 @@ mod tests {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
         app.available_commands = vec![
-            agent_client_protocol::AvailableCommand::new("/help", "Open help"),
-            agent_client_protocol::AvailableCommand::new("memory", ""),
+            crate::agent::protocol::AvailableCommand::new("/help", "Open help"),
+            crate::agent::protocol::AvailableCommand::new("memory", ""),
         ];
 
         let items = build_help_items(&app);
@@ -518,9 +518,9 @@ mod tests {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
         app.available_commands = vec![
-            agent_client_protocol::AvailableCommand::new("/login", "Login"),
-            agent_client_protocol::AvailableCommand::new("/logout", "Logout"),
-            agent_client_protocol::AvailableCommand::new("/mode", "Switch mode"),
+            crate::agent::protocol::AvailableCommand::new("/login", "Login"),
+            crate::agent::protocol::AvailableCommand::new("/logout", "Logout"),
+            crate::agent::protocol::AvailableCommand::new("/mode", "Switch mode"),
         ];
 
         let items = build_help_items(&app);

@@ -5,8 +5,8 @@
 // State transition integration tests.
 // Validates multi-event sequences and App state consistency.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::protocol as acp;
 use claude_code_rust::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 

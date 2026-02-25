@@ -44,7 +44,7 @@ pub use state::{
 };
 pub use update_check::start_update_check;
 
-use agent_client_protocol::{self as acp, Agent as _};
+use crate::agent::protocol as acp;
 use crossterm::event::{
     EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -214,7 +214,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         && let Some(ref conn) = app.conn
         && let Some(sid) = app.session_id.clone()
     {
-        let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
+        let _ = conn.cancel(sid.to_string());
     }
 
     // Restore terminal

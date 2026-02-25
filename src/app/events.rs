@@ -21,9 +21,9 @@ use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
     LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
 };
-use crate::acp::client::ClientEvent;
+use crate::agent::events::ClientEvent;
+use crate::agent::protocol as acp;
 use crate::app::todos::{apply_plan_todos, parse_todos, set_todos};
-use agent_client_protocol::{self as acp};
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
@@ -308,7 +308,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
-            let tool_id = request.tool_call.tool_call_id.to_string();
+            let tool_id = request.tool_call.tool_call_id.clone();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
                 if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
                     tracing::warn!(
@@ -400,6 +400,29 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnError(msg) => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
+            let cancelled_requested = app.cancelled_turn_pending_hint;
+            app.cancelled_turn_pending_hint = false;
+
+            if cancelled_requested {
+                let summary = summarize_internal_error(&msg);
+                tracing::warn!(
+                    error_preview = %summary,
+                    "Turn error suppressed after cancellation request"
+                );
+                if should_compact_clear {
+                    super::slash::clear_conversation_history(app);
+                }
+                let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+                app.input.clear();
+                app.pending_submit = false;
+                app.status = AppStatus::Ready;
+                app.files_accessed = 0;
+                app.active_task_ids.clear();
+                app.refresh_git_branch();
+                push_interrupted_hint(app);
+                return;
+            }
+
             tracing::error!("Turn error: {msg}");
             if looks_like_internal_error(&msg) {
                 tracing::debug!(
@@ -407,7 +430,6 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     "Internal ACP/adapter turn error payload"
                 );
             }
-            app.cancelled_turn_pending_hint = false;
             if should_compact_clear {
                 super::slash::clear_conversation_history(app);
             }
@@ -418,10 +440,10 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             push_turn_error_message(app, &msg);
         }
         ClientEvent::Connected { session_id, model_name, mode } => {
-            // Grab connection + child from the shared slot
+            // Grab connection from the shared slot
             if let Some(slot) = take_connection_slot() {
                 app.conn = Some(slot.conn);
-                app.adapter_child = Some(slot.child);
+                app.adapter_child = None;
             }
             app.session_id = Some(session_id);
             app.model_name = model_name;
@@ -519,7 +541,7 @@ fn reset_for_new_session(
     model_name: String,
     mode: Option<super::ModeState>,
 ) {
-    crate::acp::client::kill_all_terminals(&app.terminals);
+    crate::agent::events::kill_all_terminals(&app.terminals);
 
     app.session_id = Some(session_id);
     app.model_name = model_name;
@@ -573,7 +595,7 @@ fn reset_for_new_session(
 fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let title = tc.title.clone();
     let kind = tc.kind;
-    let id_str = tc.tool_call_id.to_string();
+    let id_str = tc.tool_call_id.clone();
     tracing::debug!(
         "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={} has_raw_output={}",
         tc.status,
@@ -732,7 +754,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         }
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
-            let id_str = tcu.tool_call_id.to_string();
+            let id_str = tcu.tool_call_id.clone();
             let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
             let has_raw_output = tcu.fields.raw_output.is_some();
             tracing::debug!(
@@ -747,8 +769,10 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 );
             }
             if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Failed))
-                && let Some(content_preview) =
-                    internal_failed_tool_content_preview(tcu.fields.content.as_deref())
+                && let Some(content_preview) = internal_failed_tool_content_preview(
+                    tcu.fields.content.as_deref(),
+                    tcu.fields.raw_output.as_ref(),
+                )
             {
                 let claude_tool_name = tcu.meta.as_ref().and_then(|m| {
                     m.get("claudeCode").and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
@@ -787,7 +811,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         // Extract terminal_id and command from Terminal content blocks
                         for cb in &content {
                             if let acp::ToolCallContent::Terminal(t) = cb {
-                                let tid = t.terminal_id.to_string();
+                                let tid = t.terminal_id.clone();
                                 if let Some(terminal) = app.terminals.borrow().get(&tid) {
                                     tc.terminal_command = Some(terminal.command.clone());
                                 }
@@ -797,8 +821,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         }
                         tc.content = content;
                     }
-                    // TODO(adapter): Revisit when claude-agent-acp reaches feature parity with claude-code-acp and starts forwarding
-                    // incremental Bash output updates during long-running commands.
+                    // Keep updating Execute output from raw_output so long-running commands
+                    // can stream visible terminal text before completion.
                     if matches!(tc.kind, acp::ToolKind::Execute)
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
                         && let Some(output) = raw_output_to_terminal_text(raw_output)
@@ -897,26 +921,28 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 usage.cost
             );
         }
-        _ => {
-            tracing::debug!("Unhandled session update");
-        }
     }
 }
 
 fn internal_failed_tool_content_preview(
     content: Option<&[acp::ToolCallContent]>,
+    raw_output: Option<&serde_json::Value>,
 ) -> Option<String> {
-    let text = content?.iter().find_map(|c| match c {
-        acp::ToolCallContent::Content(inner) => match &inner.content {
-            acp::ContentBlock::Text(t) => Some(t.text.as_str()),
-            _ => None,
-        },
-        _ => None,
-    })?;
-    if !looks_like_internal_error(text) {
+    let text = content
+        .and_then(|items| {
+            items.iter().find_map(|c| match c {
+                acp::ToolCallContent::Content(inner) => match &inner.content {
+                    acp::ContentBlock::Text(t) => Some(t.text.clone()),
+                    acp::ContentBlock::Image(_) => None,
+                },
+                _ => None,
+            })
+        })
+        .or_else(|| raw_output.and_then(raw_output_to_terminal_text))?;
+    if !looks_like_internal_error(&text) {
         return None;
     }
-    Some(summarize_internal_error(text))
+    Some(summarize_internal_error(&text))
 }
 
 fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
@@ -974,6 +1000,9 @@ fn has_internal_error_keywords(lower: &str) -> bool {
         "session creation failed",
         "connection closed",
         "event channel closed",
+        "tool permission request failed",
+        "zoderror",
+        "invalid_union",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -992,6 +1021,9 @@ fn looks_like_xml_error_shape(lower: &str) -> bool {
 }
 
 fn summarize_internal_error(input: &str) -> String {
+    if let Some(summary) = summarize_permission_schema_error(input) {
+        return preview_for_log(&summary);
+    }
     if let Some(msg) = extract_xml_tag_value(input, "message") {
         return preview_for_log(msg);
     }
@@ -1000,6 +1032,21 @@ fn summarize_internal_error(input: &str) -> String {
     }
     let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
     preview_for_log(fallback.trim())
+}
+
+fn summarize_permission_schema_error(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("tool permission request failed") {
+        return None;
+    }
+
+    let detail = if let Some(msg) = extract_json_string_field(input, "message") {
+        msg
+    } else {
+        input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input).trim().to_owned()
+    };
+
+    Some(format!("Tool permission request failed: {detail}"))
 }
 
 fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
@@ -1105,7 +1152,6 @@ fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
         acp::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         acp::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         acp::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
-        _ => "Unknown",
     }
 }
 
@@ -1777,6 +1823,32 @@ mod tests {
     }
 
     #[test]
+    fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("build app"));
+
+        handle_acp_event(&mut app, ClientEvent::TurnCancelled);
+        assert!(app.cancelled_turn_pending_hint);
+
+        handle_acp_event(
+            &mut app,
+            ClientEvent::TurnError("Error: Request was aborted.\n    at stack line".into()),
+        );
+
+        assert!(!app.cancelled_turn_pending_hint);
+        assert!(matches!(app.status, AppStatus::Ready));
+
+        let Some(last) = app.messages.last() else {
+            panic!("expected interruption hint message");
+        };
+        assert!(matches!(last.role, MessageRole::System));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, CONVERSATION_INTERRUPTED_HINT);
+    }
+
+    #[test]
     fn turn_cancel_marks_active_tools_failed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
@@ -2144,7 +2216,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "allow");
+        assert_eq!(selected.option_id.clone(), "allow");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2180,7 +2252,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "allow-always");
+        assert_eq!(selected.option_id.clone(), "allow-always");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2216,7 +2288,7 @@ mod tests {
         let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "deny");
+        assert_eq!(selected.option_id.clone(), "deny");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2615,5 +2687,20 @@ mod tests {
     fn summarize_internal_error_reads_json_rpc_message() {
         let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
         assert_eq!(summarize_internal_error(payload), "internal rpc fault");
+    }
+
+    #[test]
+    fn internal_error_detection_accepts_permission_zod_payload() {
+        let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input\"}]";
+        assert!(looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn summarize_internal_error_prefers_permission_failure_summary() {
+        let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
+        assert_eq!(
+            summarize_internal_error(payload),
+            "Tool permission request failed: Invalid input: expected record, received undefined"
+        );
     }
 }

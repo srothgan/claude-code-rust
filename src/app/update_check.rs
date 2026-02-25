@@ -16,7 +16,7 @@
 
 use super::App;
 use crate::Cli;
-use crate::acp::client::ClientEvent;
+use crate::agent::events::ClientEvent;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::protocol as acp;
 use crate::ui::theme;
-use agent_client_protocol as acp;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;

@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::protocol::{self as acp, PermissionOptionKind};
 use crate::app::{InlinePermission, ToolCallInfo};
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::markdown;
 use crate::ui::theme;
-use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -38,13 +38,13 @@ const TERMINAL_MAX_LINES: usize = 12;
 
 pub fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
-        acp::ToolCallStatus::Pending | acp::ToolCallStatus::InProgress => {
+        acp::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
+        acp::ToolCallStatus::InProgress => {
             let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
             (s, theme::RUST_ORANGE)
         }
         acp::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
         acp::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
-        _ => ("?", theme::DIM),
     }
 }
 
@@ -470,7 +470,7 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
             PermissionOptionKind::AllowOnce => " (Ctrl+y)",
             PermissionOptionKind::AllowAlways => " (Ctrl+a)",
             PermissionOptionKind::RejectOnce => " (Ctrl+n)",
-            _ => "",
+            PermissionOptionKind::RejectAlways => "",
         };
         spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
     }
@@ -581,7 +581,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                     };
                 }
             }
-            _ => {}
+            acp::ToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
@@ -656,7 +656,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                     }
                 }
             }
-            _ => {}
+            acp::ToolCallContent::Terminal(_) => {}
         }
     }
 
@@ -694,7 +694,7 @@ fn debug_failed_tool_render(tc: &ToolCallInfo) {
     let Some(text_payload) = tc.content.iter().find_map(|content| match content {
         acp::ToolCallContent::Content(c) => match &c.content {
             acp::ContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
-            _ => None,
+            acp::ContentBlock::Image(_) => None,
         },
         _ => None,
     }) else {

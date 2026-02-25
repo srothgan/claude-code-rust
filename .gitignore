@@ -28,6 +28,8 @@ Thumbs.db
 .env.local
 node_modules/
 .npm-cache/
+/vendor/
+/agent-sdk/dist/
 
 # Local Claude Code config
 .claude/

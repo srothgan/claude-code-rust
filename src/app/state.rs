@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::acp::client::ClientEvent;
-use agent_client_protocol as acp;
+use crate::agent::events::ClientEvent;
+use crate::agent::protocol as acp;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
@@ -78,7 +78,7 @@ pub struct App {
     pub should_quit: bool,
     pub session_id: Option<acp::SessionId>,
     /// ACP connection handle. `None` while connecting (before adapter is ready).
-    pub conn: Option<Rc<acp::ClientSideConnection>>,
+    pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
     /// Adapter child process handle. Held solely to keep the process alive --
     /// dropping `Child` kills the subprocess. Never read after being stored.
     pub adapter_child: Option<tokio::process::Child>,
@@ -111,7 +111,7 @@ pub struct App {
     /// Use `insert_active_task()`, `remove_active_task()`.
     pub active_task_ids: HashSet<String>,
     /// Shared terminal process map - used to snapshot output on completion.
-    pub terminals: crate::acp::client::TerminalMap,
+    pub terminals: crate::agent::events::TerminalMap,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.

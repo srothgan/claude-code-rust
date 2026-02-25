@@ -5,8 +5,8 @@
 // ACP event handling integration tests.
 // Validates that ClientEvent variants are correctly processed into App state.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::protocol as acp;
 use claude_code_rust::app::{
     AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole,
 };
