@@ -1,15 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
   query,
   type CanUseTool,
   type PermissionMode,
-  type PermissionRuleValue,
   type PermissionResult,
   type PermissionUpdate,
   type Query,
@@ -19,12 +16,9 @@ import {
 import type {
   AvailableCommand,
   BridgeCommand,
-  BridgeCommandEnvelope,
   BridgeEvent,
   BridgeEventEnvelope,
   Json,
-  ModeInfo,
-  ModeState,
   PermissionOutcome,
   PermissionOption,
   PermissionRequest,
@@ -34,19 +28,52 @@ import type {
   ToolCallUpdate,
   ToolCallUpdateFields,
 } from "./types.js";
+import { parseCommandEnvelope, toPermissionMode, buildModeState } from "./bridge/commands.js";
+import { asRecordOrNull } from "./bridge/shared.js";
+import { looksLikeAuthRequired } from "./bridge/auth.js";
+import {
+  TOOL_RESULT_TYPES,
+  buildToolResultFields,
+  createToolCall,
+  isToolUseBlockType,
+  normalizeToolKind,
+  normalizeToolResultText,
+  unwrapToolUseResult,
+} from "./bridge/tooling.js";
+import { buildUsageUpdateFromResult, buildUsageUpdateFromResultForSession } from "./bridge/usage.js";
+import {
+  formatPermissionUpdates,
+  permissionOptionsFromSuggestions,
+  permissionResultFromOutcome,
+} from "./bridge/permissions.js";
+import {
+  extractSessionHistoryUpdatesFromJsonl,
+  listRecentPersistedSessions,
+  resolvePersistedSessionEntry,
+} from "./bridge/history.js";
+
+export {
+  buildToolResultFields,
+  buildUsageUpdateFromResult,
+  createToolCall,
+  extractSessionHistoryUpdatesFromJsonl,
+  looksLikeAuthRequired,
+  normalizeToolKind,
+  normalizeToolResultText,
+  parseCommandEnvelope,
+  permissionOptionsFromSuggestions,
+  permissionResultFromOutcome,
+  unwrapToolUseResult,
+};
 
 type ConnectEventKind = "connected" | "session_replaced";
 
 type PendingPermission = {
-  resolve: (result: PermissionResult) => void;
+  resolve?: (result: PermissionResult) => void;
+  onOutcome?: (outcome: PermissionOutcome) => void;
   toolName: string;
   inputData: Record<string, unknown>;
   suggestions?: PermissionUpdate[];
-};
-
-type PermissionSuggestionsByScope = {
-  session: PermissionUpdate[];
-  persistent: PermissionUpdate[];
 };
 
 type SessionState = {
@@ -69,489 +96,15 @@ type SessionState = {
   resumeUpdates?: SessionUpdate[];
 };
 
-type PersistedSessionEntry = {
-  session_id: string;
-  cwd: string;
-  file_path: string;
-  title?: string;
-  updated_at?: string;
-  sort_ms: number;
-};
-
-const MODE_NAMES: Record<PermissionMode, string> = {
-  default: "Default",
-  acceptEdits: "Accept Edits",
-  bypassPermissions: "Bypass Permissions",
-  plan: "Plan",
-  dontAsk: "Don't Ask",
-};
-
-const MODE_OPTIONS: ModeInfo[] = [
-  { id: "default", name: "Default", description: "Standard permission flow" },
-  { id: "acceptEdits", name: "Accept Edits", description: "Auto-approve edit operations" },
-  { id: "plan", name: "Plan", description: "No tool execution" },
-  { id: "dontAsk", name: "Don't Ask", description: "Reject non-approved tools" },
-  { id: "bypassPermissions", name: "Bypass Permissions", description: "Auto-approve all tools" },
-];
-
-const TOOL_RESULT_TYPES = new Set([
-  "tool_result",
-  "tool_search_tool_result",
-  "web_fetch_tool_result",
-  "web_search_tool_result",
-  "code_execution_tool_result",
-  "bash_code_execution_tool_result",
-  "text_editor_code_execution_tool_result",
-  "mcp_tool_result",
-]);
-
 const sessions = new Map<string, SessionState>();
 const permissionDebugEnabled =
   process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || process.env.CLAUDE_RS_SDK_DEBUG === "1";
-const SESSION_PERMISSION_DESTINATIONS = new Set(["session", "cliArg"]);
-const PERSISTENT_PERMISSION_DESTINATIONS = new Set(["userSettings", "projectSettings", "localSettings"]);
-
-function formatPermissionRule(rule: PermissionRuleValue): string {
-  return rule.ruleContent === undefined ? rule.toolName : `${rule.toolName}(${rule.ruleContent})`;
-}
-
-function formatPermissionUpdates(updates: PermissionUpdate[] | undefined): string {
-  if (!updates || updates.length === 0) {
-    return "<none>";
-  }
-  return updates
-    .map((update) => {
-      if (update.type === "addRules" || update.type === "replaceRules" || update.type === "removeRules") {
-        const rules = update.rules.map((rule) => formatPermissionRule(rule)).join(", ");
-        return `${update.type}:${update.behavior}:${update.destination}=[${rules}]`;
-      }
-      if (update.type === "setMode") {
-        return `${update.type}:${update.mode}:${update.destination}`;
-      }
-      return `${update.type}:${update.destination}=[${update.directories.join(", ")}]`;
-    })
-    .join(" | ");
-}
 
 function logPermissionDebug(message: string): void {
   if (!permissionDebugEnabled) {
     return;
   }
   console.error(`[perm debug] ${message}`);
-}
-
-function splitPermissionSuggestionsByScope(
-  suggestions: PermissionUpdate[] | undefined,
-): PermissionSuggestionsByScope {
-  if (!suggestions || suggestions.length === 0) {
-    return { session: [], persistent: [] };
-  }
-
-  const session: PermissionUpdate[] = [];
-  const persistent: PermissionUpdate[] = [];
-  for (const suggestion of suggestions) {
-    if (SESSION_PERMISSION_DESTINATIONS.has(suggestion.destination)) {
-      session.push(suggestion);
-      continue;
-    }
-    if (PERSISTENT_PERMISSION_DESTINATIONS.has(suggestion.destination)) {
-      persistent.push(suggestion);
-      continue;
-    }
-    // Keep forward-compatible behavior: unknown destinations behave as session-scoped.
-    session.push(suggestion);
-  }
-  return { session, persistent };
-}
-
-function asRecordOrNull(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function normalizeUserPromptText(raw: string): string {
-  // Keep only user-readable prompt text; strip heavy inline context blobs.
-  let text = raw.replace(/<context[\s\S]*/gi, " ");
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-  text = text.replace(/\s+/g, " ").trim();
-  return text;
-}
-
-function truncateTextByChars(text: string, maxChars: number): string {
-  const chars = Array.from(text);
-  if (chars.length <= maxChars) {
-    return text;
-  }
-  return chars.slice(0, maxChars).join("");
-}
-
-function firstUserMessageTitleFromRecord(record: Record<string, unknown>): string | undefined {
-  if (record.type !== "user") {
-    return undefined;
-  }
-  const message = asRecordOrNull(record.message);
-  if (!message || message.role !== "user" || !Array.isArray(message.content)) {
-    return undefined;
-  }
-
-  const parts: string[] = [];
-  for (const item of message.content) {
-    const block = asRecordOrNull(item);
-    if (!block || block.type !== "text" || typeof block.text !== "string") {
-      continue;
-    }
-    const cleaned = normalizeUserPromptText(block.text);
-    if (!cleaned) {
-      continue;
-    }
-    parts.push(cleaned);
-    const combined = parts.join(" ");
-    if (Array.from(combined).length >= 180) {
-      return truncateTextByChars(combined, 180);
-    }
-  }
-
-  if (parts.length === 0) {
-    return undefined;
-  }
-  return truncateTextByChars(parts.join(" "), 180);
-}
-
-function extractSessionPreviewFromJsonl(filePath: string): { cwd?: string; title?: string } {
-  let text: string;
-  try {
-    text = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return {};
-  }
-
-  let cwd: string | undefined;
-  let title: string | undefined;
-  const lines = text.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (line.length === 0) {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const record = asRecordOrNull(parsed);
-    if (!record) {
-      continue;
-    }
-
-    if (!cwd && typeof record.cwd === "string" && record.cwd.trim().length > 0) {
-      cwd = record.cwd;
-    }
-    if (!title) {
-      title = firstUserMessageTitleFromRecord(record);
-    }
-    if (cwd && title) {
-      break;
-    }
-  }
-
-  return {
-    ...(cwd ? { cwd } : {}),
-    ...(title ? { title } : {}),
-  };
-}
-
-function listRecentPersistedSessions(limit = 8): PersistedSessionEntry[] {
-  const root = path.join(os.homedir(), ".claude", "projects");
-  if (!fs.existsSync(root)) {
-    return [];
-  }
-
-  const candidates: PersistedSessionEntry[] = [];
-  let projectDirs: fs.Dirent[];
-  try {
-    projectDirs = fs.readdirSync(root, { withFileTypes: true }).filter((dirent) => dirent.isDirectory());
-  } catch {
-    return [];
-  }
-
-  for (const dirent of projectDirs) {
-    const projectDir = path.join(root, dirent.name);
-
-    let sessionFiles: fs.Dirent[];
-    try {
-      sessionFiles = fs
-        .readdirSync(projectDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"));
-    } catch {
-      sessionFiles = [];
-    }
-
-    for (const sessionFile of sessionFiles) {
-      const sessionId = sessionFile.name.slice(0, -".jsonl".length);
-      if (!sessionId) {
-        continue;
-      }
-      let mtimeMs = 0;
-      try {
-        mtimeMs = fs.statSync(path.join(projectDir, sessionFile.name)).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) {
-        continue;
-      }
-      candidates.push({
-        session_id: sessionId,
-        cwd: "",
-        file_path: path.join(projectDir, sessionFile.name),
-        updated_at: new Date(mtimeMs).toISOString(),
-        sort_ms: mtimeMs,
-      });
-    }
-  }
-
-  candidates.sort((a, b) => b.sort_ms - a.sort_ms);
-  const deduped: PersistedSessionEntry[] = [];
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    if (seen.has(candidate.session_id)) {
-      continue;
-    }
-    seen.add(candidate.session_id);
-
-    const preview = extractSessionPreviewFromJsonl(candidate.file_path);
-    const cwd = preview.cwd?.trim();
-    if (!cwd) {
-      continue;
-    }
-
-    deduped.push({
-      session_id: candidate.session_id,
-      cwd,
-      file_path: candidate.file_path,
-      ...(preview.title ? { title: preview.title } : {}),
-      ...(candidate.updated_at ? { updated_at: candidate.updated_at } : {}),
-      sort_ms: candidate.sort_ms,
-    });
-    if (deduped.length >= limit) {
-      break;
-    }
-  }
-  return deduped;
-}
-
-function isToolUseBlockType(blockType: string): boolean {
-  return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
-}
-
-function persistedMessageCandidates(record: Record<string, unknown>): Record<string, unknown>[] {
-  const candidates: Record<string, unknown>[] = [];
-
-  const topLevel = asRecordOrNull(record.message);
-  if (topLevel) {
-    candidates.push(topLevel);
-  }
-
-  const nested = asRecordOrNull(asRecordOrNull(asRecordOrNull(record.data)?.message)?.message);
-  if (nested) {
-    candidates.push(nested);
-  }
-
-  return candidates;
-}
-
-function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
-  if (!text.trim()) {
-    return;
-  }
-  if (role === "assistant") {
-    updates.push({ type: "agent_message_chunk", content: { type: "text", text } });
-    return;
-  }
-  updates.push({ type: "user_message_chunk", content: { type: "text", text } });
-}
-
-function pushResumeToolUse(
-  updates: SessionUpdate[],
-  toolCalls: Map<string, ToolCall>,
-  block: Record<string, unknown>,
-): void {
-  const toolUseId = typeof block.id === "string" ? block.id : "";
-  if (!toolUseId) {
-    return;
-  }
-  const name = typeof block.name === "string" ? block.name : "Tool";
-  const input = asRecordOrNull(block.input) ?? {};
-
-  const toolCall = createToolCall(toolUseId, name, input);
-  toolCall.status = "in_progress";
-  toolCalls.set(toolUseId, toolCall);
-  updates.push({ type: "tool_call", tool_call: toolCall });
-}
-
-function pushResumeToolResult(
-  updates: SessionUpdate[],
-  toolCalls: Map<string, ToolCall>,
-  block: Record<string, unknown>,
-): void {
-  const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
-  if (!toolUseId) {
-    return;
-  }
-  const isError = Boolean(block.is_error);
-  const base = toolCalls.get(toolUseId);
-  const fields = buildToolResultFields(isError, block.content, base);
-  updates.push({ type: "tool_call_update", tool_call_update: { tool_call_id: toolUseId, fields } });
-
-  if (!base) {
-    return;
-  }
-  base.status = fields.status ?? base.status;
-  if (fields.raw_output) {
-    base.raw_output = fields.raw_output;
-  }
-  if (fields.content) {
-    base.content = fields.content;
-  }
-}
-
-function pushResumeUsageUpdate(
-  updates: SessionUpdate[],
-  message: Record<string, unknown>,
-  emittedUsageMessageIds: Set<string>,
-): void {
-  const messageId = typeof message.id === "string" ? message.id : "";
-  if (messageId && emittedUsageMessageIds.has(messageId)) {
-    return;
-  }
-
-  const usageUpdate = buildUsageUpdateFromResult(message);
-  if (!usageUpdate) {
-    return;
-  }
-
-  updates.push(usageUpdate);
-  if (messageId) {
-    emittedUsageMessageIds.add(messageId);
-  }
-}
-
-export function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
-  let text: string;
-  try {
-    text = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return [];
-  }
-
-  const updates: SessionUpdate[] = [];
-  const toolCalls = new Map<string, ToolCall>();
-  const emittedUsageMessageIds = new Set<string>();
-  const lines = text.split(/\r?\n/);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (line.length === 0) {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const record = asRecordOrNull(parsed);
-    if (!record) {
-      continue;
-    }
-    for (const message of persistedMessageCandidates(record)) {
-      const role = message.role;
-      if (role !== "user" && role !== "assistant") {
-        continue;
-      }
-      const content = Array.isArray(message.content) ? message.content : [];
-      for (const item of content) {
-        const block = asRecordOrNull(item);
-        if (!block) {
-          continue;
-        }
-        const blockType = typeof block.type === "string" ? block.type : "";
-        if (blockType === "thinking") {
-          continue;
-        }
-        if (blockType === "text" && typeof block.text === "string") {
-          pushResumeTextChunk(updates, role, block.text);
-          continue;
-        }
-        if (isToolUseBlockType(blockType) && role === "assistant") {
-          pushResumeToolUse(updates, toolCalls, block);
-          continue;
-        }
-        if (TOOL_RESULT_TYPES.has(blockType)) {
-          pushResumeToolResult(updates, toolCalls, block);
-          continue;
-        }
-        if (blockType === "image") {
-          pushResumeTextChunk(updates, role, "[image]");
-        }
-      }
-      pushResumeUsageUpdate(updates, message, emittedUsageMessageIds);
-    }
-  }
-  return updates;
-}
-
-function resolvePersistedSessionEntry(sessionId: string): PersistedSessionEntry | null {
-  if (
-    sessionId.trim().length === 0 ||
-    sessionId.includes("/") ||
-    sessionId.includes("\\") ||
-    sessionId.includes("..")
-  ) {
-    return null;
-  }
-  const root = path.join(os.homedir(), ".claude", "projects");
-  if (!fs.existsSync(root)) {
-    return null;
-  }
-
-  let projectDirs: fs.Dirent[];
-  try {
-    projectDirs = fs.readdirSync(root, { withFileTypes: true }).filter((dirent) => dirent.isDirectory());
-  } catch {
-    return null;
-  }
-
-  let best: PersistedSessionEntry | null = null;
-  for (const dirent of projectDirs) {
-    const filePath = path.join(root, dirent.name, `${sessionId}.jsonl`);
-    if (!fs.existsSync(filePath)) {
-      continue;
-    }
-    const preview = extractSessionPreviewFromJsonl(filePath);
-    const cwd = preview.cwd?.trim();
-    if (!cwd) {
-      continue;
-    }
-
-    let mtimeMs = 0;
-    try {
-      mtimeMs = fs.statSync(filePath).mtimeMs;
-    } catch {
-      mtimeMs = 0;
-    }
-    if (!best || mtimeMs >= best.sort_ms) {
-      best = {
-        session_id: sessionId,
-        cwd,
-        file_path: filePath,
-        sort_ms: mtimeMs,
-      };
-    }
-  }
-  return best;
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -616,182 +169,8 @@ function slashError(sessionId: string, message: string, requestId?: string): voi
   writeEvent({ event: "slash_error", session_id: sessionId, message }, requestId);
 }
 
-function asRecord(value: unknown, context: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${context} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function expectString(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): string {
-  const value = record[key];
-  if (typeof value !== "string") {
-    throw new Error(`${context}.${key} must be a string`);
-  }
-  return value;
-}
-
-function expectBoolean(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): boolean {
-  const value = record[key];
-  if (typeof value !== "boolean") {
-    throw new Error(`${context}.${key} must be a boolean`);
-  }
-  return value;
-}
-
-function optionalString(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): string | undefined {
-  const value = record[key];
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new Error(`${context}.${key} must be a string when provided`);
-  }
-  return value;
-}
-
-function optionalMetadata(record: Record<string, unknown>, key: string): Record<string, Json> {
-  const value = record[key];
-  if (value === undefined || value === null) {
-    return {};
-  }
-  return asRecord(value, `${key} metadata`) as Record<string, Json>;
-}
-
-function parsePromptChunks(
-  record: Record<string, unknown>,
-  context: string,
-): Array<{ kind: string; value: Json }> {
-  const rawChunks = record.chunks;
-  if (!Array.isArray(rawChunks)) {
-    throw new Error(`${context}.chunks must be an array`);
-  }
-  return rawChunks.map((chunk, index) => {
-    const parsed = asRecord(chunk, `${context}.chunks[${index}]`);
-    const kind = expectString(parsed, "kind", `${context}.chunks[${index}]`);
-    return { kind, value: (parsed.value ?? null) as Json };
-  });
-}
-
-export function parseCommandEnvelope(line: string): { requestId?: string; command: BridgeCommand } {
-  const raw = asRecord(JSON.parse(line) as BridgeCommandEnvelope, "command envelope");
-  const requestId = typeof raw.request_id === "string" ? raw.request_id : undefined;
-  const commandName = expectString(raw, "command", "command envelope");
-
-  const command: BridgeCommand = (() => {
-    switch (commandName) {
-      case "initialize":
-        return {
-          command: "initialize",
-          cwd: expectString(raw, "cwd", "initialize"),
-          metadata: optionalMetadata(raw, "metadata"),
-        };
-      case "create_session":
-        return {
-          command: "create_session",
-          cwd: expectString(raw, "cwd", "create_session"),
-          yolo: expectBoolean(raw, "yolo", "create_session"),
-          model: optionalString(raw, "model", "create_session"),
-          resume: optionalString(raw, "resume", "create_session"),
-          metadata: optionalMetadata(raw, "metadata"),
-        };
-      case "load_session":
-        return {
-          command: "load_session",
-          session_id: expectString(raw, "session_id", "load_session"),
-          metadata: optionalMetadata(raw, "metadata"),
-        };
-      case "new_session":
-        return {
-          command: "new_session",
-          cwd: expectString(raw, "cwd", "new_session"),
-          yolo: expectBoolean(raw, "yolo", "new_session"),
-          model: optionalString(raw, "model", "new_session"),
-        };
-      case "prompt":
-        return {
-          command: "prompt",
-          session_id: expectString(raw, "session_id", "prompt"),
-          chunks: parsePromptChunks(raw, "prompt"),
-        };
-      case "cancel_turn":
-        return {
-          command: "cancel_turn",
-          session_id: expectString(raw, "session_id", "cancel_turn"),
-        };
-      case "set_model":
-        return {
-          command: "set_model",
-          session_id: expectString(raw, "session_id", "set_model"),
-          model: expectString(raw, "model", "set_model"),
-        };
-      case "set_mode":
-        return {
-          command: "set_mode",
-          session_id: expectString(raw, "session_id", "set_mode"),
-          mode: expectString(raw, "mode", "set_mode"),
-        };
-      case "permission_response": {
-        const outcome = asRecord(raw.outcome, "permission_response.outcome");
-        const outcomeType = expectString(outcome, "outcome", "permission_response.outcome");
-        if (outcomeType !== "selected" && outcomeType !== "cancelled") {
-          throw new Error("permission_response.outcome.outcome must be 'selected' or 'cancelled'");
-        }
-        const parsedOutcome: PermissionOutcome =
-          outcomeType === "selected"
-            ? {
-                outcome: "selected",
-                option_id: expectString(outcome, "option_id", "permission_response.outcome"),
-              }
-            : { outcome: "cancelled" };
-        return {
-          command: "permission_response",
-          session_id: expectString(raw, "session_id", "permission_response"),
-          tool_call_id: expectString(raw, "tool_call_id", "permission_response"),
-          outcome: parsedOutcome,
-        };
-      }
-      case "shutdown":
-        return { command: "shutdown" };
-      default:
-        throw new Error(`unsupported command: ${commandName}`);
-    }
-  })();
-
-  return { requestId, command };
-}
-
-export function toPermissionMode(mode: string): PermissionMode | null {
-  if (
-    mode === "default" ||
-    mode === "acceptEdits" ||
-    mode === "bypassPermissions" ||
-    mode === "plan" ||
-    mode === "dontAsk"
-  ) {
-    return mode;
-  }
-  return null;
-}
-
-function modeState(mode: PermissionMode): ModeState {
-  return {
-    current_mode_id: mode,
-    current_mode_name: MODE_NAMES[mode],
-    available_modes: MODE_OPTIONS,
-  };
+function emitSessionUpdate(sessionId: string, update: SessionUpdate): void {
+  writeEvent({ event: "session_update", session_id: sessionId, update });
 }
 
 function emitConnectEvent(session: SessionState): void {
@@ -803,7 +182,7 @@ function emitConnectEvent(session: SessionState): void {
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: modeState(session.mode),
+          mode: buildModeState(session.mode),
           ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         }
       : {
@@ -811,7 +190,7 @@ function emitConnectEvent(session: SessionState): void {
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: modeState(session.mode),
+          mode: buildModeState(session.mode),
           ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         };
   writeEvent(connectEvent, session.connectRequestId);
@@ -862,186 +241,6 @@ function updateSessionId(session: SessionState, newSessionId: string): void {
   sessions.delete(session.sessionId);
   session.sessionId = newSessionId;
   sessions.set(newSessionId, session);
-}
-
-export function normalizeToolKind(name: string): string {
-  switch (name) {
-    case "Bash":
-      return "execute";
-    case "Read":
-      return "read";
-    case "Write":
-    case "Edit":
-      return "edit";
-    case "Delete":
-      return "delete";
-    case "Move":
-      return "move";
-    case "Glob":
-    case "Grep":
-      return "search";
-    case "WebFetch":
-      return "fetch";
-    case "TodoWrite":
-      return "other";
-    case "Task":
-      return "think";
-    case "ExitPlanMode":
-      return "switch_mode";
-    default:
-      return "think";
-  }
-}
-
-export function toolTitle(name: string, input: Record<string, unknown>): string {
-  if (name === "Bash") {
-    const command = typeof input.command === "string" ? input.command : "";
-    return command || "Terminal";
-  }
-  if (name === "Glob") {
-    const pattern = typeof input.pattern === "string" ? input.pattern : "";
-    const path = typeof input.path === "string" ? input.path : "";
-    if (pattern && path) {
-      return `Glob ${pattern} in ${path}`;
-    }
-    if (pattern) {
-      return `Glob ${pattern}`;
-    }
-    if (path) {
-      return `Glob ${path}`;
-    }
-  }
-  if (name === "WebFetch") {
-    const url = typeof input.url === "string" ? input.url : "";
-    if (url) {
-      return `WebFetch ${url}`;
-    }
-  }
-  if (name === "WebSearch") {
-    const query = typeof input.query === "string" ? input.query : "";
-    if (query) {
-      return `WebSearch ${query}`;
-    }
-  }
-  if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
-    return `${name} ${input.file_path}`;
-  }
-  return name;
-}
-
-function editDiffContent(name: string, input: Record<string, unknown>): ToolCall["content"] {
-  const filePath = typeof input.file_path === "string" ? input.file_path : "";
-  if (!filePath) {
-    return [];
-  }
-
-  if (name === "Edit") {
-    const oldText = typeof input.old_string === "string" ? input.old_string : "";
-    const newText = typeof input.new_string === "string" ? input.new_string : "";
-    if (!oldText && !newText) {
-      return [];
-    }
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: oldText, new: newText }];
-  }
-
-  if (name === "Write") {
-    const newText = typeof input.content === "string" ? input.content : "";
-    if (!newText) {
-      return [];
-    }
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: "", new: newText }];
-  }
-
-  return [];
-}
-
-export function createToolCall(toolUseId: string, name: string, input: Record<string, unknown>): ToolCall {
-  return {
-    tool_call_id: toolUseId,
-    title: toolTitle(name, input),
-    kind: normalizeToolKind(name),
-    status: "pending",
-    content: editDiffContent(name, input),
-    raw_input: input as unknown as Json,
-    locations: typeof input.file_path === "string" ? [{ path: input.file_path }] : [],
-    meta: {
-      claudeCode: {
-        toolName: name,
-      },
-    },
-  };
-}
-
-function emitSessionUpdate(sessionId: string, update: SessionUpdate): void {
-  writeEvent({ event: "session_update", session_id: sessionId, update });
-}
-
-export function extractText(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .map((entry) => {
-        if (typeof entry === "string") {
-          return entry;
-        }
-        if (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
-          return entry.text;
-        }
-        return "";
-      })
-      .filter((part) => part.length > 0)
-      .join("\n");
-  }
-  if (value && typeof value === "object" && "text" in value && typeof value.text === "string") {
-    return value.text;
-  }
-  return "";
-}
-
-const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
-const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
-
-function extractPersistedOutputInnerText(text: string): string | null {
-  const lower = text.toLowerCase();
-  const openIdx = lower.indexOf(PERSISTED_OUTPUT_OPEN_TAG);
-  if (openIdx < 0) {
-    return null;
-  }
-  const bodyStart = openIdx + PERSISTED_OUTPUT_OPEN_TAG.length;
-  const closeIdx = lower.indexOf(PERSISTED_OUTPUT_CLOSE_TAG, bodyStart);
-  if (closeIdx < 0) {
-    return null;
-  }
-  return text.slice(bodyStart, closeIdx);
-}
-
-function persistedOutputFirstLine(text: string): string | null {
-  const inner = extractPersistedOutputInnerText(text);
-  if (inner === null) {
-    return null;
-  }
-
-  for (const line of inner.split(/\r?\n/)) {
-    const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
-    if (cleaned.length > 0) {
-      return cleaned;
-    }
-  }
-  return null;
-}
-
-export function normalizeToolResultText(value: unknown): string {
-  const text = extractText(value);
-  if (!text) {
-    return "";
-  }
-  const persistedLine = persistedOutputFirstLine(text);
-  if (persistedLine) {
-    return persistedLine;
-  }
-  return text;
 }
 
 function emitToolCall(session: SessionState, toolUseId: string, name: string, input: Record<string, unknown>): void {
@@ -1121,118 +320,6 @@ function emitPlanIfTodoWrite(session: SessionState, name: string, input: Record<
   if (entries.length > 0) {
     emitSessionUpdate(session.sessionId, { type: "plan", entries });
   }
-}
-
-function resolveToolName(toolCall: ToolCall | undefined): string {
-  const meta = asRecordOrNull(toolCall?.meta);
-  const claudeCode = asRecordOrNull(meta?.claudeCode);
-  const toolName = claudeCode?.toolName;
-  return typeof toolName === "string" ? toolName : "";
-}
-
-function writeDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
-  const input = asRecordOrNull(rawInput);
-  if (!input) {
-    return [];
-  }
-  const filePath = typeof input.file_path === "string" ? input.file_path : "";
-  const content = typeof input.content === "string" ? input.content : "";
-  if (!filePath || !content) {
-    return [];
-  }
-  return [{ type: "diff", old_path: filePath, new_path: filePath, old: "", new: content }];
-}
-
-function editDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
-  const input = asRecordOrNull(rawInput);
-  if (!input) {
-    return [];
-  }
-  const filePath = typeof input.file_path === "string" ? input.file_path : "";
-  const oldText =
-    typeof input.old_string === "string"
-      ? input.old_string
-      : typeof input.oldString === "string"
-        ? input.oldString
-        : "";
-  const newText =
-    typeof input.new_string === "string"
-      ? input.new_string
-      : typeof input.newString === "string"
-        ? input.newString
-        : "";
-  if (!filePath || (!oldText && !newText)) {
-    return [];
-  }
-  return [{ type: "diff", old_path: filePath, new_path: filePath, old: oldText, new: newText }];
-}
-
-function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
-  const candidates = Array.isArray(rawContent) ? rawContent : [rawContent];
-  for (const candidate of candidates) {
-    const record = asRecordOrNull(candidate);
-    if (!record) {
-      continue;
-    }
-    const filePath =
-      typeof record.filePath === "string"
-        ? record.filePath
-        : typeof record.file_path === "string"
-          ? record.file_path
-          : "";
-    const content = typeof record.content === "string" ? record.content : "";
-    const originalRaw =
-      "originalFile" in record ? record.originalFile : "original_file" in record ? record.original_file : undefined;
-    if (!filePath || !content || originalRaw === undefined) {
-      continue;
-    }
-    const original = typeof originalRaw === "string" ? originalRaw : originalRaw === null ? "" : "";
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: original, new: content }];
-  }
-  return [];
-}
-
-export function buildToolResultFields(
-  isError: boolean,
-  rawContent: unknown,
-  base?: ToolCall,
-): ToolCallUpdateFields {
-  const rawOutput = normalizeToolResultText(rawContent);
-  const toolName = resolveToolName(base);
-  const fields: ToolCallUpdateFields = {
-    status: isError ? "failed" : "completed",
-    raw_output: rawOutput || JSON.stringify(rawContent),
-  };
-
-  if (!isError && toolName === "Write") {
-    const structuredDiff = writeDiffFromResult(rawContent);
-    if (structuredDiff.length > 0) {
-      fields.content = structuredDiff;
-      return fields;
-    }
-    const inputDiff = writeDiffFromInput(base?.raw_input);
-    if (inputDiff.length > 0) {
-      fields.content = inputDiff;
-      return fields;
-    }
-  }
-
-  if (!isError && toolName === "Edit") {
-    const inputDiff = editDiffFromInput(base?.raw_input);
-    if (inputDiff.length > 0) {
-      fields.content = inputDiff;
-      return fields;
-    }
-    // Preserve initial edit diff content when result payload is plain text.
-    if (base?.content.some((entry) => entry.type === "diff")) {
-      return fields;
-    }
-  }
-
-  if (rawOutput) {
-    fields.content = [{ type: "content", content: { type: "text", text: rawOutput } }];
-  }
-  return fields;
 }
 
 function emitToolResultUpdate(session: SessionState, toolUseId: string, isError: boolean, rawContent: unknown): void {
@@ -1433,26 +520,6 @@ function handleTaskSystemMessage(
   }
 }
 
-export function unwrapToolUseResult(rawResult: unknown): { isError: boolean; content: unknown } {
-  if (!rawResult || typeof rawResult !== "object") {
-    return { isError: false, content: rawResult };
-  }
-  const record = rawResult as Record<string, unknown>;
-  const isError =
-    (typeof record.is_error === "boolean" && record.is_error) ||
-    (typeof record.error === "boolean" && record.error);
-  if ("content" in record) {
-    return { isError: Boolean(isError), content: record.content };
-  }
-  if ("result" in record) {
-    return { isError: Boolean(isError), content: record.result };
-  }
-  if ("text" in record) {
-    return { isError: Boolean(isError), content: record.text };
-  }
-  return { isError: Boolean(isError), content: rawResult };
-}
-
 function handleContentBlock(session: SessionState, block: Record<string, unknown>): void {
   const blockType = typeof block.type === "string" ? block.type : "";
 
@@ -1572,16 +639,6 @@ function handleUserToolResultBlocks(session: SessionState, message: Record<strin
   }
 }
 
-export function looksLikeAuthRequired(input: string): boolean {
-  const normalized = input.toLowerCase();
-  return (
-    normalized.includes("/login") ||
-    normalized.includes("auth required") ||
-    normalized.includes("authentication failed") ||
-    normalized.includes("please log in")
-  );
-}
-
 function emitAuthRequired(session: SessionState, detail?: string): void {
   if (session.authHintSent) {
     return;
@@ -1605,117 +662,6 @@ function numberField(record: Record<string, unknown>, ...keys: string[]): number
     }
   }
   return undefined;
-}
-
-export function buildUsageUpdateFromResult(message: Record<string, unknown>): SessionUpdate | null {
-  return buildUsageUpdateFromResultForSession(undefined, message);
-}
-
-function selectModelUsageRecord(
-  session: SessionState | undefined,
-  message: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const modelUsageRaw = asRecordOrNull(message.modelUsage);
-  if (!modelUsageRaw) {
-    return null;
-  }
-  const sortedKeys = Object.keys(modelUsageRaw).sort();
-  if (sortedKeys.length === 0) {
-    return null;
-  }
-
-  const preferredKeys = new Set<string>();
-  if (session?.model) {
-    preferredKeys.add(session.model);
-  }
-  if (typeof message.model === "string") {
-    preferredKeys.add(message.model);
-  }
-
-  for (const key of preferredKeys) {
-    const value = asRecordOrNull(modelUsageRaw[key]);
-    if (value) {
-      return value;
-    }
-  }
-  for (const key of sortedKeys) {
-    const value = asRecordOrNull(modelUsageRaw[key]);
-    if (value) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function buildUsageUpdateFromResultForSession(
-  session: SessionState | undefined,
-  message: Record<string, unknown>,
-): SessionUpdate | null {
-  const usage = asRecordOrNull(message.usage);
-  const inputTokens = usage ? numberField(usage, "inputTokens", "input_tokens") : undefined;
-  const outputTokens = usage ? numberField(usage, "outputTokens", "output_tokens") : undefined;
-  const cacheReadTokens = usage
-    ? numberField(
-        usage,
-        "cacheReadInputTokens",
-        "cache_read_input_tokens",
-        "cache_read_tokens",
-      )
-    : undefined;
-  const cacheWriteTokens = usage
-    ? numberField(
-        usage,
-        "cacheCreationInputTokens",
-        "cache_creation_input_tokens",
-        "cache_write_tokens",
-      )
-    : undefined;
-
-  const totalCostUsd = numberField(message, "total_cost_usd", "totalCostUsd");
-  let turnCostUsd: number | undefined;
-  if (totalCostUsd !== undefined && session) {
-    if (session.lastTotalCostUsd === undefined) {
-      turnCostUsd = totalCostUsd;
-    } else {
-      turnCostUsd = Math.max(0, totalCostUsd - session.lastTotalCostUsd);
-    }
-    session.lastTotalCostUsd = totalCostUsd;
-  }
-
-  const modelUsage = selectModelUsageRecord(session, message);
-  const contextWindow = modelUsage
-    ? numberField(modelUsage, "contextWindow", "context_window")
-    : undefined;
-  const maxOutputTokens = modelUsage
-    ? numberField(modelUsage, "maxOutputTokens", "max_output_tokens")
-    : undefined;
-
-  if (
-    inputTokens === undefined &&
-    outputTokens === undefined &&
-    cacheReadTokens === undefined &&
-    cacheWriteTokens === undefined &&
-    totalCostUsd === undefined &&
-    turnCostUsd === undefined &&
-    contextWindow === undefined &&
-    maxOutputTokens === undefined
-  ) {
-    return null;
-  }
-
-  return {
-    type: "usage_update",
-    usage: {
-      ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
-      ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
-      ...(cacheReadTokens !== undefined ? { cache_read_tokens: cacheReadTokens } : {}),
-      ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
-      ...(totalCostUsd !== undefined ? { total_cost_usd: totalCostUsd } : {}),
-      ...(turnCostUsd !== undefined ? { turn_cost_usd: turnCostUsd } : {}),
-      ...(contextWindow !== undefined ? { context_window: contextWindow } : {}),
-      ...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
-    },
-  };
 }
 
 function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
@@ -1775,7 +721,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: modeState(session.mode),
+          mode: buildModeState(session.mode),
           ...(historyUpdates && historyUpdates.length > 0
             ? { history_updates: historyUpdates }
             : {}),
@@ -1908,29 +854,191 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
   }
 }
 
-export function permissionOptionsFromSuggestions(
-  suggestions: PermissionUpdate[] | undefined,
-): PermissionOption[] {
-  const scoped = splitPermissionSuggestionsByScope(suggestions);
-  const hasSessionScoped = scoped.session.length > 0;
-  const hasPersistentScoped = scoped.persistent.length > 0;
-  const sessionOnly = hasSessionScoped && !hasPersistentScoped;
+type AskUserQuestionOption = {
+  label: string;
+  description: string;
+};
 
-  const options: PermissionOption[] = [{ option_id: "allow_once", name: "Allow once", kind: "allow_once" }];
-  options.push({
-    option_id: sessionOnly ? "allow_session" : "allow_always",
-    name: sessionOnly ? "Allow for session" : "Always allow",
-    kind: sessionOnly ? "allow_session" : "allow_always",
-  });
-  options.push({ option_id: "reject_once", name: "Deny", kind: "reject_once" });
-  return options;
+type AskUserQuestionPrompt = {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: AskUserQuestionOption[];
+};
+
+const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
+const QUESTION_CHOICE_KIND = "question_choice";
+
+function parseAskUserQuestionPrompts(inputData: Record<string, unknown>): AskUserQuestionPrompt[] {
+  const rawQuestions = Array.isArray(inputData.questions) ? inputData.questions : [];
+  const prompts: AskUserQuestionPrompt[] = [];
+
+  for (const rawQuestion of rawQuestions) {
+    const questionRecord = asRecordOrNull(rawQuestion);
+    if (!questionRecord) {
+      continue;
+    }
+    const question = typeof questionRecord.question === "string" ? questionRecord.question.trim() : "";
+    if (!question) {
+      continue;
+    }
+    const headerRaw = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
+    const header = headerRaw || `Q${prompts.length + 1}`;
+    const multiSelect = Boolean(questionRecord.multiSelect);
+    const rawOptions = Array.isArray(questionRecord.options) ? questionRecord.options : [];
+    const options: AskUserQuestionOption[] = [];
+    for (const rawOption of rawOptions) {
+      const optionRecord = asRecordOrNull(rawOption);
+      if (!optionRecord) {
+        continue;
+      }
+      const label = typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
+      const description =
+        typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
+      if (!label) {
+        continue;
+      }
+      options.push({ label, description });
+    }
+    if (options.length < 2) {
+      continue;
+    }
+    prompts.push({ question, header, multiSelect, options });
+  }
+
+  return prompts;
+}
+
+function askUserQuestionOptions(prompt: AskUserQuestionPrompt): PermissionOption[] {
+  return prompt.options.map((option, index) => ({
+    option_id: `question_${index}`,
+    name: option.label,
+    description: option.description,
+    kind: QUESTION_CHOICE_KIND,
+  }));
+}
+
+function askUserQuestionPromptToolCall(
+  base: ToolCall,
+  prompt: AskUserQuestionPrompt,
+  index: number,
+  total: number,
+): ToolCall {
+  return {
+    ...base,
+    title: prompt.question,
+    raw_input: {
+      questions: [
+        {
+          question: prompt.question,
+          header: prompt.header,
+          multiSelect: prompt.multiSelect,
+          options: prompt.options,
+        },
+      ],
+      question_index: index,
+      total_questions: total,
+    },
+  };
+}
+
+function askUserQuestionTranscript(
+  answers: Array<{ header: string; question: string; answer: string }>,
+): string {
+  return answers.map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`).join("\n");
+}
+
+async function requestAskUserQuestionAnswers(
+  session: SessionState,
+  toolUseId: string,
+  toolName: string,
+  inputData: Record<string, unknown>,
+  baseToolCall: ToolCall,
+): Promise<PermissionResult> {
+  const prompts = parseAskUserQuestionPrompts(inputData);
+  if (prompts.length === 0) {
+    return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
+  }
+
+  const answers: Record<string, string> = {};
+  const transcript: Array<{ header: string; question: string; answer: string }> = [];
+
+  for (const [index, prompt] of prompts.entries()) {
+    const promptToolCall = askUserQuestionPromptToolCall(baseToolCall, prompt, index, prompts.length);
+    const fields: ToolCallUpdateFields = {
+      title: promptToolCall.title,
+      status: "in_progress",
+      raw_input: promptToolCall.raw_input,
+    };
+    emitSessionUpdate(session.sessionId, {
+      type: "tool_call_update",
+      tool_call_update: { tool_call_id: toolUseId, fields },
+    });
+    const tracked = session.toolCalls.get(toolUseId);
+    if (tracked) {
+      tracked.title = promptToolCall.title;
+      tracked.status = "in_progress";
+      tracked.raw_input = promptToolCall.raw_input;
+    }
+
+    const request: PermissionRequest = {
+      tool_call: promptToolCall,
+      options: askUserQuestionOptions(prompt),
+    };
+
+    const outcome = await new Promise<PermissionOutcome>((resolve) => {
+      session.pendingPermissions.set(toolUseId, {
+        onOutcome: resolve,
+        toolName,
+        inputData,
+      });
+      writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+    });
+
+    if (outcome.outcome !== "selected") {
+      setToolCallStatus(session, toolUseId, "failed", "Question cancelled");
+      return { behavior: "deny", message: "Question cancelled", toolUseID: toolUseId };
+    }
+
+    const selected = request.options.find((option) => option.option_id === outcome.option_id);
+    if (!selected) {
+      setToolCallStatus(session, toolUseId, "failed", "Question answer was invalid");
+      return { behavior: "deny", message: "Question answer was invalid", toolUseID: toolUseId };
+    }
+
+    answers[prompt.question] = selected.name;
+    transcript.push({ header: prompt.header, question: prompt.question, answer: selected.name });
+
+    const summary = askUserQuestionTranscript(transcript);
+    const progressFields: ToolCallUpdateFields = {
+      status: index + 1 >= prompts.length ? "completed" : "in_progress",
+      raw_output: summary,
+      content: [{ type: "content", content: { type: "text", text: summary } }],
+    };
+    emitSessionUpdate(session.sessionId, {
+      type: "tool_call_update",
+      tool_call_update: { tool_call_id: toolUseId, fields: progressFields },
+    });
+    if (tracked) {
+      tracked.status = progressFields.status ?? tracked.status;
+      tracked.raw_output = summary;
+      tracked.content = progressFields.content ?? tracked.content;
+    }
+  }
+
+  return {
+    behavior: "allow",
+    updatedInput: { ...inputData, answers },
+    toolUseID: toolUseId,
+  };
 }
 
 async function closeSession(session: SessionState): Promise<void> {
   session.input.close();
   session.query.close();
   for (const pending of session.pendingPermissions.values()) {
-    pending.resolve({ behavior: "deny", message: "Session closed" });
+    pending.resolve?.({ behavior: "deny", message: "Session closed" });
+    pending.onOutcome?.({ outcome: "cancelled" });
   }
   session.pendingPermissions.clear();
 }
@@ -1966,6 +1074,16 @@ async function createSession(params: {
         `decision_reason=${options.decisionReason ?? "<none>"} suggestions=${formatPermissionUpdates(options.suggestions)}`,
     );
     const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
+
+    if (toolName === ASK_USER_QUESTION_TOOL_NAME) {
+      return await requestAskUserQuestionAnswers(
+        session,
+        toolUseId,
+        toolName,
+        inputData,
+        existing,
+      );
+    }
 
     const request: PermissionRequest = {
       tool_call: existing,
@@ -2126,59 +1244,6 @@ async function createSession(params: {
   })();
 }
 
-export function permissionResultFromOutcome(
-  outcome: PermissionOutcome,
-  toolCallId: string,
-  inputData: Record<string, unknown>,
-  suggestions?: PermissionUpdate[],
-  toolName?: string,
-): PermissionResult {
-  const scopedSuggestions = splitPermissionSuggestionsByScope(suggestions);
-
-  if (outcome.outcome === "selected") {
-    if (outcome.option_id === "allow_once") {
-      return { behavior: "allow", updatedInput: inputData, toolUseID: toolCallId };
-    }
-    if (outcome.option_id === "allow_session") {
-      const sessionSuggestions = scopedSuggestions.session;
-      const fallbackSuggestions: PermissionUpdate[] | undefined =
-        sessionSuggestions.length > 0
-          ? sessionSuggestions
-          : toolName
-            ? [
-                {
-                  type: "addRules",
-                  rules: [{ toolName }],
-                  behavior: "allow",
-                  destination: "session",
-                },
-              ]
-            : undefined;
-      return {
-        behavior: "allow",
-        updatedInput: inputData,
-        ...(fallbackSuggestions && fallbackSuggestions.length > 0
-          ? { updatedPermissions: fallbackSuggestions }
-          : {}),
-        toolUseID: toolCallId,
-      };
-    }
-    if (outcome.option_id === "allow_always") {
-      const suggestionsForAlways = scopedSuggestions.persistent;
-      return {
-        behavior: "allow",
-        updatedInput: inputData,
-        ...(suggestionsForAlways && suggestionsForAlways.length > 0
-          ? { updatedPermissions: suggestionsForAlways }
-          : {}),
-        toolUseID: toolCallId,
-      };
-    }
-    return { behavior: "deny", message: "Permission denied", toolUseID: toolCallId };
-  }
-  return { behavior: "deny", message: "Permission cancelled", toolUseID: toolCallId };
-}
-
 function handlePermissionResponse(command: Extract<BridgeCommand, { command: "permission_response" }>): void {
   const session = sessionById(command.session_id);
   if (!session) {
@@ -2197,6 +1262,16 @@ function handlePermissionResponse(command: Extract<BridgeCommand, { command: "pe
   session.pendingPermissions.delete(command.tool_call_id);
 
   const outcome = command.outcome as PermissionOutcome;
+  if (resolver.onOutcome) {
+    resolver.onOutcome(outcome);
+    return;
+  }
+  if (!resolver.resolve) {
+    logPermissionDebug(
+      `response dropped: resolver missing callback session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
+    );
+    return;
+  }
   const selectedOption = outcome.outcome === "selected" ? outcome.option_id : "cancelled";
   logPermissionDebug(
     `response session_id=${command.session_id} tool_call_id=${command.tool_call_id} tool=${resolver.toolName} ` +
@@ -2442,3 +1517,5 @@ function main(): void {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
+
+

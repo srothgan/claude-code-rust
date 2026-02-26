@@ -453,7 +453,15 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
             model::SessionUpdate::AvailableCommandsUpdate(model::AvailableCommandsUpdate::new(
                 commands
                     .into_iter()
-                    .map(|cmd| model::AvailableCommand::new(cmd.name, cmd.description))
+                    .map(|cmd| {
+                        let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
+                        if let Some(input_hint) = cmd.input_hint
+                            && !input_hint.trim().is_empty()
+                        {
+                            mapped = mapped.input_hint(input_hint);
+                        }
+                        mapped
+                    })
                     .collect(),
             )),
         ),
@@ -513,6 +521,7 @@ fn map_permission_request(
                 "allow_session" => model::PermissionOptionKind::AllowSession,
                 "allow_always" => model::PermissionOptionKind::AllowAlways,
                 "reject_always" => model::PermissionOptionKind::RejectAlways,
+                "question_choice" => model::PermissionOptionKind::QuestionChoice,
                 _ => {
                     tracing::warn!(
                         "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
@@ -525,11 +534,7 @@ fn map_permission_request(
                     model::PermissionOptionKind::RejectOnce
                 }
             };
-            model::PermissionOption::new(
-                opt.option_id,
-                opt.name,
-                kind,
-            )
+            model::PermissionOption::new(opt.option_id, opt.name, kind).description(opt.description)
         })
         .collect();
     (
