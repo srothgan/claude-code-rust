@@ -58,10 +58,15 @@ pub fn create_app(cli: &Cli) -> App {
     let initial_model_name = "Connecting...".to_owned();
 
     let mut app = App {
-        messages: vec![super::ChatMessage::welcome(&initial_model_name, &cwd_display)],
+        messages: vec![super::ChatMessage::welcome_with_recent(
+            &initial_model_name,
+            &cwd_display,
+            &[],
+        )],
         viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
+        resuming_session_id: None,
         should_quit: false,
         session_id: None,
         conn: None,
@@ -90,6 +95,7 @@ pub fn create_app(cli: &Cli) -> App {
         todo_selected: 0,
         focus: FocusManager::default(),
         available_commands: Vec::new(),
+        recent_sessions: Vec::new(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
         scrollbar_drag: None,
@@ -186,7 +192,6 @@ pub fn start_connection(app: &App, cli: &Cli) {
             CommandEnvelope {
                 request_id: None,
                 command: BridgeCommand::LoadSession {
-                    cwd: cwd_raw.clone(),
                     session_id: resume,
                     metadata: std::collections::BTreeMap::new(),
                 },
@@ -265,8 +270,16 @@ fn handle_bridge_event(
     envelope: EventEnvelope,
 ) {
     match envelope.event {
-        BridgeEvent::Connected { session_id, model_name, mode } => {
-            handle_connected_event(event_tx, connected_once, session_id, model_name, mode);
+        BridgeEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
+            handle_connected_event(
+                event_tx,
+                connected_once,
+                session_id,
+                cwd,
+                model_name,
+                mode,
+                history_updates,
+            );
         }
         BridgeEvent::AuthRequired { method_name, method_description } => {
             tracing::warn!(
@@ -299,12 +312,22 @@ fn handle_bridge_event(
             tracing::warn!("bridge slash_error: {message}");
             let _ = event_tx.send(ClientEvent::SlashCommandError(message));
         }
-        BridgeEvent::SessionReplaced { session_id, model_name, mode } => {
+        BridgeEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
+            let history_updates = history_updates
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(map_session_update)
+                .collect();
             let _ = event_tx.send(ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new(session_id),
+                cwd,
                 model_name,
                 mode: mode.map(convert_mode_state),
+                history_updates,
             });
+        }
+        BridgeEvent::SessionsListed { sessions, next_cursor } => {
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions, next_cursor });
         }
         BridgeEvent::Initialized { .. } => {}
     }
@@ -314,23 +337,31 @@ fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     connected_once: &mut bool,
     session_id: String,
+    cwd: String,
     model_name: String,
     mode: Option<types::ModeState>,
+    history_updates: Option<Vec<types::SessionUpdate>>,
 ) {
-    tracing::info!("bridge connected: session_id={} model={}", session_id, model_name);
+    tracing::info!("bridge connected: session_id={} cwd={} model={}", session_id, cwd, model_name);
     let mode = mode.map(convert_mode_state);
+    let history_updates =
+        history_updates.unwrap_or_default().into_iter().filter_map(map_session_update).collect();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
             session_id: model::SessionId::new(session_id),
+            cwd,
             model_name,
             mode,
+            history_updates,
         });
     } else {
         *connected_once = true;
         let _ = event_tx.send(ClientEvent::Connected {
             session_id: model::SessionId::new(session_id),
+            cwd,
             model_name,
             mode,
+            history_updates,
         });
     }
 }

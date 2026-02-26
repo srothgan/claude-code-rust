@@ -126,7 +126,6 @@ export type BridgeCommand =
     }
   | {
       command: "load_session";
-      cwd: string;
       session_id: string;
       metadata?: Record<string, Json>;
     }
@@ -185,7 +184,14 @@ export interface InitializeResult {
 }
 
 export type BridgeEvent =
-  | { event: "connected"; session_id: string; model_name: string; mode: ModeState | null }
+  | {
+      event: "connected";
+      session_id: string;
+      cwd: string;
+      model_name: string;
+      mode: ModeState | null;
+      history_updates?: SessionUpdate[];
+    }
   | { event: "auth_required"; method_name: string; method_description: string }
   | { event: "connection_failed"; message: string }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
@@ -193,6 +199,13 @@ export type BridgeEvent =
   | { event: "turn_complete"; session_id: string }
   | { event: "turn_error"; session_id: string; message: string }
   | { event: "slash_error"; session_id: string; message: string }
-  | { event: "session_replaced"; session_id: string; model_name: string; mode: ModeState | null }
+  | {
+      event: "session_replaced";
+      session_id: string;
+      cwd: string;
+      model_name: string;
+      mode: ModeState | null;
+      history_updates?: SessionUpdate[];
+    }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: Array<{ session_id: string; cwd: string; title?: string; updated_at?: string }>; next_cursor?: string };

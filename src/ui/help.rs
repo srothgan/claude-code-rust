@@ -195,6 +195,13 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         }
         return items;
     }
+    if app.status == AppStatus::Resuming {
+        let mut items = blocked_input_help_items("Unavailable while resuming");
+        if app.update_check_hint.is_some() {
+            items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
+        }
+        return items;
+    }
     if app.status == AppStatus::Error {
         let mut items = blocked_input_help_items("Unavailable after error");
         if app.update_check_hint.is_some() {
@@ -289,6 +296,10 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
     let mut rows = vec![("Left/Right".to_owned(), "Switch help tab".to_owned())];
     if app.status == AppStatus::Connecting {
         rows.push(("Loading commands...".to_owned(), String::new()));
+        return rows;
+    }
+    if app.status == AppStatus::Resuming {
+        rows.push(("Switching sessions...".to_owned(), String::new()));
         return rows;
     }
 

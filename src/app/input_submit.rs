@@ -23,7 +23,7 @@ use crate::app::slash;
 use std::rc::Rc;
 
 pub(super) fn submit_input(app: &mut App) {
-    if matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
         return;
     }
 

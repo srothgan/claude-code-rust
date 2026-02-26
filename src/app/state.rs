@@ -68,6 +68,14 @@ pub enum TodoStatus {
     Completed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentSessionInfo {
+    pub session_id: String,
+    pub cwd: String,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub messages: Vec<ChatMessage>,
@@ -75,6 +83,8 @@ pub struct App {
     pub viewport: ChatViewport,
     pub input: InputState,
     pub status: AppStatus,
+    /// Session id currently being resumed via `/resume`.
+    pub resuming_session_id: Option<String>,
     pub should_quit: bool,
     pub session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
@@ -130,6 +140,8 @@ pub struct App {
     pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
+    /// Recently persisted session IDs discovered at startup.
+    pub recent_sessions: Vec<RecentSessionInfo>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Current selection state for mouse-based selection.
@@ -219,7 +231,10 @@ impl App {
         if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
             return;
         }
-        self.messages.insert(0, ChatMessage::welcome(&self.model_name, &self.cwd));
+        self.messages.insert(
+            0,
+            ChatMessage::welcome_with_recent(&self.model_name, &self.cwd, &self.recent_sessions),
+        );
         self.mark_all_message_layout_dirty();
     }
 
@@ -238,6 +253,22 @@ impl App {
             return;
         };
         welcome.model_name.clone_from(&self.model_name);
+        welcome.cache.invalidate();
+        self.mark_message_layout_dirty(0);
+    }
+
+    /// Update the welcome message with latest discovered recent sessions.
+    pub fn sync_welcome_recent_sessions(&mut self) {
+        let Some(first) = self.messages.first_mut() else {
+            return;
+        };
+        if !matches!(first.role, MessageRole::Welcome) {
+            return;
+        }
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
+            return;
+        };
+        welcome.recent_sessions.clone_from(&self.recent_sessions);
         welcome.cache.invalidate();
         self.mark_message_layout_dirty(0);
     }
@@ -332,6 +363,7 @@ impl App {
             viewport: ChatViewport::new(),
             input: InputState::new(),
             status: AppStatus::Ready,
+            resuming_session_id: None,
             should_quit: false,
             session_id: None,
             conn: None,
@@ -360,6 +392,7 @@ impl App {
             todo_selected: 0,
             focus: FocusManager::default(),
             available_commands: Vec::new(),
+            recent_sessions: Vec::new(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,
             scrollbar_drag: None,
@@ -647,6 +680,8 @@ impl Default for ChatViewport {
 pub enum AppStatus {
     /// Waiting for bridge adapter connection (TUI shown, input disabled).
     Connecting,
+    /// Switching to another existing session via `/resume`.
+    Resuming,
     Ready,
     Thinking,
     Running,
@@ -687,11 +722,21 @@ pub struct ChatMessage {
 impl ChatMessage {
     #[must_use]
     pub fn welcome(model_name: &str, cwd: &str) -> Self {
+        Self::welcome_with_recent(model_name, cwd, &[])
+    }
+
+    #[must_use]
+    pub fn welcome_with_recent(
+        model_name: &str,
+        cwd: &str,
+        recent_sessions: &[RecentSessionInfo],
+    ) -> Self {
         Self {
             role: MessageRole::Welcome,
             blocks: vec![MessageBlock::Welcome(WelcomeBlock {
                 model_name: model_name.to_owned(),
                 cwd: cwd.to_owned(),
+                recent_sessions: recent_sessions.to_vec(),
                 cache: BlockCache::default(),
             })],
         }
@@ -914,6 +959,7 @@ pub enum MessageRole {
 pub struct WelcomeBlock {
     pub model_name: String,
     pub cwd: String,
+    pub recent_sessions: Vec<RecentSessionInfo>,
     pub cache: BlockCache,
 }
 
