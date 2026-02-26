@@ -318,33 +318,43 @@ fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 
     if let Some(ref output) = tc.terminal_output {
-        let raw_lines: Vec<Line<'static>> = if let Ok(ansi_text) = output.as_bytes().into_text() {
-            ansi_text
-                .lines
-                .into_iter()
-                .map(|line| {
-                    let owned: Vec<Span<'static>> = line
-                        .spans
-                        .into_iter()
-                        .map(|s| Span::styled(s.content.into_owned(), s.style))
-                        .collect();
-                    Line::from(owned)
-                })
-                .collect()
-        } else {
-            output.lines().map(|l| Line::from(l.to_owned())).collect()
-        };
-
-        let total = raw_lines.len();
-        if total > TERMINAL_MAX_LINES {
-            let skipped = total - TERMINAL_MAX_LINES;
+        if matches!(tc.status, model::ToolCallStatus::Failed)
+            && let Some(first_line) = failed_execute_first_line(output)
+        {
             body_lines.push(Line::from(Span::styled(
-                format!("... {skipped} lines hidden ..."),
-                Style::default().fg(theme::DIM),
+                first_line,
+                Style::default().fg(theme::STATUS_ERROR),
             )));
-            body_lines.extend(raw_lines.into_iter().skip(skipped));
         } else {
-            body_lines = raw_lines;
+            let raw_lines: Vec<Line<'static>> = if let Ok(ansi_text) = output.as_bytes().into_text()
+            {
+                ansi_text
+                    .lines
+                    .into_iter()
+                    .map(|line| {
+                        let owned: Vec<Span<'static>> = line
+                            .spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
+                        Line::from(owned)
+                    })
+                    .collect()
+            } else {
+                output.lines().map(|l| Line::from(l.to_owned())).collect()
+            };
+
+            let total = raw_lines.len();
+            if total > TERMINAL_MAX_LINES {
+                let skipped = total - TERMINAL_MAX_LINES;
+                body_lines.push(Line::from(Span::styled(
+                    format!("... {skipped} lines hidden ..."),
+                    Style::default().fg(theme::DIM),
+                )));
+                body_lines.extend(raw_lines.into_iter().skip(skipped));
+            } else {
+                body_lines = raw_lines;
+            }
         }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
         body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
@@ -544,9 +554,14 @@ fn content_summary(tc: &ToolCallInfo) -> String {
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
             if matches!(tc.status, model::ToolCallStatus::Failed)
-                && let Some(msg) = extract_tool_use_error_message(output)
+                && let Some(first_line) = failed_execute_first_line(output)
             {
-                return msg;
+                return if first_line.chars().count() > 80 {
+                    let truncated: String = first_line.chars().take(77).collect();
+                    format!("{truncated}...")
+                } else {
+                    first_line
+                };
             }
             let last = output.lines().rev().find(|l| !l.trim().is_empty());
             if let Some(line) = last {
@@ -606,9 +621,12 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
             if matches!(tc.status, model::ToolCallStatus::Failed)
-                && let Some(msg) = extract_tool_use_error_message(output)
+                && let Some(first_line) = failed_execute_first_line(output)
             {
-                lines.extend(render_tool_use_error_content(&msg));
+                lines.push(Line::from(Span::styled(
+                    first_line,
+                    Style::default().fg(theme::STATUS_ERROR),
+                )));
             } else if let Ok(ansi_text) = output.as_bytes().into_text() {
                 for line in ansi_text.lines {
                     let owned: Vec<Span<'static>> = line
@@ -672,6 +690,13 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
+}
+
+fn failed_execute_first_line(output: &str) -> Option<String> {
+    if let Some(msg) = extract_tool_use_error_message(output) {
+        return Some(msg);
+    }
+    output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
 }
 
 fn render_internal_failure_content(payload: &str) -> Vec<Line<'static>> {
@@ -1045,5 +1070,56 @@ mod tests {
             pending_permission: None,
         };
         assert_eq!(content_summary(&tc), "bad");
+    }
+
+    #[test]
+    fn content_summary_uses_first_terminal_line_for_failed_execute() {
+        let tc = ToolCallInfo {
+            id: "tc-2".into(),
+            title: "Bash".into(),
+            sdk_tool_name: "Bash".into(),
+            status: model::ToolCallStatus::Failed,
+            content: Vec::new(),
+            collapsed: true,
+            hidden: false,
+            terminal_id: Some("term-2".into()),
+            terminal_command: Some("cd path with spaces".into()),
+            terminal_output: Some(
+                "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
+            ),
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        };
+        assert_eq!(content_summary(&tc), "Exit code 1");
+    }
+
+    #[test]
+    fn render_execute_content_failed_keeps_single_output_line() {
+        let tc = ToolCallInfo {
+            id: "tc-3".into(),
+            title: "Bash".into(),
+            sdk_tool_name: "Bash".into(),
+            status: model::ToolCallStatus::Failed,
+            content: Vec::new(),
+            collapsed: false,
+            hidden: false,
+            terminal_id: Some("term-3".into()),
+            terminal_command: Some("cd path with spaces".into()),
+            terminal_output: Some(
+                "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
+            ),
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        };
+
+        let lines = render_execute_content(&tc);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[1], "Exit code 1");
     }
 }
