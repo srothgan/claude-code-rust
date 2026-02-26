@@ -95,7 +95,7 @@ fn normalized_option_tokens(option: &acp::PermissionOption) -> String {
     out
 }
 
-fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool) {
+fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool, bool) {
     let tokens = normalized_option_tokens(option);
     let allow_like =
         tokens.contains("allow") || tokens.contains("accept") || tokens.contains("approve");
@@ -106,26 +106,32 @@ fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool) {
         || tokens.contains("remember")
         || tokens.contains("persist")
         || tokens.contains("bypasspermissions");
-    (allow_like, reject_like, persistent_like)
+    let session_like = tokens.contains("session") || tokens.contains("onesession");
+    (allow_like, reject_like, persistent_like, session_like)
 }
 
 fn option_is_allow_once_fallback(option: &acp::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like) = option_tokens(option);
-    allow_like && !reject_like && !persistent_like
+    let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
+    allow_like && !reject_like && !persistent_like && !session_like
 }
 
 fn option_is_allow_always_fallback(option: &acp::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like) = option_tokens(option);
+    let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
     allow_like && !reject_like && persistent_like
 }
 
+fn option_is_allow_non_once_fallback(option: &acp::PermissionOption) -> bool {
+    let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
+    allow_like && !reject_like && (persistent_like || session_like)
+}
+
 fn option_is_reject_once_fallback(option: &acp::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like) = option_tokens(option);
+    let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
     reject_like && !allow_like && !persistent_like
 }
 
 fn option_is_reject_fallback(option: &acp::PermissionOption) -> bool {
-    let (allow_like, reject_like, _) = option_tokens(option);
+    let (allow_like, reject_like, _, _) = option_tokens(option);
     reject_like && !allow_like
 }
 
@@ -258,8 +264,10 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
     if is_ctrl_char_shortcut(key, 'y') {
         if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
             .or_else(|| focused_option_index_where(app, option_is_allow_once_fallback))
+            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowSession))
             .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
             .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
+            .or_else(|| focused_option_index_where(app, option_is_allow_non_once_fallback))
         {
             respond_permission(app, Some(idx));
             return Some(true);
@@ -267,8 +275,9 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
         return Some(false);
     }
     if is_ctrl_char_shortcut(key, 'a') {
-        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways)
-            .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
+        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowSession)
+            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
+            .or_else(|| focused_option_index_where(app, option_is_allow_non_once_fallback))
         {
             respond_permission(app, Some(idx));
             return Some(true);

@@ -299,13 +299,13 @@ async fn multiple_tool_calls_independently_indexed() {
 // --- Edge cases: tool call update propagation ---
 
 #[tokio::test]
-async fn tool_call_update_via_meta_sets_claude_tool_name() {
+async fn tool_call_update_via_meta_sets_sdk_tool_name() {
     let mut app = test_app();
 
     let tc = acp::ToolCall::new("tc-meta", "Some tool").status(acp::ToolCallStatus::InProgress);
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
 
-    // Update arrives with meta setting claude_tool_name
+    // Update arrives with meta setting sdk_tool_name
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "WebSearch"}));
     let fields = acp::ToolCallUpdateFields::new();
@@ -317,7 +317,7 @@ async fn tool_call_update_via_meta_sets_claude_tool_name() {
 
     let (mi, bi) = app.tool_call_index["tc-meta"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert_eq!(tc.claude_tool_name.as_deref(), Some("WebSearch"));
+        assert_eq!(tc.sdk_tool_name, "WebSearch");
     } else {
         panic!("expected ToolCall block");
     }
@@ -331,7 +331,7 @@ async fn todowrite_via_update_raw_input_parses_todos() {
     let tc = acp::ToolCall::new("tc-todo-up", "TodoWrite").status(acp::ToolCallStatus::InProgress);
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
 
-    // Update sets claude_tool_name + raw_input with todos
+    // Update sets sdk_tool_name + raw_input with todos
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
     let raw = serde_json::json!({"todos": [

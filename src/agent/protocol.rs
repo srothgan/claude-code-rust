@@ -507,6 +507,7 @@ pub enum SessionUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum PermissionOptionKind {
     AllowOnce,
+    AllowSession,
     AllowAlways,
     RejectOnce,
     RejectAlways,

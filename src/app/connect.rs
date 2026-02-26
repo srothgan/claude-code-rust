@@ -427,15 +427,27 @@ fn map_permission_request(
         .options
         .into_iter()
         .map(|opt| {
+            let kind = match opt.kind.as_str() {
+                "allow_once" => acp::PermissionOptionKind::AllowOnce,
+                "allow_session" => acp::PermissionOptionKind::AllowSession,
+                "allow_always" => acp::PermissionOptionKind::AllowAlways,
+                "reject_always" => acp::PermissionOptionKind::RejectAlways,
+                _ => {
+                    tracing::warn!(
+                        "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
+                        session_id,
+                        tool_call_id,
+                        opt.option_id,
+                        opt.name,
+                        opt.kind
+                    );
+                    acp::PermissionOptionKind::RejectOnce
+                }
+            };
             acp::PermissionOption::new(
                 opt.option_id,
                 opt.name,
-                match opt.kind.as_str() {
-                    "allow_once" => acp::PermissionOptionKind::AllowOnce,
-                    "allow_always" => acp::PermissionOptionKind::AllowAlways,
-                    "reject_always" => acp::PermissionOptionKind::RejectAlways,
-                    _ => acp::PermissionOptionKind::RejectOnce,
-                },
+                kind,
             )
         })
         .collect();

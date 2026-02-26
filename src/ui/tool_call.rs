@@ -414,7 +414,7 @@ fn render_execute_with_borders(
 }
 
 /// Render inline permission options on a single compact line.
-/// Format: `▸ ✓ Allow once (Ctrl+y)  ·  ✓ Allow always (Ctrl+a)  ·  ✗ Reject (Ctrl+n)`
+/// Options are dynamic and include shortcuts only when applicable.
 /// Unfocused permissions are dimmed to indicate they don't have keyboard input.
 fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
     // Unfocused permissions: show a dimmed "waiting for focus" line
@@ -433,8 +433,12 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
 
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
-        let is_allow =
-            matches!(opt.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways);
+        let is_allow = matches!(
+            opt.kind,
+            PermissionOptionKind::AllowOnce
+                | PermissionOptionKind::AllowSession
+                | PermissionOptionKind::AllowAlways
+        );
 
         let (icon, icon_color) = if is_allow {
             ("\u{2713}", Color::Green) // ✓
@@ -474,7 +478,7 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
 
         let shortcut = match opt.kind {
             PermissionOptionKind::AllowOnce => " (Ctrl+y)",
-            PermissionOptionKind::AllowAlways => " (Ctrl+a)",
+            PermissionOptionKind::AllowSession | PermissionOptionKind::AllowAlways => " (Ctrl+a)",
             PermissionOptionKind::RejectOnce => " (Ctrl+n)",
             PermissionOptionKind::RejectAlways => "",
         };
