@@ -490,7 +490,7 @@ fn session_age_label(updated_at: Option<&str>) -> String {
     format_relative_age(epoch)
 }
 
-/// Source: https://code.claude.com/docs/en/model-config
+/// Source: <https://code.claude.com/docs/en/model-config>
 /// Section: Model aliases
 const CLAUDE_CODE_MODEL_CANDIDATES: &[(&str, &str)] = &[
     ("default", "Recommended model setting based on account"),
