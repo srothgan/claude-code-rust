@@ -19,24 +19,31 @@ use crate::agent::model;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
 /// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`
+#[cfg(test)]
 pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
-    let Some(arr) = raw_input.get("todos").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    arr.iter()
-        .filter_map(|item| {
-            let content = item.get("content")?.as_str()?.to_owned();
-            let status_str = item.get("status")?.as_str()?;
-            let active_form =
-                item.get("activeForm").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            let status = match status_str {
-                "in_progress" => TodoStatus::InProgress,
-                "completed" => TodoStatus::Completed,
-                _ => TodoStatus::Pending,
-            };
-            Some(TodoItem { content, status, active_form })
-        })
-        .collect()
+    parse_todos_if_present(raw_input).unwrap_or_default()
+}
+
+/// Parse todos only when a concrete `todos` array is present in `raw_input`.
+/// Returns `None` for transient/incomplete payloads (missing or non-array `todos`).
+pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Vec<TodoItem>> {
+    let arr = raw_input.get("todos")?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|item| {
+                let content = item.get("content")?.as_str()?.to_owned();
+                let status_str = item.get("status")?.as_str()?;
+                let active_form =
+                    item.get("activeForm").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let status = match status_str {
+                    "in_progress" => TodoStatus::InProgress,
+                    "completed" => TodoStatus::Completed,
+                    _ => TodoStatus::Pending,
+                };
+                Some(TodoItem { content, status, active_form })
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
@@ -129,6 +136,27 @@ mod tests {
         let input = json!({"todos": []});
         let todos = parse_todos(&input);
         assert!(todos.is_empty());
+    }
+
+    #[test]
+    fn parse_if_present_missing_todos_returns_none() {
+        let input = json!({"other": 1});
+        let todos = parse_todos_if_present(&input);
+        assert!(todos.is_none());
+    }
+
+    #[test]
+    fn parse_if_present_non_array_todos_returns_none() {
+        let input = json!({"todos": {"not": "array"}});
+        let todos = parse_todos_if_present(&input);
+        assert!(todos.is_none());
+    }
+
+    #[test]
+    fn parse_if_present_empty_array_returns_some_empty_vec() {
+        let input = json!({"todos": []});
+        let todos = parse_todos_if_present(&input);
+        assert!(matches!(todos, Some(v) if v.is_empty()));
     }
 
     // parse_todos

@@ -23,7 +23,7 @@ use super::{
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use crate::app::todos::{apply_plan_todos, parse_todos, set_todos};
+use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
@@ -638,9 +638,14 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     if sdk_tool_name == "TodoWrite" {
         tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
         if let Some(ref raw_input) = tc.raw_input {
-            let todos = parse_todos(raw_input);
-            tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
-            set_todos(app, todos);
+            if let Some(todos) = parse_todos_if_present(raw_input) {
+                tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
+                set_todos(app, todos);
+            } else {
+                tracing::debug!(
+                    "TodoWrite ToolCall raw_input has no todos array yet; preserving existing todos"
+                );
+            }
         } else {
             tracing::warn!("TodoWrite ToolCall has no raw_input");
         }
@@ -856,12 +861,17 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                             tcu.fields.raw_input
                         );
                         if let Some(ref raw_input) = tcu.fields.raw_input {
-                            let todos = parse_todos(raw_input);
-                            tracing::info!(
-                                "Parsed {} todos from ToolCallUpdate raw_input",
-                                todos.len()
-                            );
-                            pending_todos = Some(todos);
+                            if let Some(todos) = parse_todos_if_present(raw_input) {
+                                tracing::info!(
+                                    "Parsed {} todos from ToolCallUpdate raw_input",
+                                    todos.len()
+                                );
+                                pending_todos = Some(todos);
+                            } else {
+                                tracing::debug!(
+                                    "TodoWrite ToolCallUpdate raw_input has no todos array yet; preserving existing todos"
+                                );
+                            }
                         }
                     }
                     if matches!(
@@ -1433,6 +1443,61 @@ mod tests {
             panic!("tool call block missing");
         };
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
+    }
+
+    #[test]
+    fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Existing todo".into(),
+            status: TodoStatus::InProgress,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+
+        let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
+            .kind(model::ToolKind::Other)
+            .raw_input(serde_json::json!({}))
+            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+        );
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Existing todo");
+        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
+        assert!(app.show_todo_panel);
+    }
+
+    #[test]
+    fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
+        let mut app = make_test_app();
+        let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
+            .kind(model::ToolKind::Other)
+            .raw_input(serde_json::json!({
+                "todos": [{"content": "Task A", "status": "in_progress"}]
+            }))
+            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+        );
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Task A");
+
+        let update = model::ToolCallUpdate::new(
+            "tc-todo-update",
+            model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Task A");
+        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
     }
 
     #[test]
