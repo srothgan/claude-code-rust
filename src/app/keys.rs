@@ -18,6 +18,7 @@ use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, Mod
 use crate::agent::events::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
+use crate::app::selection::clear_selection;
 use crate::app::{mention, slash};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
@@ -41,11 +42,77 @@ fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
 }
 
 fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    if is_ctrl_char_shortcut(key, 'c') || is_ctrl_char_shortcut(key, 'q') {
+    if is_ctrl_char_shortcut(key, 'q') {
+        app.should_quit = true;
+        return true;
+    }
+    if is_ctrl_char_shortcut(key, 'c') {
+        if copy_selection_to_clipboard(app) {
+            clear_selection(app);
+            return true;
+        }
         app.should_quit = true;
         return true;
     }
     false
+}
+
+fn copy_selection_to_clipboard(app: &App) -> bool {
+    let Some(selection) = app.selection else {
+        return false;
+    };
+    let selected_text = selection_text_from_rendered_lines(app, selection);
+    if selected_text.is_empty() {
+        return false;
+    }
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(selected_text);
+    }
+    true
+}
+
+fn selection_text_from_rendered_lines(app: &App, selection: super::SelectionState) -> String {
+    let lines = match selection.kind {
+        super::SelectionKind::Chat => &app.rendered_chat_lines,
+        super::SelectionKind::Input => &app.rendered_input_lines,
+    };
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let (start, end) = super::normalize_selection(selection.start, selection.end);
+    if start.row >= lines.len() {
+        return String::new();
+    }
+    let last_row = end.row.min(lines.len().saturating_sub(1));
+
+    let mut out = String::new();
+    for row in start.row..=last_row {
+        let line = lines.get(row).map_or("", String::as_str);
+        let start_col = if row == start.row { start.col } else { 0 };
+        let end_col = if row == end.row { end.col } else { line.chars().count() };
+        out.push_str(&slice_by_cols(line, start_col, end_col));
+        if row < last_row {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn slice_by_cols(text: &str, start_col: usize, end_col: usize) -> String {
+    if start_col >= end_col {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, ch) in text.chars().enumerate() {
+        if i >= end_col {
+            break;
+        }
+        if i >= start_col {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
@@ -53,7 +120,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
         handle_blocked_input_shortcuts(app, key);
         return;
     }
@@ -76,7 +143,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// During blocked-input states (Connecting, Error), keep input disabled and only allow
+/// During blocked-input states (Connecting, Resuming, Error), keep input disabled and only allow
 /// navigation/help shortcuts.
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {

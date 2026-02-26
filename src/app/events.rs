@@ -16,7 +16,7 @@
 
 use super::connect::take_connection_slot;
 use super::selection::clear_selection;
-use super::state::ScrollbarDragState;
+use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
     LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
@@ -43,7 +43,8 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             handle_mouse_event(app, mouse);
         }
         Event::Paste(text) => {
-            if !matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
+            if !matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error)
+            {
                 // Queue paste chunks for this drain cycle. Some terminals split a
                 // single clipboard paste into multiple `Event::Paste` payloads.
                 app.pending_paste_text.push_str(&text);
@@ -439,26 +440,45 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.status = AppStatus::Error;
             push_turn_error_message(app, &msg);
         }
-        ClientEvent::Connected { session_id, model_name, mode } => {
+        ClientEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
             // Grab connection from the shared slot
             if let Some(slot) = take_connection_slot() {
                 app.conn = Some(slot.conn);
             }
+            apply_session_cwd(app, cwd);
             app.session_id = Some(session_id);
             app.model_name = model_name;
             app.mode = mode;
-            app.status = AppStatus::Ready;
             app.login_hint = None;
             app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
             app.cached_header_line = None;
             app.cached_footer_line = None;
             app.update_welcome_model_if_pristine();
+            app.sync_welcome_recent_sessions();
+            if !history_updates.is_empty() {
+                load_resume_history(app, &history_updates);
+            }
+            app.status = AppStatus::Ready;
+            app.resuming_session_id = None;
+        }
+        ClientEvent::SessionsListed { sessions, .. } => {
+            app.recent_sessions = sessions
+                .into_iter()
+                .map(|entry| RecentSessionInfo {
+                    session_id: entry.session_id,
+                    cwd: entry.cwd,
+                    title: entry.title,
+                    updated_at: entry.updated_at,
+                })
+                .collect();
+            app.sync_welcome_recent_sessions();
         }
         ClientEvent::AuthRequired { method_name, method_description } => {
             // Show auth context without pre-filling /login. Slash login/logout
             // discoverability is intentionally deferred for now.
             app.status = AppStatus::Ready;
+            app.resuming_session_id = None;
             app.login_hint = Some(LoginHint { method_name, method_description });
             app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
@@ -466,6 +486,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::ConnectionFailed(msg) => {
             app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
+            app.resuming_session_id = None;
             app.input.clear();
             app.pending_submit = false;
             app.status = AppStatus::Error;
@@ -482,10 +503,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             });
             app.viewport.engage_auto_scroll();
             app.status = AppStatus::Ready;
+            app.resuming_session_id = None;
         }
-        ClientEvent::SessionReplaced { session_id, model_name, mode } => {
+        ClientEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
             app.pending_compact_clear = false;
+            apply_session_cwd(app, cwd);
             reset_for_new_session(app, session_id, model_name, mode);
+            if !history_updates.is_empty() {
+                load_resume_history(app, &history_updates);
+            }
+            app.status = AppStatus::Ready;
+            app.resuming_session_id = None;
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
             app.update_check_hint = Some(format!(
@@ -533,6 +561,92 @@ fn push_connection_error_message(app: &mut App, error: &str) {
     app.viewport.engage_auto_scroll();
 }
 
+fn shorten_cwd_display(cwd_raw: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if cwd_raw.starts_with(home_str.as_ref()) {
+            return format!("~{}", &cwd_raw[home_str.len()..]);
+        }
+    }
+    cwd_raw.to_owned()
+}
+
+fn sync_welcome_cwd(app: &mut App) {
+    let Some(first) = app.messages.first_mut() else {
+        return;
+    };
+    if !matches!(first.role, MessageRole::Welcome) {
+        return;
+    }
+    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
+        return;
+    };
+    welcome.cwd.clone_from(&app.cwd);
+    welcome.cache.invalidate();
+    app.mark_message_layout_dirty(0);
+}
+
+fn apply_session_cwd(app: &mut App, cwd_raw: String) {
+    app.cwd_raw = cwd_raw;
+    app.cwd = shorten_cwd_display(&app.cwd_raw);
+    app.file_cache = None;
+    app.cached_header_line = None;
+    app.cached_footer_line = None;
+    app.refresh_git_branch();
+    sync_welcome_cwd(app);
+}
+
+fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
+    let model::ContentBlock::Text(text) = &chunk.content else {
+        return;
+    };
+    if text.text.is_empty() {
+        return;
+    }
+
+    if let Some(last) = app.messages.last_mut()
+        && matches!(last.role, MessageRole::User)
+    {
+        if let Some(MessageBlock::Text(existing, cache, incr)) = last.blocks.last_mut() {
+            existing.push_str(&text.text);
+            incr.append(&text.text);
+            cache.invalidate();
+        } else {
+            let mut incr = IncrementalMarkdown::default();
+            incr.append(&text.text);
+            last.blocks.push(MessageBlock::Text(text.text.clone(), BlockCache::default(), incr));
+        }
+        return;
+    }
+
+    let mut incr = IncrementalMarkdown::default();
+    incr.append(&text.text);
+    app.messages.push(ChatMessage {
+        role: MessageRole::User,
+        blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default(), incr)],
+    });
+}
+
+fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
+    app.messages.clear();
+    app.messages.push(ChatMessage::welcome_with_recent(
+        &app.model_name,
+        &app.cwd,
+        &app.recent_sessions,
+    ));
+    for update in history_updates {
+        match update {
+            model::SessionUpdate::UserMessageChunk(chunk) => {
+                append_resume_user_message_chunk(app, chunk);
+            }
+            _ => handle_session_update(app, update.clone()),
+        }
+    }
+    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.viewport = super::ChatViewport::new();
+    app.viewport.engage_auto_scroll();
+}
+
 #[allow(clippy::too_many_lines)]
 fn reset_for_new_session(
     app: &mut App,
@@ -545,7 +659,6 @@ fn reset_for_new_session(
     app.session_id = Some(session_id);
     app.model_name = model_name;
     app.mode = mode;
-    app.status = AppStatus::Ready;
     app.login_hint = None;
     app.pending_compact_clear = false;
     app.should_quit = false;
@@ -553,7 +666,11 @@ fn reset_for_new_session(
     app.cancelled_turn_pending_hint = false;
 
     app.messages.clear();
-    app.messages.push(ChatMessage::welcome(&app.model_name, &app.cwd));
+    app.messages.push(ChatMessage::welcome_with_recent(
+        &app.model_name,
+        &app.cwd,
+        &app.recent_sessions,
+    ));
     app.viewport = super::ChatViewport::new();
 
     app.input.clear();
@@ -1395,8 +1512,10 @@ mod tests {
     fn connected_event(model_name: &str) -> ClientEvent {
         ClientEvent::Connected {
             session_id: model::SessionId::new("test-session"),
+            cwd: "/test".into(),
             model_name: model_name.to_owned(),
             mode: None,
+            history_updates: Vec::new(),
         }
     }
 
@@ -1742,6 +1861,37 @@ mod tests {
     }
 
     #[test]
+    fn connected_updates_cwd_and_clears_resuming_marker() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.file_cache = Some(Vec::new());
+        app.resuming_session_id = Some("resume-123".into());
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("session-cwd"),
+                cwd: "/changed".into(),
+                model_name: "claude-updated".into(),
+                mode: None,
+                history_updates: Vec::new(),
+            },
+        );
+
+        assert_eq!(app.cwd_raw, "/changed");
+        assert_eq!(app.cwd, "/changed");
+        assert!(app.file_cache.is_none());
+        assert!(app.resuming_session_id.is_none());
+        let Some(first) = app.messages.first() else {
+            panic!("missing welcome message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.cwd, "/changed");
+    }
+
+    #[test]
     fn connected_does_not_update_welcome_after_chat_started() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
@@ -1830,8 +1980,10 @@ mod tests {
             &mut app,
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("replacement"),
+                cwd: "/replacement".into(),
                 model_name: "new-model".into(),
                 mode: None,
+                history_updates: Vec::new(),
             },
         );
 
@@ -1848,6 +2000,108 @@ mod tests {
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
+        assert_eq!(app.cwd_raw, "/replacement");
+        assert_eq!(app.cwd, "/replacement");
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.cwd, "/replacement");
+    }
+
+    #[test]
+    fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Resuming;
+        app.resuming_session_id = Some("resume-123".into());
+
+        handle_client_event(&mut app, ClientEvent::SlashCommandError("resume failed".into()));
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(app.resuming_session_id.is_none());
+    }
+
+    #[test]
+    fn resume_does_not_add_confirmation_system_message() {
+        let mut app = make_test_app();
+        app.resuming_session_id = Some("requested-123".into());
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-456"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                mode: None,
+                history_updates: Vec::new(),
+            },
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert!(app.resuming_session_id.is_none());
+        assert!(matches!(app.status, AppStatus::Ready));
+    }
+
+    #[test]
+    fn resume_history_renders_user_message_chunks() {
+        let mut app = make_test_app();
+        let history_updates = vec![
+            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("first user line")),
+            )),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("assistant reply")),
+            )),
+        ];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-456"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                mode: None,
+                history_updates,
+            },
+        );
+
+        assert_eq!(app.messages.len(), 3);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert!(matches!(app.messages[1].role, MessageRole::User));
+        assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+
+        let Some(MessageBlock::Text(user_text, _, _)) = app.messages[1].blocks.first() else {
+            panic!("expected user text block");
+        };
+        assert_eq!(user_text, "first user line");
+    }
+
+    #[test]
+    fn resume_history_forces_open_tool_calls_to_failed() {
+        let mut app = make_test_app();
+        let open_tool = model::ToolCall::new("resume-open", "Execute command")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-789"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                mode: None,
+                history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
+            },
+        );
+
+        let Some((mi, bi)) = app.lookup_tool_call("resume-open") else {
+            panic!("missing tool call index");
+        };
+        let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+        else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Failed);
     }
 
     #[test]
@@ -2409,13 +2663,14 @@ mod tests {
     }
 
     #[test]
-    fn connecting_state_ctrl_c_quits() {
+    fn connecting_state_ctrl_c_with_non_empty_selection_does_not_quit() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
+        app.rendered_input_lines = vec!["copy".to_owned()];
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
-            end: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 4 },
             dragging: false,
         });
 
@@ -2424,8 +2679,8 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
 
-        assert!(app.should_quit);
-        assert!(app.selection.is_some());
+        assert!(!app.should_quit);
+        assert!(app.selection.is_none());
     }
 
     #[test]
@@ -2492,8 +2747,67 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_with_selection_force_quits() {
+    fn ctrl_c_with_non_empty_selection_does_not_quit_and_clears_selection() {
         let mut app = make_test_app();
+        app.rendered_input_lines = vec!["copy".to_owned()];
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 4 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_without_selection_quits() {
+        let mut app = make_test_app();
+        app.selection = None;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_second_press_after_copy_quits() {
+        let mut app = make_test_app();
+        app.rendered_input_lines = vec!["copy".to_owned()];
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 4 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(!app.should_quit);
+        assert!(app.selection.is_none());
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_with_zero_length_selection_quits() {
+        let mut app = make_test_app();
+        app.rendered_input_lines = vec!["copy".to_owned()];
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -2507,7 +2821,26 @@ mod tests {
         );
 
         assert!(app.should_quit);
-        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn ctrl_c_with_whitespace_selection_copies_and_clears_selection() {
+        let mut app = make_test_app();
+        app.rendered_input_lines = vec!["   ".to_owned()];
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.selection.is_none());
     }
 
     #[test]

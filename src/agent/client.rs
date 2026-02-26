@@ -150,6 +150,16 @@ impl AgentConnection {
         })
     }
 
+    pub fn load_session(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::LoadSession {
+                session_id,
+                metadata: std::collections::BTreeMap::new(),
+            },
+        })
+    }
+
     fn send(&self, envelope: CommandEnvelope) -> anyhow::Result<()> {
         self.command_tx.send(envelope).map_err(|_| anyhow::anyhow!("bridge command channel closed"))
     }

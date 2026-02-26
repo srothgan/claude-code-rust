@@ -38,8 +38,10 @@ pub enum ClientEvent {
     /// Background connection completed successfully.
     Connected {
         session_id: model::SessionId,
+        cwd: String,
         model_name: String,
         mode: Option<crate::app::ModeState>,
+        history_updates: Vec<model::SessionUpdate>,
     },
     /// Background connection failed.
     ConnectionFailed(String),
@@ -50,8 +52,15 @@ pub enum ClientEvent {
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
+        cwd: String,
         model_name: String,
         mode: Option<crate::app::ModeState>,
+        history_updates: Vec<model::SessionUpdate>,
+    },
+    /// Recent persisted sessions discovered by the bridge.
+    SessionsListed {
+        sessions: Vec<crate::agent::types::SessionListEntry>,
+        next_cursor: Option<String>,
     },
     /// Startup update check found a newer published version.
     UpdateAvailable { latest_version: String, current_version: String },

@@ -28,6 +28,22 @@ test("parseCommandEnvelope validates initialize command", () => {
   assert.equal(parsed.command.cwd, "C:/work");
 });
 
+test("parseCommandEnvelope validates load_session command without cwd", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-2",
+      command: "load_session",
+      session_id: "session-123",
+    }),
+  );
+  assert.equal(parsed.requestId, "req-2");
+  assert.equal(parsed.command.command, "load_session");
+  if (parsed.command.command !== "load_session") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+});
+
 test("parseCommandEnvelope rejects missing required fields", () => {
   assert.throws(
     () => parseCommandEnvelope(JSON.stringify({ command: "set_model", session_id: "s1" })),

@@ -146,11 +146,16 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     app.status = AppStatus::Ready;
+    app.resuming_session_id = None;
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
 
     app.messages.clear();
-    app.messages.push(ChatMessage::welcome(&app.model_name, &app.cwd));
+    app.messages.push(ChatMessage::welcome_with_recent(
+        &app.model_name,
+        &app.cwd,
+        &app.recent_sessions,
+    ));
     app.viewport = ChatViewport::new();
 
     app.tool_call_index.clear();
@@ -189,6 +194,7 @@ fn supported_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/mode".into(), "Set session mode".into());
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
+    by_name.insert("/resume".into(), "Resume a session by ID".into());
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
@@ -215,7 +221,7 @@ fn filter_candidates(candidates: &[SlashCandidate], query: &str) -> Vec<SlashCan
 }
 
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
-    matches!(command_name, "/cancel" | "/compact" | "/mode" | "/model" | "/new-session")
+    matches!(command_name, "/cancel" | "/compact" | "/mode" | "/model" | "/new-session" | "/resume")
         || advertised_commands(app).iter().any(|c| c == command_name)
 }
 
@@ -516,6 +522,37 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             });
             true
         }
+        "/resume" => {
+            app.input.clear();
+            let [session_id_arg] = parsed.args.as_slice() else {
+                push_system_message(app, "Usage: /resume <session_id>");
+                return true;
+            };
+            let session_id = (*session_id_arg).trim();
+            if session_id.is_empty() {
+                push_system_message(app, "Usage: /resume <session_id>");
+                return true;
+            }
+
+            push_user_message(app, format!("/resume {session_id}"));
+
+            let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.")
+            else {
+                return true;
+            };
+            app.status = AppStatus::Resuming;
+            app.resuming_session_id = Some(session_id.to_owned());
+            let tx = app.event_tx.clone();
+            let session_id = session_id.to_owned();
+            tokio::task::spawn_local(async move {
+                if let Err(e) = conn.load_session(session_id) {
+                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                        "Failed to run /resume: {e}"
+                    )));
+                }
+            });
+            true
+        }
         _ => {
             if is_supported_command(app, parsed.name) {
                 // Adapter-advertised slash command: let normal prompt path send it.
@@ -605,6 +642,57 @@ mod tests {
             panic!("expected user text block");
         };
         assert_eq!(text, "/new-session");
+    }
+
+    #[test]
+    fn resume_with_missing_id_returns_usage() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/resume");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Usage: /resume <session_id>");
+    }
+
+    #[test]
+    fn resume_command_is_rendered_as_user_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/resume abc-123");
+        assert!(consumed);
+        assert!(app.messages.len() >= 2);
+
+        let Some(first) = app.messages.first() else {
+            panic!("expected user message");
+        };
+        assert!(matches!(first.role, MessageRole::User));
+        let Some(MessageBlock::Text(text, _, _)) = first.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "/resume abc-123");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_sets_resuming_state_when_connected() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+
+                let consumed = try_handle_submit(&mut app, "/resume abc-123");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::Resuming));
+                assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
+
+                tokio::task::yield_now().await;
+                assert!(rx.try_recv().is_ok());
+            })
+            .await;
     }
 
     #[test]

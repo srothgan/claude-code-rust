@@ -43,7 +43,6 @@ pub enum BridgeCommand {
         metadata: BTreeMap<String, serde_json::Value>,
     },
     LoadSession {
-        cwd: String,
         session_id: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
@@ -87,16 +86,53 @@ pub struct EventEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
-    Connected { session_id: String, model_name: String, mode: Option<types::ModeState> },
-    AuthRequired { method_name: String, method_description: String },
-    ConnectionFailed { message: String },
-    SessionUpdate { session_id: String, update: types::SessionUpdate },
-    PermissionRequest { session_id: String, request: types::PermissionRequest },
-    TurnComplete { session_id: String },
-    TurnError { session_id: String, message: String },
-    SlashError { session_id: String, message: String },
-    SessionReplaced { session_id: String, model_name: String, mode: Option<types::ModeState> },
-    Initialized { result: types::InitializeResult },
+    Connected {
+        session_id: String,
+        cwd: String,
+        model_name: String,
+        mode: Option<types::ModeState>,
+        history_updates: Option<Vec<types::SessionUpdate>>,
+    },
+    AuthRequired {
+        method_name: String,
+        method_description: String,
+    },
+    ConnectionFailed {
+        message: String,
+    },
+    SessionUpdate {
+        session_id: String,
+        update: types::SessionUpdate,
+    },
+    PermissionRequest {
+        session_id: String,
+        request: types::PermissionRequest,
+    },
+    TurnComplete {
+        session_id: String,
+    },
+    TurnError {
+        session_id: String,
+        message: String,
+    },
+    SlashError {
+        session_id: String,
+        message: String,
+    },
+    SessionReplaced {
+        session_id: String,
+        cwd: String,
+        model_name: String,
+        mode: Option<types::ModeState>,
+        history_updates: Option<Vec<types::SessionUpdate>>,
+    },
+    Initialized {
+        result: types::InitializeResult,
+    },
+    SessionsListed {
+        sessions: Vec<types::SessionListEntry>,
+        next_cursor: Option<String>,
+    },
 }
 
 #[cfg(test)]

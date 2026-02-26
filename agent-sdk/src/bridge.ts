@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
   query,
   type CanUseTool,
   type PermissionMode,
+  type PermissionRuleValue,
   type PermissionResult,
   type PermissionUpdate,
   type Query,
@@ -61,6 +64,17 @@ type SessionState = {
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   authHintSent: boolean;
+  sessionsToCloseAfterConnect?: SessionState[];
+  resumeUpdates?: SessionUpdate[];
+};
+
+type PersistedSessionEntry = {
+  session_id: string;
+  cwd: string;
+  file_path: string;
+  title?: string;
+  updated_at?: string;
+  sort_ms: number;
 };
 
 const MODE_NAMES: Record<PermissionMode, string> = {
@@ -147,6 +161,359 @@ function splitPermissionSuggestionsByScope(
     session.push(suggestion);
   }
   return { session, persistent };
+}
+
+function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeUserPromptText(raw: string): string {
+  // Keep only user-readable prompt text; strip heavy inline context blobs.
+  let text = raw.replace(/<context[\s\S]*/gi, " ");
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  text = text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
+function truncateTextByChars(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) {
+    return text;
+  }
+  return chars.slice(0, maxChars).join("");
+}
+
+function firstUserMessageTitleFromRecord(record: Record<string, unknown>): string | undefined {
+  if (record.type !== "user") {
+    return undefined;
+  }
+  const message = asRecordOrNull(record.message);
+  if (!message || message.role !== "user" || !Array.isArray(message.content)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const item of message.content) {
+    const block = asRecordOrNull(item);
+    if (!block || block.type !== "text" || typeof block.text !== "string") {
+      continue;
+    }
+    const cleaned = normalizeUserPromptText(block.text);
+    if (!cleaned) {
+      continue;
+    }
+    parts.push(cleaned);
+    const combined = parts.join(" ");
+    if (Array.from(combined).length >= 180) {
+      return truncateTextByChars(combined, 180);
+    }
+  }
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return truncateTextByChars(parts.join(" "), 180);
+}
+
+function extractSessionPreviewFromJsonl(filePath: string): { cwd?: string; title?: string } {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return {};
+  }
+
+  let cwd: string | undefined;
+  let title: string | undefined;
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = asRecordOrNull(parsed);
+    if (!record) {
+      continue;
+    }
+
+    if (!cwd && typeof record.cwd === "string" && record.cwd.trim().length > 0) {
+      cwd = record.cwd;
+    }
+    if (!title) {
+      title = firstUserMessageTitleFromRecord(record);
+    }
+    if (cwd && title) {
+      break;
+    }
+  }
+
+  return {
+    ...(cwd ? { cwd } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+function listRecentPersistedSessions(limit = 8): PersistedSessionEntry[] {
+  const root = path.join(os.homedir(), ".claude", "projects");
+  if (!fs.existsSync(root)) {
+    return [];
+  }
+
+  const candidates: PersistedSessionEntry[] = [];
+  let projectDirs: fs.Dirent[];
+  try {
+    projectDirs = fs.readdirSync(root, { withFileTypes: true }).filter((dirent) => dirent.isDirectory());
+  } catch {
+    return [];
+  }
+
+  for (const dirent of projectDirs) {
+    const projectDir = path.join(root, dirent.name);
+
+    let sessionFiles: fs.Dirent[];
+    try {
+      sessionFiles = fs
+        .readdirSync(projectDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"));
+    } catch {
+      sessionFiles = [];
+    }
+
+    for (const sessionFile of sessionFiles) {
+      const sessionId = sessionFile.name.slice(0, -".jsonl".length);
+      if (!sessionId) {
+        continue;
+      }
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(path.join(projectDir, sessionFile.name)).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) {
+        continue;
+      }
+      candidates.push({
+        session_id: sessionId,
+        cwd: "",
+        file_path: path.join(projectDir, sessionFile.name),
+        updated_at: new Date(mtimeMs).toISOString(),
+        sort_ms: mtimeMs,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.sort_ms - a.sort_ms);
+  const deduped: PersistedSessionEntry[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.session_id)) {
+      continue;
+    }
+    seen.add(candidate.session_id);
+
+    const preview = extractSessionPreviewFromJsonl(candidate.file_path);
+    const cwd = preview.cwd?.trim();
+    if (!cwd) {
+      continue;
+    }
+
+    deduped.push({
+      session_id: candidate.session_id,
+      cwd,
+      file_path: candidate.file_path,
+      ...(preview.title ? { title: preview.title } : {}),
+      ...(candidate.updated_at ? { updated_at: candidate.updated_at } : {}),
+      sort_ms: candidate.sort_ms,
+    });
+    if (deduped.length >= limit) {
+      break;
+    }
+  }
+  return deduped;
+}
+
+function isToolUseBlockType(blockType: string): boolean {
+  return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
+}
+
+function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
+  if (!text.trim()) {
+    return;
+  }
+  if (role === "assistant") {
+    updates.push({ type: "agent_message_chunk", content: { type: "text", text } });
+    return;
+  }
+  updates.push({ type: "user_message_chunk", content: { type: "text", text } });
+}
+
+function pushResumeToolUse(
+  updates: SessionUpdate[],
+  toolCalls: Map<string, ToolCall>,
+  block: Record<string, unknown>,
+): void {
+  const toolUseId = typeof block.id === "string" ? block.id : "";
+  if (!toolUseId) {
+    return;
+  }
+  const name = typeof block.name === "string" ? block.name : "Tool";
+  const input = asRecordOrNull(block.input) ?? {};
+
+  const toolCall = createToolCall(toolUseId, name, input);
+  toolCall.status = "in_progress";
+  toolCalls.set(toolUseId, toolCall);
+  updates.push({ type: "tool_call", tool_call: toolCall });
+}
+
+function pushResumeToolResult(
+  updates: SessionUpdate[],
+  toolCalls: Map<string, ToolCall>,
+  block: Record<string, unknown>,
+): void {
+  const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
+  if (!toolUseId) {
+    return;
+  }
+  const isError = Boolean(block.is_error);
+  const base = toolCalls.get(toolUseId);
+  const fields = buildToolResultFields(isError, block.content, base);
+  updates.push({ type: "tool_call_update", tool_call_update: { tool_call_id: toolUseId, fields } });
+
+  if (!base) {
+    return;
+  }
+  base.status = fields.status ?? base.status;
+  if (fields.raw_output) {
+    base.raw_output = fields.raw_output;
+  }
+  if (fields.content) {
+    base.content = fields.content;
+  }
+}
+
+function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return [];
+  }
+
+  const updates: SessionUpdate[] = [];
+  const toolCalls = new Map<string, ToolCall>();
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = asRecordOrNull(parsed);
+    if (!record) {
+      continue;
+    }
+    const message = asRecordOrNull(record.message);
+    if (!message) {
+      continue;
+    }
+    const role = message.role;
+    if (role !== "user" && role !== "assistant") {
+      continue;
+    }
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const item of content) {
+      const block = asRecordOrNull(item);
+      if (!block) {
+        continue;
+      }
+      const blockType = typeof block.type === "string" ? block.type : "";
+      if (blockType === "thinking") {
+        continue;
+      }
+      if (blockType === "text" && typeof block.text === "string") {
+        pushResumeTextChunk(updates, role, block.text);
+        continue;
+      }
+      if (isToolUseBlockType(blockType) && role === "assistant") {
+        pushResumeToolUse(updates, toolCalls, block);
+        continue;
+      }
+      if (TOOL_RESULT_TYPES.has(blockType)) {
+        pushResumeToolResult(updates, toolCalls, block);
+        continue;
+      }
+      if (blockType === "image") {
+        pushResumeTextChunk(updates, role, "[image]");
+      }
+    }
+  }
+  return updates;
+}
+
+function resolvePersistedSessionEntry(sessionId: string): PersistedSessionEntry | null {
+  if (
+    sessionId.trim().length === 0 ||
+    sessionId.includes("/") ||
+    sessionId.includes("\\") ||
+    sessionId.includes("..")
+  ) {
+    return null;
+  }
+  const root = path.join(os.homedir(), ".claude", "projects");
+  if (!fs.existsSync(root)) {
+    return null;
+  }
+
+  let projectDirs: fs.Dirent[];
+  try {
+    projectDirs = fs.readdirSync(root, { withFileTypes: true }).filter((dirent) => dirent.isDirectory());
+  } catch {
+    return null;
+  }
+
+  let best: PersistedSessionEntry | null = null;
+  for (const dirent of projectDirs) {
+    const filePath = path.join(root, dirent.name, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) {
+      continue;
+    }
+    const preview = extractSessionPreviewFromJsonl(filePath);
+    const cwd = preview.cwd?.trim();
+    if (!cwd) {
+      continue;
+    }
+
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(filePath).mtimeMs;
+    } catch {
+      mtimeMs = 0;
+    }
+    if (!best || mtimeMs >= best.sort_ms) {
+      best = {
+        session_id: sessionId,
+        cwd,
+        file_path: filePath,
+        sort_ms: mtimeMs,
+      };
+    }
+  }
+  return best;
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -305,7 +672,6 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
       case "load_session":
         return {
           command: "load_session",
-          cwd: expectString(raw, "cwd", "load_session"),
           session_id: expectString(raw, "session_id", "load_session"),
           metadata: optionalMetadata(raw, "metadata"),
         };
@@ -391,24 +757,47 @@ function modeState(mode: PermissionMode): ModeState {
 }
 
 function emitConnectEvent(session: SessionState): void {
+  const historyUpdates = session.resumeUpdates;
   const connectEvent: BridgeEvent =
     session.connectEvent === "session_replaced"
       ? {
           event: "session_replaced",
           session_id: session.sessionId,
+          cwd: session.cwd,
           model_name: session.model,
           mode: modeState(session.mode),
+          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         }
       : {
           event: "connected",
           session_id: session.sessionId,
+          cwd: session.cwd,
           model_name: session.model,
           mode: modeState(session.mode),
+          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         };
   writeEvent(connectEvent, session.connectRequestId);
   session.connectRequestId = undefined;
   session.connected = true;
   session.authHintSent = false;
+  session.resumeUpdates = undefined;
+
+  const staleSessions = session.sessionsToCloseAfterConnect;
+  session.sessionsToCloseAfterConnect = undefined;
+  if (!staleSessions || staleSessions.length === 0) {
+    return;
+  }
+  void (async () => {
+    for (const stale of staleSessions) {
+      if (stale === session) {
+        continue;
+      }
+      if (sessions.get(stale.sessionId) === stale) {
+        sessions.delete(stale.sessionId);
+      }
+      await closeSession(stale);
+    }
+  })();
 }
 
 function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
@@ -650,13 +1039,6 @@ function emitPlanIfTodoWrite(session: SessionState, name: string, input: Record<
   if (entries.length > 0) {
     emitSessionUpdate(session.sessionId, { type: "plan", entries });
   }
-}
-
-function asRecordOrNull(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
 }
 
 function resolveToolName(toolCall: ToolCall | undefined): string {
@@ -1234,12 +1616,18 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
       if (!session.connected) {
         emitConnectEvent(session);
       } else if (previousSessionId !== session.sessionId) {
+        const historyUpdates = session.resumeUpdates;
         writeEvent({
           event: "session_replaced",
           session_id: session.sessionId,
+          cwd: session.cwd,
           model_name: session.model,
           mode: modeState(session.mode),
+          ...(historyUpdates && historyUpdates.length > 0
+            ? { history_updates: historyUpdates }
+            : {}),
         });
+        session.resumeUpdates = undefined;
       }
 
       if (Array.isArray(msg.slash_commands)) {
@@ -1384,6 +1772,8 @@ async function createSession(params: {
   resume?: string;
   connectEvent: ConnectEventKind;
   requestId?: string;
+  sessionsToCloseAfterConnect?: SessionState[];
+  resumeUpdates?: SessionUpdate[];
 }): Promise<void> {
   const input = new AsyncQueue<SDKUserMessage>();
   const startMode: PermissionMode = params.yolo ? "bypassPermissions" : "default";
@@ -1506,6 +1896,12 @@ async function createSession(params: {
     taskToolUseIds: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     authHintSent: false,
+    ...(params.resumeUpdates && params.resumeUpdates.length > 0
+      ? { resumeUpdates: params.resumeUpdates }
+      : {}),
+    ...(params.sessionsToCloseAfterConnect
+      ? { sessionsToCloseAfterConnect: params.sessionsToCloseAfterConnect }
+      : {}),
   };
   sessions.set(provisionalSessionId, session);
 
@@ -1683,13 +2079,22 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
               prompt_image: false,
               prompt_embedded_context: true,
               load_session: true,
-              supports_list_sessions: false,
+              supports_list_sessions: true,
               supports_resume: true,
             },
           },
         },
         requestId,
       );
+      writeEvent({
+        event: "sessions_listed",
+        sessions: listRecentPersistedSessions().map((entry) => ({
+          session_id: entry.session_id,
+          cwd: entry.cwd,
+          ...(entry.title ? { title: entry.title } : {}),
+          ...(entry.updated_at ? { updated_at: entry.updated_at } : {}),
+        })),
+      });
       return;
 
     case "create_session":
@@ -1703,15 +2108,31 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       });
       return;
 
-    case "load_session":
-      await createSession({
-        cwd: command.cwd,
-        yolo: false,
-        resume: command.session_id,
-        connectEvent: "connected",
-        requestId,
-      });
+    case "load_session": {
+      const persisted = resolvePersistedSessionEntry(command.session_id);
+      if (!persisted) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      const resumeUpdates = extractSessionHistoryUpdatesFromJsonl(persisted.file_path);
+      const staleSessions = Array.from(sessions.values());
+      const hadActiveSession = staleSessions.length > 0;
+      try {
+        await createSession({
+          cwd: persisted.cwd,
+          yolo: false,
+          resume: command.session_id,
+          ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
+          connectEvent: hadActiveSession ? "session_replaced" : "connected",
+          requestId,
+          ...(hadActiveSession ? { sessionsToCloseAfterConnect: staleSessions } : {}),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to resume session: ${message}`, requestId);
+      }
       return;
+    }
 
     case "new_session":
       await closeAllSessions();
