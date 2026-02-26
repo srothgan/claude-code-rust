@@ -38,10 +38,10 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, ChatViewport, HelpView, IncrementalMarkdown,
-    InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState,
-    RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState, SessionUsageState, TodoItem,
-    TodoStatus, ToolCallInfo, WelcomeBlock, is_execute_tool_name,
+    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
+    IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
+    ModeInfo, ModeState, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
+    SessionUsageState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock, is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 

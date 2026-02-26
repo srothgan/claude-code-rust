@@ -80,6 +80,8 @@ pub fn create_app(cli: &Cli) -> App {
         help_view: HelpView::Keys,
         pending_permission_ids: Vec::new(),
         cancelled_turn_pending_hint: false,
+        queued_submission: None,
+        pending_cancel_origin: None,
         event_tx,
         event_rx,
         spinner_frame: 0,

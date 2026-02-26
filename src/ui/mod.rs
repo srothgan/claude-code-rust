@@ -28,7 +28,7 @@ pub mod theme;
 mod todo;
 mod tool_call;
 
-use crate::app::{App, MessageRole};
+use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
@@ -183,7 +183,6 @@ fn footer_telemetry_text(app: &App) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     let totals = &app.session_usage;
     let is_new_session = app.session_id.is_some()
-        && app.messages.iter().all(|m| matches!(m.role, MessageRole::Welcome))
         && totals.total_tokens() == 0
         && totals.context_used_tokens().is_none();
     if app.session_id.is_some()
@@ -335,7 +334,9 @@ fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app:
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::App;
+    use crate::app::{
+        App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
+    };
 
     #[test]
     fn split_footer_columns_preserves_total_width() {
@@ -383,6 +384,24 @@ mod tests {
     fn footer_telemetry_new_session_uses_unknown_defaults() {
         let mut app = App::test_default();
         app.session_id = Some(model::SessionId::new("session-new"));
+
+        let text = footer_telemetry_text(&app).expect("footer telemetry");
+        assert_eq!(text, "Context: 100%");
+    }
+
+    #[test]
+    fn footer_telemetry_still_defaults_to_full_after_first_user_message() {
+        let mut app = App::test_default();
+        app.session_id = Some(model::SessionId::new("session-new"));
+        app.messages.push(ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![MessageBlock::Text(
+                "hello".to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete("hello"),
+            )],
+            usage: None,
+        });
 
         let text = footer_telemetry_text(&app).expect("footer telemetry");
         assert_eq!(text, "Context: 100%");

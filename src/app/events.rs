@@ -18,9 +18,9 @@ use super::connect::take_connection_slot;
 use super::selection::clear_selection;
 use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
-    LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind, SelectionPoint,
-    ToolCallInfo,
+    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
+    InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind,
+    SelectionPoint, ToolCallInfo,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -376,16 +376,23 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnCancelled => {
             app.pending_compact_clear = false;
             app.is_compacting = false;
-            app.cancelled_turn_pending_hint = true;
+            if app.pending_cancel_origin.is_none() {
+                app.pending_cancel_origin = Some(CancelOrigin::Manual);
+            }
+            app.cancelled_turn_pending_hint =
+                matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
             let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         }
         ClientEvent::TurnComplete => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
             app.is_compacting = false;
-            let show_interrupted_hint = app.cancelled_turn_pending_hint;
+            let cancelled_requested = app.pending_cancel_origin.is_some();
+            let show_interrupted_hint =
+                matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+            app.pending_cancel_origin = None;
             app.cancelled_turn_pending_hint = false;
-            if show_interrupted_hint {
+            if cancelled_requested {
                 let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
             } else {
                 let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
@@ -400,15 +407,18 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             if should_compact_clear {
                 super::slash::clear_conversation_history(app);
             }
+            super::input_submit::drain_queued_submission(app);
         }
         ClientEvent::TurnError(msg) => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
             app.is_compacting = false;
-            let cancelled_requested = app.cancelled_turn_pending_hint;
+            let cancelled_requested = app.pending_cancel_origin;
+            let show_interrupted_hint = matches!(cancelled_requested, Some(CancelOrigin::Manual));
+            app.pending_cancel_origin = None;
             app.cancelled_turn_pending_hint = false;
 
-            if cancelled_requested {
+            if cancelled_requested.is_some() {
                 let summary = summarize_internal_error(&msg);
                 tracing::warn!(
                     error_preview = %summary,
@@ -424,7 +434,10 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 app.files_accessed = 0;
                 app.active_task_ids.clear();
                 app.refresh_git_branch();
-                push_interrupted_hint(app);
+                if show_interrupted_hint {
+                    push_interrupted_hint(app);
+                }
+                super::input_submit::drain_queued_submission(app);
                 return;
             }
 
@@ -458,6 +471,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.is_compacting = false;
             app.session_usage = super::SessionUsageState::default();
             app.cancelled_turn_pending_hint = false;
+            app.pending_cancel_origin = None;
+            app.queued_submission = None;
             app.cached_header_line = None;
             app.cached_footer_line = None;
             app.update_welcome_model_if_pristine();
@@ -489,11 +504,15 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.pending_compact_clear = false;
             app.is_compacting = false;
             app.cancelled_turn_pending_hint = false;
+            app.pending_cancel_origin = None;
+            app.queued_submission = None;
         }
         ClientEvent::ConnectionFailed(msg) => {
             app.pending_compact_clear = false;
             app.is_compacting = false;
             app.cancelled_turn_pending_hint = false;
+            app.pending_cancel_origin = None;
+            app.queued_submission = None;
             app.resuming_session_id = None;
             app.input.clear();
             app.pending_submit = false;
@@ -517,6 +536,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
             app.pending_compact_clear = false;
             app.is_compacting = false;
+            app.pending_cancel_origin = None;
+            app.queued_submission = None;
             apply_session_cwd(app, cwd);
             reset_for_new_session(app, session_id, model_name, mode);
             if !history_updates.is_empty() {
@@ -753,6 +774,8 @@ fn reset_for_new_session(
     app.should_quit = false;
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.queued_submission = None;
 
     app.messages.clear();
     app.messages.push(ChatMessage::welcome_with_recent(
