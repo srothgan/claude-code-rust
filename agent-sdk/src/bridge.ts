@@ -64,6 +64,7 @@ type SessionState = {
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   authHintSent: boolean;
+  lastTotalCostUsd?: number;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 };
@@ -346,6 +347,22 @@ function isToolUseBlockType(blockType: string): boolean {
   return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
 }
 
+function persistedMessageCandidates(record: Record<string, unknown>): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [];
+
+  const topLevel = asRecordOrNull(record.message);
+  if (topLevel) {
+    candidates.push(topLevel);
+  }
+
+  const nested = asRecordOrNull(asRecordOrNull(asRecordOrNull(record.data)?.message)?.message);
+  if (nested) {
+    candidates.push(nested);
+  }
+
+  return candidates;
+}
+
 function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
   if (!text.trim()) {
     return;
@@ -401,7 +418,28 @@ function pushResumeToolResult(
   }
 }
 
-function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
+function pushResumeUsageUpdate(
+  updates: SessionUpdate[],
+  message: Record<string, unknown>,
+  emittedUsageMessageIds: Set<string>,
+): void {
+  const messageId = typeof message.id === "string" ? message.id : "";
+  if (messageId && emittedUsageMessageIds.has(messageId)) {
+    return;
+  }
+
+  const usageUpdate = buildUsageUpdateFromResult(message);
+  if (!usageUpdate) {
+    return;
+  }
+
+  updates.push(usageUpdate);
+  if (messageId) {
+    emittedUsageMessageIds.add(messageId);
+  }
+}
+
+export function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf8");
@@ -411,6 +449,7 @@ function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[
 
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
+  const emittedUsageMessageIds = new Set<string>();
   const lines = text.split(/\r?\n/);
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -427,39 +466,38 @@ function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[
     if (!record) {
       continue;
     }
-    const message = asRecordOrNull(record.message);
-    if (!message) {
-      continue;
-    }
-    const role = message.role;
-    if (role !== "user" && role !== "assistant") {
-      continue;
-    }
-    const content = Array.isArray(message.content) ? message.content : [];
-    for (const item of content) {
-      const block = asRecordOrNull(item);
-      if (!block) {
+    for (const message of persistedMessageCandidates(record)) {
+      const role = message.role;
+      if (role !== "user" && role !== "assistant") {
         continue;
       }
-      const blockType = typeof block.type === "string" ? block.type : "";
-      if (blockType === "thinking") {
-        continue;
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const item of content) {
+        const block = asRecordOrNull(item);
+        if (!block) {
+          continue;
+        }
+        const blockType = typeof block.type === "string" ? block.type : "";
+        if (blockType === "thinking") {
+          continue;
+        }
+        if (blockType === "text" && typeof block.text === "string") {
+          pushResumeTextChunk(updates, role, block.text);
+          continue;
+        }
+        if (isToolUseBlockType(blockType) && role === "assistant") {
+          pushResumeToolUse(updates, toolCalls, block);
+          continue;
+        }
+        if (TOOL_RESULT_TYPES.has(blockType)) {
+          pushResumeToolResult(updates, toolCalls, block);
+          continue;
+        }
+        if (blockType === "image") {
+          pushResumeTextChunk(updates, role, "[image]");
+        }
       }
-      if (blockType === "text" && typeof block.text === "string") {
-        pushResumeTextChunk(updates, role, block.text);
-        continue;
-      }
-      if (isToolUseBlockType(blockType) && role === "assistant") {
-        pushResumeToolUse(updates, toolCalls, block);
-        continue;
-      }
-      if (TOOL_RESULT_TYPES.has(blockType)) {
-        pushResumeToolResult(updates, toolCalls, block);
-        continue;
-      }
-      if (blockType === "image") {
-        pushResumeTextChunk(updates, role, "[image]");
-      }
+      pushResumeUsageUpdate(updates, message, emittedUsageMessageIds);
     }
   }
   return updates;
@@ -962,6 +1000,50 @@ export function extractText(value: unknown): string {
   return "";
 }
 
+const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
+const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
+
+function extractPersistedOutputInnerText(text: string): string | null {
+  const lower = text.toLowerCase();
+  const openIdx = lower.indexOf(PERSISTED_OUTPUT_OPEN_TAG);
+  if (openIdx < 0) {
+    return null;
+  }
+  const bodyStart = openIdx + PERSISTED_OUTPUT_OPEN_TAG.length;
+  const closeIdx = lower.indexOf(PERSISTED_OUTPUT_CLOSE_TAG, bodyStart);
+  if (closeIdx < 0) {
+    return null;
+  }
+  return text.slice(bodyStart, closeIdx);
+}
+
+function persistedOutputFirstLine(text: string): string | null {
+  const inner = extractPersistedOutputInnerText(text);
+  if (inner === null) {
+    return null;
+  }
+
+  for (const line of inner.split(/\r?\n/)) {
+    const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
+    if (cleaned.length > 0) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+
+export function normalizeToolResultText(value: unknown): string {
+  const text = extractText(value);
+  if (!text) {
+    return "";
+  }
+  const persistedLine = persistedOutputFirstLine(text);
+  if (persistedLine) {
+    return persistedLine;
+  }
+  return text;
+}
+
 function emitToolCall(session: SessionState, toolUseId: string, name: string, input: Record<string, unknown>): void {
   const toolCall = createToolCall(toolUseId, name, input);
   const status: ToolCall["status"] = "in_progress";
@@ -1115,7 +1197,7 @@ export function buildToolResultFields(
   rawContent: unknown,
   base?: ToolCall,
 ): ToolCallUpdateFields {
-  const rawOutput = extractText(rawContent);
+  const rawOutput = normalizeToolResultText(rawContent);
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
@@ -1526,30 +1608,97 @@ function numberField(record: Record<string, unknown>, ...keys: string[]): number
 }
 
 export function buildUsageUpdateFromResult(message: Record<string, unknown>): SessionUpdate | null {
-  if (!message.usage || typeof message.usage !== "object") {
+  return buildUsageUpdateFromResultForSession(undefined, message);
+}
+
+function selectModelUsageRecord(
+  session: SessionState | undefined,
+  message: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const modelUsageRaw = asRecordOrNull(message.modelUsage);
+  if (!modelUsageRaw) {
     return null;
   }
-  const usage = message.usage as Record<string, unknown>;
-  const inputTokens = numberField(usage, "inputTokens", "input_tokens");
-  const outputTokens = numberField(usage, "outputTokens", "output_tokens");
-  const cacheReadTokens = numberField(
-    usage,
-    "cacheReadInputTokens",
-    "cache_read_input_tokens",
-    "cache_read_tokens",
-  );
-  const cacheWriteTokens = numberField(
-    usage,
-    "cacheCreationInputTokens",
-    "cache_creation_input_tokens",
-    "cache_write_tokens",
-  );
+  const sortedKeys = Object.keys(modelUsageRaw).sort();
+  if (sortedKeys.length === 0) {
+    return null;
+  }
+
+  const preferredKeys = new Set<string>();
+  if (session?.model) {
+    preferredKeys.add(session.model);
+  }
+  if (typeof message.model === "string") {
+    preferredKeys.add(message.model);
+  }
+
+  for (const key of preferredKeys) {
+    const value = asRecordOrNull(modelUsageRaw[key]);
+    if (value) {
+      return value;
+    }
+  }
+  for (const key of sortedKeys) {
+    const value = asRecordOrNull(modelUsageRaw[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function buildUsageUpdateFromResultForSession(
+  session: SessionState | undefined,
+  message: Record<string, unknown>,
+): SessionUpdate | null {
+  const usage = asRecordOrNull(message.usage);
+  const inputTokens = usage ? numberField(usage, "inputTokens", "input_tokens") : undefined;
+  const outputTokens = usage ? numberField(usage, "outputTokens", "output_tokens") : undefined;
+  const cacheReadTokens = usage
+    ? numberField(
+        usage,
+        "cacheReadInputTokens",
+        "cache_read_input_tokens",
+        "cache_read_tokens",
+      )
+    : undefined;
+  const cacheWriteTokens = usage
+    ? numberField(
+        usage,
+        "cacheCreationInputTokens",
+        "cache_creation_input_tokens",
+        "cache_write_tokens",
+      )
+    : undefined;
+
+  const totalCostUsd = numberField(message, "total_cost_usd", "totalCostUsd");
+  let turnCostUsd: number | undefined;
+  if (totalCostUsd !== undefined && session) {
+    if (session.lastTotalCostUsd === undefined) {
+      turnCostUsd = totalCostUsd;
+    } else {
+      turnCostUsd = Math.max(0, totalCostUsd - session.lastTotalCostUsd);
+    }
+    session.lastTotalCostUsd = totalCostUsd;
+  }
+
+  const modelUsage = selectModelUsageRecord(session, message);
+  const contextWindow = modelUsage
+    ? numberField(modelUsage, "contextWindow", "context_window")
+    : undefined;
+  const maxOutputTokens = modelUsage
+    ? numberField(modelUsage, "maxOutputTokens", "max_output_tokens")
+    : undefined;
 
   if (
     inputTokens === undefined &&
     outputTokens === undefined &&
     cacheReadTokens === undefined &&
-    cacheWriteTokens === undefined
+    cacheWriteTokens === undefined &&
+    totalCostUsd === undefined &&
+    turnCostUsd === undefined &&
+    contextWindow === undefined &&
+    maxOutputTokens === undefined
   ) {
     return null;
   }
@@ -1557,16 +1706,20 @@ export function buildUsageUpdateFromResult(message: Record<string, unknown>): Se
   return {
     type: "usage_update",
     usage: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_read_tokens: cacheReadTokens,
-      cache_write_tokens: cacheWriteTokens,
+      ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+      ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+      ...(cacheReadTokens !== undefined ? { cache_read_tokens: cacheReadTokens } : {}),
+      ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
+      ...(totalCostUsd !== undefined ? { total_cost_usd: totalCostUsd } : {}),
+      ...(turnCostUsd !== undefined ? { turn_cost_usd: turnCostUsd } : {}),
+      ...(contextWindow !== undefined ? { context_window: contextWindow } : {}),
+      ...(maxOutputTokens !== undefined ? { max_output_tokens: maxOutputTokens } : {}),
     },
   };
 }
 
 function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
-  const usageUpdate = buildUsageUpdateFromResult(message);
+  const usageUpdate = buildUsageUpdateFromResultForSession(session, message);
   if (usageUpdate) {
     emitSessionUpdate(session.sessionId, usageUpdate);
   }
@@ -1655,11 +1808,34 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
       return;
     }
 
-    if (subtype === "status" && typeof msg.permissionMode === "string") {
-      const mode = toPermissionMode(msg.permissionMode);
+    if (subtype === "status") {
+      const mode =
+        typeof msg.permissionMode === "string" ? toPermissionMode(msg.permissionMode) : null;
       if (mode) {
         session.mode = mode;
         emitSessionUpdate(session.sessionId, { type: "current_mode_update", current_mode_id: mode });
+      }
+      if (msg.status === "compacting") {
+        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "compacting" });
+      } else if (msg.status === null) {
+        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
+      }
+      return;
+    }
+
+    if (subtype === "compact_boundary") {
+      const compactMetadata = asRecordOrNull(msg.compact_metadata);
+      if (!compactMetadata) {
+        return;
+      }
+      const trigger = compactMetadata.trigger;
+      const preTokens = numberField(compactMetadata, "pre_tokens", "preTokens");
+      if ((trigger === "manual" || trigger === "auto") && preTokens !== undefined) {
+        emitSessionUpdate(session.sessionId, {
+          type: "compaction_boundary",
+          trigger,
+          pre_tokens: preTokens,
+        });
       }
       return;
     }

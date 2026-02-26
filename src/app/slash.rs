@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, ChatViewport, FocusTarget, IncrementalMarkdown,
-    MessageBlock, MessageRole, dialog::DialogState,
+    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, FocusTarget,
+    IncrementalMarkdown, MessageBlock, MessageRole, dialog::DialogState,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -60,6 +60,10 @@ fn parse(text: &str) -> Option<ParsedSlash<'_>> {
     Some(ParsedSlash { name, args: parts.collect() })
 }
 
+pub fn is_cancel_command(text: &str) -> bool {
+    parse(text).is_some_and(|parsed| parsed.name == "/cancel")
+}
+
 fn normalize_slash_name(name: &str) -> String {
     if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }
@@ -101,6 +105,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&text),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -114,6 +119,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&text),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -148,7 +154,9 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.status = AppStatus::Ready;
     app.resuming_session_id = None;
     app.files_accessed = 0;
+    app.is_compacting = false;
     app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
 
     app.messages.clear();
     app.messages.push(ChatMessage::welcome_with_recent(
@@ -381,30 +389,16 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 
     match parsed.name {
         "/cancel" => {
-            app.input.clear();
-            let Some((conn, sid)) = require_active_session(
-                app,
-                "Cannot cancel: not connected yet.",
-                "Cannot cancel: no active session.",
-            ) else {
+            if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+                push_system_message(app, "Cannot cancel: no active turn.");
                 return true;
-            };
-
-            let tx = app.event_tx.clone();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = conn.cancel(sid.to_string()) {
-                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                        "Failed to run /cancel: {e}"
-                    )));
-                } else {
-                    let _ = tx.send(ClientEvent::TurnCancelled);
-                }
-            });
-            app.status = AppStatus::Ready;
+            }
+            if let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual) {
+                push_system_message(app, format!("Failed to run /cancel: {message}"));
+            }
             true
         }
         "/compact" => {
-            app.input.clear();
             if !parsed.args.is_empty() {
                 push_system_message(app, "Usage: /compact");
                 return true;
@@ -423,10 +417,10 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             // Forward `/compact` through the bridge via the normal prompt path, then clear
             // local history once the turn completes.
             app.pending_compact_clear = true;
+            app.is_compacting = true;
             false
         }
         "/mode" => {
-            app.input.clear();
             let [requested_mode_arg] = parsed.args.as_slice() else {
                 push_system_message(app, "Usage: /mode <id>");
                 return true;
@@ -468,7 +462,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             true
         }
         "/model" => {
-            app.input.clear();
             let model_name = parsed.args.join(" ");
             if model_name.trim().is_empty() {
                 push_system_message(app, "Usage: /model <name>");
@@ -496,7 +489,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             true
         }
         "/new-session" => {
-            app.input.clear();
             if !parsed.args.is_empty() {
                 push_system_message(app, "Usage: /new-session");
                 return true;
@@ -523,7 +515,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             true
         }
         "/resume" => {
-            app.input.clear();
             let [session_id_arg] = parsed.args.as_slice() else {
                 push_system_message(app, "Usage: /resume <session_id>");
                 return true;
@@ -558,7 +549,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
                 // Adapter-advertised slash command: let normal prompt path send it.
                 false
             } else {
-                app.input.clear();
                 push_system_message(app, format!("{} is not yet supported", parsed.name));
                 true
             }
@@ -713,6 +703,19 @@ mod tests {
     }
 
     #[test]
+    fn compact_with_active_session_sets_pending_and_compacting() {
+        let mut app = App::test_default();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        let consumed = try_handle_submit(&mut app, "/compact");
+        assert!(!consumed);
+        assert!(app.pending_compact_clear);
+        assert!(app.is_compacting);
+    }
+
+    #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
         app.messages.push(ChatMessage {
@@ -722,6 +725,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::from_complete("keep"),
             )],
+            usage: None,
         });
 
         let consumed = try_handle_submit(&mut app, "/compact now");

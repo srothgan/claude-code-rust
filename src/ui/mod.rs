@@ -34,7 +34,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("ui::render"));
@@ -115,6 +115,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 const FOOTER_PAD: u16 = 2;
+const FOOTER_COLUMN_GAP: u16 = 1;
+const FOOTER_SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
@@ -145,46 +150,134 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(line) = &app.cached_footer_line {
-        frame.render_widget(Paragraph::new(line.clone()), padded);
-        render_footer_update_hint(frame, padded, line, app.update_check_hint.as_deref());
+        if let Some((right_text, right_color)) = footer_right_text(app) {
+            let (left_area, right_area) = split_footer_columns(padded);
+            frame.render_widget(Paragraph::new(line.clone()), left_area);
+            render_footer_right_info(frame, right_area, &right_text, right_color);
+        } else {
+            frame.render_widget(Paragraph::new(line.clone()), padded);
+        }
     }
 }
 
-fn render_footer_update_hint(
-    frame: &mut Frame,
-    area: Rect,
-    left_line: &Line<'_>,
-    hint: Option<&str>,
-) {
-    let Some(hint) = hint else {
+fn context_remaining_percent_rounded(used: u64, window: u64) -> Option<u64> {
+    if window == 0 {
+        return None;
+    }
+    let used_percent = (u128::from(used) * 100 + (u128::from(window) / 2)) / u128::from(window);
+    Some(100_u64.saturating_sub(used_percent.min(100) as u64))
+}
+
+fn context_text(window: Option<u64>, used: Option<u64>, show_new_session_default: bool) -> String {
+    if show_new_session_default {
+        return "100%".to_owned();
+    }
+
+    window
+        .zip(used)
+        .and_then(|(w, u)| context_remaining_percent_rounded(u, w))
+        .map_or_else(|| "-".to_owned(), |percent| format!("{percent}%"))
+}
+
+fn footer_telemetry_text(app: &App) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let totals = &app.session_usage;
+    let is_new_session = app.session_id.is_some()
+        && totals.total_tokens() == 0
+        && totals.context_used_tokens().is_none();
+    if app.session_id.is_some()
+        || totals.context_window.is_some()
+        || totals.context_used_tokens().is_some()
+    {
+        let context_text =
+            context_text(totals.context_window, totals.context_used_tokens(), is_new_session);
+        parts.push(format!("Context: {context_text}"));
+    }
+
+    if parts.is_empty() && !app.is_compacting {
+        return None;
+    }
+
+    let mut text = parts.join(" | ");
+    if app.is_compacting {
+        let ch = FOOTER_SPINNER_FRAMES[app.spinner_frame % FOOTER_SPINNER_FRAMES.len()];
+        text = if text.is_empty() {
+            format!("{ch} Compacting...")
+        } else {
+            format!("{ch} Compacting...  {text}")
+        };
+    }
+    Some(text)
+}
+
+fn footer_right_text(app: &App) -> Option<(String, Color)> {
+    if let Some(text) = footer_telemetry_text(app) {
+        let color = if app.is_compacting { theme::RUST_ORANGE } else { theme::DIM };
+        return Some((text, color));
+    }
+    app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE))
+}
+
+fn split_footer_columns(area: Rect) -> (Rect, Rect) {
+    if area.width == 0 {
+        return (area, Rect { width: 0, ..area });
+    }
+
+    let gap = if area.width > 2 { FOOTER_COLUMN_GAP } else { 0 };
+    let usable_width = area.width.saturating_sub(gap);
+    let left_width = usable_width.saturating_add(1) / 2;
+    let right_width = usable_width.saturating_sub(left_width);
+
+    let left = Rect { width: left_width, ..area };
+    let right = Rect {
+        x: area.x.saturating_add(left_width).saturating_add(gap),
+        width: right_width,
+        ..area
+    };
+    (left, right)
+}
+
+fn fit_footer_right_text(text: &str, max_width: usize) -> Option<String> {
+    if max_width == 0 || text.trim().is_empty() {
+        return None;
+    }
+
+    if UnicodeWidthStr::width(text) <= max_width {
+        return Some(text.to_owned());
+    }
+
+    if max_width <= 3 {
+        return Some(".".repeat(max_width));
+    }
+
+    let mut fitted = String::new();
+    let mut width: usize = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width.saturating_add(ch_width).saturating_add(3) > max_width {
+            break;
+        }
+        fitted.push(ch);
+        width = width.saturating_add(ch_width);
+    }
+
+    if fitted.is_empty() {
+        return Some("...".to_owned());
+    }
+    fitted.push_str("...");
+    Some(fitted)
+}
+
+fn render_footer_right_info(frame: &mut Frame, area: Rect, right_text: &str, right_color: Color) {
+    if area.width == 0 {
+        return;
+    }
+    let Some(fitted) = fit_footer_right_text(right_text, usize::from(area.width)) else {
         return;
     };
-    if hint.trim().is_empty() || area.width == 0 {
-        return;
-    }
 
-    let left_width = line_display_width(left_line);
-    let hint_width = UnicodeWidthStr::width(hint);
-    if hint_width == 0 {
-        return;
-    }
-
-    // Keep a small gap and skip rendering if the footer is too narrow.
-    if !footer_can_render_update_hint(usize::from(area.width), left_width, hint_width) {
-        return;
-    }
-
-    let line = Line::from(Span::styled(hint.to_owned(), Style::default().fg(theme::RUST_ORANGE)));
+    let line = Line::from(Span::styled(fitted, Style::default().fg(right_color)));
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
-}
-
-fn line_display_width(line: &Line<'_>) -> usize {
-    line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
-}
-
-fn footer_can_render_update_hint(area_width: usize, left_width: usize, hint_width: usize) -> bool {
-    let min_total = left_width.saturating_add(3).saturating_add(hint_width);
-    area_width > min_total
 }
 
 /// Returns a color for the given mode ID.
@@ -240,10 +333,89 @@ fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::model;
+    use crate::app::{
+        App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
+    };
 
     #[test]
-    fn footer_hint_requires_gap_after_left_content() {
-        assert!(footer_can_render_update_hint(40, 20, 10));
-        assert!(!footer_can_render_update_hint(33, 20, 10));
+    fn split_footer_columns_preserves_total_width() {
+        let area = Rect::new(0, 0, 80, 1);
+        let (left, right) = split_footer_columns(area);
+        assert_eq!(left.width.saturating_add(right.width).saturating_add(FOOTER_COLUMN_GAP), 80);
+        assert_eq!(left.width, 40);
+        assert_eq!(right.width, 39);
+    }
+
+    #[test]
+    fn fit_footer_right_text_truncates_when_needed() {
+        let text = "Context: 37%";
+        let fitted = fit_footer_right_text(text, 8).expect("fitted text");
+        assert!(fitted.ends_with("..."));
+        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 8);
+    }
+
+    #[test]
+    fn fit_footer_right_text_keeps_compacting_prefix() {
+        let text = "\u{280B} Compacting...  Context: 37%";
+        let fitted = fit_footer_right_text(text, 20).expect("fitted text");
+        assert!(fitted.starts_with('\u{280B}'));
+        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 20);
+    }
+
+    #[test]
+    fn context_text_new_session_defaults_to_full() {
+        assert_eq!(context_text(None, None, true), "100%");
+        assert_eq!(context_text(Some(200_000), None, true), "100%");
+    }
+
+    #[test]
+    fn context_text_unknown_when_not_new_session() {
+        assert_eq!(context_text(None, None, false), "-");
+        assert_eq!(context_text(Some(200_000), None, false), "-");
+    }
+
+    #[test]
+    fn context_text_computes_percent_when_defined() {
+        assert_eq!(context_text(Some(200_000), Some(100_000), false), "50%");
+    }
+
+    #[test]
+    fn footer_telemetry_new_session_uses_unknown_defaults() {
+        let mut app = App::test_default();
+        app.session_id = Some(model::SessionId::new("session-new"));
+
+        let text = footer_telemetry_text(&app).expect("footer telemetry");
+        assert_eq!(text, "Context: 100%");
+    }
+
+    #[test]
+    fn footer_telemetry_still_defaults_to_full_after_first_user_message() {
+        let mut app = App::test_default();
+        app.session_id = Some(model::SessionId::new("session-new"));
+        app.messages.push(ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![MessageBlock::Text(
+                "hello".to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete("hello"),
+            )],
+            usage: None,
+        });
+
+        let text = footer_telemetry_text(&app).expect("footer telemetry");
+        assert_eq!(text, "Context: 100%");
+    }
+
+    #[test]
+    fn footer_telemetry_resume_ignores_cost_and_tokens() {
+        let mut app = App::test_default();
+        app.session_id = Some(model::SessionId::new("session-resume"));
+        app.session_usage.total_input_tokens = 400;
+        app.session_usage.total_cost_usd = Some(0.35);
+        app.session_usage.cost_is_since_resume = true;
+
+        let text = footer_telemetry_text(&app).expect("footer telemetry");
+        assert_eq!(text, "Context: -");
     }
 }

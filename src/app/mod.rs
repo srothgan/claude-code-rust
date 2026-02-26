@@ -38,10 +38,10 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, ChatViewport, HelpView, IncrementalMarkdown,
-    InlinePermission, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, RecentSessionInfo,
-    SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
-    WelcomeBlock, is_execute_tool_name,
+    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
+    IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
+    ModeInfo, ModeState, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
+    SessionUsageState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock, is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 
@@ -153,7 +153,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         let is_animating = matches!(
             app.status,
             AppStatus::Connecting | AppStatus::Resuming | AppStatus::Thinking | AppStatus::Running
-        );
+        ) || app.is_compacting;
         if is_animating {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.needs_redraw = true;

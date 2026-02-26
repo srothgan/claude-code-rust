@@ -14,8 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo, ModeState};
-use crate::agent::events::ClientEvent;
+use super::{
+    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo,
+    ModeState,
+};
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::clear_selection;
@@ -282,19 +284,9 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && let Some(ref conn) = app.conn
-                && let Some(sid) = app.session_id.clone()
+                && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
             {
-                let conn = Rc::clone(conn);
-                let tx = app.event_tx.clone();
-                tokio::task::spawn_local(async move {
-                    if let Err(e) = conn.cancel(sid.to_string()) {
-                        tracing::error!("Failed to send cancel: {e}");
-                    } else {
-                        let _ = tx.send(ClientEvent::TurnCancelled);
-                    }
-                });
-                app.status = AppStatus::Ready;
+                tracing::error!("Failed to send cancel: {message}");
             }
         }
         // Enter (no modifiers): deferred submit for paste detection.
