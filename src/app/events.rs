@@ -685,7 +685,7 @@ fn update_session_usage(app: &mut App, usage: &model::UsageUpdate) -> MessageUsa
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
-        turn_cost_usd: usage.turn_cost_usd.or(usage.total_cost_usd),
+        turn_cost_usd: usage.turn_cost_usd,
     }
 }
 
