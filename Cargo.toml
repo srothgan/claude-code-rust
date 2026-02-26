@@ -19,7 +19,6 @@ name = "claude-rs"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol = { version = "0.9.4", features = ["unstable_session_model", "unstable_session_resume", "unstable_session_usage"] }
 ansi-to-tui = "8.0.1"
 anyhow = "1.0.101"
 arboard = "3.6.1"

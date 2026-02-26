@@ -3,38 +3,38 @@
 // that the pending_permission_ids queue is maintained, and that responses
 // are sent through the oneshot channel.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::model;
 use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
-use crate::helpers::{send_acp_event, test_app};
+use crate::helpers::{send_client_event, test_app};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
 /// Returns the oneshot receiver so the test can verify the response.
 fn setup_permission(
     app: &mut claude_code_rust::app::App,
     tool_id: &str,
-    options: Vec<acp::PermissionOption>,
-) -> oneshot::Receiver<acp::RequestPermissionResponse> {
+    options: Vec<model::PermissionOption>,
+) -> oneshot::Receiver<model::RequestPermissionResponse> {
     // First create the tool call so it exists in the index
     let id = tool_id.to_owned();
-    let tc = acp::ToolCall::new(id, "Write file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc = model::ToolCall::new(id, "Write file").status(model::ToolCallStatus::InProgress);
+    send_client_event(app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     let (response_tx, response_rx) = oneshot::channel();
     let tool_call_update =
-        acp::ToolCallUpdate::new(tool_id.to_owned(), acp::ToolCallUpdateFields::new());
-    let request = acp::RequestPermissionRequest::new("test-session", tool_call_update, options);
-    send_acp_event(app, ClientEvent::PermissionRequest { request, response_tx });
+        model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
+    let request = model::RequestPermissionRequest::new("test-session", tool_call_update, options);
+    send_client_event(app, ClientEvent::PermissionRequest { request, response_tx });
     response_rx
 }
 
-fn allow_deny_options() -> Vec<acp::PermissionOption> {
+fn allow_deny_options() -> Vec<model::PermissionOption> {
     vec![
-        acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
-        acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+        model::PermissionOption::new("allow", "Allow", model::PermissionOptionKind::AllowOnce),
+        model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
     ]
 }
 
@@ -77,10 +77,10 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
 
     let (response_tx, mut response_rx) = oneshot::channel();
     let tool_call_update =
-        acp::ToolCallUpdate::new("nonexistent", acp::ToolCallUpdateFields::new());
+        model::ToolCallUpdate::new("nonexistent", model::ToolCallUpdateFields::new());
     let options = allow_deny_options();
-    let request = acp::RequestPermissionRequest::new("test-session", tool_call_update, options);
-    send_acp_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    let request = model::RequestPermissionRequest::new("test-session", tool_call_update, options);
+    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
     // Should NOT be in pending queue
     assert!(app.pending_permission_ids.is_empty());
@@ -89,8 +89,8 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     let response = response_rx.try_recv();
     assert!(response.is_ok(), "auto-reject should send response immediately");
     let resp = response.unwrap();
-    if let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome {
-        assert_eq!(selected.option_id.to_string(), "deny", "auto-reject should pick last option");
+    if let model::RequestPermissionOutcome::Selected(selected) = resp.outcome {
+        assert_eq!(selected.option_id.clone(), "deny", "auto-reject should pick last option");
     } else {
         panic!("expected Selected outcome from auto-reject");
     }
@@ -125,19 +125,22 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     let mut first_rx = setup_permission(&mut app, "tc-dup", allow_deny_options());
 
     let (response_tx, mut duplicate_rx) = oneshot::channel();
-    let tool_call_update = acp::ToolCallUpdate::new("tc-dup", acp::ToolCallUpdateFields::new());
-    let request =
-        acp::RequestPermissionRequest::new("test-session", tool_call_update, allow_deny_options());
-    send_acp_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    let tool_call_update = model::ToolCallUpdate::new("tc-dup", model::ToolCallUpdateFields::new());
+    let request = model::RequestPermissionRequest::new(
+        "test-session",
+        tool_call_update,
+        allow_deny_options(),
+    );
+    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
     assert_eq!(app.pending_permission_ids, vec!["tc-dup"]);
     assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
 
     let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
-    let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+    let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
         panic!("expected Selected outcome from duplicate auto-reject");
     };
-    assert_eq!(selected.option_id.to_string(), "deny");
+    assert_eq!(selected.option_id.clone(), "deny");
 }
 
 // --- Scroll interaction during streaming ---
@@ -148,10 +151,11 @@ async fn scroll_target_preserved_across_text_chunks() {
     app.viewport.scroll_target = 42;
     app.viewport.auto_scroll = false;
 
-    let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Some text")));
-    send_acp_event(
+    let chunk =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Some text")));
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
     );
 
     // Text chunks should NOT reset scroll when auto_scroll is off
@@ -165,8 +169,9 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     app.viewport.scroll_target = 10;
     app.viewport.auto_scroll = false;
 
-    let tc = acp::ToolCall::new("tc-scroll", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc =
+        model::ToolCall::new("tc-scroll", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     assert_eq!(app.viewport.scroll_target, 10, "tool calls shouldn't touch scroll_target");
     assert!(!app.viewport.auto_scroll);
@@ -181,7 +186,7 @@ async fn turn_complete_resets_transient_state() {
     app.files_accessed = 5;
     app.spinner_frame = 42;
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0, "files_accessed should reset");
@@ -194,14 +199,15 @@ async fn turn_complete_resets_transient_state() {
 async fn turn_complete_does_not_clear_messages() {
     let mut app = test_app();
 
-    let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("hello")));
-    send_acp_event(
+    let chunk =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("hello")));
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
     );
     assert_eq!(app.messages.len(), 1);
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
 
     assert_eq!(app.messages.len(), 1, "messages should persist across turns");
 }
@@ -210,11 +216,12 @@ async fn turn_complete_does_not_clear_messages() {
 async fn turn_complete_does_not_clear_tool_call_index() {
     let mut app = test_app();
 
-    let tc = acp::ToolCall::new("tc-persist", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc =
+        model::ToolCall::new("tc-persist", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     assert!(app.tool_call_index.contains_key("tc-persist"));
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
 
     assert!(
         app.tool_call_index.contains_key("tc-persist"),
@@ -234,7 +241,7 @@ async fn turn_complete_does_not_clear_todos() {
     }];
     app.show_todo_panel = true;
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
 
     assert_eq!(app.todos.len(), 1, "todos should persist across turns");
     assert!(app.show_todo_panel, "todo panel state should persist");
@@ -253,7 +260,7 @@ async fn turn_complete_does_not_affect_mode() {
         }],
     });
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
 
     assert!(app.mode.is_some(), "mode should persist across turns");
 }

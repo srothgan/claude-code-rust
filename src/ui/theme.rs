@@ -21,8 +21,8 @@ pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
 
 // UI chrome
 pub const DIM: Color = Color::DarkGray;
-pub const PROMPT_CHAR: &str = "❯";
-pub const SEPARATOR_CHAR: &str = "─";
+pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
 // Role header colors
 pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
@@ -31,41 +31,35 @@ pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
 // Tool status icons
-pub const ICON_COMPLETED: &str = "\u{2713}"; // ✓
-pub const ICON_FAILED: &str = "\u{2717}"; // ✗
+pub const ICON_COMPLETED: &str = "\u{2713}";
+pub const ICON_FAILED: &str = "\u{2717}";
 
 // Status colors
 pub const STATUS_ERROR: Color = Color::Red;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 
-/// Tool kind icon + label pair. Monochrome Unicode symbols.
-/// If `claude_tool_name` is provided, override icon/label for specific tools.
-pub fn tool_kind_label(
-    kind: agent_client_protocol::ToolKind,
-    claude_tool_name: Option<&str>,
-) -> (&'static str, &'static str) {
-    use agent_client_protocol::ToolKind;
-
-    // Override for specific Claude Code tool names
-    if let Some(name) = claude_tool_name {
-        match name {
-            "Task" => return ("◇", "Agent"),
-            "WebSearch" => return ("⊕", "Search"),
-            "WebFetch" => return ("⊕", "Fetch"),
-            _ => {}
-        }
-    }
-
-    match kind {
-        ToolKind::Read => ("⬚", "Read"),
-        ToolKind::Edit => ("▣", "Edit"),
-        ToolKind::Delete => ("▣", "Delete"),
-        ToolKind::Move => ("⇄", "Move"),
-        ToolKind::Search => ("⌕", "Find"),
-        ToolKind::Execute => ("⟩", "Bash"),
-        ToolKind::Think => ("❖", "Think"),
-        ToolKind::Fetch => ("⊕", "Fetch"),
-        ToolKind::SwitchMode => ("⊙", "Mode"),
-        _ => ("○", "Tool"),
+/// SDK tool icon + label pair. Monochrome Unicode symbols.
+/// Unknown tool names fall back to a generic Tool label.
+pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
+    match sdk_tool_name {
+        "Read" => ("\u{2b1a}", "Read"),
+        "Write" => ("\u{25a3}", "Write"),
+        "Edit" => ("\u{25a3}", "Edit"),
+        "MultiEdit" => ("\u{25a3}", "MultiEdit"),
+        "NotebookEdit" => ("\u{25a3}", "NotebookEdit"),
+        "Delete" => ("\u{25a3}", "Delete"),
+        "Move" => ("\u{21c4}", "Move"),
+        "Glob" => ("\u{2315}", "Glob"),
+        "Grep" => ("\u{2315}", "Grep"),
+        "LS" => ("\u{2315}", "LS"),
+        "Bash" => ("\u{27e9}", "Bash"),
+        "Task" => ("\u{25c7}", "Task"),
+        "WebFetch" => ("\u{2295}", "WebFetch"),
+        "WebSearch" => ("\u{2295}", "WebSearch"),
+        "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
+        "TodoWrite" => ("\u{25cc}", "TodoWrite"),
+        "Config" => ("\u{2299}", "Config"),
+        "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        _ => ("\u{25cb}", "Tool"),
     }
 }

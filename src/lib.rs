@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod acp;
+pub mod agent;
 pub mod app;
 pub mod perf;
 pub mod ui;
@@ -45,9 +45,9 @@ pub struct Cli {
     #[arg(long, short = 'C')]
     pub dir: Option<std::path::PathBuf>,
 
-    /// Path to an ACP adapter binary (highest startup priority).
+    /// Path to the agent bridge script (defaults to agent-sdk/dist/bridge.js).
     #[arg(long)]
-    pub adapter_bin: Option<std::path::PathBuf>,
+    pub bridge_script: Option<std::path::PathBuf>,
 
     /// Write tracing diagnostics to a file (disabled unless explicitly set).
     #[arg(long, value_name = "PATH")]

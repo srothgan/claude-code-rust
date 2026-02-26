@@ -5,12 +5,12 @@
 // State transition integration tests.
 // Validates multi-event sequences and App state consistency.
 
-use agent_client_protocol as acp;
-use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::agent::events::ClientEvent;
+use claude_code_rust::agent::model;
 use claude_code_rust::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::{send_acp_event, test_app};
+use crate::helpers::{send_client_event, test_app};
 
 // --- Full turn lifecycle ---
 
@@ -21,25 +21,25 @@ async fn full_turn_lifecycle_text_only() {
 
     // Agent starts thinking (thought chunk)
     let thought =
-        acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Planning...")));
-    send_acp_event(
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Planning...")));
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentThoughtChunk(thought)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentThoughtChunk(thought)),
     );
     assert!(matches!(app.status, AppStatus::Thinking));
 
     // Agent streams text
-    let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
         "Here is my answer.",
     )));
-    send_acp_event(
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
     );
     assert!(matches!(app.status, AppStatus::Running));
 
     // Turn completes
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.messages.len(), 1);
 }
@@ -49,40 +49,41 @@ async fn full_turn_lifecycle_with_tool_calls() {
     let mut app = test_app();
 
     // Text chunk
-    let chunk =
-        acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Let me check.")));
-    send_acp_event(
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+        "Let me check.",
+    )));
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
     );
 
     // Tool call
-    let tc = acp::ToolCall::new("tc-flow", "Read src/lib.rs")
-        .kind(acp::ToolKind::Read)
-        .status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc = model::ToolCall::new("tc-flow", "Read src/lib.rs")
+        .kind(model::ToolKind::Read)
+        .status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     // Tool completes
-    let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed);
-    send_acp_event(
+    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-            "tc-flow", fields,
-        ))),
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+            model::ToolCallUpdate::new("tc-flow", fields),
+        )),
     );
     assert!(matches!(app.status, AppStatus::Thinking));
 
     // More text
-    let chunk2 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(
+    let chunk2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
         " The file looks good.",
     )));
-    send_acp_event(
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk2)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk2)),
     );
 
     // Turn completes
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -101,12 +102,12 @@ async fn todowrite_tool_call_updates_todo_list() {
 
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc = acp::ToolCall::new("todo-1", "TodoWrite")
-        .kind(acp::ToolKind::Other)
-        .status(acp::ToolCallStatus::InProgress)
+    let tc = model::ToolCall::new("todo-1", "TodoWrite")
+        .kind(model::ToolKind::Other)
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw_input)
         .meta(meta);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     assert_eq!(app.todos.len(), 2);
     assert_eq!(app.todos[0].content, "Fix bug");
@@ -127,12 +128,12 @@ async fn todowrite_all_completed_hides_panel() {
 
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc = acp::ToolCall::new("todo-done", "TodoWrite")
-        .kind(acp::ToolKind::Other)
-        .status(acp::ToolCallStatus::InProgress)
+    let tc = model::ToolCall::new("todo-done", "TodoWrite")
+        .kind(model::ToolKind::Other)
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw_input)
         .meta(meta);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     assert!(app.todos.is_empty(), "all-completed clears the list");
     assert!(!app.show_todo_panel, "panel hidden when all done");
@@ -144,15 +145,16 @@ async fn todowrite_all_completed_hides_panel() {
 async fn error_then_new_turn_recovers() {
     let mut app = test_app();
 
-    send_acp_event(&mut app, ClientEvent::TurnError("timeout".into()));
+    send_client_event(&mut app, ClientEvent::TurnError("timeout".into()));
     assert!(matches!(app.status, AppStatus::Error));
 
     // New text chunk (simulates user retry) starts fresh
-    let chunk =
-        acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Retry answer")));
-    send_acp_event(
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+        "Retry answer",
+    )));
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
     );
     assert!(matches!(app.status, AppStatus::Running));
 }
@@ -164,14 +166,20 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
     let mut app = test_app();
 
     // First turn
-    let c1 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Turn 1")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c1)));
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
+    );
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert_eq!(app.messages.len(), 1);
 
     // Second turn: chunks append to the last assistant message (no user message between turns)
-    let c2 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Turn 2")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c2)));
+    let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
+    );
 
     // Still one message - consecutive assistant chunks always merge
     assert_eq!(app.messages.len(), 1);
@@ -187,19 +195,20 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
 async fn tool_call_content_update() {
     let mut app = test_app();
 
-    let tc = acp::ToolCall::new("tc-content", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc =
+        model::ToolCall::new("tc-content", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
     // Update with content
-    let content = vec![acp::ToolCallContent::from("file contents here")];
-    let fields =
-        acp::ToolCallUpdateFields::new().content(content).status(acp::ToolCallStatus::Completed);
-    send_acp_event(
+    let content = vec![model::ToolCallContent::from("file contents here")];
+    let fields = model::ToolCallUpdateFields::new()
+        .content(content)
+        .status(model::ToolCallStatus::Completed);
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-            "tc-content",
-            fields,
-        ))),
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+            model::ToolCallUpdate::new("tc-content", fields),
+        )),
     );
 
     let (mi, bi) = app.tool_call_index["tc-content"];
@@ -218,11 +227,12 @@ async fn auto_scroll_maintained_during_streaming() {
     assert!(app.viewport.auto_scroll);
 
     for _ in 0..20 {
-        let chunk =
-            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("More text. ")));
-        send_acp_event(
+        let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+            "More text. ",
+        )));
+        send_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
+            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
         );
     }
 
@@ -237,20 +247,20 @@ async fn stress_many_tool_calls_in_one_turn() {
     app.status = AppStatus::Running;
 
     for i in 0..50 {
-        let tc = acp::ToolCall::new(format!("stress-{i}"), format!("Op {i}"))
-            .status(acp::ToolCallStatus::InProgress);
-        send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+        let tc = model::ToolCall::new(format!("stress-{i}"), format!("Op {i}"))
+            .status(model::ToolCallStatus::InProgress);
+        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     }
 
     assert_eq!(app.tool_call_index.len(), 50);
 
     // Complete all
     for i in 0..50 {
-        let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed);
-        send_acp_event(
+        let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
+        send_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCallUpdate(
-                acp::ToolCallUpdate::new(format!("stress-{i}"), fields),
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new(format!("stress-{i}"), fields),
             )),
         );
     }
@@ -275,10 +285,10 @@ async fn mode_update_switches_active_mode() {
     });
 
     // CurrentModeUpdate switches to "plan"
-    let update = acp::CurrentModeUpdate::new("plan");
-    send_acp_event(
+    let update = model::CurrentModeUpdate::new("plan");
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::CurrentModeUpdate(update)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
     );
 
     let mode = app.mode.as_ref().expect("mode should still exist");
@@ -301,10 +311,10 @@ async fn mode_update_unknown_id_uses_id_as_name() {
     });
 
     // Update with an ID not in available_modes
-    let update = acp::CurrentModeUpdate::new("unknown-mode");
-    send_acp_event(
+    let update = model::CurrentModeUpdate::new("unknown-mode");
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::CurrentModeUpdate(update)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
     );
 
     let mode = app.mode.as_ref().unwrap();
@@ -317,10 +327,10 @@ async fn mode_update_without_mode_state_is_noop() {
     let mut app = test_app();
     assert!(app.mode.is_none());
 
-    let update = acp::CurrentModeUpdate::new("plan-mode");
-    send_acp_event(
+    let update = model::CurrentModeUpdate::new("plan-mode");
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::CurrentModeUpdate(update)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
     );
 
     // No crash, mode stays None since no ModeState was initialized
@@ -333,20 +343,34 @@ async fn mode_update_without_mode_state_is_noop() {
 async fn text_between_tool_calls_creates_separate_blocks() {
     let mut app = test_app();
 
-    let c1 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Before tool")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c1)));
+    let c1 =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Before tool")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
+    );
 
-    let tc = acp::ToolCall::new("tc-inter", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc =
+        model::ToolCall::new("tc-inter", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    let c2 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("After tool")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c2)));
+    let c2 =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("After tool")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
+    );
 
-    let tc2 = acp::ToolCall::new("tc-inter2", "Write file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc2)));
+    let tc2 =
+        model::ToolCall::new("tc-inter2", "Write file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
 
-    let c3 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Final text")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c3)));
+    let c3 =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Final text")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c3)),
+    );
 
     // Should be: Text, ToolCall, Text, ToolCall, Text = 5 blocks
     assert_eq!(app.messages.len(), 1);
@@ -363,22 +387,28 @@ async fn rapid_turn_complete_then_new_streaming() {
     let mut app = test_app();
 
     // First turn
-    let c1 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Turn 1")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c1)));
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
+    );
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0);
 
     // Immediately start second turn
-    let c2 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Turn 2")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c2)));
+    let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
+    );
     assert!(matches!(app.status, AppStatus::Running));
 
-    let tc = acp::ToolCall::new("tc-t2", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc = model::ToolCall::new("tc-t2", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     assert_eq!(app.files_accessed, 1);
 
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
 }
@@ -394,11 +424,11 @@ async fn todowrite_replaces_previous_todos() {
     ]});
     let mut meta1 = serde_json::Map::new();
     meta1.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc1 = acp::ToolCall::new("todo-r1", "TodoWrite")
-        .status(acp::ToolCallStatus::InProgress)
+    let tc1 = model::ToolCall::new("todo-r1", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw1)
         .meta(meta1);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc1)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
     assert_eq!(app.todos.len(), 2);
 
     // Second TodoWrite replaces with 1 item
@@ -407,11 +437,11 @@ async fn todowrite_replaces_previous_todos() {
     ]});
     let mut meta2 = serde_json::Map::new();
     meta2.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc2 = acp::ToolCall::new("todo-r2", "TodoWrite")
-        .status(acp::ToolCallStatus::InProgress)
+    let tc2 = model::ToolCall::new("todo-r2", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw2)
         .meta(meta2);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc2)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
 
     assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
     assert_eq!(app.todos[0].content, "Task C");
@@ -421,21 +451,21 @@ async fn todowrite_replaces_previous_todos() {
 async fn available_commands_update_replaces_previous() {
     let mut app = test_app();
 
-    let cmd1 = acp::AvailableCommand::new("/help", "Help");
-    let cmd2 = acp::AvailableCommand::new("/clear", "Clear");
-    let update1 = acp::AvailableCommandsUpdate::new(vec![cmd1, cmd2]);
-    send_acp_event(
+    let cmd1 = model::AvailableCommand::new("/help", "Help");
+    let cmd2 = model::AvailableCommand::new("/clear", "Clear");
+    let update1 = model::AvailableCommandsUpdate::new(vec![cmd1, cmd2]);
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AvailableCommandsUpdate(update1)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update1)),
     );
     assert_eq!(app.available_commands.len(), 2);
 
     // New update replaces, not appends
-    let cmd3 = acp::AvailableCommand::new("/commit", "Commit");
-    let update2 = acp::AvailableCommandsUpdate::new(vec![cmd3]);
-    send_acp_event(
+    let cmd3 = model::AvailableCommand::new("/commit", "Commit");
+    let update2 = model::AvailableCommandsUpdate::new(vec![cmd3]);
+    send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(acp::SessionUpdate::AvailableCommandsUpdate(update2)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update2)),
     );
     assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
 }
@@ -450,22 +480,22 @@ async fn empty_todowrite_clears_todos() {
     ]});
     let mut meta1 = serde_json::Map::new();
     meta1.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc1 = acp::ToolCall::new("todo-e1", "TodoWrite")
-        .status(acp::ToolCallStatus::InProgress)
+    let tc1 = model::ToolCall::new("todo-e1", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw1)
         .meta(meta1);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc1)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
     assert_eq!(app.todos.len(), 1);
 
     // Empty TodoWrite clears
     let raw2 = serde_json::json!({"todos": []});
     let mut meta2 = serde_json::Map::new();
     meta2.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc2 = acp::ToolCall::new("todo-e2", "TodoWrite")
-        .status(acp::ToolCallStatus::InProgress)
+    let tc2 = model::ToolCall::new("todo-e2", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
         .raw_input(raw2)
         .meta(meta2);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc2)));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
 
     assert!(app.todos.is_empty(), "empty todo list clears");
 }
@@ -474,13 +504,16 @@ async fn empty_todowrite_clears_todos() {
 async fn error_during_tool_calls_leaves_tool_calls_intact() {
     let mut app = test_app();
 
-    let c = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("working")));
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c)));
+    let c = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("working")));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c)),
+    );
 
-    let tc = acp::ToolCall::new("tc-err", "Read file").status(acp::ToolCallStatus::InProgress);
-    send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+    let tc = model::ToolCall::new("tc-err", "Read file").status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    send_acp_event(&mut app, ClientEvent::TurnError("crashed".into()));
+    send_client_event(&mut app, ClientEvent::TurnError("crashed".into()));
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
@@ -492,7 +525,7 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
         panic!("expected preserved tool call block");
     };
     assert_eq!(tc.id, "tc-err");
-    assert_eq!(tc.status, acp::ToolCallStatus::Failed, "in-progress tool should be failed");
+    assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
     assert!(matches!(app.messages[1].role, MessageRole::System));
     let Some(MessageBlock::Text(text, ..)) = app.messages[1].blocks.first() else {
@@ -506,12 +539,12 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     let mut app = test_app();
 
     for i in 0..3 {
-        let tc = acp::ToolCall::new(format!("tc-acc-{i}"), format!("Read {i}"))
-            .status(acp::ToolCallStatus::InProgress);
-        send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+        let tc = model::ToolCall::new(format!("tc-acc-{i}"), format!("Read {i}"))
+            .status(model::ToolCallStatus::InProgress);
+        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     }
 
     assert_eq!(app.files_accessed, 3, "one per tool call");
-    send_acp_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete);
     assert_eq!(app.files_accessed, 0, "reset on turn complete");
 }

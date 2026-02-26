@@ -21,9 +21,9 @@ use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
     LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
 };
-use crate::acp::client::ClientEvent;
-use crate::app::todos::{apply_plan_todos, parse_todos, set_todos};
-use agent_client_protocol::{self as acp};
+use crate::agent::events::ClientEvent;
+use crate::agent::model;
+use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
@@ -303,12 +303,12 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
+pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
         ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
-            let tool_id = request.tool_call.tool_call_id.to_string();
+            let tool_id = request.tool_call.tool_call_id.clone();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
                 if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
                     tracing::warn!(
@@ -316,9 +316,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     );
                     // Keep the original pending prompt and reject duplicate request.
                     if let Some(last_opt) = request.options.last() {
-                        let _ = response_tx.send(acp::RequestPermissionResponse::new(
-                            acp::RequestPermissionOutcome::Selected(
-                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                        let _ = response_tx.send(model::RequestPermissionResponse::new(
+                            model::RequestPermissionOutcome::Selected(
+                                model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
                             ),
                         ));
                     }
@@ -347,9 +347,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                         "Permission request for non-tool block index: {tool_id}; auto-rejecting"
                     );
                     if let Some(last_opt) = request.options.last() {
-                        let _ = response_tx.send(acp::RequestPermissionResponse::new(
-                            acp::RequestPermissionOutcome::Selected(
-                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                        let _ = response_tx.send(model::RequestPermissionResponse::new(
+                            model::RequestPermissionOutcome::Selected(
+                                model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
                             ),
                         ));
                     }
@@ -363,9 +363,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 );
                 // Tool call not found -- reject by selecting last option
                 if let Some(last_opt) = request.options.last() {
-                    let _ = response_tx.send(acp::RequestPermissionResponse::new(
-                        acp::RequestPermissionOutcome::Selected(
-                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                    let _ = response_tx.send(model::RequestPermissionResponse::new(
+                        model::RequestPermissionOutcome::Selected(
+                            model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
                         ),
                     ));
                 }
@@ -374,7 +374,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnCancelled => {
             app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = true;
-            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+            let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         }
         ClientEvent::TurnComplete => {
             let should_compact_clear = app.pending_compact_clear;
@@ -382,9 +382,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             let show_interrupted_hint = app.cancelled_turn_pending_hint;
             app.cancelled_turn_pending_hint = false;
             if show_interrupted_hint {
-                let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+                let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
             } else {
-                let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Completed);
+                let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
             }
             app.status = AppStatus::Ready;
             app.files_accessed = 0;
@@ -400,28 +400,49 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnError(msg) => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
+            let cancelled_requested = app.cancelled_turn_pending_hint;
+            app.cancelled_turn_pending_hint = false;
+
+            if cancelled_requested {
+                let summary = summarize_internal_error(&msg);
+                tracing::warn!(
+                    error_preview = %summary,
+                    "Turn error suppressed after cancellation request"
+                );
+                if should_compact_clear {
+                    super::slash::clear_conversation_history(app);
+                }
+                let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+                app.input.clear();
+                app.pending_submit = false;
+                app.status = AppStatus::Ready;
+                app.files_accessed = 0;
+                app.active_task_ids.clear();
+                app.refresh_git_branch();
+                push_interrupted_hint(app);
+                return;
+            }
+
             tracing::error!("Turn error: {msg}");
             if looks_like_internal_error(&msg) {
                 tracing::debug!(
                     error_preview = %summarize_internal_error(&msg),
-                    "Internal ACP/adapter turn error payload"
+                    "Internal bridge/adapter turn error payload"
                 );
             }
-            app.cancelled_turn_pending_hint = false;
             if should_compact_clear {
                 super::slash::clear_conversation_history(app);
             }
-            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+            let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
             app.input.clear();
             app.pending_submit = false;
             app.status = AppStatus::Error;
             push_turn_error_message(app, &msg);
         }
         ClientEvent::Connected { session_id, model_name, mode } => {
-            // Grab connection + child from the shared slot
+            // Grab connection from the shared slot
             if let Some(slot) = take_connection_slot() {
                 app.conn = Some(slot.conn);
-                app.adapter_child = Some(slot.child);
             }
             app.session_id = Some(session_id);
             app.model_name = model_name;
@@ -515,11 +536,11 @@ fn push_connection_error_message(app: &mut App, error: &str) {
 #[allow(clippy::too_many_lines)]
 fn reset_for_new_session(
     app: &mut App,
-    session_id: acp::SessionId,
+    session_id: model::SessionId,
     model_name: String,
     mode: Option<super::ModeState>,
 ) {
-    crate::acp::client::kill_all_terminals(&app.terminals);
+    crate::agent::events::kill_all_terminals(&app.terminals);
 
     app.session_id = Some(session_id);
     app.model_name = model_name;
@@ -570,10 +591,35 @@ fn reset_for_new_session(
     app.refresh_git_branch();
 }
 
-fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
+fn sdk_tool_name_from_meta(meta: Option<&serde_json::Value>) -> Option<&str> {
+    meta.and_then(|m| m.get("claudeCode")).and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
+}
+
+fn fallback_sdk_tool_name(kind: model::ToolKind) -> &'static str {
+    match kind {
+        model::ToolKind::Read => "Read",
+        model::ToolKind::Edit => "Edit",
+        model::ToolKind::Delete => "Delete",
+        model::ToolKind::Move => "Move",
+        model::ToolKind::Search => "Search",
+        model::ToolKind::Execute => "Bash",
+        model::ToolKind::Think => "Think",
+        model::ToolKind::Fetch => "Fetch",
+        model::ToolKind::SwitchMode => "ExitPlanMode",
+        model::ToolKind::Other => "Tool",
+    }
+}
+
+fn resolve_sdk_tool_name(kind: model::ToolKind, meta: Option<&serde_json::Value>) -> String {
+    sdk_tool_name_from_meta(meta)
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| fallback_sdk_tool_name(kind).to_owned(), str::to_owned)
+}
+
+fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let title = tc.title.clone();
     let kind = tc.kind;
-    let id_str = tc.tool_call_id.to_string();
+    let id_str = tc.tool_call_id.clone();
     tracing::debug!(
         "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={} has_raw_output={}",
         tc.status,
@@ -581,27 +627,25 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         tc.raw_output.is_some()
     );
 
-    // Extract claude_tool_name from meta.claudeCode.toolName
-    let claude_tool_name = tc.meta.as_ref().and_then(|m| {
-        m.get("claudeCode")
-            .and_then(|v| v.get("toolName"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    });
-
-    let is_task = claude_tool_name.as_deref() == Some("Task");
+    let sdk_tool_name = resolve_sdk_tool_name(kind, tc.meta.as_ref());
+    let is_task = sdk_tool_name == "Task";
 
     // Subagent children are never hidden -- they need to be visible so
     // permission prompts render and the user can interact with them.
     let hidden = false;
 
     // Extract todos from TodoWrite tool calls
-    if claude_tool_name.as_deref() == Some("TodoWrite") {
+    if sdk_tool_name == "TodoWrite" {
         tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
         if let Some(ref raw_input) = tc.raw_input {
-            let todos = parse_todos(raw_input);
-            tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
-            set_todos(app, todos);
+            if let Some(todos) = parse_todos_if_present(raw_input) {
+                tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
+                set_todos(app, todos);
+            } else {
+                tracing::debug!(
+                    "TodoWrite ToolCall raw_input has no todos array yet; preserving existing todos"
+                );
+            }
         } else {
             tracing::warn!("TodoWrite ToolCall has no raw_input");
         }
@@ -612,7 +656,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         app.insert_active_task(id_str.clone());
     }
 
-    let initial_execute_output = if matches!(kind, acp::ToolKind::Execute) {
+    let initial_execute_output = if super::is_execute_tool_name(&sdk_tool_name) {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
         None
@@ -621,11 +665,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let mut tool_info = ToolCallInfo {
         id: id_str,
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
-        kind,
+        sdk_tool_name,
         status: tc.status,
         content: tc.content,
         collapsed: app.tools_collapsed,
-        claude_tool_name,
         hidden,
         terminal_id: None,
         terminal_command: None,
@@ -655,8 +698,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
                 existing.title.clone_from(&tool_info.title);
                 existing.status = tool_info.status;
                 existing.content.clone_from(&tool_info.content);
-                existing.kind = tool_info.kind;
-                existing.claude_tool_name.clone_from(&tool_info.claude_tool_name);
+                existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
                 existing.cache.invalidate();
                 layout_dirty = true;
             }
@@ -687,11 +729,11 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
+fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
     match update {
-        acp::SessionUpdate::AgentMessageChunk(chunk) => {
-            if let acp::ContentBlock::Text(text) = chunk.content {
+        model::SessionUpdate::AgentMessageChunk(chunk) => {
+            if let model::ContentBlock::Text(text) = chunk.content {
                 // Text is actively streaming - suppress the "Thinking..." spinner
                 app.status = AppStatus::Running;
 
@@ -727,12 +769,12 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 });
             }
         }
-        acp::SessionUpdate::ToolCall(tc) => {
+        model::SessionUpdate::ToolCall(tc) => {
             handle_tool_call(app, tc);
         }
-        acp::SessionUpdate::ToolCallUpdate(tcu) => {
+        model::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
-            let id_str = tcu.tool_call_id.to_string();
+            let id_str = tcu.tool_call_id.clone();
             let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
             let has_raw_output = tcu.fields.raw_output.is_some();
             tracing::debug!(
@@ -746,17 +788,17 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     tcu.fields.raw_output
                 );
             }
-            if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Failed))
-                && let Some(content_preview) =
-                    internal_failed_tool_content_preview(tcu.fields.content.as_deref())
+            if matches!(tcu.fields.status, Some(model::ToolCallStatus::Failed))
+                && let Some(content_preview) = internal_failed_tool_content_preview(
+                    tcu.fields.content.as_deref(),
+                    tcu.fields.raw_output.as_ref(),
+                )
             {
-                let claude_tool_name = tcu.meta.as_ref().and_then(|m| {
-                    m.get("claudeCode").and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
-                });
+                let sdk_tool_name = sdk_tool_name_from_meta(tcu.meta.as_ref());
                 tracing::debug!(
                     tool_call_id = %id_str,
                     title = ?tcu.fields.title,
-                    claude_tool_name = ?claude_tool_name,
+                    sdk_tool_name = ?sdk_tool_name,
                     content_preview = %content_preview,
                     "Internal failed ToolCallUpdate payload"
                 );
@@ -765,7 +807,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             // If this is a Task completing, remove from active list
             if matches!(
                 tcu.fields.status,
-                Some(acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed)
+                Some(model::ToolCallStatus::Completed | model::ToolCallStatus::Failed)
             ) {
                 app.remove_active_task(&id_str);
             }
@@ -786,8 +828,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     if let Some(content) = tcu.fields.content {
                         // Extract terminal_id and command from Terminal content blocks
                         for cb in &content {
-                            if let acp::ToolCallContent::Terminal(t) = cb {
-                                let tid = t.terminal_id.to_string();
+                            if let model::ToolCallContent::Terminal(t) = cb {
+                                let tid = t.terminal_id.clone();
                                 if let Some(terminal) = app.terminals.borrow().get(&tid) {
                                     tc.terminal_command = Some(terminal.command.clone());
                                 }
@@ -797,42 +839,44 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         }
                         tc.content = content;
                     }
-                    // TODO(adapter): Revisit when claude-agent-acp reaches feature parity with claude-code-acp and starts forwarding
-                    // incremental Bash output updates during long-running commands.
-                    if matches!(tc.kind, acp::ToolKind::Execute)
+                    // Keep updating Execute output from raw_output so long-running commands
+                    // can stream visible terminal text before completion.
+                    if tc.is_execute_tool()
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
                         && let Some(output) = raw_output_to_terminal_text(raw_output)
                     {
                         tc.terminal_output_len = output.len();
                         tc.terminal_output = Some(output);
                     }
-                    // Update claude_tool_name from update meta if present
-                    if let Some(ref meta) = tcu.meta
-                        && let Some(name) = meta
-                            .get("claudeCode")
-                            .and_then(|v| v.get("toolName"))
-                            .and_then(|v| v.as_str())
+                    // Update sdk_tool_name from update meta when provided.
+                    if let Some(name) = sdk_tool_name_from_meta(tcu.meta.as_ref())
+                        && !name.trim().is_empty()
                     {
-                        tc.claude_tool_name = Some(name.to_owned());
+                        tc.sdk_tool_name = name.to_owned();
                     }
                     // Update todos from TodoWrite raw_input updates
-                    if tc.claude_tool_name.as_deref() == Some("TodoWrite") {
+                    if tc.sdk_tool_name == "TodoWrite" {
                         tracing::info!(
                             "TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}",
                             tcu.fields.raw_input
                         );
                         if let Some(ref raw_input) = tcu.fields.raw_input {
-                            let todos = parse_todos(raw_input);
-                            tracing::info!(
-                                "Parsed {} todos from ToolCallUpdate raw_input",
-                                todos.len()
-                            );
-                            pending_todos = Some(todos);
+                            if let Some(todos) = parse_todos_if_present(raw_input) {
+                                tracing::info!(
+                                    "Parsed {} todos from ToolCallUpdate raw_input",
+                                    todos.len()
+                                );
+                                pending_todos = Some(todos);
+                            } else {
+                                tracing::debug!(
+                                    "TodoWrite ToolCallUpdate raw_input has no todos array yet; preserving existing todos"
+                                );
+                            }
                         }
                     }
                     if matches!(
                         tc.status,
-                        acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
+                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed
                     ) {
                         tc.collapsed = app.tools_collapsed;
                     }
@@ -855,25 +899,25 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 app.status = AppStatus::Thinking;
             }
         }
-        acp::SessionUpdate::UserMessageChunk(_) => {
+        model::SessionUpdate::UserMessageChunk(_) => {
             // Our own message echoed back -- we already display it
         }
-        acp::SessionUpdate::AgentThoughtChunk(chunk) => {
+        model::SessionUpdate::AgentThoughtChunk(chunk) => {
             tracing::debug!("Agent thought: {:?}", chunk);
             app.status = AppStatus::Thinking;
         }
-        acp::SessionUpdate::Plan(plan) => {
+        model::SessionUpdate::Plan(plan) => {
             tracing::debug!("Plan update: {:?}", plan);
             apply_plan_todos(app, &plan);
         }
-        acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
+        model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
             app.available_commands = cmds.available_commands;
             if app.slash.is_some() {
                 super::slash::update_query(app);
             }
         }
-        acp::SessionUpdate::CurrentModeUpdate(update) => {
+        model::SessionUpdate::CurrentModeUpdate(update) => {
             if let Some(ref mut mode) = app.mode {
                 let mode_id = update.current_mode_id.to_string();
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
@@ -886,10 +930,10 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 app.cached_footer_line = None;
             }
         }
-        acp::SessionUpdate::ConfigOptionUpdate(config) => {
+        model::SessionUpdate::ConfigOptionUpdate(config) => {
             tracing::debug!("Config update: {:?}", config);
         }
-        acp::SessionUpdate::UsageUpdate(usage) => {
+        model::SessionUpdate::UsageUpdate(usage) => {
             tracing::debug!(
                 "UsageUpdate: used={} size={} cost={:?}",
                 usage.used,
@@ -897,26 +941,28 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 usage.cost
             );
         }
-        _ => {
-            tracing::debug!("Unhandled session update");
-        }
     }
 }
 
 fn internal_failed_tool_content_preview(
-    content: Option<&[acp::ToolCallContent]>,
+    content: Option<&[model::ToolCallContent]>,
+    raw_output: Option<&serde_json::Value>,
 ) -> Option<String> {
-    let text = content?.iter().find_map(|c| match c {
-        acp::ToolCallContent::Content(inner) => match &inner.content {
-            acp::ContentBlock::Text(t) => Some(t.text.as_str()),
-            _ => None,
-        },
-        _ => None,
-    })?;
-    if !looks_like_internal_error(text) {
+    let text = content
+        .and_then(|items| {
+            items.iter().find_map(|c| match c {
+                model::ToolCallContent::Content(inner) => match &inner.content {
+                    model::ContentBlock::Text(t) => Some(t.text.clone()),
+                    model::ContentBlock::Image(_) => None,
+                },
+                _ => None,
+            })
+        })
+        .or_else(|| raw_output.and_then(raw_output_to_terminal_text))?;
+    if !looks_like_internal_error(&text) {
         return None;
     }
-    Some(summarize_internal_error(text))
+    Some(summarize_internal_error(&text))
 }
 
 fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
@@ -965,7 +1011,7 @@ fn has_internal_error_keywords(lower: &str) -> bool {
     [
         "internal error",
         "adapter",
-        "acp",
+        "bridge",
         "json-rpc",
         "rpc",
         "protocol error",
@@ -974,6 +1020,9 @@ fn has_internal_error_keywords(lower: &str) -> bool {
         "session creation failed",
         "connection closed",
         "event channel closed",
+        "tool permission request failed",
+        "zoderror",
+        "invalid_union",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -992,6 +1041,9 @@ fn looks_like_xml_error_shape(lower: &str) -> bool {
 }
 
 fn summarize_internal_error(input: &str) -> String {
+    if let Some(summary) = summarize_permission_schema_error(input) {
+        return preview_for_log(&summary);
+    }
     if let Some(msg) = extract_xml_tag_value(input, "message") {
         return preview_for_log(msg);
     }
@@ -1000,6 +1052,21 @@ fn summarize_internal_error(input: &str) -> String {
     }
     let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
     preview_for_log(fallback.trim())
+}
+
+fn summarize_permission_schema_error(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("tool permission request failed") {
+        return None;
+    }
+
+    let detail = if let Some(msg) = extract_json_string_field(input, "message") {
+        msg
+    } else {
+        input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input).trim().to_owned()
+    };
+
+    Some(format!("Tool permission request failed: {detail}"))
 }
 
 fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
@@ -1049,7 +1116,7 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
 
 /// Shorten absolute paths in tool titles to relative paths based on cwd.
 /// e.g. "Read C:\\Users\\me\\project\\src\\main.rs" -> "Read src/main.rs"
-/// Handles both `/` and `\\` separators on all platforms since the ACP adapter
+/// Handles both `/` and `\\` separators on all platforms since the bridge adapter
 /// may use either regardless of the host OS.
 fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     if cwd_raw.is_empty() {
@@ -1085,7 +1152,7 @@ fn has_in_progress_tool_calls(app: &App) -> bool {
             matches!(
                 block,
                 MessageBlock::ToolCall(tc)
-                    if matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending)
+                    if matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending)
             )
         });
     }
@@ -1093,19 +1160,18 @@ fn has_in_progress_tool_calls(app: &App) -> bool {
 }
 
 /// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
-fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
+fn session_update_name(update: &model::SessionUpdate) -> &'static str {
     match update {
-        acp::SessionUpdate::AgentMessageChunk(_) => "AgentMessageChunk",
-        acp::SessionUpdate::ToolCall(_) => "ToolCall",
-        acp::SessionUpdate::ToolCallUpdate(_) => "ToolCallUpdate",
-        acp::SessionUpdate::UserMessageChunk(_) => "UserMessageChunk",
-        acp::SessionUpdate::AgentThoughtChunk(_) => "AgentThoughtChunk",
-        acp::SessionUpdate::Plan(_) => "Plan",
-        acp::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
-        acp::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
-        acp::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
-        acp::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
-        _ => "Unknown",
+        model::SessionUpdate::AgentMessageChunk(_) => "AgentMessageChunk",
+        model::SessionUpdate::ToolCall(_) => "ToolCall",
+        model::SessionUpdate::ToolCallUpdate(_) => "ToolCallUpdate",
+        model::SessionUpdate::UserMessageChunk(_) => "UserMessageChunk",
+        model::SessionUpdate::AgentThoughtChunk(_) => "AgentThoughtChunk",
+        model::SessionUpdate::Plan(_) => "Plan",
+        model::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
+        model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
+        model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
+        model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
     }
 }
 
@@ -1124,15 +1190,14 @@ mod tests {
 
     // Helper: build a minimal ToolCallInfo with given id + status
 
-    fn tool_call(id: &str, status: acp::ToolCallStatus) -> ToolCallInfo {
+    fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.into(),
             title: id.into(),
-            kind: acp::ToolKind::Read,
+            sdk_tool_name: "Read".into(),
             status,
             content: vec![],
             collapsed: false,
-            claude_tool_name: None,
             hidden: false,
             terminal_id: None,
             terminal_command: None,
@@ -1329,7 +1394,7 @@ mod tests {
 
     fn connected_event(model_name: &str) -> ClientEvent {
         ClientEvent::Connected {
-            session_id: acp::SessionId::new("test-session"),
+            session_id: model::SessionId::new("test-session"),
             model_name: model_name.to_owned(),
             mode: None,
         }
@@ -1353,18 +1418,21 @@ mod tests {
     #[test]
     fn execute_tool_update_uses_raw_output_fallback() {
         let mut app = make_test_app();
-        let tc = acp::ToolCall::new("tc-exec", "Terminal")
-            .kind(acp::ToolKind::Execute)
-            .status(acp::ToolCallStatus::InProgress);
-        handle_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
-
-        let fields = acp::ToolCallUpdateFields::new()
-            .status(acp::ToolCallStatus::Completed)
-            .raw_output(serde_json::json!("line 1\nline 2"));
-        let update = acp::ToolCallUpdate::new("tc-exec", fields);
-        handle_acp_event(
+        let tc = model::ToolCall::new("tc-exec", "Terminal")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress);
+        handle_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCallUpdate(update)),
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+        );
+
+        let fields = model::ToolCallUpdateFields::new()
+            .status(model::ToolCallStatus::Completed)
+            .raw_output(serde_json::json!("line 1\nline 2"));
+        let update = model::ToolCallUpdate::new("tc-exec", fields);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
         );
 
         let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
@@ -1375,6 +1443,61 @@ mod tests {
             panic!("tool call block missing");
         };
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
+    }
+
+    #[test]
+    fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Existing todo".into(),
+            status: TodoStatus::InProgress,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+
+        let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
+            .kind(model::ToolKind::Other)
+            .raw_input(serde_json::json!({}))
+            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+        );
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Existing todo");
+        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
+        assert!(app.show_todo_panel);
+    }
+
+    #[test]
+    fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
+        let mut app = make_test_app();
+        let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
+            .kind(model::ToolKind::Other)
+            .raw_input(serde_json::json!({
+                "todos": [{"content": "Task A", "status": "in_progress"}]
+            }))
+            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+        );
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Task A");
+
+        let update = model::ToolCallUpdate::new(
+            "tc-todo-update",
+            model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todos[0].content, "Task A");
+        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
     }
 
     #[test]
@@ -1399,7 +1522,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::Pending,
+            model::ToolCallStatus::Pending,
         )))]));
         assert!(has_in_progress_tool_calls(&app));
     }
@@ -1409,7 +1532,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::InProgress,
+            model::ToolCallStatus::InProgress,
         )))]));
         assert!(has_in_progress_tool_calls(&app));
     }
@@ -1419,7 +1542,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::Completed,
+            model::ToolCallStatus::Completed,
         )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1429,7 +1552,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::Failed,
+            model::ToolCallStatus::Failed,
         )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1450,7 +1573,7 @@ mod tests {
         // First assistant message has in-progress tool
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::InProgress,
+            model::ToolCallStatus::InProgress,
         )))]));
         // Last message is user - should be false
         app.messages.push(user_msg("thanks"));
@@ -1463,12 +1586,12 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
-            acp::ToolCallStatus::InProgress,
+            model::ToolCallStatus::InProgress,
         )))]));
         app.messages.push(user_msg("ok"));
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc2",
-            acp::ToolCallStatus::Completed,
+            model::ToolCallStatus::Completed,
         )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1477,8 +1600,8 @@ mod tests {
     fn has_in_progress_mixed_completed_and_pending() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::InProgress))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
         ]));
         assert!(has_in_progress_tool_calls(&app));
     }
@@ -1493,7 +1616,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::default(),
             ),
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::Text(
                 "done".into(),
                 BlockCache::default(),
@@ -1511,13 +1634,13 @@ mod tests {
             .map(|i| {
                 MessageBlock::ToolCall(Box::new(tool_call(
                     &format!("tc{i}"),
-                    acp::ToolCallStatus::Completed,
+                    model::ToolCallStatus::Completed,
                 )))
             })
             .collect();
         blocks.push(MessageBlock::ToolCall(Box::new(tool_call(
             "tc_pending",
-            acp::ToolCallStatus::Pending,
+            model::ToolCallStatus::Pending,
         ))));
         app.messages.push(assistant_msg(blocks));
         assert!(has_in_progress_tool_calls(&app));
@@ -1531,7 +1654,7 @@ mod tests {
             .map(|i| {
                 MessageBlock::ToolCall(Box::new(tool_call(
                     &format!("tc{i}"),
-                    acp::ToolCallStatus::Completed,
+                    model::ToolCallStatus::Completed,
                 )))
             })
             .collect();
@@ -1544,9 +1667,9 @@ mod tests {
     fn has_in_progress_failed_and_completed_mix() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Failed))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc3", acp::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
         ]));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1588,10 +1711,10 @@ mod tests {
     fn turn_complete_after_cancel_renders_interrupted_hint() {
         let mut app = make_test_app();
 
-        handle_acp_event(&mut app, ClientEvent::TurnCancelled);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
         assert!(app.cancelled_turn_pending_hint);
 
-        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         assert!(!app.cancelled_turn_pending_hint);
         let last = app.messages.last().expect("expected interruption hint message");
@@ -1607,7 +1730,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
 
-        handle_acp_event(&mut app, connected_event("claude-updated"));
+        handle_client_event(&mut app, connected_event("claude-updated"));
 
         let Some(first) = app.messages.first() else {
             panic!("missing welcome message");
@@ -1624,7 +1747,7 @@ mod tests {
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.messages.push(user_msg("hello"));
 
-        handle_acp_event(&mut app, connected_event("claude-updated"));
+        handle_client_event(&mut app, connected_event("claude-updated"));
 
         let Some(first) = app.messages.first() else {
             panic!("missing first message");
@@ -1640,7 +1763,7 @@ mod tests {
         let mut app = make_test_app();
         app.input.set_text("keep me");
 
-        handle_acp_event(
+        handle_client_event(
             &mut app,
             ClientEvent::AuthRequired {
                 method_name: "oauth".into(),
@@ -1662,7 +1785,7 @@ mod tests {
         let mut app = make_test_app();
         assert!(app.update_check_hint.is_none());
 
-        handle_acp_event(
+        handle_client_event(
             &mut app,
             ClientEvent::UpdateAvailable {
                 latest_version: "0.3.0".into(),
@@ -1703,10 +1826,10 @@ mod tests {
             dialog: super::super::dialog::DialogState::default(),
         });
 
-        handle_acp_event(
+        handle_client_event(
             &mut app,
             ClientEvent::SessionReplaced {
-                session_id: acp::SessionId::new("replacement"),
+                session_id: model::SessionId::new("replacement"),
                 model_name: "new-model".into(),
                 mode: None,
             },
@@ -1730,14 +1853,14 @@ mod tests {
     #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
-        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
         assert!(app.messages.is_empty());
     }
 
     #[test]
     fn turn_complete_clears_history_when_compact_pending() {
         let mut app = make_test_app();
-        app.session_id = Some(acp::SessionId::new("session-x"));
+        app.session_id = Some(model::SessionId::new("session-x"));
         app.pending_compact_clear = true;
         app.messages.push(user_msg("/compact"));
         app.messages.push(assistant_msg(vec![MessageBlock::Text(
@@ -1746,7 +1869,7 @@ mod tests {
             IncrementalMarkdown::from_complete("compacted"),
         )]));
 
-        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         assert!(!app.pending_compact_clear);
         assert_eq!(app.messages.len(), 1);
@@ -1760,7 +1883,7 @@ mod tests {
         app.pending_compact_clear = true;
         app.messages.push(user_msg("/compact"));
 
-        handle_acp_event(&mut app, ClientEvent::TurnError("adapter failed".into()));
+        handle_client_event(&mut app, ClientEvent::TurnError("adapter failed".into()));
 
         assert!(!app.pending_compact_clear);
         assert!(matches!(app.status, AppStatus::Error));
@@ -1777,20 +1900,46 @@ mod tests {
     }
 
     #[test]
+    fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("build app"));
+
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        assert!(app.cancelled_turn_pending_hint);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError("Error: Request was aborted.\n    at stack line".into()),
+        );
+
+        assert!(!app.cancelled_turn_pending_hint);
+        assert!(matches!(app.status, AppStatus::Ready));
+
+        let Some(last) = app.messages.last() else {
+            panic!("expected interruption hint message");
+        };
+        assert!(matches!(last.role, MessageRole::System));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, CONVERSATION_INTERRUPTED_HINT);
+    }
+
+    #[test]
     fn turn_cancel_marks_active_tools_failed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Pending))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc3", acp::ToolCallStatus::Completed))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
         ]));
 
-        handle_acp_event(&mut app, ClientEvent::TurnCancelled);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
 
         let Some(last) = app.messages.last() else {
             panic!("missing assistant message");
         };
-        let statuses: Vec<acp::ToolCallStatus> = last
+        let statuses: Vec<model::ToolCallStatus> = last
             .blocks
             .iter()
             .filter_map(|b| match b {
@@ -1801,9 +1950,9 @@ mod tests {
         assert_eq!(
             statuses,
             vec![
-                acp::ToolCallStatus::Failed,
-                acp::ToolCallStatus::Failed,
-                acp::ToolCallStatus::Completed
+                model::ToolCallStatus::Failed,
+                model::ToolCallStatus::Failed,
+                model::ToolCallStatus::Completed
             ]
         );
     }
@@ -1812,16 +1961,16 @@ mod tests {
     fn turn_complete_marks_lingering_tools_completed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
-            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Pending))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         ]));
 
-        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         let Some(last) = app.messages.last() else {
             panic!("missing assistant message");
         };
-        let statuses: Vec<acp::ToolCallStatus> = last
+        let statuses: Vec<model::ToolCallStatus> = last
             .blocks
             .iter()
             .filter_map(|b| match b {
@@ -1829,7 +1978,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(statuses, vec![acp::ToolCallStatus::Completed, acp::ToolCallStatus::Completed]);
+        assert_eq!(
+            statuses,
+            vec![model::ToolCallStatus::Completed, model::ToolCallStatus::Completed]
+        );
     }
 
     #[test]
@@ -1993,8 +2145,16 @@ mod tests {
             &mut app,
             "perm-a",
             vec![
-                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
-                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
             ],
             true,
         );
@@ -2002,8 +2162,16 @@ mod tests {
             &mut app,
             "perm-b",
             vec![
-                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
-                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
             ],
             false,
         );
@@ -2093,11 +2261,11 @@ mod tests {
     fn attach_pending_permission(
         app: &mut App,
         tool_id: &str,
-        options: Vec<acp::PermissionOption>,
+        options: Vec<model::PermissionOption>,
         focused: bool,
-    ) -> oneshot::Receiver<acp::RequestPermissionResponse> {
+    ) -> oneshot::Receiver<model::RequestPermissionResponse> {
         let (response_tx, response_rx) = oneshot::channel();
-        let mut tc = tool_call(tool_id, acp::ToolCallStatus::InProgress);
+        let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
         tc.pending_permission =
             Some(InlinePermission { options, response_tx, selected_index: 0, focused });
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
@@ -2126,8 +2294,16 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
-                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
             ],
             true,
         );
@@ -2141,10 +2317,10 @@ mod tests {
         );
 
         let resp = response_rx.try_recv().expect("ctrl+y should resolve pending permission");
-        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "allow");
+        assert_eq!(selected.option_id.clone(), "allow");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2155,17 +2331,21 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-once",
                     "Allow once",
-                    acp::PermissionOptionKind::AllowOnce,
+                    model::PermissionOptionKind::AllowOnce,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-always",
                     "Allow always",
-                    acp::PermissionOptionKind::AllowAlways,
+                    model::PermissionOptionKind::AllowAlways,
                 ),
-                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
             ],
             true,
         );
@@ -2177,10 +2357,10 @@ mod tests {
         );
 
         let resp = response_rx.try_recv().expect("ctrl+a should resolve pending permission");
-        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "allow-always");
+        assert_eq!(selected.option_id.clone(), "allow-always");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2191,8 +2371,16 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
-                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
             ],
             true,
         );
@@ -2213,10 +2401,10 @@ mod tests {
         );
 
         let resp = response_rx.try_recv().expect("ctrl+n should resolve pending permission");
-        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
-        assert_eq!(selected.option_id.to_string(), "deny");
+        assert_eq!(selected.option_id.clone(), "deny");
         assert!(app.pending_permission_ids.is_empty());
     }
 
@@ -2615,5 +2803,20 @@ mod tests {
     fn summarize_internal_error_reads_json_rpc_message() {
         let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
         assert_eq!(summarize_internal_error(payload), "internal rpc fault");
+    }
+
+    #[test]
+    fn internal_error_detection_accepts_permission_zod_payload() {
+        let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input\"}]";
+        assert!(looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn summarize_internal_error_prefers_permission_failure_summary() {
+        let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
+        assert_eq!(
+            summarize_internal_error(payload),
+            "Tool permission request failed: Invalid input: expected record, received undefined"
+        );
     }
 }

@@ -15,11 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo, ModeState};
-use crate::acp::client::ClientEvent;
+use crate::agent::events::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
 use crate::app::{mention, slash};
-use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
 
@@ -222,7 +221,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 let conn = Rc::clone(conn);
                 let tx = app.event_tx.clone();
                 tokio::task::spawn_local(async move {
-                    if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
+                    if let Err(e) = conn.cancel(sid.to_string()) {
                         tracing::error!("Failed to send cancel: {e}");
                     } else {
                         let _ = tx.send(ClientEvent::TurnCancelled);
@@ -332,13 +331,10 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 if let Some(ref conn) = app.conn
                     && let Some(sid) = app.session_id.clone()
                 {
-                    let mode_id = acp::SessionModeId::new(next.id.as_str());
+                    let mode_id = next.id.clone();
                     let conn = Rc::clone(conn);
                     tokio::task::spawn_local(async move {
-                        if let Err(e) = conn
-                            .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
-                            .await
-                        {
+                        if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
                             tracing::error!("Failed to set mode: {e}");
                         }
                     });
