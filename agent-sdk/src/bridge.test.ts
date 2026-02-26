@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
+  extractSessionHistoryUpdatesFromJsonl,
   looksLikeAuthRequired,
   normalizeToolKind,
   parseCommandEnvelope,
@@ -378,4 +382,128 @@ test("buildUsageUpdateFromResult includes cost and context window fields", () =>
 test("looksLikeAuthRequired detects login hints", () => {
   assert.equal(looksLikeAuthRequired("Please run /login to continue"), true);
   assert.equal(looksLikeAuthRequired("normal tool output"), false);
+});
+
+function withTempJsonl(lines: unknown[], run: (filePath: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-resume-test-"));
+  const filePath = path.join(dir, "session.jsonl");
+  fs.writeFileSync(filePath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+  try {
+    run(filePath);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("extractSessionHistoryUpdatesFromJsonl parses nested progress message records", () => {
+  const lines = [
+    {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Top-level user prompt" }],
+      },
+    },
+    {
+      type: "progress",
+      data: {
+        message: {
+          type: "assistant",
+          message: {
+            id: "msg-nested-1",
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-nested-1",
+                name: "Bash",
+                input: { command: "echo hello" },
+              },
+            ],
+            usage: {
+              input_tokens: 11,
+              output_tokens: 7,
+              cache_read_input_tokens: 5,
+              cache_creation_input_tokens: 3,
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "progress",
+      data: {
+        message: {
+          type: "user",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-nested-1",
+                content: "ok",
+                is_error: false,
+              },
+            ],
+          },
+        },
+      },
+    },
+    {
+      type: "progress",
+      data: {
+        message: {
+          type: "assistant",
+          message: {
+            id: "msg-nested-1",
+            role: "assistant",
+            content: [{ type: "text", text: "Nested assistant final" }],
+            usage: {
+              input_tokens: 11,
+              output_tokens: 7,
+              cache_read_input_tokens: 5,
+              cache_creation_input_tokens: 3,
+            },
+          },
+        },
+      },
+    },
+  ];
+
+  withTempJsonl(lines, (filePath) => {
+    const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
+    const variantCounts = new Map<string, number>();
+    for (const update of updates) {
+      variantCounts.set(update.type, (variantCounts.get(update.type) ?? 0) + 1);
+    }
+
+    assert.equal(variantCounts.get("user_message_chunk"), 1);
+    assert.equal(variantCounts.get("agent_message_chunk"), 1);
+    assert.equal(variantCounts.get("tool_call"), 1);
+    assert.equal(variantCounts.get("tool_call_update"), 1);
+    assert.equal(variantCounts.get("usage_update"), 1);
+
+    const usage = updates.find((update) => update.type === "usage_update");
+    assert.ok(usage && usage.type === "usage_update");
+    assert.deepEqual(usage.usage, {
+      input_tokens: 11,
+      output_tokens: 7,
+      cache_read_tokens: 5,
+      cache_write_tokens: 3,
+    });
+  });
+});
+
+test("extractSessionHistoryUpdatesFromJsonl ignores invalid records", () => {
+  withTempJsonl(
+    [
+      { type: "queue-operation", operation: "enqueue" },
+      { type: "progress", data: { not_message: true } },
+      { type: "user", message: { role: "assistant", content: [{ type: "thinking", thinking: "h" }] } },
+    ],
+    (filePath) => {
+      const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
+      assert.equal(updates.length, 0);
+    },
+  );
 });

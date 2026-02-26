@@ -638,11 +638,18 @@ fn update_session_usage(app: &mut App, usage: &model::UsageUpdate) -> MessageUsa
             app.session_usage.total_cache_write_tokens.saturating_add(v);
     }
 
-    if let Some(v) = usage.turn_cost_usd {
+    if let Some(v) = usage.total_cost_usd {
+        // Prefer adapter-reported cumulative total when available.
+        app.session_usage.total_cost_usd = Some(v);
+        if app.session_usage.cost_is_since_resume {
+            let includes_historical_baseline = usage.turn_cost_usd.is_none_or(|turn| v > turn);
+            if includes_historical_baseline {
+                app.session_usage.cost_is_since_resume = false;
+            }
+        }
+    } else if let Some(v) = usage.turn_cost_usd {
         app.session_usage.total_cost_usd =
             Some(app.session_usage.total_cost_usd.unwrap_or(0.0) + v);
-    } else if let Some(v) = usage.total_cost_usd {
-        app.session_usage.total_cost_usd = Some(v);
     }
 
     if let Some(v) = usage.context_window {
@@ -717,6 +724,10 @@ fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) 
             }
             _ => handle_session_update(app, update.clone()),
         }
+    }
+    let resumed_with_tokens = app.session_usage.total_tokens() > 0;
+    if resumed_with_tokens && app.session_usage.total_cost_usd.is_none() {
+        app.session_usage.cost_is_since_resume = true;
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
     app.viewport = super::ChatViewport::new();
@@ -2223,6 +2234,61 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
+    }
+
+    #[test]
+    fn resume_history_marks_cost_as_since_resume_when_missing() {
+        let mut app = make_test_app();
+        let history_updates = vec![model::SessionUpdate::UsageUpdate(model::UsageUpdate {
+            input_tokens: Some(410),
+            output_tokens: Some(19),
+            cache_read_tokens: Some(52_000),
+            cache_write_tokens: Some(1_250),
+            total_cost_usd: None,
+            turn_cost_usd: None,
+            context_window: None,
+            max_output_tokens: None,
+        })];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-901"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                mode: None,
+                history_updates,
+            },
+        );
+
+        assert!(app.session_usage.cost_is_since_resume);
+        assert!(app.session_usage.total_cost_usd.is_none());
+    }
+
+    #[test]
+    fn total_cost_update_clears_since_resume_cost_marker() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("active-902"));
+        app.session_usage.cost_is_since_resume = true;
+        app.session_usage.total_input_tokens = 500;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
+                input_tokens: Some(2),
+                output_tokens: Some(6),
+                cache_read_tokens: Some(20_000),
+                cache_write_tokens: Some(800),
+                total_cost_usd: Some(4.20),
+                turn_cost_usd: Some(0.20),
+                context_window: Some(200_000),
+                max_output_tokens: None,
+            })),
+        );
+
+        let total_cost = app.session_usage.total_cost_usd.expect("total cost");
+        assert!((total_cost - 4.20).abs() < f64::EPSILON);
+        assert!(!app.session_usage.cost_is_since_resume);
     }
 
     #[test]

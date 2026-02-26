@@ -347,6 +347,22 @@ function isToolUseBlockType(blockType: string): boolean {
   return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
 }
 
+function persistedMessageCandidates(record: Record<string, unknown>): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [];
+
+  const topLevel = asRecordOrNull(record.message);
+  if (topLevel) {
+    candidates.push(topLevel);
+  }
+
+  const nested = asRecordOrNull(asRecordOrNull(asRecordOrNull(record.data)?.message)?.message);
+  if (nested) {
+    candidates.push(nested);
+  }
+
+  return candidates;
+}
+
 function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
   if (!text.trim()) {
     return;
@@ -402,7 +418,28 @@ function pushResumeToolResult(
   }
 }
 
-function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
+function pushResumeUsageUpdate(
+  updates: SessionUpdate[],
+  message: Record<string, unknown>,
+  emittedUsageMessageIds: Set<string>,
+): void {
+  const messageId = typeof message.id === "string" ? message.id : "";
+  if (messageId && emittedUsageMessageIds.has(messageId)) {
+    return;
+  }
+
+  const usageUpdate = buildUsageUpdateFromResult(message);
+  if (!usageUpdate) {
+    return;
+  }
+
+  updates.push(usageUpdate);
+  if (messageId) {
+    emittedUsageMessageIds.add(messageId);
+  }
+}
+
+export function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[] {
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf8");
@@ -412,6 +449,7 @@ function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[
 
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
+  const emittedUsageMessageIds = new Set<string>();
   const lines = text.split(/\r?\n/);
   for (const rawLine of lines) {
     const line = rawLine.trim();
@@ -428,39 +466,38 @@ function extractSessionHistoryUpdatesFromJsonl(filePath: string): SessionUpdate[
     if (!record) {
       continue;
     }
-    const message = asRecordOrNull(record.message);
-    if (!message) {
-      continue;
-    }
-    const role = message.role;
-    if (role !== "user" && role !== "assistant") {
-      continue;
-    }
-    const content = Array.isArray(message.content) ? message.content : [];
-    for (const item of content) {
-      const block = asRecordOrNull(item);
-      if (!block) {
+    for (const message of persistedMessageCandidates(record)) {
+      const role = message.role;
+      if (role !== "user" && role !== "assistant") {
         continue;
       }
-      const blockType = typeof block.type === "string" ? block.type : "";
-      if (blockType === "thinking") {
-        continue;
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const item of content) {
+        const block = asRecordOrNull(item);
+        if (!block) {
+          continue;
+        }
+        const blockType = typeof block.type === "string" ? block.type : "";
+        if (blockType === "thinking") {
+          continue;
+        }
+        if (blockType === "text" && typeof block.text === "string") {
+          pushResumeTextChunk(updates, role, block.text);
+          continue;
+        }
+        if (isToolUseBlockType(blockType) && role === "assistant") {
+          pushResumeToolUse(updates, toolCalls, block);
+          continue;
+        }
+        if (TOOL_RESULT_TYPES.has(blockType)) {
+          pushResumeToolResult(updates, toolCalls, block);
+          continue;
+        }
+        if (blockType === "image") {
+          pushResumeTextChunk(updates, role, "[image]");
+        }
       }
-      if (blockType === "text" && typeof block.text === "string") {
-        pushResumeTextChunk(updates, role, block.text);
-        continue;
-      }
-      if (isToolUseBlockType(blockType) && role === "assistant") {
-        pushResumeToolUse(updates, toolCalls, block);
-        continue;
-      }
-      if (TOOL_RESULT_TYPES.has(blockType)) {
-        pushResumeToolResult(updates, toolCalls, block);
-        continue;
-      }
-      if (blockType === "image") {
-        pushResumeTextChunk(updates, role, "[image]");
-      }
+      pushResumeUsageUpdate(updates, message, emittedUsageMessageIds);
     }
   }
   return updates;

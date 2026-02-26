@@ -96,6 +96,9 @@ pub struct SessionUsageState {
     pub latest_cache_read_tokens: Option<u64>,
     pub latest_cache_write_tokens: Option<u64>,
     pub total_cost_usd: Option<f64>,
+    /// True when cost started accumulating only after a resume because
+    /// historical resume updates carried no cost baseline.
+    pub cost_is_since_resume: bool,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
