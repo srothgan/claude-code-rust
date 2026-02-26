@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::agent::events::ClientEvent;
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
@@ -76,12 +76,9 @@ pub struct App {
     pub input: InputState,
     pub status: AppStatus,
     pub should_quit: bool,
-    pub session_id: Option<acp::SessionId>,
-    /// ACP connection handle. `None` while connecting (before adapter is ready).
+    pub session_id: Option<model::SessionId>,
+    /// Agent connection handle. `None` while connecting (before bridge is ready).
     pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
-    /// Adapter child process handle. Held solely to keep the process alive --
-    /// dropping `Child` kills the subprocess. Never read after being stored.
-    pub adapter_child: Option<tokio::process::Child>,
     pub model_name: String,
     pub cwd: String,
     pub cwd_raw: String,
@@ -90,7 +87,7 @@ pub struct App {
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
     /// When true, the current/next turn completion should clear local conversation history.
-    /// Set by `/compact` once the command is accepted for ACP forwarding.
+    /// Set by `/compact` once the command is accepted for bridge forwarding.
     pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
@@ -132,7 +129,7 @@ pub struct App {
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
-    pub available_commands: Vec<acp::AvailableCommand>,
+    pub available_commands: Vec<model::AvailableCommand>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Current selection state for mouse-based selection.
@@ -287,7 +284,7 @@ impl App {
 
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
-    pub fn finalize_in_progress_tool_calls(&mut self, new_status: acp::ToolCallStatus) -> usize {
+    pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut cleared_permission = false;
         let mut first_changed_idx: Option<usize> = None;
@@ -298,7 +295,7 @@ impl App {
                     let tc = tc.as_mut();
                     if matches!(
                         tc.status,
-                        acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending
+                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
                     ) {
                         tc.status = new_status;
                         tc.cache.invalidate();
@@ -338,7 +335,6 @@ impl App {
             should_quit: false,
             session_id: None,
             conn: None,
-            adapter_child: None,
             model_name: "test-model".into(),
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
@@ -649,7 +645,7 @@ impl Default for ChatViewport {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AppStatus {
-    /// Waiting for ACP adapter connection (TUI shown, input disabled).
+    /// Waiting for bridge adapter connection (TUI shown, input disabled).
     Connecting,
     Ready,
     Thinking,
@@ -927,8 +923,8 @@ pub struct ToolCallInfo {
     /// The SDK tool name from `meta.claudeCode.toolName` when available.
     /// Falls back to a derived name when metadata is absent.
     pub sdk_tool_name: String,
-    pub status: acp::ToolCallStatus,
-    pub content: Vec<acp::ToolCallContent>,
+    pub status: model::ToolCallStatus,
+    pub content: Vec<model::ToolCallContent>,
     pub collapsed: bool,
     /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
@@ -962,8 +958,8 @@ pub fn is_execute_tool_name(tool_name: &str) -> bool {
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
 /// controls render inside the tool call block (unified edit/permission UX).
 pub struct InlinePermission {
-    pub options: Vec<acp::PermissionOption>,
-    pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
+    pub options: Vec<model::PermissionOption>,
+    pub response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     pub selected_index: usize,
     /// Whether this permission currently has keyboard focus.
     /// When multiple permissions are pending, only the focused one

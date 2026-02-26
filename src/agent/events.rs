@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
     /// Session update notification (streaming text, tool calls, etc.)
-    SessionUpdate(acp::SessionUpdate),
+    SessionUpdate(model::SessionUpdate),
     /// Permission request that needs user input.
     PermissionRequest {
-        request: acp::RequestPermissionRequest,
-        response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
+        request: model::RequestPermissionRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     },
     /// A prompt turn completed successfully.
     TurnComplete,
@@ -37,7 +37,7 @@ pub enum ClientEvent {
     TurnError(String),
     /// Background connection completed successfully.
     Connected {
-        session_id: acp::SessionId,
+        session_id: model::SessionId,
         model_name: String,
         mode: Option<crate::app::ModeState>,
     },
@@ -49,7 +49,7 @@ pub enum ClientEvent {
     SlashCommandError(String),
     /// Custom slash command replaced the active session.
     SessionReplaced {
-        session_id: acp::SessionId,
+        session_id: model::SessionId,
         model_name: String,
         mode: Option<crate::app::ModeState>,
     },

@@ -308,7 +308,7 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
 
     if commands.is_empty() {
         rows.push((
-            "No ACP slash commands".to_owned(),
+            "No slash commands advertised".to_owned(),
             "Not advertised in this session".to_owned(),
         ));
         return rows;
@@ -504,8 +504,8 @@ mod tests {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
         app.available_commands = vec![
-            crate::agent::protocol::AvailableCommand::new("/help", "Open help"),
-            crate::agent::protocol::AvailableCommand::new("memory", ""),
+            crate::agent::model::AvailableCommand::new("/help", "Open help"),
+            crate::agent::model::AvailableCommand::new("memory", ""),
         ];
 
         let items = build_help_items(&app);
@@ -518,9 +518,9 @@ mod tests {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
         app.available_commands = vec![
-            crate::agent::protocol::AvailableCommand::new("/login", "Login"),
-            crate::agent::protocol::AvailableCommand::new("/logout", "Logout"),
-            crate::agent::protocol::AvailableCommand::new("/mode", "Switch mode"),
+            crate::agent::model::AvailableCommand::new("/login", "Login"),
+            crate::agent::model::AvailableCommand::new("/logout", "Logout"),
+            crate::agent::model::AvailableCommand::new("/mode", "Switch mode"),
         ];
 
         let items = build_help_items(&app);
@@ -537,7 +537,11 @@ mod tests {
 
         let items = build_help_items(&app);
         assert!(has_item(&items, "Loading commands...", ""));
-        assert!(!has_item(&items, "No ACP slash commands", "Not advertised in this session"));
+        assert!(!has_item(
+            &items,
+            "No slash commands advertised",
+            "Not advertised in this session"
+        ));
     }
 
     #[test]

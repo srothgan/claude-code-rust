@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, FocusTarget, TodoItem, TodoStatus};
-use crate::agent::protocol as acp;
+use crate::agent::model;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
 /// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`
@@ -68,8 +68,8 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
     }
 }
 
-/// Convert ACP plan entries into the local todo list.
-pub(super) fn apply_plan_todos(app: &mut App, plan: &acp::Plan) {
+/// Convert bridge plan entries into the local todo list.
+pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
     app.cached_todo_compact = None;
     let mut todos = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {

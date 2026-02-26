@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::agent::protocol::{self as acp, PermissionOptionKind};
+use crate::agent::model::{self as model, PermissionOptionKind};
 use crate::app::{InlinePermission, ToolCallInfo};
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::markdown;
@@ -36,15 +36,15 @@ const SPINNER_STRS: &[&str] = &[
 /// TODO: make configurable (see ROADMAP.md)
 const TERMINAL_MAX_LINES: usize = 12;
 
-pub fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
+pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
-        acp::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
-        acp::ToolCallStatus::InProgress => {
+        model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
+        model::ToolCallStatus::InProgress => {
             let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
             (s, theme::RUST_ORANGE)
         }
-        acp::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
-        acp::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
+        model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
+        model::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
     }
 }
 
@@ -93,7 +93,7 @@ pub fn render_tool_call_cached(
 
     // Non-Execute tool calls: existing caching strategy
     let is_in_progress =
-        matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
+        matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending);
 
     // Completed/failed: full cache (title + body together)
     if !is_in_progress {
@@ -166,7 +166,7 @@ pub fn measure_tool_call_height_cached(
     }
 
     let is_in_progress =
-        matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
+        matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending);
 
     if !is_in_progress {
         if let Some(h) = tc.cache.height_at(width) {
@@ -255,7 +255,7 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     let has_permission = tc.pending_permission.is_some();
 
     // Diffs (Edit tool) are always shown -- user needs to see changes
-    let has_diff = tc.content.iter().any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
+    let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
 
     if tc.content.is_empty() && !has_permission {
         return;
@@ -346,7 +346,7 @@ fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         } else {
             body_lines = raw_lines;
         }
-    } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+    } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
         body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
     }
 
@@ -543,7 +543,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
     // For Execute tool calls, show last non-empty line of terminal output
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
-            if matches!(tc.status, acp::ToolCallStatus::Failed)
+            if matches!(tc.status, model::ToolCallStatus::Failed)
                 && let Some(msg) = extract_tool_use_error_message(output)
             {
                 return msg;
@@ -558,7 +558,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                 };
             }
         }
-        return if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+        return if matches!(tc.status, model::ToolCallStatus::InProgress) {
             "running...".to_owned()
         } else {
             String::new()
@@ -567,17 +567,17 @@ fn content_summary(tc: &ToolCallInfo) -> String {
 
     for content in &tc.content {
         match content {
-            acp::ToolCallContent::Diff(diff) => {
+            model::ToolCallContent::Diff(diff) => {
                 let name = diff.path.file_name().map_or_else(
                     || diff.path.to_string_lossy().into_owned(),
                     |f| f.to_string_lossy().into_owned(),
                 );
                 return name;
             }
-            acp::ToolCallContent::Content(c) => {
-                if let acp::ContentBlock::Text(text) = &c.content {
+            model::ToolCallContent::Content(c) => {
+                if let model::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
-                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                    if matches!(tc.status, model::ToolCallStatus::Failed)
                         && let Some(msg) = extract_tool_use_error_message(&stripped)
                     {
                         return msg;
@@ -591,7 +591,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                     };
                 }
             }
-            acp::ToolCallContent::Terminal(_) => {}
+            model::ToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
@@ -605,7 +605,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     // For Execute tool calls with terminal output, render the live output
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
-            if matches!(tc.status, acp::ToolCallStatus::Failed)
+            if matches!(tc.status, model::ToolCallStatus::Failed)
                 && let Some(msg) = extract_tool_use_error_message(output)
             {
                 lines.extend(render_tool_use_error_content(&msg));
@@ -623,7 +623,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                     lines.push(Line::from(text_line.to_owned()));
                 }
             }
-        } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+        } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
             lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
         }
         debug_failed_tool_render(tc);
@@ -632,19 +632,19 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     for content in &tc.content {
         match content {
-            acp::ToolCallContent::Diff(diff) => {
+            model::ToolCallContent::Diff(diff) => {
                 lines.extend(render_diff(diff));
             }
-            acp::ToolCallContent::Content(c) => {
-                if let acp::ContentBlock::Text(text) = &c.content {
+            model::ToolCallContent::Content(c) => {
+                if let model::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
-                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                    if matches!(tc.status, model::ToolCallStatus::Failed)
                         && let Some(msg) = extract_tool_use_error_message(&stripped)
                     {
                         lines.extend(render_tool_use_error_content(&msg));
                         continue;
                     }
-                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                    if matches!(tc.status, model::ToolCallStatus::Failed)
                         && looks_like_internal_error(&stripped)
                     {
                         lines.extend(render_internal_failure_content(&stripped));
@@ -666,7 +666,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                     }
                 }
             }
-            acp::ToolCallContent::Terminal(_) => {}
+            model::ToolCallContent::Terminal(_) => {}
         }
     }
 
@@ -677,7 +677,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 fn render_internal_failure_content(payload: &str) -> Vec<Line<'static>> {
     let summary = summarize_internal_error(payload);
     let mut lines = vec![Line::from(Span::styled(
-        "Internal ACP/adapter error",
+        "Internal bridge/adapter error",
         Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
     ))];
     if !summary.is_empty() {
@@ -697,19 +697,19 @@ fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>> {
 }
 
 fn debug_failed_tool_render(tc: &ToolCallInfo) {
-    if !matches!(tc.status, acp::ToolCallStatus::Failed) {
+    if !matches!(tc.status, model::ToolCallStatus::Failed) {
         return;
     }
 
     let Some(text_payload) = tc.content.iter().find_map(|content| match content {
-        acp::ToolCallContent::Content(c) => match &c.content {
-            acp::ContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
-            acp::ContentBlock::Image(_) => None,
+        model::ToolCallContent::Content(c) => match &c.content {
+            model::ContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
+            model::ContentBlock::Image(_) => None,
         },
         _ => None,
     }) else {
         // Skip generic command failures that only have terminal stderr/stdout.
-        // We want ACP/adapter-style structured error payloads here.
+        // We want bridge/adapter-style structured error payloads here.
         return;
     };
     if !looks_like_internal_error(&text_payload) {
@@ -757,7 +757,7 @@ fn has_internal_error_keywords(lower: &str) -> bool {
     [
         "internal error",
         "adapter",
-        "acp",
+        "bridge",
         "json-rpc",
         "rpc",
         "protocol error",
@@ -856,43 +856,43 @@ mod tests {
 
     #[test]
     fn status_icon_pending() {
-        let (icon, color) = status_icon(acp::ToolCallStatus::Pending, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Pending, 0);
         assert!(!icon.is_empty());
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn status_icon_in_progress() {
-        let (icon, color) = status_icon(acp::ToolCallStatus::InProgress, 3);
+        let (icon, color) = status_icon(model::ToolCallStatus::InProgress, 3);
         assert!(!icon.is_empty());
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn status_icon_completed() {
-        let (icon, color) = status_icon(acp::ToolCallStatus::Completed, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Completed, 0);
         assert_eq!(icon, theme::ICON_COMPLETED);
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn status_icon_failed() {
-        let (icon, color) = status_icon(acp::ToolCallStatus::Failed, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Failed, 0);
         assert_eq!(icon, theme::ICON_FAILED);
         assert_eq!(color, theme::STATUS_ERROR);
     }
 
     #[test]
     fn status_icon_spinner_wraps() {
-        let (icon_a, _) = status_icon(acp::ToolCallStatus::InProgress, 0);
-        let (icon_b, _) = status_icon(acp::ToolCallStatus::InProgress, SPINNER_STRS.len());
+        let (icon_a, _) = status_icon(model::ToolCallStatus::InProgress, 0);
+        let (icon_b, _) = status_icon(model::ToolCallStatus::InProgress, SPINNER_STRS.len());
         assert_eq!(icon_a, icon_b);
     }
 
     #[test]
     fn status_icon_all_spinner_frames_valid() {
         for i in 0..SPINNER_STRS.len() {
-            let (icon, _) = status_icon(acp::ToolCallStatus::InProgress, i);
+            let (icon, _) = status_icon(model::ToolCallStatus::InProgress, i);
             assert!(!icon.is_empty());
         }
     }
@@ -901,7 +901,7 @@ mod tests {
     #[test]
     fn status_icon_spinner_frames_distinct() {
         let frames: Vec<&str> = (0..SPINNER_STRS.len())
-            .map(|i| status_icon(acp::ToolCallStatus::InProgress, i).0)
+            .map(|i| status_icon(model::ToolCallStatus::InProgress, i).0)
             .collect();
         for i in 0..frames.len() {
             for j in (i + 1)..frames.len() {
@@ -913,7 +913,7 @@ mod tests {
     /// Large spinner frame number wraps correctly.
     #[test]
     fn status_icon_spinner_large_frame() {
-        let (icon, _) = status_icon(acp::ToolCallStatus::Pending, 999_999);
+        let (icon, _) = status_icon(model::ToolCallStatus::Pending, 999_999);
         assert!(!icon.is_empty());
     }
 
@@ -945,7 +945,7 @@ mod tests {
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
                 .into(),
             sdk_tool_name: "Bash".into(),
-            status: acp::ToolCallStatus::Pending,
+            status: model::ToolCallStatus::Pending,
             content: Vec::new(),
             collapsed: false,
             hidden: false,
@@ -1013,7 +1013,7 @@ mod tests {
             id: "tc-1".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
-            status: acp::ToolCallStatus::Completed,
+            status: model::ToolCallStatus::Completed,
             content: Vec::new(),
             collapsed: true,
             hidden: false,
@@ -1033,7 +1033,7 @@ mod tests {
             id: "tc-1".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
-            status: acp::ToolCallStatus::Failed,
+            status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
             hidden: false,

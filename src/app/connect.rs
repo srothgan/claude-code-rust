@@ -21,7 +21,7 @@ use super::{
 use crate::Cli;
 use crate::agent::client::{AgentConnection, BridgeClient};
 use crate::agent::events::{ClientEvent, TerminalMap};
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
 use std::collections::{HashMap, HashSet};
@@ -41,12 +41,15 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
     cwd_str
 }
 
+fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
+    cli.dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
 /// Create the `App` struct in `Connecting` state. No I/O - returns immediately.
 pub fn create_app(cli: &Cli) -> App {
-    let cwd = cli
-        .dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let cwd = resolve_startup_cwd(cli);
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let terminals: TerminalMap = Rc::new(std::cell::RefCell::new(HashMap::new()));
@@ -62,7 +65,6 @@ pub fn create_app(cli: &Cli) -> App {
         should_quit: false,
         session_id: None,
         conn: None,
-        adapter_child: None,
         model_name: initial_model_name,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
@@ -264,22 +266,7 @@ fn handle_bridge_event(
 ) {
     match envelope.event {
         BridgeEvent::Connected { session_id, model_name, mode } => {
-            tracing::info!("bridge connected: session_id={} model={}", session_id, model_name);
-            let mode = mode.map(convert_mode_state);
-            if *connected_once {
-                let _ = event_tx.send(ClientEvent::SessionReplaced {
-                    session_id: acp::SessionId::new(session_id),
-                    model_name,
-                    mode,
-                });
-            } else {
-                *connected_once = true;
-                let _ = event_tx.send(ClientEvent::Connected {
-                    session_id: acp::SessionId::new(session_id),
-                    model_name,
-                    mode,
-                });
-            }
+            handle_connected_event(event_tx, connected_once, session_id, model_name, mode);
         }
         BridgeEvent::AuthRequired { method_name, method_description } => {
             tracing::warn!(
@@ -299,50 +286,7 @@ fn handle_bridge_event(
             }
         }
         BridgeEvent::PermissionRequest { session_id, request } => {
-            tracing::debug!(
-                "bridge permission_request: session_id={} tool_call_id={} options={}",
-                session_id,
-                request.tool_call.tool_call_id,
-                request.options.len()
-            );
-            let (request, tool_call_id) = map_permission_request(&session_id, request);
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-            if event_tx.send(ClientEvent::PermissionRequest { request, response_tx }).is_ok() {
-                let cmd_tx = cmd_tx.clone();
-                tokio::task::spawn_local(async move {
-                    let Ok(response) = response_rx.await else {
-                        return;
-                    };
-                    let outcome = match response.outcome {
-                        acp::RequestPermissionOutcome::Selected(selected) => {
-                            let option_id = selected.option_id.clone();
-                            tracing::debug!(
-                                "forward permission_response: session_id={} tool_call_id={} option_id={}",
-                                session_id,
-                                tool_call_id,
-                                option_id
-                            );
-                            types::PermissionOutcome::Selected { option_id }
-                        }
-                        acp::RequestPermissionOutcome::Cancelled => {
-                            tracing::debug!(
-                                "forward permission_response: session_id={} tool_call_id={} outcome=cancelled",
-                                session_id,
-                                tool_call_id
-                            );
-                            types::PermissionOutcome::Cancelled
-                        }
-                    };
-                    let _ = cmd_tx.send(CommandEnvelope {
-                        request_id: None,
-                        command: BridgeCommand::PermissionResponse {
-                            session_id,
-                            tool_call_id,
-                            outcome,
-                        },
-                    });
-                });
-            }
+            handle_permission_request_event(event_tx, cmd_tx, session_id, request);
         }
         BridgeEvent::TurnComplete { .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete);
@@ -357,49 +301,130 @@ fn handle_bridge_event(
         }
         BridgeEvent::SessionReplaced { session_id, model_name, mode } => {
             let _ = event_tx.send(ClientEvent::SessionReplaced {
-                session_id: acp::SessionId::new(session_id),
+                session_id: model::SessionId::new(session_id),
                 model_name,
                 mode: mode.map(convert_mode_state),
             });
         }
-        BridgeEvent::Initialized { .. } | BridgeEvent::SessionsListed { .. } => {}
+        BridgeEvent::Initialized { .. } => {}
     }
 }
 
-fn map_session_update(update: types::SessionUpdate) -> Option<acp::SessionUpdate> {
+fn handle_connected_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    connected_once: &mut bool,
+    session_id: String,
+    model_name: String,
+    mode: Option<types::ModeState>,
+) {
+    tracing::info!("bridge connected: session_id={} model={}", session_id, model_name);
+    let mode = mode.map(convert_mode_state);
+    if *connected_once {
+        let _ = event_tx.send(ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new(session_id),
+            model_name,
+            mode,
+        });
+    } else {
+        *connected_once = true;
+        let _ = event_tx.send(ClientEvent::Connected {
+            session_id: model::SessionId::new(session_id),
+            model_name,
+            mode,
+        });
+    }
+}
+
+fn handle_permission_request_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    session_id: String,
+    request: types::PermissionRequest,
+) {
+    tracing::debug!(
+        "bridge permission_request: session_id={} tool_call_id={} options={}",
+        session_id,
+        request.tool_call.tool_call_id,
+        request.options.len()
+    );
+    let (request, tool_call_id) = map_permission_request(&session_id, request);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    if event_tx.send(ClientEvent::PermissionRequest { request, response_tx }).is_ok() {
+        spawn_permission_response_forwarder(cmd_tx.clone(), response_rx, session_id, tool_call_id);
+    }
+}
+
+fn spawn_permission_response_forwarder(
+    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
+    session_id: String,
+    tool_call_id: String,
+) {
+    tokio::task::spawn_local(async move {
+        let Ok(response) = response_rx.await else {
+            return;
+        };
+        let outcome = match response.outcome {
+            model::RequestPermissionOutcome::Selected(selected) => {
+                let option_id = selected.option_id.clone();
+                tracing::debug!(
+                    "forward permission_response: session_id={} tool_call_id={} option_id={}",
+                    session_id,
+                    tool_call_id,
+                    option_id
+                );
+                types::PermissionOutcome::Selected { option_id }
+            }
+            model::RequestPermissionOutcome::Cancelled => {
+                tracing::debug!(
+                    "forward permission_response: session_id={} tool_call_id={} outcome=cancelled",
+                    session_id,
+                    tool_call_id
+                );
+                types::PermissionOutcome::Cancelled
+            }
+        };
+        let _ = cmd_tx.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::PermissionResponse { session_id, tool_call_id, outcome },
+        });
+    });
+}
+
+fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {
             let content = convert_content_block(content)?;
-            Some(acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(content)))
+            Some(model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(content)))
         }
         types::SessionUpdate::AgentMessageChunk { content } => {
             let content = convert_content_block(content)?;
-            Some(acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(content)))
         }
         types::SessionUpdate::AgentThoughtChunk { content } => {
             let content = convert_content_block(content)?;
-            Some(acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentThoughtChunk(model::ContentChunk::new(content)))
         }
         types::SessionUpdate::ToolCall { tool_call } => {
-            Some(acp::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
+            Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
         }
         types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
-            Some(acp::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
+            Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
         }
-        types::SessionUpdate::Plan { entries } => Some(acp::SessionUpdate::Plan(acp::Plan::new(
-            entries.into_iter().map(convert_plan_entry).collect(),
-        ))),
-        types::SessionUpdate::AvailableCommandsUpdate { commands } => {
-            Some(acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+        types::SessionUpdate::Plan { entries } => Some(model::SessionUpdate::Plan(
+            model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
+        )),
+        types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
+            model::SessionUpdate::AvailableCommandsUpdate(model::AvailableCommandsUpdate::new(
                 commands
                     .into_iter()
-                    .map(|cmd| acp::AvailableCommand::new(cmd.name, cmd.description))
+                    .map(|cmd| model::AvailableCommand::new(cmd.name, cmd.description))
                     .collect(),
-            )))
-        }
+            )),
+        ),
         types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-            Some(acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
-                acp::SessionModeId::new(current_mode_id),
+            Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
+                model::SessionModeId::new(current_mode_id),
             )))
         }
         types::SessionUpdate::ConfigOptionUpdate { .. } => None,
@@ -407,7 +432,7 @@ fn map_session_update(update: types::SessionUpdate) -> Option<acp::SessionUpdate
             let used = usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0);
             let size =
                 used + usage.cache_read_tokens.unwrap_or(0) + usage.cache_write_tokens.unwrap_or(0);
-            Some(acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(used, size)))
+            Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate::new(used, size)))
         }
     }
 }
@@ -415,11 +440,11 @@ fn map_session_update(update: types::SessionUpdate) -> Option<acp::SessionUpdate
 fn map_permission_request(
     session_id: &str,
     request: types::PermissionRequest,
-) -> (acp::RequestPermissionRequest, String) {
+) -> (model::RequestPermissionRequest, String) {
     let tool_call_id = request.tool_call.tool_call_id.clone();
     let tool_call_meta = request.tool_call.meta.clone();
     let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
-    let mut tool_call_update = acp::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
+    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
     if let Some(meta) = tool_call_meta {
         tool_call_update = tool_call_update.meta(meta);
     }
@@ -428,10 +453,10 @@ fn map_permission_request(
         .into_iter()
         .map(|opt| {
             let kind = match opt.kind.as_str() {
-                "allow_once" => acp::PermissionOptionKind::AllowOnce,
-                "allow_session" => acp::PermissionOptionKind::AllowSession,
-                "allow_always" => acp::PermissionOptionKind::AllowAlways,
-                "reject_always" => acp::PermissionOptionKind::RejectAlways,
+                "allow_once" => model::PermissionOptionKind::AllowOnce,
+                "allow_session" => model::PermissionOptionKind::AllowSession,
+                "allow_always" => model::PermissionOptionKind::AllowAlways,
+                "reject_always" => model::PermissionOptionKind::RejectAlways,
                 _ => {
                     tracing::warn!(
                         "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
@@ -441,10 +466,10 @@ fn map_permission_request(
                         opt.name,
                         opt.kind
                     );
-                    acp::PermissionOptionKind::RejectOnce
+                    model::PermissionOptionKind::RejectOnce
                 }
             };
-            acp::PermissionOption::new(
+            model::PermissionOption::new(
                 opt.option_id,
                 opt.name,
                 kind,
@@ -452,8 +477,8 @@ fn map_permission_request(
         })
         .collect();
     (
-        acp::RequestPermissionRequest::new(
-            acp::SessionId::new(session_id),
+        model::RequestPermissionRequest::new(
+            model::SessionId::new(session_id),
             tool_call_update,
             options,
         ),
@@ -461,17 +486,17 @@ fn map_permission_request(
     )
 }
 
-fn convert_content_block(content: types::ContentBlock) -> Option<acp::ContentBlock> {
+fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
     match content {
         types::ContentBlock::Text { text } => {
-            Some(acp::ContentBlock::Text(acp::TextContent::new(text)))
+            Some(model::ContentBlock::Text(model::TextContent::new(text)))
         }
         // Deferred for parity follow-up per scope.
         types::ContentBlock::Image { .. } => None,
     }
 }
 
-fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
+fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     let types::ToolCall {
         tool_call_id,
         title,
@@ -484,7 +509,7 @@ fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
         meta,
     } = tool_call;
 
-    let mut tc = acp::ToolCall::new(tool_call_id, title)
+    let mut tc = model::ToolCall::new(tool_call_id, title)
         .kind(convert_tool_kind(&kind))
         .status(convert_tool_status(&status))
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
@@ -492,7 +517,7 @@ fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
             locations
                 .into_iter()
                 .map(|loc| {
-                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    let mut location = model::ToolCallLocation::new(loc.path);
                     if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
                         location = location.line(line);
                     }
@@ -515,9 +540,9 @@ fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
     tc
 }
 
-fn convert_tool_call_update(update: types::ToolCallUpdate) -> acp::ToolCallUpdate {
+fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
     let update_meta = update.fields.meta.clone();
-    let mut out = acp::ToolCallUpdate::new(
+    let mut out = model::ToolCallUpdate::new(
         update.tool_call_id,
         convert_tool_call_update_fields(update.fields),
     );
@@ -527,8 +552,8 @@ fn convert_tool_call_update(update: types::ToolCallUpdate) -> acp::ToolCallUpdat
     out
 }
 
-fn convert_tool_call_to_fields(tool_call: types::ToolCall) -> acp::ToolCallUpdateFields {
-    let mut fields = acp::ToolCallUpdateFields::new()
+fn convert_tool_call_to_fields(tool_call: types::ToolCall) -> model::ToolCallUpdateFields {
+    let mut fields = model::ToolCallUpdateFields::new()
         .title(tool_call.title)
         .kind(convert_tool_kind(&tool_call.kind))
         .status(convert_tool_status(&tool_call.status))
@@ -540,7 +565,7 @@ fn convert_tool_call_to_fields(tool_call: types::ToolCall) -> acp::ToolCallUpdat
                 .locations
                 .into_iter()
                 .map(|loc| {
-                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    let mut location = model::ToolCallLocation::new(loc.path);
                     if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
                         location = location.line(line);
                     }
@@ -562,8 +587,8 @@ fn convert_tool_call_to_fields(tool_call: types::ToolCall) -> acp::ToolCallUpdat
 
 fn convert_tool_call_update_fields(
     fields: types::ToolCallUpdateFields,
-) -> acp::ToolCallUpdateFields {
-    let mut out = acp::ToolCallUpdateFields::new();
+) -> model::ToolCallUpdateFields {
+    let mut out = model::ToolCallUpdateFields::new();
 
     if let Some(title) = fields.title {
         out = out.title(title);
@@ -589,7 +614,7 @@ fn convert_tool_call_update_fields(
             locations
                 .into_iter()
                 .map(|loc| {
-                    let mut location = acp::ToolCallLocation::new(loc.path);
+                    let mut location = model::ToolCallLocation::new(loc.path);
                     if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
                         location = location.line(line);
                     }
@@ -602,49 +627,51 @@ fn convert_tool_call_update_fields(
     out
 }
 
-fn convert_tool_call_content(tool_content: types::ToolCallContent) -> Option<acp::ToolCallContent> {
+fn convert_tool_call_content(
+    tool_content: types::ToolCallContent,
+) -> Option<model::ToolCallContent> {
     match tool_content {
         types::ToolCallContent::Content { content } => {
             let block = convert_content_block(content)?;
-            Some(acp::ToolCallContent::Content(acp::Content::new(block)))
+            Some(model::ToolCallContent::Content(model::Content::new(block)))
         }
         types::ToolCallContent::Diff { old_path: _, new_path, old, new } => {
-            Some(acp::ToolCallContent::Diff(acp::Diff::new(new_path, new).old_text(Some(old))))
+            Some(model::ToolCallContent::Diff(model::Diff::new(new_path, new).old_text(Some(old))))
         }
     }
 }
 
-fn convert_tool_kind(kind: &str) -> acp::ToolKind {
+fn convert_tool_kind(kind: &str) -> model::ToolKind {
     match kind {
-        "read" => acp::ToolKind::Read,
-        "edit" => acp::ToolKind::Edit,
-        "delete" => acp::ToolKind::Delete,
-        "move" => acp::ToolKind::Move,
-        "execute" => acp::ToolKind::Execute,
-        "search" => acp::ToolKind::Search,
-        "fetch" => acp::ToolKind::Fetch,
-        "switch_mode" => acp::ToolKind::SwitchMode,
-        "other" => acp::ToolKind::Other,
-        _ => acp::ToolKind::Think,
+        "read" => model::ToolKind::Read,
+        "edit" => model::ToolKind::Edit,
+        "delete" => model::ToolKind::Delete,
+        "move" => model::ToolKind::Move,
+        "execute" => model::ToolKind::Execute,
+        "search" => model::ToolKind::Search,
+        "fetch" => model::ToolKind::Fetch,
+        "switch_mode" => model::ToolKind::SwitchMode,
+        "other" => model::ToolKind::Other,
+        _ => model::ToolKind::Think,
     }
 }
 
-fn convert_tool_status(status: &str) -> acp::ToolCallStatus {
+fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     match status {
-        "in_progress" => acp::ToolCallStatus::InProgress,
-        "completed" => acp::ToolCallStatus::Completed,
-        "failed" => acp::ToolCallStatus::Failed,
-        _ => acp::ToolCallStatus::Pending,
+        "in_progress" => model::ToolCallStatus::InProgress,
+        "completed" => model::ToolCallStatus::Completed,
+        "failed" => model::ToolCallStatus::Failed,
+        _ => model::ToolCallStatus::Pending,
     }
 }
 
-fn convert_plan_entry(entry: types::PlanEntry) -> acp::PlanEntry {
+fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
     let status = match entry.status.as_str() {
-        "in_progress" => acp::PlanEntryStatus::InProgress,
-        "completed" => acp::PlanEntryStatus::Completed,
-        _ => acp::PlanEntryStatus::Pending,
+        "in_progress" => model::PlanEntryStatus::InProgress,
+        "completed" => model::PlanEntryStatus::Completed,
+        _ => model::PlanEntryStatus::Pending,
     };
-    acp::PlanEntry::new(entry.content, acp::PlanEntryPriority::Medium, status)
+    model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
 }
 
 fn convert_mode_state(mode: types::ModeState) -> ModeState {

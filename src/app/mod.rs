@@ -33,7 +33,7 @@ mod update_check;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use connect::{create_app, start_connection};
-pub use events::{handle_acp_event, handle_terminal_event};
+pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
@@ -45,7 +45,7 @@ pub use state::{
 };
 pub use update_check::start_update_check;
 
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use crossterm::event::{
     EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -88,7 +88,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 events::handle_terminal_event(app, event);
             }
             Some(event) = app.event_rx.recv() => {
-                events::handle_acp_event(app, event);
+                events::handle_client_event(app, event);
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -106,10 +106,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 events::handle_terminal_event(app, event);
                 continue;
             }
-            // Then ACP events
+            // Then client events
             match app.event_rx.try_recv() {
                 Ok(event) => {
-                    events::handle_acp_event(app, event);
+                    events::handle_client_event(app, event);
                 }
                 Err(_) => break,
             }
@@ -201,10 +201,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(pending) = tc.pending_permission.take()
                 && let Some(last_opt) = pending.options.last()
             {
-                let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                        last_opt.option_id.clone(),
-                    )),
+                let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
+                    model::RequestPermissionOutcome::Selected(
+                        model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                    ),
                 ));
             }
         }

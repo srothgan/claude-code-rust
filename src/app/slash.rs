@@ -19,7 +19,7 @@ use super::{
     MessageBlock, MessageRole, dialog::DialogState,
 };
 use crate::agent::events::ClientEvent;
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use std::rc::Rc;
 
 pub const MAX_VISIBLE: usize = 8;
@@ -133,7 +133,7 @@ fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Rc<crate::agent::client::AgentConnection>, acp::SessionId)> {
+) -> Option<(Rc<crate::agent::client::AgentConnection>, model::SessionId)> {
     let conn = require_connection(app, not_connected_msg)?;
     let Some(session_id) = app.session_id.clone() else {
         push_system_message(app, no_session_msg);
@@ -143,7 +143,7 @@ fn require_active_session(
 }
 
 pub(crate) fn clear_conversation_history(app: &mut App) {
-    let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
@@ -414,7 +414,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
                 return true;
             }
 
-            // Forward `/compact` to ACP/Zed via the normal prompt path, then clear
+            // Forward `/compact` through the bridge via the normal prompt path, then clear
             // local history once the turn completes.
             app.pending_compact_clear = true;
             false
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.available_commands = vec![acp::AvailableCommand::new("/help", "Help")];
+        app.available_commands = vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
     }
@@ -569,9 +569,9 @@ mod tests {
     fn login_logout_are_hidden_from_candidates() {
         let mut app = App::test_default();
         app.available_commands = vec![
-            acp::AvailableCommand::new("/login", "Login"),
-            acp::AvailableCommand::new("/logout", "Logout"),
-            acp::AvailableCommand::new("/help", "Help"),
+            model::AvailableCommand::new("/login", "Login"),
+            model::AvailableCommand::new("/logout", "Logout"),
+            model::AvailableCommand::new("/help", "Help"),
         ];
 
         let names: Vec<String> = supported_candidates(&app).into_iter().map(|c| c.name).collect();
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn typed_login_is_still_forwarded_when_advertised() {
         let mut app = App::test_default();
-        app.available_commands = vec![acp::AvailableCommand::new("/login", "Login")];
+        app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
 
         let consumed = try_handle_submit(&mut app, "/login");
         assert!(!consumed);

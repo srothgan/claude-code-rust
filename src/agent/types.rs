@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
@@ -174,28 +173,7 @@ pub struct SessionInit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionConfigOption {
-    pub id: String,
-    pub name: String,
-    pub category: String,
-    pub current_value: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionInfo {
-    pub session_id: String,
-    pub cwd: String,
-    pub title: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptChunk {
     pub kind: String,
     pub value: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionMeta {
-    pub values: BTreeMap<String, serde_json::Value>,
 }

@@ -17,6 +17,6 @@
 pub mod bridge;
 pub mod client;
 pub mod events;
-pub mod protocol;
+pub mod model;
 pub mod types;
 pub mod wire;

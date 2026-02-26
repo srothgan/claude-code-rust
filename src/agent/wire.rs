@@ -97,7 +97,6 @@ pub enum BridgeEvent {
     SlashError { session_id: String, message: String },
     SessionReplaced { session_id: String, model_name: String, mode: Option<types::ModeState> },
     Initialized { result: types::InitializeResult },
-    SessionsListed { sessions: Vec<types::SessionInfo>, next_cursor: Option<String> },
 }
 
 #[cfg(test)]

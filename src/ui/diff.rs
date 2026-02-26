@@ -14,16 +14,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
 
 /// Render a diff with proper unified-style output using the `similar` crate.
-/// The ACP `Diff` struct provides `old_text`/`new_text` -- we compute the actual
+/// The model `Diff` struct provides `old_text`/`new_text` -- we compute the actual
 /// line-level changes and show only changed lines with context.
-pub fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
+pub fn render_diff(diff: &model::Diff) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // File path header
@@ -93,7 +93,7 @@ pub fn lang_from_title(title: &str) -> String {
 }
 
 /// Strip an outer markdown code fence if the text is entirely wrapped in one.
-/// The ACP adapter often wraps file contents in ```` ``` ```` fences.
+/// The bridge adapter often wraps file contents in ```` ``` ```` fences.
 pub fn strip_outer_code_fence(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.starts_with("```") {

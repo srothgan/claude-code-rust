@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, FocusTarget, MessageBlock, ToolCallInfo};
-use crate::agent::protocol as acp;
-use crate::agent::protocol::PermissionOptionKind;
+use crate::agent::model;
+use crate::agent::model::PermissionOptionKind;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -65,7 +65,7 @@ fn focused_option_index_by_kind(app: &App, kind: PermissionOptionKind) -> Option
 
 fn focused_option_index_where<F>(app: &App, mut predicate: F) -> Option<usize>
 where
-    F: FnMut(&acp::PermissionOption) -> bool,
+    F: FnMut(&model::PermissionOption) -> bool,
 {
     let tool_id = app.pending_permission_ids.first()?;
     let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
@@ -85,7 +85,7 @@ fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
         && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
 }
 
-fn normalized_option_tokens(option: &acp::PermissionOption) -> String {
+fn normalized_option_tokens(option: &model::PermissionOption) -> String {
     let mut out = String::new();
     for ch in option.name.chars().chain(option.option_id.chars()) {
         if ch.is_ascii_alphanumeric() {
@@ -95,7 +95,7 @@ fn normalized_option_tokens(option: &acp::PermissionOption) -> String {
     out
 }
 
-fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool, bool) {
+fn option_tokens(option: &model::PermissionOption) -> (bool, bool, bool, bool) {
     let tokens = normalized_option_tokens(option);
     let allow_like =
         tokens.contains("allow") || tokens.contains("accept") || tokens.contains("approve");
@@ -110,27 +110,27 @@ fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool, bool) {
     (allow_like, reject_like, persistent_like, session_like)
 }
 
-fn option_is_allow_once_fallback(option: &acp::PermissionOption) -> bool {
+fn option_is_allow_once_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
     allow_like && !reject_like && !persistent_like && !session_like
 }
 
-fn option_is_allow_always_fallback(option: &acp::PermissionOption) -> bool {
+fn option_is_allow_always_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
     allow_like && !reject_like && persistent_like
 }
 
-fn option_is_allow_non_once_fallback(option: &acp::PermissionOption) -> bool {
+fn option_is_allow_non_once_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
     allow_like && !reject_like && (persistent_like || session_like)
 }
 
-fn option_is_reject_once_fallback(option: &acp::PermissionOption) -> bool {
+fn option_is_reject_once_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
     reject_like && !allow_like && !persistent_like
 }
 
-fn option_is_reject_fallback(option: &acp::PermissionOption) -> bool {
+fn option_is_reject_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, _, _) = option_tokens(option);
     reject_like && !allow_like
 }
@@ -345,8 +345,8 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                 opt.name,
                 opt.kind
             );
-            let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+            let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
+                model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
                     opt.option_id.clone(),
                 )),
             ));
@@ -389,7 +389,7 @@ mod tests {
             id: id.to_owned(),
             title: format!("Tool {id}"),
             sdk_tool_name: "Read".to_owned(),
-            status: acp::ToolCallStatus::InProgress,
+            status: model::ToolCallStatus::InProgress,
             content: Vec::new(),
             collapsed: false,
             hidden: false,
@@ -409,24 +409,28 @@ mod tests {
         }
     }
 
-    fn allow_options() -> Vec<acp::PermissionOption> {
+    fn allow_options() -> Vec<model::PermissionOption> {
         vec![
-            acp::PermissionOption::new("allow-once", "Allow once", PermissionOptionKind::AllowOnce),
-            acp::PermissionOption::new(
+            model::PermissionOption::new(
+                "allow-once",
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            ),
+            model::PermissionOption::new(
                 "allow-always",
                 "Allow always",
                 PermissionOptionKind::AllowAlways,
             ),
-            acp::PermissionOption::new("reject-once", "Reject", PermissionOptionKind::RejectOnce),
+            model::PermissionOption::new("reject-once", "Reject", PermissionOptionKind::RejectOnce),
         ]
     }
 
     fn add_permission(
         app: &mut App,
         tool_id: &str,
-        options: Vec<acp::PermissionOption>,
+        options: Vec<model::PermissionOption>,
         focused: bool,
-    ) -> oneshot::Receiver<acp::RequestPermissionResponse> {
+    ) -> oneshot::Receiver<model::RequestPermissionResponse> {
         let msg_idx = app.messages.len();
         app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
@@ -480,7 +484,7 @@ mod tests {
         assert!(consumed);
 
         let resp2 = rx2.try_recv().expect("focused permission should receive response");
-        let acp::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
+        let model::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel2.option_id.clone(), "allow-once");
@@ -510,17 +514,17 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-always",
                     "Allow always",
                     PermissionOptionKind::AllowAlways,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-once",
                     "Allow once",
                     PermissionOptionKind::AllowOnce,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "reject-once",
                     "Reject",
                     PermissionOptionKind::RejectOnce,
@@ -537,7 +541,7 @@ mod tests {
         assert!(consumed);
 
         let resp1 = rx1.try_recv().expect("first permission should be answered");
-        let acp::RequestPermissionOutcome::Selected(sel1) = resp1.outcome else {
+        let model::RequestPermissionOutcome::Selected(sel1) = resp1.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel1.option_id.clone(), "allow-once");
@@ -578,7 +582,7 @@ mod tests {
         assert!(app.pending_permission_ids.is_empty());
 
         let resp = rx.try_recv().expect("permission should be answered by ctrl+n");
-        let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel.option_id.clone(), "reject-once");
@@ -591,12 +595,12 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-once",
                     "Allow once",
                     PermissionOptionKind::AllowOnce,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "reject-always",
                     "Reject always",
                     PermissionOptionKind::RejectAlways,
@@ -621,17 +625,17 @@ mod tests {
             &mut app,
             "perm-1",
             vec![
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-once",
                     "Allow once",
                     PermissionOptionKind::AllowOnce,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "allow-always",
                     "Allow always",
                     PermissionOptionKind::AllowOnce,
                 ),
-                acp::PermissionOption::new(
+                model::PermissionOption::new(
                     "reject-once",
                     "Reject",
                     PermissionOptionKind::RejectOnce,
@@ -647,7 +651,7 @@ mod tests {
         assert!(consumed);
 
         let resp = rx.try_recv().expect("permission should be answered by ctrl+a fallback");
-        let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel.option_id.clone(), "allow-always");
@@ -668,7 +672,7 @@ mod tests {
         assert!(consumed);
 
         let resp = rx.try_recv().expect("permission should be answered by uppercase ctrl+a");
-        let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel.option_id.clone(), "allow-always");

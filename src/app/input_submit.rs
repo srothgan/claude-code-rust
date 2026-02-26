@@ -18,7 +18,7 @@ use super::{
     App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
 };
 use crate::agent::events::ClientEvent;
-use crate::agent::protocol as acp;
+use crate::agent::model;
 use crate::app::slash;
 use std::rc::Rc;
 
@@ -43,7 +43,7 @@ pub(super) fn submit_input(app: &mut App) {
 
     // New turn started by user input: force-stop stale tool calls from older turns
     // so their spinners don't continue during this turn.
-    let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     let Some(ref conn) = app.conn else { return };
 
