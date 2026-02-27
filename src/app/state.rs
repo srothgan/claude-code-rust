@@ -16,8 +16,10 @@
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -119,6 +121,52 @@ impl SessionUsageState {
         let cache_write = self.latest_cache_write_tokens.unwrap_or(0);
         Some(input.saturating_add(output).saturating_add(cache_read).saturating_add(cache_write))
     }
+}
+
+pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+// TODO(perf): Re-evaluate long-session memory policy. Decide whether to:
+// - tune `DEFAULT_RENDER_CACHE_BUDGET_BYTES`, and
+// - introduce message-history retention limits (drop or disk-spill oldest messages)
+//   so total app memory remains bounded beyond render-cache eviction.
+static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
+
+fn next_cache_access_tick() -> u64 {
+    CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderCacheBudget {
+    pub max_bytes: usize,
+    pub last_total_bytes: usize,
+    pub last_evicted_bytes: usize,
+    pub total_evictions: usize,
+}
+
+impl Default for RenderCacheBudget {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
+            last_total_bytes: 0,
+            last_evicted_bytes: 0,
+            total_evictions: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheBudgetEnforceStats {
+    pub total_before_bytes: usize,
+    pub total_after_bytes: usize,
+    pub evicted_bytes: usize,
+    pub evicted_blocks: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheSlotCandidate {
+    msg_idx: usize,
+    block_idx: usize,
+    bytes: usize,
+    last_access_tick: u64,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -252,6 +300,8 @@ pub struct App {
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
     pub perf: Option<crate::perf::PerfLogger>,
+    /// Global in-memory budget for rendered block caches (message + tool + welcome).
+    pub render_cache_budget: RenderCacheBudget,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
@@ -406,6 +456,89 @@ impl App {
         changed
     }
 
+    pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
+        let mut stats = CacheBudgetEnforceStats::default();
+        let is_streaming = matches!(self.status, AppStatus::Thinking | AppStatus::Running);
+        let msg_count = self.messages.len();
+        let mut evictable = Vec::new();
+
+        for (msg_idx, msg) in self.messages.iter().enumerate() {
+            let protect_message_tail = is_streaming && (msg_idx + 1 == msg_count);
+            for (block_idx, block) in msg.blocks.iter().enumerate() {
+                let (cache, protect_block) = match block {
+                    MessageBlock::Text(_, cache, _) => (cache, false),
+                    MessageBlock::Welcome(welcome) => (&welcome.cache, false),
+                    MessageBlock::ToolCall(tc) => (
+                        &tc.cache,
+                        matches!(
+                            tc.status,
+                            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                        ),
+                    ),
+                };
+
+                let bytes = cache.cached_bytes();
+                if bytes == 0 {
+                    continue;
+                }
+                stats.total_before_bytes = stats.total_before_bytes.saturating_add(bytes);
+
+                if !(protect_message_tail || protect_block) {
+                    evictable.push(CacheSlotCandidate {
+                        msg_idx,
+                        block_idx,
+                        bytes,
+                        last_access_tick: cache.last_access_tick(),
+                    });
+                }
+            }
+        }
+
+        if stats.total_before_bytes <= self.render_cache_budget.max_bytes {
+            self.render_cache_budget.last_total_bytes = stats.total_before_bytes;
+            self.render_cache_budget.last_evicted_bytes = 0;
+            stats.total_after_bytes = stats.total_before_bytes;
+            return stats;
+        }
+
+        evictable.sort_by_key(|slot| (slot.last_access_tick, std::cmp::Reverse(slot.bytes)));
+        stats.total_after_bytes = stats.total_before_bytes;
+
+        for slot in evictable {
+            if stats.total_after_bytes <= self.render_cache_budget.max_bytes {
+                break;
+            }
+            let removed = self.evict_cache_slot(slot.msg_idx, slot.block_idx);
+            if removed == 0 {
+                continue;
+            }
+            stats.total_after_bytes = stats.total_after_bytes.saturating_sub(removed);
+            stats.evicted_bytes = stats.evicted_bytes.saturating_add(removed);
+            stats.evicted_blocks = stats.evicted_blocks.saturating_add(1);
+        }
+
+        self.render_cache_budget.last_total_bytes = stats.total_after_bytes;
+        self.render_cache_budget.last_evicted_bytes = stats.evicted_bytes;
+        self.render_cache_budget.total_evictions =
+            self.render_cache_budget.total_evictions.saturating_add(stats.evicted_blocks);
+
+        stats
+    }
+
+    fn evict_cache_slot(&mut self, msg_idx: usize, block_idx: usize) -> usize {
+        let Some(msg) = self.messages.get_mut(msg_idx) else {
+            return 0;
+        };
+        let Some(block) = msg.blocks.get_mut(block_idx) else {
+            return 0;
+        };
+        match block {
+            MessageBlock::Text(_, cache, _) => cache.evict_cached_render(),
+            MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
+            MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
+        }
+    }
+
     /// Build a minimal `App` for unit/integration tests.
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
@@ -473,6 +606,7 @@ impl App {
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,
+            render_cache_budget: RenderCacheBudget::default(),
             fps_ema: None,
             last_frame_at: None,
         }
@@ -828,30 +962,82 @@ impl ChatMessage {
 pub struct BlockCache {
     version: u64,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
+    segments: Vec<CacheLineSegment>,
+    /// Approximate UTF-8 byte size of cached rendered lines.
+    cached_bytes: usize,
     /// Wrapped line count of the cached lines at `wrapped_width`.
     /// Computed via `Paragraph::line_count(width)` on the same lines stored in `lines`.
     wrapped_height: usize,
     /// The viewport width used to compute `wrapped_height`.
     wrapped_width: u16,
+    wrapped_height_valid: bool,
+    last_access_tick: Cell<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheLineSegment {
+    start: usize,
+    end: usize,
+    wrapped_height: usize,
+    wrapped_width: u16,
+    wrapped_height_valid: bool,
+}
+
+impl CacheLineSegment {
+    #[must_use]
+    fn new(start: usize, end: usize) -> Self {
+        Self { start, end, wrapped_height: 0, wrapped_width: 0, wrapped_height_valid: false }
+    }
 }
 
 impl BlockCache {
+    fn touch(&self) {
+        self.last_access_tick.set(next_cache_access_tick());
+    }
+
     /// Bump the version to invalidate cached lines and height.
     pub fn invalidate(&mut self) {
         self.version += 1;
+        self.wrapped_height_valid = false;
     }
 
     /// Get a reference to the cached lines, if fresh.
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 { self.lines.as_ref() } else { None }
+        if self.version == 0 {
+            let lines = self.lines.as_ref();
+            if lines.is_some() {
+                self.touch();
+            }
+            lines
+        } else {
+            None
+        }
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
     /// Height is set separately via `set_height()` after measurement.
     pub fn store(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
+        self.store_with_policy(lines, *super::default_cache_split_policy());
+    }
+
+    /// Store freshly rendered lines using a shared KB split policy.
+    pub fn store_with_policy(
+        &mut self,
+        lines: Vec<ratatui::text::Line<'static>>,
+        policy: super::CacheSplitPolicy,
+    ) {
+        let segment_limit = policy.hard_limit_bytes.max(1);
+        let (segments, cached_bytes) = build_line_segments(&lines, segment_limit);
         self.lines = Some(lines);
+        self.segments = segments;
+        self.cached_bytes = cached_bytes;
         self.version = 0;
+        self.wrapped_height = 0;
+        self.wrapped_width = 0;
+        self.wrapped_height_valid = false;
+        self.touch();
     }
 
     /// Set the wrapped height for the cached lines at the given width.
@@ -860,6 +1046,8 @@ impl BlockCache {
     pub fn set_height(&mut self, height: usize, width: u16) {
         self.wrapped_height = height;
         self.wrapped_width = width;
+        self.wrapped_height_valid = true;
+        self.touch();
     }
 
     /// Store lines and set height in one call.
@@ -877,12 +1065,116 @@ impl BlockCache {
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
     #[must_use]
     pub fn height_at(&self, width: u16) -> Option<usize> {
-        if self.version == 0 && self.wrapped_width == width {
+        if self.version == 0 && self.wrapped_height_valid && self.wrapped_width == width {
+            self.touch();
             Some(self.wrapped_height)
         } else {
             None
         }
     }
+
+    /// Recompute wrapped height from cached segments and memoize it at `width`.
+    /// Returns `None` when the render cache is stale.
+    pub fn measure_and_set_height(&mut self, width: u16) -> Option<usize> {
+        if self.version != 0 {
+            return None;
+        }
+        if let Some(h) = self.height_at(width) {
+            return Some(h);
+        }
+
+        let lines = self.lines.as_ref()?;
+
+        if self.segments.is_empty() {
+            self.set_height(0, width);
+            return Some(0);
+        }
+
+        let mut total_height = 0usize;
+        for segment in &mut self.segments {
+            if segment.wrapped_height_valid && segment.wrapped_width == width {
+                total_height = total_height.saturating_add(segment.wrapped_height);
+                continue;
+            }
+            let segment_lines = lines[segment.start..segment.end].to_vec();
+            let h = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(segment_lines))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .line_count(width);
+            segment.wrapped_height = h;
+            segment.wrapped_width = width;
+            segment.wrapped_height_valid = true;
+            total_height = total_height.saturating_add(h);
+        }
+
+        self.set_height(total_height, width);
+        Some(total_height)
+    }
+
+    #[must_use]
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    #[must_use]
+    pub fn cached_bytes(&self) -> usize {
+        self.cached_bytes
+    }
+
+    #[must_use]
+    pub fn last_access_tick(&self) -> u64 {
+        self.last_access_tick.get()
+    }
+
+    pub fn evict_cached_render(&mut self) -> usize {
+        let removed = self.cached_bytes;
+        if removed == 0 {
+            return 0;
+        }
+        self.lines = None;
+        self.segments.clear();
+        self.cached_bytes = 0;
+        self.wrapped_height = 0;
+        self.wrapped_width = 0;
+        self.wrapped_height_valid = false;
+        self.version = self.version.wrapping_add(1);
+        removed
+    }
+}
+
+fn build_line_segments(
+    lines: &[ratatui::text::Line<'static>],
+    segment_limit_bytes: usize,
+) -> (Vec<CacheLineSegment>, usize) {
+    if lines.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let limit = segment_limit_bytes.max(1);
+    let mut segments = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut start = 0usize;
+    let mut acc = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let line_bytes = line_utf8_bytes(line).max(1);
+        total_bytes = total_bytes.saturating_add(line_bytes);
+
+        if idx > start && acc.saturating_add(line_bytes) > limit {
+            segments.push(CacheLineSegment::new(start, idx));
+            start = idx;
+            acc = 0;
+        }
+        acc = acc.saturating_add(line_bytes);
+    }
+
+    segments.push(CacheLineSegment::new(start, lines.len()));
+    (segments, total_bytes)
+}
+
+fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
+    let span_bytes =
+        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
+    span_bytes.saturating_add(1)
 }
 
 /// Text holder for a single message block's markdown source.
@@ -1177,6 +1469,16 @@ mod tests {
     }
 
     #[test]
+    fn cache_store_splits_into_kb_segments() {
+        let mut cache = BlockCache::default();
+        let long = "x".repeat(800);
+        let lines: Vec<Line<'static>> = (0..12).map(|_| Line::from(long.clone())).collect();
+        cache.store(lines);
+        assert!(cache.segment_count() > 1);
+        assert!(cache.cached_bytes() > 0);
+    }
+
+    #[test]
     fn cache_invalidate_without_store() {
         let mut cache = BlockCache::default();
         cache.invalidate();
@@ -1341,10 +1643,121 @@ mod tests {
         assert_eq!(cache_a.get().unwrap().len(), cache_b.get().unwrap().len());
     }
 
+    #[test]
+    fn cache_measure_and_set_height_from_segments() {
+        let mut cache = BlockCache::default();
+        let lines = vec![
+            Line::from("alpha beta gamma delta epsilon"),
+            Line::from("zeta eta theta iota kappa lambda"),
+            Line::from("mu nu xi omicron pi rho sigma"),
+        ];
+        cache.store(lines.clone());
+        let measured = cache.measure_and_set_height(16).expect("expected measured height");
+        let expected = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .line_count(16);
+        assert_eq!(measured, expected);
+        assert_eq!(cache.height_at(16), Some(expected));
+    }
+
+    #[test]
+    fn cache_get_updates_last_access_tick() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("tick")]);
+        let before = cache.last_access_tick();
+        let _ = cache.get();
+        let after = cache.last_access_tick();
+        assert!(after > before);
+    }
+
     // App tool_call_index
 
     fn make_test_app() -> App {
         App::test_default()
+    }
+
+    fn assistant_text_block(text: &str) -> MessageBlock {
+        MessageBlock::Text(
+            text.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(text),
+        )
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_evicts_lru_block() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("a")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("b")],
+                usage: None,
+            },
+        ];
+
+        let bytes_a = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("x".repeat(2200))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
+            cache.store(vec![Line::from("y".repeat(2200))]);
+            let _ = cache.get();
+            cache.cached_bytes()
+        } else {
+            0
+        };
+
+        app.render_cache_budget.max_bytes = bytes_b;
+        let stats = app.enforce_render_cache_budget();
+        assert!(stats.evicted_blocks >= 1);
+        assert!(stats.evicted_bytes >= bytes_a);
+        assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
+
+        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
+            assert_eq!(cache.cached_bytes(), 0);
+        } else {
+            panic!("expected text block");
+        }
+        if let MessageBlock::Text(_, cache, _) = &app.messages[1].blocks[0] {
+            assert_eq!(cache.cached_bytes(), bytes_b);
+        } else {
+            panic!("expected text block");
+        }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_protects_streaming_tail_message() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages = vec![ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![assistant_text_block("streaming tail")],
+            usage: None,
+        }];
+
+        let before = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("z".repeat(4096))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        app.render_cache_budget.max_bytes = 64;
+        let stats = app.enforce_render_cache_budget();
+        assert_eq!(stats.evicted_blocks, 0);
+        assert_eq!(stats.evicted_bytes, 0);
+
+        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
+            assert_eq!(cache.cached_bytes(), before);
+        } else {
+            panic!("expected text block");
+        }
     }
 
     #[test]
