@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-02-27 [Changes][v0.4.0]
+
+### Features
+
+- **Agent SDK migration** (#45, closes #23): Replace `@zed-industries/claude-code-acp` with the in-repo Agent SDK bridge; align permission suggestions with SDK session/always-allow scope
+- **Session resume** (#46, closes #22): `--resume` is cwd-aware and restores full transcript state; input locked while resuming; recent sessions shown in welcome context
+- **Token and cost tracking** (#47, closes #21): Footer shows live `Context: XX%`; assistant turns show per-turn `(Xk tok / $X.XX)`; compaction spinner during SDK-reported compaction
+- **Slash command popovers and AskUserQuestion** (#48): Variable-input slash commands show dynamic argument popovers; full `AskUserQuestion` flow with option rendering and answer propagation
+
+### Fixes
+
+- **TodoWrite flicker** (#45): Ignore transient payloads without a todos array so the list no longer clears and reappears mid-turn
+- **Failed Bash rendering** (#45): Compress failed tool output to a single exit-code summary line instead of the full stderr dump
+- **Ctrl+C determinism** (#46): Copy only when selection is non-empty and clear it after; otherwise quit
+- **Submission pipeline** (#47): Single queue gate for submissions; cancel active turn before dispatching queued action; wait for turn-settle before ready
+- **Persisted tool-result normalization** (#48): Strip leading box-drawing prefixes from tool result summaries
+
+### Performance
+
+- **Streaming frame cost** (#49): Generation-keyed tool call measurement cache with O(1) fast path; terminal output delta-append; skip invalidation for no-op updates
+
+### Internal
+
+- Agent SDK bridge modularized into focused modules (`commands.ts`, `tooling.ts`, `permissions.ts`, `usage.ts`, `history.ts`, `auth.ts`, `shared.ts`) (#48)
+- Perf instrumentation markers for key invalidation, measurement, and snapshot paths (#49)
+
 ## [0.3.0] - 2026-02-25 [Changes][v0.3.0]
 
 ### Features
@@ -161,6 +187,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.4.0]: https://github.com/srothgan/claude-code-rust/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/srothgan/claude-code-rust/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/srothgan/claude-code-rust/compare/v0.1.3...v0.2.0
 [v0.1.3]: https://github.com/srothgan/claude-code-rust/compare/v0.1.2...v0.1.3

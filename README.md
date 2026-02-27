@@ -12,8 +12,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Requisites
 
-- Rust 1.88.0+ (install via [rustup](https://rustup.rs), required for source builds and Cargo installs)
-- Node.js 18+ with npx (for the local Agent SDK bridge)
+- Node.js 18+ (for the Agent SDK bridge)
 - Existing Claude Code authentication (`~/.claude/config.json`)
 
 ## Install
@@ -26,17 +25,6 @@ npm install -g claude-code-rust
 
 The npm package installs a `claude-rs` command and downloads the matching
 prebuilt release binary for your platform during `postinstall`.
-
-### Cargo (crates.io)
-
-```bash
-cargo install claude-code-rust
-```
-
-If `claude-rs` is not found after Cargo install, add your Cargo bin directory
-to `PATH` and restart the terminal:
-- Windows: `%USERPROFILE%\\.cargo\\bin` (or your custom `CARGO_HOME\\bin`)
-- macOS/Linux: `$HOME/.cargo/bin`
 
 ## Usage
 
