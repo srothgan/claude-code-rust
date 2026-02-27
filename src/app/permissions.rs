@@ -47,11 +47,13 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
         && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
     {
         let tc = tc.as_mut();
-        if let Some(ref mut perm) = tc.pending_permission {
+        if let Some(ref mut perm) = tc.pending_permission
+            && perm.focused != focused
+        {
             perm.focused = focused;
+            tc.mark_tool_call_layout_dirty();
+            invalidated = true;
         }
-        tc.cache.invalidate();
-        invalidated = true;
     }
     if invalidated {
         app.mark_message_layout_dirty(mi);
@@ -215,13 +217,18 @@ fn handle_permission_focus_cycle(
 fn move_permission_option_left(app: &mut App) {
     let dirty_idx =
         app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    let mut changed = false;
     if let Some(tc) = get_focused_permission_tc(app)
         && let Some(ref mut p) = tc.pending_permission
     {
-        p.selected_index = p.selected_index.saturating_sub(1);
-        tc.cache.invalidate();
+        let next = p.selected_index.saturating_sub(1);
+        if next != p.selected_index {
+            p.selected_index = next;
+            tc.mark_tool_call_layout_dirty();
+            changed = true;
+        }
     }
-    if let Some((mi, _)) = dirty_idx {
+    if changed && let Some((mi, _)) = dirty_idx {
         app.mark_message_layout_dirty(mi);
     }
 }
@@ -229,14 +236,16 @@ fn move_permission_option_left(app: &mut App) {
 fn move_permission_option_right(app: &mut App, option_count: usize) {
     let dirty_idx =
         app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    let mut changed = false;
     if let Some(tc) = get_focused_permission_tc(app)
         && let Some(ref mut p) = tc.pending_permission
         && p.selected_index + 1 < option_count
     {
         p.selected_index += 1;
-        tc.cache.invalidate();
+        tc.mark_tool_call_layout_dirty();
+        changed = true;
     }
-    if let Some((mi, _)) = dirty_idx {
+    if changed && let Some((mi, _)) = dirty_idx {
         app.mark_message_layout_dirty(mi);
     }
 }
@@ -404,7 +413,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                 pending.options.len()
             );
         }
-        tc.cache.invalidate();
+        tc.mark_tool_call_layout_dirty();
         invalidated = true;
     }
     if invalidated {
@@ -439,7 +448,7 @@ fn respond_permission_cancel(app: &mut App) {
         let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
             model::RequestPermissionOutcome::Cancelled,
         ));
-        tc.cache.invalidate();
+        tc.mark_tool_call_layout_dirty();
         app.mark_message_layout_dirty(mi);
     }
 
@@ -475,6 +484,14 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         }

@@ -33,6 +33,8 @@ const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
+const MSG_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
+const MSG_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
@@ -339,7 +341,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                         selected_index: 0,
                         focused: is_first,
                     });
-                    tc.cache.invalidate();
+                    tc.mark_tool_call_layout_dirty();
                     layout_dirty = true;
                     app.pending_permission_ids.push(tool_id);
                     app.claim_focus_target(FocusTarget::Permission);
@@ -845,6 +847,7 @@ fn resolve_sdk_tool_name(kind: model::ToolKind, meta: Option<&serde_json::Value>
         .map_or_else(|| fallback_sdk_tool_name(kind).to_owned(), str::to_owned)
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let title = tc.title.clone();
     let kind = tc.kind;
@@ -904,12 +907,22 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         terminal_command: None,
         terminal_output: None,
         terminal_output_len: 0,
+        terminal_bytes_seen: 0,
+        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+        render_epoch: 0,
+        layout_epoch: 0,
+        last_measured_width: 0,
+        last_measured_height: 0,
+        last_measured_layout_epoch: 0,
+        last_measured_layout_generation: 0,
         cache: BlockCache::default(),
         pending_permission: None,
     };
     if let Some(output) = initial_execute_output {
         tool_info.terminal_output_len = output.len();
+        tool_info.terminal_bytes_seen = output.len();
         tool_info.terminal_output = Some(output);
+        tool_info.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
     }
 
     // Attach to current assistant message -- update existing or add new
@@ -925,13 +938,33 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
             {
                 let existing = existing.as_mut();
-                existing.title.clone_from(&tool_info.title);
-                existing.status = tool_info.status;
-                existing.content.clone_from(&tool_info.content);
-                existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
-                existing.raw_input.clone_from(&tool_info.raw_input);
-                existing.cache.invalidate();
-                layout_dirty = true;
+                let mut changed = false;
+                if existing.title != tool_info.title {
+                    existing.title.clone_from(&tool_info.title);
+                    changed = true;
+                }
+                if existing.status != tool_info.status {
+                    existing.status = tool_info.status;
+                    changed = true;
+                }
+                if existing.content != tool_info.content {
+                    existing.content.clone_from(&tool_info.content);
+                    changed = true;
+                }
+                if existing.sdk_tool_name != tool_info.sdk_tool_name {
+                    existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
+                    changed = true;
+                }
+                if existing.raw_input != tool_info.raw_input {
+                    existing.raw_input.clone_from(&tool_info.raw_input);
+                    changed = true;
+                }
+                if changed {
+                    existing.mark_tool_call_layout_dirty();
+                    layout_dirty = true;
+                } else {
+                    crate::perf::mark("tool_update_noop_skips");
+                }
             }
             if layout_dirty {
                 app.mark_message_layout_dirty(mi);
@@ -968,36 +1001,24 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             if let model::ContentBlock::Text(text) = chunk.content {
                 // Text is actively streaming - suppress the "Thinking..." spinner
                 app.status = AppStatus::Running;
+                if text.text.is_empty() {
+                    return;
+                }
 
-                // Append to last text block in current assistant message, or create new
+                // Append to last text block in current assistant message, splitting
+                // the block into frozen chunks at prioritized boundaries.
                 if let Some(last) = app.messages.last_mut()
                     && matches!(last.role, MessageRole::Assistant)
                 {
-                    // Append to last Text block if it exists, else push new one
-                    if let Some(MessageBlock::Text(t, cache, incr)) = last.blocks.last_mut() {
-                        t.push_str(&text.text);
-                        incr.append(&text.text);
-                        cache.invalidate();
-                    } else {
-                        let mut incr = IncrementalMarkdown::default();
-                        incr.append(&text.text);
-                        last.blocks.push(MessageBlock::Text(
-                            text.text.clone(),
-                            BlockCache::default(),
-                            incr,
-                        ));
-                    }
+                    append_agent_stream_text(&mut last.blocks, &text.text);
                     return;
                 }
-                let mut incr = IncrementalMarkdown::default();
-                incr.append(&text.text);
+
+                let mut blocks = Vec::new();
+                append_agent_stream_text(&mut blocks, &text.text);
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
-                    blocks: vec![MessageBlock::Text(
-                        text.text.clone(),
-                        BlockCache::default(),
-                        incr,
-                    )],
+                    blocks,
                     usage: None,
                 });
             }
@@ -1052,43 +1073,77 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
                     let tc = tc.as_mut();
-                    if let Some(status) = tcu.fields.status {
+                    let mut changed = false;
+                    if let Some(status) = tcu.fields.status
+                        && tc.status != status
+                    {
                         tc.status = status;
+                        changed = true;
                     }
                     if let Some(title) = &tcu.fields.title {
-                        tc.title = shorten_tool_title(title, &app.cwd_raw);
+                        let shortened = shorten_tool_title(title, &app.cwd_raw);
+                        if tc.title != shortened {
+                            tc.title = shortened;
+                            changed = true;
+                        }
                     }
                     if let Some(content) = tcu.fields.content {
                         // Extract terminal_id and command from Terminal content blocks
                         for cb in &content {
                             if let model::ToolCallContent::Terminal(t) = cb {
                                 let tid = t.terminal_id.clone();
-                                if let Some(terminal) = app.terminals.borrow().get(&tid) {
+                                if let Some(terminal) = app.terminals.borrow().get(&tid)
+                                    && tc.terminal_command.as_deref()
+                                        != Some(terminal.command.as_str())
+                                {
                                     tc.terminal_command = Some(terminal.command.clone());
+                                    changed = true;
                                 }
-                                tc.terminal_id = Some(tid.clone());
-                                app.terminal_tool_calls.push((tid, mi, bi));
+                                if tc.terminal_id.as_deref() != Some(tid.as_str()) {
+                                    tc.terminal_id = Some(tid.clone());
+                                    changed = true;
+                                }
+                                if !app
+                                    .terminal_tool_calls
+                                    .iter()
+                                    .any(|(id, m, b)| id == &tid && *m == mi && *b == bi)
+                                {
+                                    app.terminal_tool_calls.push((tid, mi, bi));
+                                }
                             }
                         }
-                        tc.content = content;
+                        if tc.content != content {
+                            tc.content = content;
+                            changed = true;
+                        }
                     }
-                    if let Some(raw_input) = tcu.fields.raw_input.as_ref() {
+                    if let Some(raw_input) = tcu.fields.raw_input.as_ref()
+                        && tc.raw_input.as_ref() != Some(raw_input)
+                    {
                         tc.raw_input = Some(raw_input.clone());
+                        changed = true;
                     }
                     // Keep updating Execute output from raw_output so long-running commands
                     // can stream visible terminal text before completion.
                     if tc.is_execute_tool()
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
                         && let Some(output) = raw_output_to_terminal_text(raw_output)
+                        && tc.terminal_output.as_deref() != Some(output.as_str())
                     {
                         tc.terminal_output_len = output.len();
+                        tc.terminal_bytes_seen = output.len();
                         tc.terminal_output = Some(output);
+                        tc.terminal_snapshot_mode =
+                            crate::app::TerminalSnapshotMode::ReplaceSnapshot;
+                        changed = true;
                     }
                     // Update sdk_tool_name from update meta when provided.
                     if let Some(name) = sdk_tool_name_from_meta(tcu.meta.as_ref())
                         && !name.trim().is_empty()
+                        && tc.sdk_tool_name != name
                     {
                         tc.sdk_tool_name = name.to_owned();
+                        changed = true;
                     }
                     // Update todos from TodoWrite raw_input updates
                     if tc.sdk_tool_name == "TodoWrite" {
@@ -1113,11 +1168,17 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                     if matches!(
                         tc.status,
                         model::ToolCallStatus::Completed | model::ToolCallStatus::Failed
-                    ) {
+                    ) && tc.collapsed != app.tools_collapsed
+                    {
                         tc.collapsed = app.tools_collapsed;
+                        changed = true;
                     }
-                    tc.cache.invalidate();
-                    layout_dirty_idx = Some(mi);
+                    if changed {
+                        tc.mark_tool_call_layout_dirty();
+                        layout_dirty_idx = Some(mi);
+                    } else {
+                        crate::perf::mark("tool_update_noop_skips");
+                    }
                 }
             } else {
                 tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
@@ -1433,6 +1494,159 @@ fn has_in_progress_tool_calls(app: &App) -> bool {
     false
 }
 
+fn new_text_block(text: String) -> MessageBlock {
+    let incr = IncrementalMarkdown::from_complete(&text);
+    MessageBlock::Text(text, BlockCache::default(), incr)
+}
+
+fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    if let Some(MessageBlock::Text(text, cache, incr)) = blocks.last_mut() {
+        text.push_str(chunk);
+        incr.append(chunk);
+        cache.invalidate();
+    } else {
+        blocks.push(new_text_block(chunk.to_owned()));
+    }
+
+    let split_count = split_tail_text_block(blocks);
+    if split_count > 0 {
+        crate::perf::mark_with("text_block_split_count", "count", split_count);
+    }
+
+    if let Some(MessageBlock::Text(text, _, _)) = blocks.last() {
+        crate::perf::mark_with("text_block_active_tail_bytes", "bytes", text.len());
+    }
+    let text_block_count = blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
+    crate::perf::mark_with("text_block_frozen_count", "count", text_block_count.saturating_sub(1));
+}
+
+fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
+    let mut split_count = 0usize;
+    loop {
+        let Some(tail_idx) = blocks.len().checked_sub(1) else {
+            break;
+        };
+        let Some(split_at) = blocks.get(tail_idx).and_then(|block| {
+            if let MessageBlock::Text(text, _, _) = block {
+                find_text_block_split_index(text)
+            } else {
+                None
+            }
+        }) else {
+            break;
+        };
+
+        let (completed, remainder) = match blocks.get(tail_idx) {
+            Some(MessageBlock::Text(text, _, _)) => {
+                (text[..split_at].to_owned(), text[split_at..].to_owned())
+            }
+            _ => break,
+        };
+
+        if completed.is_empty() || remainder.is_empty() {
+            break;
+        }
+
+        blocks[tail_idx] = new_text_block(remainder);
+        blocks.insert(tail_idx, new_text_block(completed));
+        split_count += 1;
+    }
+    split_count
+}
+
+fn find_text_block_split_index(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut in_fence = false;
+    let mut i = 0usize;
+
+    let mut soft_newline = None;
+    let mut soft_sentence = None;
+    let mut hard_newline = None;
+    let mut hard_sentence = None;
+    let mut post_hard_newline = None;
+    let mut post_hard_sentence = None;
+
+    while i < bytes.len() {
+        if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
+            in_fence = !in_fence;
+        }
+
+        if !in_fence {
+            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
+                let split_at = i + 2;
+                if split_at < bytes.len() {
+                    return Some(split_at);
+                }
+                return None;
+            }
+
+            if bytes[i] == b'\n' {
+                track_text_split_candidate(
+                    i + 1,
+                    &mut soft_newline,
+                    &mut hard_newline,
+                    &mut post_hard_newline,
+                );
+            }
+
+            if is_sentence_boundary(bytes, i) {
+                track_text_split_candidate(
+                    i + 1,
+                    &mut soft_sentence,
+                    &mut hard_sentence,
+                    &mut post_hard_sentence,
+                );
+            }
+        }
+        i += 1;
+    }
+
+    if bytes.len() >= MSG_SPLIT_SOFT_LIMIT_BYTES
+        && let Some(split_at) = pick_text_split_candidate(soft_newline, soft_sentence)
+        && split_at < bytes.len()
+    {
+        return Some(split_at);
+    }
+
+    if bytes.len() >= MSG_SPLIT_HARD_LIMIT_BYTES
+        && let Some(split_at) =
+            hard_newline.or(post_hard_newline).or(hard_sentence).or(post_hard_sentence)
+        && split_at < bytes.len()
+    {
+        return Some(split_at);
+    }
+
+    None
+}
+
+fn track_text_split_candidate(
+    split_at: usize,
+    soft_slot: &mut Option<usize>,
+    hard_slot: &mut Option<usize>,
+    post_hard_slot: &mut Option<usize>,
+) {
+    if split_at <= MSG_SPLIT_SOFT_LIMIT_BYTES {
+        *soft_slot = Some(split_at);
+    }
+    if split_at <= MSG_SPLIT_HARD_LIMIT_BYTES {
+        *hard_slot = Some(split_at);
+    } else if post_hard_slot.is_none() {
+        *post_hard_slot = Some(split_at);
+    }
+}
+
+fn pick_text_split_candidate(newline: Option<usize>, sentence: Option<usize>) -> Option<usize> {
+    newline.or(sentence)
+}
+
+fn is_sentence_boundary(bytes: &[u8], i: usize) -> bool {
+    matches!(bytes[i], b'.' | b'!' | b'?')
+        && (i + 1 == bytes.len() || matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n'))
+}
+
 /// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
 fn session_update_name(update: &model::SessionUpdate) -> &'static str {
     match update {
@@ -1480,6 +1694,14 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         }
@@ -1664,6 +1886,67 @@ mod tests {
         assert_eq!(result, "Read /project/file.rs");
     }
 
+    #[test]
+    fn split_index_prefers_double_newline() {
+        let text = "first\n\nsecond";
+        let split_at = find_text_block_split_index(text);
+        assert_eq!(split_at, Some("first\n\n".len()));
+    }
+
+    #[test]
+    fn split_index_soft_limit_prefers_newline() {
+        let prefix = "a".repeat(MSG_SPLIT_SOFT_LIMIT_BYTES - 1);
+        let text = format!("{prefix}\n{}", "b".repeat(32));
+        let split_at = find_text_block_split_index(&text).expect("expected split index");
+        assert_eq!(&text[..split_at], format!("{prefix}\n"));
+    }
+
+    #[test]
+    fn split_index_hard_limit_uses_sentence_when_needed() {
+        let prefix = "a".repeat(MSG_SPLIT_HARD_LIMIT_BYTES + 32);
+        let text = format!("{prefix}. tail");
+        let split_at = find_text_block_split_index(&text).expect("expected split index");
+        assert_eq!(&text[..split_at], format!("{prefix}."));
+    }
+
+    #[test]
+    fn split_index_ignores_double_newline_inside_code_fence() {
+        let text = "```\nline1\n\nline2\n```";
+        assert!(find_text_block_split_index(text).is_none());
+    }
+
+    #[test]
+    fn agent_message_chunk_splits_into_frozen_text_blocks() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                    "p1\n\np2\n\np3",
+                ))),
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        let Some(last) = app.messages.last() else {
+            panic!("missing assistant message");
+        };
+        assert!(matches!(last.role, MessageRole::Assistant));
+        assert_eq!(last.blocks.len(), 3);
+        let Some(MessageBlock::Text(b1, _, _)) = last.blocks.first() else {
+            panic!("expected first text block");
+        };
+        let Some(MessageBlock::Text(b2, _, _)) = last.blocks.get(1) else {
+            panic!("expected second text block");
+        };
+        let Some(MessageBlock::Text(b3, _, _)) = last.blocks.get(2) else {
+            panic!("expected third text block");
+        };
+        assert_eq!(b1, "p1\n\n");
+        assert_eq!(b2, "p2\n\n");
+        assert_eq!(b3, "p3");
+    }
+
     // has_in_progress_tool_calls
 
     fn make_test_app() -> App {
@@ -1723,6 +2006,42 @@ mod tests {
             panic!("tool call block missing");
         };
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
+    }
+
+    #[test]
+    fn tool_call_update_noop_does_not_bump_epochs() {
+        let mut app = make_test_app();
+        let tc = model::ToolCall::new("tc-noop", "Read file")
+            .kind(model::ToolKind::Read)
+            .status(model::ToolCallStatus::InProgress);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+        );
+
+        let (mi, bi) = app.lookup_tool_call("tc-noop").expect("tool call not indexed");
+        let (before_render, before_layout, before_dirty_from) = {
+            let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
+                panic!("tool call block missing");
+            };
+            (tc.render_epoch, tc.layout_epoch, app.viewport.dirty_from)
+        };
+
+        let update = model::ToolCallUpdate::new(
+            "tc-noop",
+            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
+            panic!("tool call block missing");
+        };
+        assert_eq!(tc.render_epoch, before_render);
+        assert_eq!(tc.layout_epoch, before_layout);
+        assert_eq!(app.viewport.dirty_from, before_dirty_from);
     }
 
     #[test]

@@ -649,11 +649,14 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
                 let tc = tc.as_mut();
-                tc.collapsed = app.tools_collapsed;
-                tc.cache.invalidate();
+                if tc.collapsed != app.tools_collapsed {
+                    tc.collapsed = app.tools_collapsed;
+                    tc.mark_tool_call_layout_dirty();
+                }
             }
         }
     }
+    app.viewport.bump_layout_generation();
     app.mark_all_message_layout_dirty();
 }
 

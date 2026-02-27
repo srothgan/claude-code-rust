@@ -106,7 +106,12 @@ fn update_visual_heights(
             break;
         }
         let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
-        let (h, rendered_lines) = measure_message_height(&mut app.messages[i], &sp, width);
+        let (h, rendered_lines) = measure_message_height(
+            &mut app.messages[i],
+            &sp,
+            width,
+            app.viewport.layout_generation,
+        );
         stats.measured_msgs += 1;
         stats.measured_lines += rendered_lines;
 
@@ -128,9 +133,11 @@ fn measure_message_height(
     msg: &mut crate::app::ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    layout_generation: u64,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) = message::measure_message_height_cached(msg, spinner, width);
+    let (h, wrapped_lines) =
+        message::measure_message_height_cached(msg, spinner, width, layout_generation);
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -385,6 +392,7 @@ fn render_culled_messages(
                 &mut app.messages[i],
                 &sp,
                 width,
+                app.viewport.layout_generation,
                 local_scroll,
                 out,
             );
