@@ -79,13 +79,6 @@ pub fn render_tool_call_cached(
         // Apply borders at render time with current width
         if let Some(content) = tc.cache.get() {
             let bordered = render_execute_with_borders(tc, content, width, spinner_frame);
-            let h = {
-                let _t = crate::perf::start_with("tc::wrap_height_exec", "lines", bordered.len());
-                Paragraph::new(Text::from(bordered.clone()))
-                    .wrap(Wrap { trim: false })
-                    .line_count(width)
-            };
-            tc.cache.set_height(h, width);
             out.extend(bordered);
         }
         return;
@@ -105,12 +98,7 @@ pub fn render_tool_call_cached(
         crate::perf::mark("tc::cache_miss");
         let _t = crate::perf::start("tc::render");
         let fresh = render_tool_call(tc, width, spinner_frame);
-        let h = {
-            let _t = crate::perf::start_with("tc::wrap_height", "lines", fresh.len());
-            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
-        };
         tc.cache.store(fresh);
-        tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
@@ -129,12 +117,7 @@ pub fn render_tool_call_cached(
         crate::perf::mark("tc::cache_miss_body");
         let _t = crate::perf::start("tc::render_body");
         let body = render_tool_call_body(tc);
-        let h = {
-            let _t = crate::perf::start_with("tc::wrap_height_body", "lines", body.len());
-            Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width)
-        };
         tc.cache.store(body);
-        tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
@@ -147,7 +130,14 @@ pub fn measure_tool_call_height_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
+    layout_generation: u64,
 ) -> (usize, usize) {
+    if tc.cache_measurement_key_matches(width, layout_generation) {
+        crate::perf::mark("tc_measure_fast_path_hits");
+        return (tc.last_measured_height, 0);
+    }
+    crate::perf::mark("tc_measure_recompute_count");
+
     let is_execute = tc.is_execute_tool();
     if is_execute {
         if tc.cache.get().is_none() {
@@ -160,8 +150,10 @@ pub fn measure_tool_call_height_cached(
                 .wrap(Wrap { trim: false })
                 .line_count(width);
             tc.cache.set_height(h, width);
+            tc.record_measured_height(width, h, layout_generation);
             return (h, bordered.len());
         }
+        tc.record_measured_height(width, 0, layout_generation);
         return (0, 0);
     }
 
@@ -170,6 +162,7 @@ pub fn measure_tool_call_height_cached(
 
     if !is_in_progress {
         if let Some(h) = tc.cache.height_at(width) {
+            tc.record_measured_height(width, h, layout_generation);
             return (h, 0);
         }
         if let Some(cached_lines) = tc.cache.get().cloned() {
@@ -177,6 +170,7 @@ pub fn measure_tool_call_height_cached(
                 .wrap(Wrap { trim: false })
                 .line_count(width);
             tc.cache.set_height(h, width);
+            tc.record_measured_height(width, h, layout_generation);
             return (h, cached_lines.len());
         }
         let fresh = render_tool_call(tc, width, spinner_frame);
@@ -184,6 +178,7 @@ pub fn measure_tool_call_height_cached(
             Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
         tc.cache.store(fresh);
         tc.cache.set_height(h, width);
+        tc.record_measured_height(width, h, layout_generation);
         return (h, tc.cache.get().map_or(0, Vec::len));
     }
 
@@ -193,14 +188,18 @@ pub fn measure_tool_call_height_cached(
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
 
     if let Some(body_h) = tc.cache.height_at(width) {
-        return (title_h + body_h, 1);
+        let total = title_h + body_h;
+        tc.record_measured_height(width, total, layout_generation);
+        return (total, 1);
     }
     if let Some(cached_body) = tc.cache.get().cloned() {
         let body_h = Paragraph::new(Text::from(cached_body.clone()))
             .wrap(Wrap { trim: false })
             .line_count(width);
         tc.cache.set_height(body_h, width);
-        return (title_h + body_h, cached_body.len() + 1);
+        let total = title_h + body_h;
+        tc.record_measured_height(width, total, layout_generation);
+        return (total, cached_body.len() + 1);
     }
 
     let body = render_tool_call_body(tc);
@@ -208,7 +207,9 @@ pub fn measure_tool_call_height_cached(
         Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
     tc.cache.store(body);
     tc.cache.set_height(body_h, width);
-    (title_h + body_h, tc.cache.get().map_or(1, |b| b.len() + 1))
+    let total = title_h + body_h;
+    tc.record_measured_height(width, total, layout_generation);
+    (total, tc.cache.get().map_or(1, |b| b.len() + 1))
 }
 
 /// Render just the title line for a non-Execute tool call (the line containing the spinner icon).
@@ -1032,6 +1033,37 @@ mod tests {
     use crate::app::BlockCache;
     use pretty_assertions::assert_eq;
 
+    fn test_tool_call(
+        id: &str,
+        sdk_tool_name: &str,
+        status: model::ToolCallStatus,
+    ) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input: None,
+            status,
+            content: Vec::new(),
+            collapsed: false,
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        }
+    }
+
     // status_icon
 
     #[test]
@@ -1118,8 +1150,6 @@ mod tests {
 
     #[test]
     fn execute_top_border_does_not_wrap_for_long_title() {
-        use crate::app::BlockCache;
-
         let tc = ToolCallInfo {
             id: "tc-1".into(),
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
@@ -1134,6 +1164,14 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         };
@@ -1141,6 +1179,48 @@ mod tests {
         let rendered = render_execute_with_borders(&tc, &[], 80, 0);
         let top = rendered.first().expect("top border line");
         assert!(spans_width(&top.spans) <= 80);
+    }
+
+    #[test]
+    fn execute_measure_fast_path_reuses_cached_height() {
+        let mut tc = test_tool_call("tc-fast", "Bash", model::ToolCallStatus::InProgress);
+        tc.terminal_command = Some("echo hi".to_owned());
+        tc.terminal_output = Some("hello\nworld".to_owned());
+
+        let (h1, lines1) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        assert!(h1 > 0);
+        assert!(lines1 > 0);
+
+        let (h2, lines2) = measure_tool_call_height_cached(&mut tc, 80, 4, 1);
+        assert_eq!(h2, h1);
+        assert_eq!(lines2, 0);
+    }
+
+    #[test]
+    fn execute_measure_recomputes_on_layout_generation_change() {
+        let mut tc = test_tool_call("tc-layout-gen", "Bash", model::ToolCallStatus::InProgress);
+        tc.terminal_command = Some("echo hi".to_owned());
+        tc.terminal_output = Some("hello".to_owned());
+
+        let (_, first_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        assert!(first_lines > 0);
+        let (_, second_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 2);
+        assert!(second_lines > 0);
+    }
+
+    #[test]
+    fn layout_dirty_invalidates_measure_fast_path() {
+        let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from("one line")];
+
+        let (_, first_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        assert!(first_lines > 0);
+        let (_, fast_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        assert_eq!(fast_lines, 0);
+
+        tc.mark_tool_call_layout_dirty();
+        let (_, recompute_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        assert!(recompute_lines > 0);
     }
 
     #[test]
@@ -1203,6 +1283,14 @@ mod tests {
             terminal_command: Some("echo done".into()),
             terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         };
@@ -1224,6 +1312,14 @@ mod tests {
             terminal_command: Some("echo done".into()),
             terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         };
@@ -1247,6 +1343,14 @@ mod tests {
                 "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
             ),
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         };
@@ -1270,6 +1374,14 @@ mod tests {
                 "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
             ),
             terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
         };

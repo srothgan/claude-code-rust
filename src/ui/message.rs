@@ -235,6 +235,7 @@ pub fn measure_message_height_cached(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    layout_generation: u64,
 ) -> (usize, usize) {
     let mut height = 1usize; // role label
     let mut wrapped_lines = 0usize;
@@ -296,8 +297,12 @@ pub fn measure_message_height_cached(
                             height += 1;
                             lines_after_label += 1;
                         }
-                        let (h, lines) =
-                            tool_call::measure_tool_call_height_cached(tc, width, spinner.frame);
+                        let (h, lines) = tool_call::measure_tool_call_height_cached(
+                            tc,
+                            width,
+                            spinner.frame,
+                            layout_generation,
+                        );
                         height += h;
                         lines_after_label += h;
                         wrapped_lines += lines;
@@ -339,6 +344,7 @@ pub fn render_message_from_offset(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    layout_generation: u64,
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
@@ -447,8 +453,12 @@ pub fn render_message_from_offset(
                             );
                             lines_after_label += 1;
                         }
-                        let (h, _) =
-                            tool_call::measure_tool_call_height_cached(tc, width, spinner.frame);
+                        let (h, _) = tool_call::measure_tool_call_height_cached(
+                            tc,
+                            width,
+                            spinner.frame,
+                            layout_generation,
+                        );
                         let mut render = |dst: &mut Vec<Line<'static>>| {
                             tool_call::render_tool_call_cached(tc, width, spinner.frame, dst);
                         };
@@ -1075,7 +1085,7 @@ mod tests {
         let mut measured_msg = make_text_message(MessageRole::User, &text);
         let mut truth_msg = make_text_message(MessageRole::User, &text);
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 32);
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 32, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 32);
 
         assert_eq!(h, truth);
@@ -1098,12 +1108,12 @@ mod tests {
         let mut truth_wide = make_text_message(MessageRole::Assistant, &text);
         let mut truth_narrow = make_text_message(MessageRole::Assistant, &text);
 
-        let (h_wide, _) = measure_message_height_cached(&mut measured_msg, &spinner, 100);
+        let (h_wide, _) = measure_message_height_cached(&mut measured_msg, &spinner, 100, 1);
         let wide_truth = ground_truth_height(&mut truth_wide, &spinner, 100);
         assert_eq!(h_wide, wide_truth);
 
         // Reuse the same message to hit width-mismatch cache path.
-        let (h_narrow, _) = measure_message_height_cached(&mut measured_msg, &spinner, 28);
+        let (h_narrow, _) = measure_message_height_cached(&mut measured_msg, &spinner, 28, 2);
         let narrow_truth = ground_truth_height(&mut truth_narrow, &spinner, 28);
         assert_eq!(h_narrow, narrow_truth);
     }
@@ -1122,7 +1132,7 @@ mod tests {
         let total = ground_truth_height(&mut truth_msg, &spinner, 120);
 
         let mut out = Vec::new();
-        let rem = render_message_from_offset(&mut msg, &spinner, 120, total + 3, &mut out);
+        let rem = render_message_from_offset(&mut msg, &spinner, 120, 1, total + 3, &mut out);
 
         assert!(out.is_empty());
         assert_eq!(rem, 3);
@@ -1140,7 +1150,7 @@ mod tests {
         let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
         let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52);
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 52);
         assert_eq!(h, truth);
     }

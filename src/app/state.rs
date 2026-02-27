@@ -383,7 +383,7 @@ impl App {
                         model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
                     ) {
                         tc.status = new_status;
-                        tc.cache.invalidate();
+                        tc.mark_tool_call_layout_dirty();
                         if tc.pending_permission.take().is_some() {
                             cleared_permission = true;
                         }
@@ -567,6 +567,9 @@ pub struct ChatViewport {
     // --- Layout ---
     /// Current terminal width. Set by `on_frame()` each render cycle.
     pub width: u16,
+    /// Monotonic layout generation for width/global layout-affecting changes.
+    /// Tool-call measurement cache keys include this to avoid stale heights.
+    pub layout_generation: u64,
 
     // --- Per-message heights ---
     /// Visual height (in terminal rows) of each message, indexed by message position.
@@ -597,6 +600,7 @@ impl ChatViewport {
             scrollbar_thumb_size: 0.0,
             auto_scroll: true,
             width: 0,
+            layout_generation: 1,
             message_heights: Vec::new(),
             message_heights_width: 0,
             dirty_from: None,
@@ -630,6 +634,12 @@ impl ChatViewport {
     fn handle_resize(&mut self) {
         self.message_heights_width = 0;
         self.prefix_sums_width = 0;
+        self.layout_generation = self.layout_generation.wrapping_add(1);
+    }
+
+    /// Bump layout generation for non-width global layout-affecting changes.
+    pub fn bump_layout_generation(&mut self) {
+        self.layout_generation = self.layout_generation.wrapping_add(1);
     }
 
     // --- Per-message height ---
@@ -875,135 +885,54 @@ impl BlockCache {
     }
 }
 
-/// Paragraph-level incremental markdown cache.
+/// Text holder for a single message block's markdown source.
 ///
-/// During streaming, text arrives in small chunks appended to a growing block.
-/// Instead of re-parsing the entire block every frame, we split on paragraph
-/// boundaries (`\n\n` outside code fences) and cache rendered lines for each
-/// completed paragraph. Only the in-progress tail paragraph gets re-rendered.
+/// Block splitting for streaming text is handled at the message construction
+/// level. This type intentionally does no internal splitting.
 #[derive(Default)]
 pub struct IncrementalMarkdown {
-    /// Completed paragraphs: `(source_text, rendered_lines)`.
-    paragraphs: Vec<(String, Vec<ratatui::text::Line<'static>>)>,
-    /// The in-progress tail paragraph being streamed into.
-    tail: String,
-    /// Whether we are currently inside a code fence.
-    in_code_fence: bool,
-    /// Byte offset into `tail` where the next scan should start.
-    /// Avoids re-scanning already-processed bytes (which would re-toggle fence state).
-    scan_offset: usize,
+    text: String,
 }
 
 impl IncrementalMarkdown {
     /// Create from existing full text (e.g. user messages, connection errors).
-    /// Treats the entire text as a single completed paragraph.
+    /// Treats the entire text as one block source.
     #[must_use]
     pub fn from_complete(text: &str) -> Self {
-        Self { paragraphs: Vec::new(), tail: text.to_owned(), in_code_fence: false, scan_offset: 0 }
+        Self { text: text.to_owned() }
     }
 
-    /// Append a streaming text chunk. Splits completed paragraphs off the tail.
+    /// Append a streaming text chunk.
     pub fn append(&mut self, chunk: &str) {
-        // Back up scan_offset by 1 to catch \n\n spanning old/new boundary
-        self.scan_offset = self.scan_offset.min(self.tail.len().saturating_sub(1));
-        self.tail.push_str(chunk);
-        self.split_completed_paragraphs();
+        self.text.push_str(chunk);
     }
 
-    /// Get the full source text (all paragraphs + tail).
+    /// Get the full source text.
     #[must_use]
     pub fn full_text(&self) -> String {
-        let mut out = String::new();
-        for (src, _) in &self.paragraphs {
-            out.push_str(src);
-            out.push_str("\n\n");
-        }
-        out.push_str(&self.tail);
-        out
+        self.text.clone()
     }
 
-    /// Render all lines: cached paragraphs + fresh tail.
+    /// Render this block source via the provided markdown renderer.
     /// `render_fn` converts a markdown source string into `Vec<Line>`.
-    /// Lazily renders any paragraph whose cache is still empty.
     pub fn lines(
         &mut self,
         render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
     ) -> Vec<ratatui::text::Line<'static>> {
-        let mut out = Vec::new();
-        for (src, lines) in &mut self.paragraphs {
-            if lines.is_empty() {
-                *lines = render_fn(src);
-            }
-            out.extend(lines.iter().cloned());
-        }
-        if !self.tail.is_empty() {
-            out.extend(render_fn(&self.tail));
-        }
-        out
+        render_fn(&self.text)
     }
 
-    /// Clear all cached paragraph renders (e.g. after toggle collapse).
-    /// Source text is preserved; re-rendering will rebuild caches.
+    /// No-op: markdown render caching lives at `BlockCache` level.
     pub fn invalidate_renders(&mut self) {
-        for (src, lines) in &mut self.paragraphs {
-            let _ = src; // keep source
-            lines.clear();
-        }
+        let _ = self.text.len();
     }
 
-    /// Re-render any paragraph whose cached lines are empty (after `invalidate_renders`).
+    /// No-op: markdown render caching lives at `BlockCache` level.
     pub fn ensure_rendered(
         &mut self,
-        render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
+        _render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
     ) {
-        for (src, lines) in &mut self.paragraphs {
-            if lines.is_empty() {
-                *lines = render_fn(src);
-            }
-        }
-    }
-
-    /// Split completed paragraphs off the tail.
-    /// A paragraph boundary is `\n\n` that is NOT inside a code fence.
-    fn split_completed_paragraphs(&mut self) {
-        loop {
-            let (boundary, fence_state, scanned_to) = self.scan_tail_for_boundary();
-            if let Some(offset) = boundary {
-                let completed = self.tail[..offset].to_owned();
-                self.tail = self.tail[offset + 2..].to_owned();
-                self.in_code_fence = fence_state;
-                // Reset scan_offset: the split removed bytes before the boundary,
-                // so scanned_to is no longer valid. Start from 0 for the new tail.
-                self.scan_offset = 0;
-                self.paragraphs.push((completed, Vec::new()));
-            } else {
-                // No more boundaries -- save the final fence state + scan position
-                self.in_code_fence = fence_state;
-                self.scan_offset = scanned_to;
-                break;
-            }
-        }
-    }
-
-    /// Scan `self.tail` starting from `self.scan_offset` for the first `\n\n`
-    /// outside a code fence.
-    /// Returns `(boundary, fence_state, scanned_to)`.
-    fn scan_tail_for_boundary(&self) -> (Option<usize>, bool, usize) {
-        let bytes = self.tail.as_bytes();
-        let mut in_fence = self.in_code_fence;
-        let mut i = self.scan_offset;
-        while i < bytes.len() {
-            // Check for code fence: line starting with ```
-            if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
-                in_fence = !in_fence;
-            }
-            // Check for \n\n paragraph boundary (only outside code fences)
-            if !in_fence && i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-                return (Some(i), in_fence, i);
-            }
-            i += 1;
-        }
-        (None, in_fence, i)
+        let _ = self.text.len();
     }
 }
 
@@ -1050,10 +979,32 @@ pub struct ToolCallInfo {
     /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
     pub terminal_output_len: usize,
+    /// Number of terminal output bytes consumed for incremental append updates.
+    pub terminal_bytes_seen: usize,
+    /// Current terminal snapshot ingestion mode.
+    pub terminal_snapshot_mode: TerminalSnapshotMode,
+    /// Monotonic generation for render-affecting changes.
+    pub render_epoch: u64,
+    /// Monotonic generation for layout-affecting changes.
+    pub layout_epoch: u64,
+    /// Last measured width used by tool-call height cache.
+    pub last_measured_width: u16,
+    /// Last measured visual height in wrapped rows.
+    pub last_measured_height: usize,
+    /// Layout epoch used for the last measured height.
+    pub last_measured_layout_epoch: u64,
+    /// Global layout generation used for the last measured height.
+    pub last_measured_layout_generation: u64,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
     /// Inline permission prompt - rendered inside this tool call block.
     pub pending_permission: Option<InlinePermission>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSnapshotMode {
+    AppendOnly,
+    ReplaceSnapshot,
 }
 
 impl ToolCallInfo {
@@ -1065,6 +1016,38 @@ impl ToolCallInfo {
     #[must_use]
     pub fn is_ask_question_tool(&self) -> bool {
         is_ask_question_tool_name(&self.sdk_tool_name)
+    }
+
+    /// Mark render cache for this tool call as stale.
+    pub fn mark_tool_call_render_dirty(&mut self) {
+        crate::perf::mark("tc_invalidations_requested");
+        self.render_epoch = self.render_epoch.wrapping_add(1);
+        self.cache.invalidate();
+        crate::perf::mark("tc_invalidations_applied");
+    }
+
+    /// Mark layout cache for this tool call as stale.
+    pub fn mark_tool_call_layout_dirty(&mut self) {
+        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.last_measured_width = 0;
+        self.last_measured_height = 0;
+        self.last_measured_layout_epoch = 0;
+        self.last_measured_layout_generation = 0;
+        self.mark_tool_call_render_dirty();
+    }
+
+    #[must_use]
+    pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
+        self.last_measured_width == width
+            && self.last_measured_layout_epoch == self.layout_epoch
+            && self.last_measured_layout_generation == layout_generation
+    }
+
+    pub fn record_measured_height(&mut self, width: u16, height: usize, layout_generation: u64) {
+        self.last_measured_width = width;
+        self.last_measured_height = height;
+        self.last_measured_layout_epoch = self.layout_epoch;
+        self.last_measured_layout_generation = layout_generation;
     }
 }
 
@@ -1516,64 +1499,19 @@ mod tests {
     }
 
     #[test]
-    fn incr_append_no_paragraph_break() {
+    fn incr_append_accumulates_chunks() {
         let mut incr = IncrementalMarkdown::default();
-        incr.append("line1\nline2\nline3");
-        assert_eq!(incr.paragraphs.len(), 0);
-        assert_eq!(incr.tail, "line1\nline2\nline3");
+        incr.append("line1");
+        incr.append("\nline2");
+        incr.append("\nline3");
+        assert_eq!(incr.full_text(), "line1\nline2\nline3");
     }
 
     #[test]
-    fn incr_append_splits_on_double_newline() {
+    fn incr_append_preserves_paragraph_delimiters() {
         let mut incr = IncrementalMarkdown::default();
         incr.append("para1\n\npara2");
-        assert_eq!(incr.paragraphs.len(), 1);
-        assert_eq!(incr.paragraphs[0].0, "para1");
-        assert_eq!(incr.tail, "para2");
-    }
-
-    #[test]
-    fn incr_append_multiple_paragraphs() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\np3\n\np4");
-        assert_eq!(incr.paragraphs.len(), 3);
-        assert_eq!(incr.paragraphs[0].0, "p1");
-        assert_eq!(incr.paragraphs[1].0, "p2");
-        assert_eq!(incr.paragraphs[2].0, "p3");
-        assert_eq!(incr.tail, "p4");
-    }
-
-    #[test]
-    fn incr_append_incremental_chunks() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("hel");
-        incr.append("lo\n");
-        incr.append("\nworld");
-        assert_eq!(incr.paragraphs.len(), 1);
-        assert_eq!(incr.paragraphs[0].0, "hello");
-        assert_eq!(incr.tail, "world");
-    }
-
-    #[test]
-    fn incr_code_fence_preserves_double_newlines() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("before\n\n```\ncode\n\nmore code\n```\n\nafter");
-        // "before" split off, then code fence block stays as one paragraph
-        assert_eq!(incr.paragraphs.len(), 2);
-        assert_eq!(incr.paragraphs[0].0, "before");
-        assert_eq!(incr.paragraphs[1].0, "```\ncode\n\nmore code\n```");
-        assert_eq!(incr.tail, "after");
-    }
-
-    #[test]
-    fn incr_code_fence_incremental() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("text\n\n```\nfn main() {\n");
-        assert_eq!(incr.paragraphs.len(), 1); // "text" split off
-        assert!(incr.in_code_fence); // inside fence
-        incr.append("    println!(\"hi\");\n\n}\n```\n\nafter");
-        assert!(!incr.in_code_fence); // fence closed
-        assert_eq!(incr.tail, "after");
+        assert_eq!(incr.full_text(), "para1\n\npara2");
     }
 
     #[test]
@@ -1588,43 +1526,24 @@ mod tests {
         let mut incr = IncrementalMarkdown::default();
         incr.append("line1\n\nline2\n\nline3");
         let lines = incr.lines(&test_render);
-        // 3 paragraphs total (2 completed + 1 tail), each has 1 line
-        assert_eq!(lines.len(), 3);
+        // test_render maps each source line to one output line
+        assert_eq!(lines.len(), 5);
     }
 
     #[test]
-    fn incr_lines_caches_paragraphs() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\ntail");
-        // First call renders all paragraphs
-        let _ = incr.lines(&test_render);
-        assert!(!incr.paragraphs[0].1.is_empty());
-        assert!(!incr.paragraphs[1].1.is_empty());
-        // Second call reuses cached paragraph renders
-        let lines = incr.lines(&test_render);
-        assert_eq!(lines.len(), 3);
-    }
-
-    #[test]
-    fn incr_ensure_rendered_fills_empty() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("p1\n\np2\n\ntail");
-        // Paragraphs have empty renders initially
-        assert!(incr.paragraphs[0].1.is_empty());
-        incr.ensure_rendered(&test_render);
-        assert!(!incr.paragraphs[0].1.is_empty());
-        assert!(!incr.paragraphs[1].1.is_empty());
-    }
-
-    #[test]
-    fn incr_invalidate_clears_renders() {
+    fn incr_ensure_rendered_noop_preserves_text() {
         let mut incr = IncrementalMarkdown::default();
         incr.append("p1\n\np2\n\ntail");
         incr.ensure_rendered(&test_render);
-        assert!(!incr.paragraphs[0].1.is_empty());
+        assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
+    }
+
+    #[test]
+    fn incr_invalidate_renders_noop_preserves_text() {
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2\n\ntail");
         incr.invalidate_renders();
-        assert!(incr.paragraphs[0].1.is_empty());
-        assert!(incr.paragraphs[1].1.is_empty());
+        assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
     }
 
     #[test]
@@ -1635,18 +1554,7 @@ mod tests {
         for chunk in chunks {
             incr.append(chunk);
         }
-        assert_eq!(incr.paragraphs.len(), 2);
-        assert_eq!(incr.paragraphs[0].0, "Here is some text.");
-        assert_eq!(incr.paragraphs[1].0, "Next paragraph here.");
-        assert_eq!(incr.tail, "Final.");
-    }
-
-    #[test]
-    fn incr_empty_paragraphs() {
-        let mut incr = IncrementalMarkdown::default();
-        incr.append("\n\n\n\n");
-        // Two \n\n boundaries: empty string before first, empty between, remaining empty tail
-        assert!(!incr.paragraphs.is_empty());
+        assert_eq!(incr.full_text(), "Here is some text.\n\nNext paragraph here.\n\nFinal.");
     }
 
     // ChatViewport
