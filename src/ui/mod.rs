@@ -116,6 +116,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 const FOOTER_PAD: u16 = 2;
 const FOOTER_COLUMN_GAP: u16 = 1;
+type FooterItem = Option<(String, Color)>;
 const FOOTER_SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
     '\u{2807}', '\u{280F}',
@@ -226,13 +227,12 @@ fn footer_telemetry_text(app: &App) -> Option<String> {
 }
 
 /// Returns `(telemetry, update_hint)` -- either or both may be `None`.
-fn footer_right_items(app: &App) -> (Option<(String, Color)>, Option<(String, Color)>) {
+fn footer_right_items(app: &App) -> (FooterItem, FooterItem) {
     let telemetry = footer_telemetry_text(app).map(|text| {
         let color = if app.is_compacting { theme::RUST_ORANGE } else { theme::DIM };
         (text, color)
     });
-    let update_hint =
-        app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE));
+    let update_hint = app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE));
     (telemetry, update_hint)
 }
 
@@ -271,11 +271,8 @@ fn split_footer_three_columns(area: Rect) -> (Rect, Rect, Rect) {
     let right_width = right_half.saturating_sub(mid_width);
 
     let left = Rect { width: left_width, ..area };
-    let mid = Rect {
-        x: area.x.saturating_add(left_width).saturating_add(gap),
-        width: mid_width,
-        ..area
-    };
+    let mid =
+        Rect { x: area.x.saturating_add(left_width).saturating_add(gap), width: mid_width, ..area };
     let right = Rect {
         x: area
             .x
