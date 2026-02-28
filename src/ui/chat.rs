@@ -23,6 +23,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
+use std::time::Instant;
 
 /// Minimum number of messages to render above/below the visible range as a margin.
 /// Heights are now exact (block-level wrapped heights), so no safety margin is needed.
@@ -59,14 +60,19 @@ fn msg_spinner(
     index: usize,
     msg_count: usize,
     is_thinking: bool,
+    show_subagent_thinking: bool,
     msg: &crate::app::ChatMessage,
 ) -> SpinnerState {
     let is_last = index + 1 == msg_count;
-    let mid_turn = is_last
-        && is_thinking
-        && matches!(msg.role, MessageRole::Assistant)
-        && !msg.blocks.is_empty();
-    SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..base }
+    let is_assistant = matches!(msg.role, MessageRole::Assistant);
+    let mid_turn = is_last && is_thinking && is_assistant && !msg.blocks.is_empty();
+    let subagent = is_last && is_assistant && show_subagent_thinking && !msg.blocks.is_empty();
+    SpinnerState {
+        is_last_message: is_last,
+        is_thinking_mid_turn: mid_turn,
+        is_subagent_thinking: subagent,
+        ..base
+    }
 }
 
 /// Ensure every message has an up-to-date height in the viewport at the given width.
@@ -85,6 +91,7 @@ fn update_visual_heights(
     app: &mut App,
     base: SpinnerState,
     is_thinking: bool,
+    show_subagent_thinking: bool,
     width: u16,
 ) -> HeightUpdateStats {
     let _t =
@@ -105,7 +112,8 @@ fn update_visual_heights(
             stats.reused_msgs = i + 1;
             break;
         }
-        let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
+        let sp =
+            msg_spinner(base, i, msg_count, is_thinking, show_subagent_thinking, &app.messages[i]);
         let (h, rendered_lines) = measure_message_height(
             &mut app.messages[i],
             &sp,
@@ -155,6 +163,7 @@ fn render_scrolled(
     app: &mut App,
     base: SpinnerState,
     is_thinking: bool,
+    show_subagent_thinking: bool,
     width: u16,
     content_height: usize,
     viewport_height: usize,
@@ -195,6 +204,7 @@ fn render_scrolled(
             app,
             base,
             is_thinking,
+            show_subagent_thinking,
             width,
             scroll_offset,
             viewport_height,
@@ -362,6 +372,7 @@ fn render_culled_messages(
     app: &mut App,
     base: SpinnerState,
     is_thinking: bool,
+    show_subagent_thinking: bool,
     width: u16,
     scroll: usize,
     viewport_height: usize,
@@ -385,7 +396,8 @@ fn render_culled_messages(
     let mut local_scroll = scroll.saturating_sub(height_before_start);
     let mut consume_skip_in_messages = true;
     for i in render_start..msg_count {
-        let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
+        let sp =
+            msg_spinner(base, i, msg_count, is_thinking, show_subagent_thinking, &app.messages[i]);
         let before = out.len();
         if local_scroll > 0 && consume_skip_in_messages {
             let rem = message::render_message_from_offset(
@@ -422,6 +434,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
     crate::perf::mark_with("chat::message_count", "msgs", app.messages.len());
     let is_thinking = matches!(app.status, AppStatus::Thinking);
+    let show_subagent_thinking = app.should_show_subagent_thinking(Instant::now());
     let width = area.width;
 
     let base_spinner = SpinnerState {
@@ -429,6 +442,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         is_last_message: false,
         is_thinking_mid_turn: false,
+        is_subagent_thinking: false,
         is_compacting: app.is_compacting,
     };
 
@@ -439,7 +453,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Update per-message visual heights
-    let height_stats = update_visual_heights(app, base_spinner, is_thinking, width);
+    let height_stats =
+        update_visual_heights(app, base_spinner, is_thinking, show_subagent_thinking, width);
     crate::perf::mark_with(
         "chat::update_heights_measured_msgs",
         "msgs",
@@ -490,6 +505,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app,
         base_spinner,
         is_thinking,
+        show_subagent_thinking,
         width,
         content_height,
         viewport_height,
@@ -640,10 +656,11 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
             is_compacting: false,
         };
 
-        update_visual_heights(&mut app, spinner, false, 12);
+        update_visual_heights(&mut app, spinner, false, false, 12);
         let base_h = app.viewport.message_height(0);
         assert!(base_h > 0);
 
@@ -657,7 +674,7 @@ mod tests {
         }
         app.mark_message_layout_dirty(0);
 
-        update_visual_heights(&mut app, spinner, false, 12);
+        update_visual_heights(&mut app, spinner, false, false, 12);
         assert!(
             app.viewport.message_height(0) > base_h,
             "dirty non-tail message should be remeasured"

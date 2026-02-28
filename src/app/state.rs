@@ -20,7 +20,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
@@ -125,6 +125,7 @@ impl SessionUsageState {
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub const SUBAGENT_THINKING_DEBOUNCE: Duration = Duration::from_millis(1_500);
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
 const HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES: usize = 64;
@@ -255,6 +256,12 @@ pub struct App {
     /// IDs of Task tool calls currently `InProgress` -- their children get hidden.
     /// Use `insert_active_task()`, `remove_active_task()`.
     pub active_task_ids: HashSet<String>,
+    /// Tool scope keyed by tool call ID; used to distinguish main-agent from subagent tools.
+    pub tool_call_scopes: HashMap<String, ToolCallScope>,
+    /// IDs of non-Task subagent tool calls currently `InProgress`/`Pending`.
+    pub active_subagent_tool_ids: HashSet<String>,
+    /// Timestamp when subagent entered an idle gap (no active child tool calls).
+    pub subagent_idle_since: Option<Instant>,
     /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::agent::events::TerminalMap,
     /// Force a full terminal clear on next render frame.
@@ -437,6 +444,50 @@ impl App {
     /// Remove a Task tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
         self.active_task_ids.remove(id);
+    }
+
+    pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
+        self.tool_call_scopes.insert(id, scope);
+    }
+
+    #[must_use]
+    pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
+        self.tool_call_scopes.get(id).copied()
+    }
+
+    pub fn mark_subagent_tool_started(&mut self, id: &str) {
+        self.active_subagent_tool_ids.insert(id.to_owned());
+        self.subagent_idle_since = None;
+    }
+
+    pub fn mark_subagent_tool_finished(&mut self, id: &str, now: Instant) {
+        self.active_subagent_tool_ids.remove(id);
+        self.refresh_subagent_idle_since(now);
+    }
+
+    pub fn refresh_subagent_idle_since(&mut self, now: Instant) {
+        if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
+            self.subagent_idle_since = None;
+            return;
+        }
+        if self.subagent_idle_since.is_none() {
+            self.subagent_idle_since = Some(now);
+        }
+    }
+
+    #[must_use]
+    pub fn should_show_subagent_thinking(&self, now: Instant) -> bool {
+        if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
+            return false;
+        }
+        self.subagent_idle_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= SUBAGENT_THINKING_DEBOUNCE)
+    }
+
+    pub fn clear_tool_scope_tracking(&mut self) {
+        self.tool_call_scopes.clear();
+        self.active_subagent_tool_ids.clear();
+        self.subagent_idle_since = None;
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -952,6 +1003,9 @@ impl App {
             spinner_frame: 0,
             tools_collapsed: false,
             active_task_ids: HashSet::default(),
+            tool_call_scopes: HashMap::default(),
+            active_subagent_tool_ids: HashSet::default(),
+            subagent_idle_since: None,
             terminals: std::rc::Rc::default(),
             force_redraw: false,
             tool_call_index: HashMap::default(),
@@ -1275,6 +1329,13 @@ pub enum AppStatus {
     Thinking,
     Running,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallScope {
+    MainAgent,
+    Subagent,
+    Task,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
