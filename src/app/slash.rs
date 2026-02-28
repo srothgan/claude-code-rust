@@ -248,7 +248,7 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.viewport = ChatViewport::new();
 
     app.tool_call_index.clear();
-    app.active_task_ids.clear();
+    app.clear_tool_scope_tracking();
     app.todos.clear();
     app.show_todo_panel = false;
     app.todo_scroll = 0;

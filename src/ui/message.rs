@@ -54,6 +54,9 @@ pub struct SpinnerState {
     /// True when the agent is thinking mid-turn (all tool calls finished,
     /// waiting for next action). Shows a trailing spinner after existing blocks.
     pub is_thinking_mid_turn: bool,
+    /// True when a subagent task is in an idle pause long enough to show
+    /// a dedicated thinking indicator.
+    pub is_subagent_thinking: bool,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
 }
@@ -167,6 +170,7 @@ pub fn render_message(
             }
 
             // Render blocks in order with spacing at text<->tool transitions
+            let show_subagent_thinking = spinner.is_subagent_thinking;
             let mut prev_was_tool = false;
             for block in &mut msg.blocks {
                 match block {
@@ -195,8 +199,13 @@ pub fn render_message(
                 }
             }
 
+            if show_subagent_thinking {
+                out.push(Line::default());
+                out.push(subagent_thinking_line(spinner.frame));
+            }
+
             // Trailing "Thinking..." spinner when all tool calls finished mid-turn
-            if spinner.is_thinking_mid_turn {
+            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
                 out.push(Line::default());
                 let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
                 out.push(Line::from(Span::styled(
@@ -272,6 +281,7 @@ pub fn measure_message_height_cached(
                 return (height + 2, wrapped_lines);
             }
 
+            let show_subagent_thinking = spinner.is_subagent_thinking;
             let mut prev_was_tool = false;
             let mut lines_after_label = 0usize;
             for block in &mut msg.blocks {
@@ -312,7 +322,11 @@ pub fn measure_message_height_cached(
                 }
             }
 
-            if spinner.is_thinking_mid_turn {
+            if show_subagent_thinking {
+                height += 2;
+            }
+
+            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
                 // Blank line + "Thinking..."
                 height += 2;
             }
@@ -414,6 +428,7 @@ pub fn render_message_from_offset(
                 return remaining_skip;
             }
 
+            let show_subagent_thinking = spinner.is_subagent_thinking;
             let mut prev_was_tool = false;
             let mut lines_after_label = 0usize;
             for block in &mut msg.blocks {
@@ -472,7 +487,17 @@ pub fn render_message_from_offset(
                 }
             }
 
-            if spinner.is_thinking_mid_turn {
+            if show_subagent_thinking {
+                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+                emit_line_with_skip(
+                    subagent_thinking_line(spinner.frame),
+                    out,
+                    &mut remaining_skip,
+                    can_consume_skip,
+                );
+            }
+
+            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
                 emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
                 emit_line_with_skip(
                     thinking_line(spinner.frame),
@@ -561,6 +586,14 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
 fn thinking_line(frame: usize) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
     Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+}
+
+fn subagent_thinking_line(frame: usize) -> Line<'static> {
+    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+    Line::from(vec![
+        Span::styled("  \u{2514}\u{2500} ", Style::default().fg(theme::DIM)),
+        Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)),
+    ])
 }
 
 fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
@@ -1053,6 +1086,49 @@ mod tests {
         }
     }
 
+    fn make_tool_call_info(
+        id: &str,
+        sdk_tool_name: &str,
+        status: crate::agent::model::ToolCallStatus,
+        text: &str,
+    ) -> crate::app::ToolCallInfo {
+        crate::app::ToolCallInfo {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input: None,
+            status,
+            content: if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![crate::agent::model::ToolCallContent::from(text.to_owned())]
+            },
+            collapsed: true,
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        }
+    }
+
+    fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
     fn make_welcome_message(model_name: &str, cwd: &str) -> ChatMessage {
         ChatMessage::welcome(model_name, cwd)
     }
@@ -1071,6 +1147,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
             is_compacting: false,
         };
 
@@ -1093,6 +1170,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
             is_compacting: false,
         };
 
@@ -1117,6 +1195,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
             is_compacting: false,
         };
         let mut msg = make_text_message(MessageRole::User, "hello\nworld");
@@ -1137,6 +1216,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
             is_compacting: false,
         };
         let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
@@ -1145,5 +1225,111 @@ mod tests {
         let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 52);
         assert_eq!(h, truth);
+    }
+
+    #[test]
+    fn assistant_message_shows_subagent_indicator_when_enabled() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: true,
+            is_compacting: false,
+        };
+        let mut msg = ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(make_tool_call_info(
+                "task-only",
+                "Task",
+                crate::agent::model::ToolCallStatus::InProgress,
+                "Research project",
+            )))],
+            usage: None,
+        };
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
+    fn assistant_message_hides_subagent_indicator_when_disabled() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![
+                MessageBlock::ToolCall(Box::new(make_tool_call_info(
+                    "task-main",
+                    "Task",
+                    crate::agent::model::ToolCallStatus::InProgress,
+                    "Research project",
+                ))),
+                MessageBlock::ToolCall(Box::new(make_tool_call_info(
+                    "bash-child",
+                    "Bash",
+                    crate::agent::model::ToolCallStatus::InProgress,
+                    "",
+                ))),
+            ],
+            usage: None,
+        };
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
+    fn assistant_message_places_subagent_indicator_after_visible_tool_blocks() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: true,
+            is_compacting: false,
+        };
+        let mut msg = ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![
+                MessageBlock::ToolCall(Box::new(make_tool_call_info(
+                    "task-main",
+                    "Task",
+                    crate::agent::model::ToolCallStatus::InProgress,
+                    "Research project",
+                ))),
+                MessageBlock::ToolCall(Box::new(make_tool_call_info(
+                    "bash-done",
+                    "Bash",
+                    crate::agent::model::ToolCallStatus::Completed,
+                    "",
+                ))),
+            ],
+            usage: None,
+        };
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        let bash_idx = rendered.iter().position(|line| line.contains("Bash")).expect("bash line");
+        let thinking_idx = rendered
+            .iter()
+            .position(|line| line.contains("Thinking..."))
+            .expect("subagent thinking line");
+
+        assert!(thinking_idx > bash_idx);
     }
 }

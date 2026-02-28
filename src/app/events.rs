@@ -20,7 +20,7 @@ use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
     InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind,
-    SelectionPoint, ToolCallInfo, default_cache_split_policy, find_text_split_index,
+    SelectionPoint, ToolCallInfo, ToolCallScope, default_cache_split_policy, find_text_split_index,
 };
 use crate::agent::error_handling::{
     TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,
@@ -33,6 +33,7 @@ use crate::error::AppError;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
+use std::time::Instant;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
@@ -446,7 +447,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             app.status = AppStatus::Ready;
             app.files_accessed = 0;
-            app.active_task_ids.clear();
+            app.clear_tool_scope_tracking();
             app.refresh_git_branch();
             if show_interrupted_hint {
                 push_interrupted_hint(app);
@@ -618,7 +619,7 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
         app.pending_submit = false;
         app.status = AppStatus::Ready;
         app.files_accessed = 0;
-        app.active_task_ids.clear();
+        app.clear_tool_scope_tracking();
         app.refresh_git_branch();
         if show_interrupted_hint {
             push_interrupted_hint(app);
@@ -912,7 +913,7 @@ fn reset_for_new_session(
     app.paste_burst_start = None;
 
     app.pending_permission_ids.clear();
-    app.active_task_ids.clear();
+    app.clear_tool_scope_tracking();
     app.tool_call_index.clear();
     app.todos.clear();
     app.show_todo_panel = false;
@@ -979,6 +980,14 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
 
     let sdk_tool_name = resolve_sdk_tool_name(kind, tc.meta.as_ref());
     let is_task = sdk_tool_name == "Task";
+    let scope = if is_task {
+        ToolCallScope::Task
+    } else if app.active_task_ids.is_empty() {
+        ToolCallScope::MainAgent
+    } else {
+        ToolCallScope::Subagent
+    };
+    app.register_tool_call_scope(id_str.clone(), scope);
 
     // Subagent children are never hidden -- they need to be visible so
     // permission prompts render and the user can interact with them.
@@ -1004,6 +1013,24 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     // Track new Task tool calls as active subagents
     if is_task {
         app.insert_active_task(id_str.clone());
+    }
+
+    match (scope, tc.status) {
+        (
+            ToolCallScope::Subagent,
+            model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending,
+        ) => {
+            app.mark_subagent_tool_started(&id_str);
+        }
+        (
+            ToolCallScope::Subagent,
+            model::ToolCallStatus::Completed | model::ToolCallStatus::Failed,
+        ) => {
+            app.mark_subagent_tool_finished(&id_str, Instant::now());
+        }
+        _ => {
+            app.refresh_subagent_idle_since(Instant::now());
+        }
     }
 
     let initial_execute_output = if super::is_execute_tool_name(&sdk_tool_name) {
@@ -1147,6 +1174,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.clone();
+            let tool_scope = app.tool_call_scope(&id_str);
             let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
             let has_raw_output = tcu.fields.raw_output.is_some();
             tracing::debug!(
@@ -1176,12 +1204,27 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 );
             }
 
-            // If this is a Task completing, remove from active list
-            if matches!(
-                tcu.fields.status,
-                Some(model::ToolCallStatus::Completed | model::ToolCallStatus::Failed)
-            ) {
-                app.remove_active_task(&id_str);
+            if let Some(status) = tcu.fields.status {
+                match tool_scope {
+                    Some(ToolCallScope::Subagent) => match status {
+                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+                            app.mark_subagent_tool_started(&id_str);
+                        }
+                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
+                            app.mark_subagent_tool_finished(&id_str, Instant::now());
+                        }
+                    },
+                    Some(ToolCallScope::Task) => match status {
+                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+                            app.refresh_subagent_idle_since(Instant::now());
+                        }
+                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
+                            app.remove_active_task(&id_str);
+                            app.refresh_subagent_idle_since(Instant::now());
+                        }
+                    },
+                    Some(ToolCallScope::MainAgent) | None => {}
+                }
             }
 
             let mut pending_todos: Option<Vec<super::TodoItem>> = None;

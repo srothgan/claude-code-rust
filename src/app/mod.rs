@@ -47,7 +47,7 @@ pub use state::{
     IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
     ModeInfo, ModeState, PasteSessionState, RecentSessionInfo, SelectionKind, SelectionPoint,
     SelectionState, SessionUsageState, TerminalSnapshotMode, TodoItem, TodoStatus, ToolCallInfo,
-    WelcomeBlock, is_execute_tool_name,
+    ToolCallScope, WelcomeBlock, is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 
