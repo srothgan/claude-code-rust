@@ -532,6 +532,8 @@ pub enum PermissionOptionKind {
     RejectOnce,
     RejectAlways,
     QuestionChoice,
+    PlanApprove,
+    PlanReject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

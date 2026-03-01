@@ -964,6 +964,53 @@ type AskUserQuestionPrompt = {
 const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 const QUESTION_CHOICE_KIND = "question_choice";
 
+const EXIT_PLAN_MODE_TOOL_NAME = "ExitPlanMode";
+const PLAN_APPROVE_KIND = "plan_approve";
+const PLAN_REJECT_KIND = "plan_reject";
+
+async function requestExitPlanModeApproval(
+  session: SessionState,
+  toolUseId: string,
+  inputData: Record<string, unknown>,
+  baseToolCall: ToolCall,
+): Promise<PermissionResult> {
+  const options: PermissionOption[] = [
+    {
+      option_id: "approve",
+      name: "Approve",
+      description: "Approve the plan and continue",
+      kind: PLAN_APPROVE_KIND,
+    },
+    {
+      option_id: "reject",
+      name: "Reject",
+      description: "Reject the plan",
+      kind: PLAN_REJECT_KIND,
+    },
+  ];
+
+  const request: PermissionRequest = {
+    tool_call: baseToolCall,
+    options,
+  };
+
+  const outcome = await new Promise<PermissionOutcome>((resolve) => {
+    session.pendingPermissions.set(toolUseId, {
+      onOutcome: resolve,
+      toolName: EXIT_PLAN_MODE_TOOL_NAME,
+      inputData,
+    });
+    writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+  });
+
+  if (outcome.outcome !== "selected" || outcome.option_id === "reject") {
+    setToolCallStatus(session, toolUseId, "failed", "Plan rejected");
+    return { behavior: "deny", message: "Plan rejected", toolUseID: toolUseId };
+  }
+
+  return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
+}
+
 function parseAskUserQuestionPrompts(inputData: Record<string, unknown>): AskUserQuestionPrompt[] {
   const rawQuestions = Array.isArray(inputData.questions) ? inputData.questions : [];
   const prompts: AskUserQuestionPrompt[] = [];
@@ -1161,8 +1208,9 @@ async function createSession(params: {
   let session!: SessionState;
   const canUseTool: CanUseTool = async (toolName, inputData, options) => {
     const toolUseId = options.toolUseID;
-    if (toolName === "ExitPlanMode") {
-      return { behavior: "allow", toolUseID: toolUseId };
+    if (toolName === EXIT_PLAN_MODE_TOOL_NAME) {
+      const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
+      return await requestExitPlanModeApproval(session, toolUseId, inputData, existing);
     }
     logPermissionDebug(
       `request tool_use_id=${toolUseId} tool=${toolName} blocked_path=${options.blockedPath ?? "<none>"} ` +

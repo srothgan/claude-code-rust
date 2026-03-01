@@ -1758,6 +1758,11 @@ impl ToolCallInfo {
         is_ask_question_tool_name(&self.sdk_tool_name)
     }
 
+    #[must_use]
+    pub fn is_exit_plan_mode_tool(&self) -> bool {
+        is_exit_plan_mode_tool_name(&self.sdk_tool_name)
+    }
+
     /// Mark render cache for this tool call as stale.
     pub fn mark_tool_call_render_dirty(&mut self) {
         crate::perf::mark("tc_invalidations_requested");
@@ -1799,6 +1804,11 @@ pub fn is_execute_tool_name(tool_name: &str) -> bool {
 #[must_use]
 pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
+}
+
+#[must_use]
+pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("exitplanmode")
 }
 
 /// Permission state stored inline on a `ToolCallInfo`, so the permission

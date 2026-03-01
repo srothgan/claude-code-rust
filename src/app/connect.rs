@@ -709,6 +709,8 @@ fn map_permission_request(
                 "allow_always" => model::PermissionOptionKind::AllowAlways,
                 "reject_always" => model::PermissionOptionKind::RejectAlways,
                 "question_choice" => model::PermissionOptionKind::QuestionChoice,
+                "plan_approve" => model::PermissionOptionKind::PlanApprove,
+                "plan_reject" => model::PermissionOptionKind::PlanReject,
                 _ => {
                     tracing::warn!(
                         "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",

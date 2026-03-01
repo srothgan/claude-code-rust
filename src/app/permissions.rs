@@ -172,6 +172,25 @@ fn focused_permission_is_question_prompt(app: &App) -> bool {
             .all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
 }
 
+fn focused_permission_is_plan_approval(app: &App) -> bool {
+    let Some(tool_id) = app.pending_permission_ids.first() else {
+        return false;
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        return false;
+    };
+    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+    else {
+        return false;
+    };
+    let Some(pending) = tc.pending_permission.as_ref() else {
+        return false;
+    };
+    pending.options.iter().any(|opt| {
+        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+    })
+}
+
 fn handle_permission_focus_cycle(
     app: &mut App,
     key: KeyEvent,
@@ -184,8 +203,8 @@ fn handle_permission_focus_cycle(
         return None;
     }
     if app.pending_permission_ids.len() <= 1 {
-        if focused_permission_is_question_prompt(app) {
-            // For AskUserQuestion prompts, Up/Down are option navigation keys.
+        if focused_permission_is_question_prompt(app) || focused_permission_is_plan_approval(app) {
+            // For AskUserQuestion and ExitPlanMode, Up/Down are option navigation keys.
             return None;
         }
         // Single pending permission: consume navigation keys so they do not
@@ -256,6 +275,7 @@ fn handle_permission_option_keys(
     permission_has_focus: bool,
     option_count: usize,
     question_prompt: bool,
+    plan_approval: bool,
 ) -> Option<bool> {
     if !permission_has_focus {
         return None;
@@ -269,11 +289,11 @@ fn handle_permission_option_keys(
             move_permission_option_right(app, option_count);
             Some(true)
         }
-        KeyCode::Up if question_prompt && option_count > 0 => {
+        KeyCode::Up if (question_prompt || plan_approval) && option_count > 0 => {
             move_permission_option_left(app);
             Some(true)
         }
-        KeyCode::Down if question_prompt && option_count > 0 => {
+        KeyCode::Down if (question_prompt || plan_approval) && option_count > 0 => {
             move_permission_option_right(app, option_count);
             Some(true)
         }
@@ -306,6 +326,34 @@ fn handle_permission_option_keys(
 
 fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<bool> {
     if !matches!(key.code, KeyCode::Char(_)) {
+        return None;
+    }
+    // Plan approval: plain y/n approve or reject; suppress Ctrl+Y/A/N (not applicable here).
+    if focused_permission_is_plan_approval(app) {
+        if is_ctrl_char_shortcut(key, 'y')
+            || is_ctrl_char_shortcut(key, 'a')
+            || is_ctrl_char_shortcut(key, 'n')
+        {
+            return Some(false);
+        }
+        if focused_permission_is_active(app) && !is_ctrl_shortcut(key.modifiers) {
+            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                if let Some(idx) =
+                    focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
+                {
+                    respond_permission(app, Some(idx));
+                    return Some(true);
+                }
+            }
+            if matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N')) {
+                if let Some(idx) =
+                    focused_option_index_by_kind(app, PermissionOptionKind::PlanReject)
+                {
+                    respond_permission(app, Some(idx));
+                    return Some(true);
+                }
+            }
+        }
         return None;
     }
     if focused_permission_is_question_prompt(app)
@@ -358,13 +406,19 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
         .map_or(0, |p| p.options.len());
     let permission_has_focus = focused_permission_is_active(app);
     let question_prompt = focused_permission_is_question_prompt(app);
+    let plan_approval = focused_permission_is_plan_approval(app);
 
     if let Some(consumed) = handle_permission_focus_cycle(app, key, permission_has_focus) {
         return consumed;
     }
-    if let Some(consumed) =
-        handle_permission_option_keys(app, key, permission_has_focus, option_count, question_prompt)
-    {
+    if let Some(consumed) = handle_permission_option_keys(
+        app,
+        key,
+        permission_has_focus,
+        option_count,
+        question_prompt,
+        plan_approval,
+    ) {
         return consumed;
     }
     if let Some(consumed) = handle_permission_quick_shortcuts(app, key) {
