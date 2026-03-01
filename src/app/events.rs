@@ -1043,6 +1043,9 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     update_subagent_scope_state(app, scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name);
+    if should_jump_on_large_write(&tool_info) {
+        app.viewport.engage_auto_scroll();
+    }
     upsert_tool_call_into_assistant_message(app, tool_info);
 
     app.status = AppStatus::Running;
@@ -1418,6 +1421,9 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= sync_tool_collapse_state(tc, app.tools_collapsed);
 
         if changed {
+            if should_jump_on_large_write(tc) {
+                app.viewport.engage_auto_scroll();
+            }
             tc.mark_tool_call_layout_dirty();
             out.layout_dirty_idx = Some(mi);
         } else {
@@ -1426,6 +1432,22 @@ fn apply_tool_call_update_to_indexed_block(
     }
 
     out
+}
+
+const WRITE_DIFF_JUMP_THRESHOLD_LINES: usize = 40;
+
+fn should_jump_on_large_write(tc: &ToolCallInfo) -> bool {
+    if tc.sdk_tool_name != "Write" {
+        return false;
+    }
+    tc.content.iter().any(|c| match c {
+        model::ToolCallContent::Diff(diff) => {
+            let new_lines = diff.new_text.lines().count();
+            let old_lines = diff.old_text.as_deref().map_or(0, |t| t.lines().count());
+            new_lines.max(old_lines) >= WRITE_DIFF_JUMP_THRESHOLD_LINES
+        }
+        _ => false,
+    })
 }
 
 fn apply_tool_call_status_update(

@@ -337,21 +337,19 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
             return Some(false);
         }
         if focused_permission_is_active(app) && !is_ctrl_shortcut(key.modifiers) {
-            if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                if let Some(idx) =
+            if matches!(key.code, KeyCode::Char('y' | 'Y'))
+                && let Some(idx) =
                     focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
-                {
-                    respond_permission(app, Some(idx));
-                    return Some(true);
-                }
+            {
+                respond_permission(app, Some(idx));
+                return Some(true);
             }
-            if matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N')) {
-                if let Some(idx) =
+            if matches!(key.code, KeyCode::Char('n' | 'N'))
+                && let Some(idx) =
                     focused_option_index_by_kind(app, PermissionOptionKind::PlanReject)
-                {
-                    respond_permission(app, Some(idx));
-                    return Some(true);
-                }
+            {
+                respond_permission(app, Some(idx));
+                return Some(true);
             }
         }
         return None;

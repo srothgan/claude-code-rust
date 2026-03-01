@@ -39,6 +39,8 @@ const SPINNER_STRS: &[&str] = &[
 /// Total box height = 1 (title) + 1 (command) + this + 1 (bottom border) = 15.
 /// TODO: make configurable (see ROADMAP.md)
 const TERMINAL_MAX_LINES: usize = 12;
+const WRITE_DIFF_MAX_LINES: usize = 50;
+const WRITE_DIFF_HEAD_LINES: usize = 10;
 
 pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
@@ -518,9 +520,9 @@ fn is_question_permission(perm: &InlinePermission, tc: &ToolCallInfo) -> bool {
 }
 
 fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
-    perm.options
-        .iter()
-        .any(|opt| matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject))
+    perm.options.iter().any(|opt| {
+        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+    })
 }
 
 fn parse_exit_plan_mode_allowed_prompts(raw_input: Option<&serde_json::Value>) -> Vec<String> {
@@ -898,7 +900,12 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
-                lines.extend(render_diff(diff));
+                let raw = render_diff(diff);
+                if tc.sdk_tool_name == "Write" {
+                    lines.extend(cap_write_diff_lines(raw));
+                } else {
+                    lines.extend(raw);
+                }
             }
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
@@ -937,6 +944,29 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
+}
+
+fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if lines.len() <= WRITE_DIFF_MAX_LINES {
+        return lines;
+    }
+    let total = lines.len();
+    let separator_lines = 3usize; // blank + marker + blank
+    let head = WRITE_DIFF_HEAD_LINES.min(WRITE_DIFF_MAX_LINES.saturating_sub(separator_lines));
+    let tail = WRITE_DIFF_MAX_LINES.saturating_sub(head + separator_lines);
+    let tail_start = total.saturating_sub(tail);
+    let omitted = tail_start.saturating_sub(head);
+
+    let mut out = Vec::with_capacity(WRITE_DIFF_MAX_LINES);
+    out.extend(lines.iter().take(head).cloned());
+    out.push(Line::default());
+    out.push(Line::from(Span::styled(
+        format!("... {omitted} diff lines omitted ..."),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+    )));
+    out.push(Line::default());
+    out.extend(lines.iter().skip(tail_start).cloned());
+    out
 }
 
 fn failed_execute_first_line(output: &str) -> Option<String> {
@@ -1409,5 +1439,25 @@ mod tests {
             .collect();
         assert_eq!(rendered.len(), 2);
         assert_eq!(rendered[1], "Exit code 1");
+    }
+
+    #[test]
+    fn write_diff_cap_keeps_head_and_tail_with_omission_marker() {
+        let lines: Vec<Line<'static>> =
+            (0..120).map(|idx| Line::from(format!("line {idx}"))).collect();
+        let capped = cap_write_diff_lines(lines);
+        let rendered: Vec<String> = capped
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(rendered.len(), WRITE_DIFF_MAX_LINES);
+        assert_eq!(rendered[0], "line 0");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES - 1], "line 9");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES], "");
+        assert!(rendered[WRITE_DIFF_HEAD_LINES + 1].contains("73 diff lines omitted"));
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES + 2], "");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES + 3], "line 83");
+        assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 }
