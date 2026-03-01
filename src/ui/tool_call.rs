@@ -901,7 +901,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         match content {
             model::ToolCallContent::Diff(diff) => {
                 let raw = render_diff(diff);
-                if tc.sdk_tool_name == "Write" {
+                if tc.sdk_tool_name == "Write" && !is_plan_file_path(&diff.path) {
                     lines.extend(cap_write_diff_lines(raw));
                 } else {
                     lines.extend(raw);
@@ -944,6 +944,14 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
+}
+
+/// Returns `true` for paths inside `.claude/plans/` (cross-platform).
+/// Write diffs for these files are never capped so the full plan is always visible.
+fn is_plan_file_path(path: &std::path::Path) -> bool {
+    path.components()
+        .zip(path.components().skip(1))
+        .any(|(a, b)| a.as_os_str() == ".claude" && b.as_os_str() == "plans")
 }
 
 fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
