@@ -39,6 +39,8 @@ const SPINNER_STRS: &[&str] = &[
 /// Total box height = 1 (title) + 1 (command) + this + 1 (bottom border) = 15.
 /// TODO: make configurable (see ROADMAP.md)
 const TERMINAL_MAX_LINES: usize = 12;
+const WRITE_DIFF_MAX_LINES: usize = 50;
+const WRITE_DIFF_HEAD_LINES: usize = 10;
 
 pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
@@ -424,6 +426,9 @@ fn render_execute_with_borders(
 /// Options are dynamic and include shortcuts only when applicable.
 /// Unfocused permissions are dimmed to indicate they don't have keyboard input.
 fn render_permission_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Line<'static>> {
+    if tc.is_exit_plan_mode_tool() || is_plan_approval_permission(perm) {
+        return render_plan_approval_lines(tc, perm);
+    }
     if is_question_permission(perm, tc) {
         return render_question_permission_lines(tc, perm);
     }
@@ -491,7 +496,10 @@ fn render_permission_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Li
             PermissionOptionKind::AllowOnce => " (Ctrl+y)",
             PermissionOptionKind::AllowSession | PermissionOptionKind::AllowAlways => " (Ctrl+a)",
             PermissionOptionKind::RejectOnce => " (Ctrl+n)",
-            PermissionOptionKind::RejectAlways | PermissionOptionKind::QuestionChoice => "",
+            PermissionOptionKind::RejectAlways
+            | PermissionOptionKind::QuestionChoice
+            | PermissionOptionKind::PlanApprove
+            | PermissionOptionKind::PlanReject => "",
         };
         spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
     }
@@ -509,6 +517,95 @@ fn render_permission_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Li
 fn is_question_permission(perm: &InlinePermission, tc: &ToolCallInfo) -> bool {
     tc.is_ask_question_tool()
         || perm.options.iter().all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
+}
+
+fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
+    perm.options.iter().any(|opt| {
+        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+    })
+}
+
+fn parse_exit_plan_mode_allowed_prompts(raw_input: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(raw) = raw_input else {
+        return Vec::new();
+    };
+    let Some(arr) = raw.get("allowedPrompts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let prompt = item.get("prompt")?.as_str()?;
+            let tool = item.get("tool")?.as_str()?;
+            Some(format!("{tool}: {prompt}"))
+        })
+        .collect()
+}
+
+fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Line<'static>> {
+    if !perm.focused {
+        return vec![
+            Line::default(),
+            Line::from(Span::styled(
+                "  \u{25cb} Waiting for input\u{2026} (\u{2191}\u{2193} to focus)",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+    }
+
+    let mut lines = vec![Line::default()];
+
+    // Show pre-approved actions requested by Claude, if any.
+    let allowed_prompts = parse_exit_plan_mode_allowed_prompts(tc.raw_input.as_ref());
+    if !allowed_prompts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Pre-approved actions:",
+            Style::default().fg(theme::DIM),
+        )));
+        for prompt_text in allowed_prompts {
+            lines.push(Line::from(vec![
+                Span::styled("    \u{2022} ", Style::default().fg(theme::DIM)),
+                Span::styled(prompt_text, Style::default().fg(Color::White)),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+
+    // Stacked approve / reject options.
+    for (i, opt) in perm.options.iter().enumerate() {
+        let is_selected = i == perm.selected_index;
+        let (icon, icon_color, shortcut) = match opt.kind {
+            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green, " [y]"),
+            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red, " [n]"),
+            _ => ("\u{00b7}", Color::Gray, ""),
+        };
+
+        let name_style = if is_selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        let mut line_spans: Vec<Span<'static>> = Vec::new();
+        if is_selected {
+            line_spans.push(Span::styled(
+                "  \u{25b8} ",
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            line_spans.push(Span::raw("    "));
+        }
+        line_spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+        line_spans.push(Span::styled(opt.name.clone(), name_style));
+        line_spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
+        lines.push(Line::from(line_spans));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  \u{2191}\u{2193} select  enter confirm  y approve  n/esc reject",
+        Style::default().fg(theme::DIM),
+    )));
+
+    lines
 }
 
 #[derive(Default)]
@@ -803,7 +900,12 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
-                lines.extend(render_diff(diff));
+                let raw = render_diff(diff);
+                if tc.sdk_tool_name == "Write" && !is_plan_file_path(&diff.path) {
+                    lines.extend(cap_write_diff_lines(raw));
+                } else {
+                    lines.extend(raw);
+                }
             }
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
@@ -842,6 +944,37 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
+}
+
+/// Returns `true` for paths inside `.claude/plans/` (cross-platform).
+/// Write diffs for these files are never capped so the full plan is always visible.
+fn is_plan_file_path(path: &std::path::Path) -> bool {
+    path.components()
+        .zip(path.components().skip(1))
+        .any(|(a, b)| a.as_os_str() == ".claude" && b.as_os_str() == "plans")
+}
+
+fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if lines.len() <= WRITE_DIFF_MAX_LINES {
+        return lines;
+    }
+    let total = lines.len();
+    let separator_lines = 3usize; // blank + marker + blank
+    let head = WRITE_DIFF_HEAD_LINES.min(WRITE_DIFF_MAX_LINES.saturating_sub(separator_lines));
+    let tail = WRITE_DIFF_MAX_LINES.saturating_sub(head + separator_lines);
+    let tail_start = total.saturating_sub(tail);
+    let omitted = tail_start.saturating_sub(head);
+
+    let mut out = Vec::with_capacity(WRITE_DIFF_MAX_LINES);
+    out.extend(lines.iter().take(head).cloned());
+    out.push(Line::default());
+    out.push(Line::from(Span::styled(
+        format!("... {omitted} diff lines omitted ..."),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+    )));
+    out.push(Line::default());
+    out.extend(lines.iter().skip(tail_start).cloned());
+    out
 }
 
 fn failed_execute_first_line(output: &str) -> Option<String> {
@@ -1314,5 +1447,25 @@ mod tests {
             .collect();
         assert_eq!(rendered.len(), 2);
         assert_eq!(rendered[1], "Exit code 1");
+    }
+
+    #[test]
+    fn write_diff_cap_keeps_head_and_tail_with_omission_marker() {
+        let lines: Vec<Line<'static>> =
+            (0..120).map(|idx| Line::from(format!("line {idx}"))).collect();
+        let capped = cap_write_diff_lines(lines);
+        let rendered: Vec<String> = capped
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(rendered.len(), WRITE_DIFF_MAX_LINES);
+        assert_eq!(rendered[0], "line 0");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES - 1], "line 9");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES], "");
+        assert!(rendered[WRITE_DIFF_HEAD_LINES + 1].contains("73 diff lines omitted"));
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES + 2], "");
+        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES + 3], "line 83");
+        assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 }

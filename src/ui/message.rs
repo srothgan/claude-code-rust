@@ -353,7 +353,6 @@ pub fn measure_message_height_cached(
 /// (label/separators/full blocks) without rendering them. If skipping lands inside
 /// a block, that block is rendered in full and the remaining skip is returned so
 /// the caller can apply `Paragraph::scroll()` for exact intra-block offset.
-#[allow(clippy::too_many_lines)]
 pub fn render_message_from_offset(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -374,159 +373,162 @@ pub fn render_message_from_offset(
 
     match msg.role {
         MessageRole::Welcome => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Welcome(welcome) = block {
-                    let (h, _) = welcome_block_height_cached(welcome, width);
-                    let mut render = |dst: &mut Vec<Line<'static>>| {
-                        render_welcome_cached(welcome, width, dst);
-                    };
-                    if should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
-                        continue;
-                    }
-                    render(out);
-                }
-            }
+            render_welcome_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
         }
         MessageRole::User => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    let (h, _) = text_block_height_cached(
-                        text,
-                        cache,
-                        incr,
-                        width,
-                        Some(theme::USER_MSG_BG),
-                        true,
-                    );
-                    let mut render = |dst: &mut Vec<Line<'static>>| {
-                        render_text_cached(
-                            text,
-                            cache,
-                            incr,
-                            width,
-                            Some(theme::USER_MSG_BG),
-                            true,
-                            dst,
-                        );
-                    };
-                    if should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
-                        continue;
-                    }
-                    render(out);
-                }
-            }
+            render_user_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
         }
         MessageRole::Assistant => {
+            render_assistant_from_offset(
+                msg,
+                spinner,
+                width,
+                layout_generation,
+                out,
+                &mut remaining_skip,
+                &mut can_consume_skip,
+            );
             if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-                emit_line_with_skip(
-                    thinking_line(spinner.frame),
-                    out,
-                    &mut remaining_skip,
-                    can_consume_skip,
-                );
                 emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
                 return remaining_skip;
             }
-
-            let show_subagent_thinking = spinner.is_subagent_thinking;
-            let mut prev_was_tool = false;
-            let mut lines_after_label = 0usize;
-            for block in &mut msg.blocks {
-                match block {
-                    MessageBlock::Text(text, cache, incr) => {
-                        if prev_was_tool {
-                            emit_line_with_skip(
-                                Line::default(),
-                                out,
-                                &mut remaining_skip,
-                                can_consume_skip,
-                            );
-                            lines_after_label += 1;
-                        }
-                        let (h, _) =
-                            text_block_height_cached(text, cache, incr, width, None, false);
-                        let mut render = |dst: &mut Vec<Line<'static>>| {
-                            render_text_cached(text, cache, incr, width, None, false, dst);
-                        };
-                        if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
-                            render(out);
-                        }
-                        lines_after_label += h;
-                        prev_was_tool = false;
-                    }
-                    MessageBlock::ToolCall(tc) => {
-                        let tc = tc.as_mut();
-                        if tc.hidden {
-                            continue;
-                        }
-                        if !prev_was_tool && lines_after_label > 0 {
-                            emit_line_with_skip(
-                                Line::default(),
-                                out,
-                                &mut remaining_skip,
-                                can_consume_skip,
-                            );
-                            lines_after_label += 1;
-                        }
-                        let (h, _) = tool_call::measure_tool_call_height_cached(
-                            tc,
-                            width,
-                            spinner.frame,
-                            layout_generation,
-                        );
-                        let mut render = |dst: &mut Vec<Line<'static>>| {
-                            tool_call::render_tool_call_cached(tc, width, spinner.frame, dst);
-                        };
-                        if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
-                            render(out);
-                        }
-                        lines_after_label += h;
-                        prev_was_tool = true;
-                    }
-                    MessageBlock::Welcome(_) => {}
-                }
-            }
-
-            if show_subagent_thinking {
-                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
-                emit_line_with_skip(
-                    subagent_thinking_line(spinner.frame),
-                    out,
-                    &mut remaining_skip,
-                    can_consume_skip,
-                );
-            }
-
-            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
-                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
-                emit_line_with_skip(
-                    thinking_line(spinner.frame),
-                    out,
-                    &mut remaining_skip,
-                    can_consume_skip,
-                );
-            }
         }
         MessageRole::System => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
-                    let mut render = |dst: &mut Vec<Line<'static>>| {
-                        let mut lines = Vec::new();
-                        render_text_cached(text, cache, incr, width, None, false, &mut lines);
-                        tint_lines(&mut lines, theme::STATUS_ERROR);
-                        dst.extend(lines);
-                    };
-                    if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
-                        render(out);
-                    }
-                }
-            }
+            render_system_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
         }
     }
 
     emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
     remaining_skip
+}
+
+fn render_welcome_from_offset(
+    msg: &mut ChatMessage,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Welcome(welcome) = block {
+            let (h, _) = welcome_block_height_cached(welcome, width);
+            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                continue;
+            }
+            render_welcome_cached(welcome, width, out);
+        }
+    }
+}
+
+fn render_user_from_offset(
+    msg: &mut ChatMessage,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Text(text, cache, incr) = block {
+            let (h, _) =
+                text_block_height_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true);
+            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                continue;
+            }
+            render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
+        }
+    }
+}
+
+fn render_assistant_from_offset(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) {
+    if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
+        emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
+        return;
+    }
+
+    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let mut prev_was_tool = false;
+    let mut lines_after_label = 0usize;
+    for block in &mut msg.blocks {
+        match block {
+            MessageBlock::Text(text, cache, incr) => {
+                if prev_was_tool {
+                    emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+                    lines_after_label += 1;
+                }
+                let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
+                if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                    render_text_cached(text, cache, incr, width, None, false, out);
+                }
+                lines_after_label += h;
+                prev_was_tool = false;
+            }
+            MessageBlock::ToolCall(tc) => {
+                let tc = tc.as_mut();
+                if tc.hidden {
+                    continue;
+                }
+                if !prev_was_tool && lines_after_label > 0 {
+                    emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+                    lines_after_label += 1;
+                }
+                let (h, _) = tool_call::measure_tool_call_height_cached(
+                    tc,
+                    width,
+                    spinner.frame,
+                    layout_generation,
+                );
+                if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                    tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
+                }
+                lines_after_label += h;
+                prev_was_tool = true;
+            }
+            MessageBlock::Welcome(_) => {}
+        }
+    }
+
+    if show_subagent_thinking {
+        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+        emit_line_with_skip(
+            subagent_thinking_line(spinner.frame),
+            out,
+            remaining_skip,
+            *can_consume_skip,
+        );
+    }
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+        emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
+    }
+}
+
+fn render_system_from_offset(
+    msg: &mut ChatMessage,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Text(text, cache, incr) = block {
+            let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
+            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                continue;
+            }
+            let mut lines = Vec::new();
+            render_text_cached(text, cache, incr, width, None, false, &mut lines);
+            tint_lines(&mut lines, theme::STATUS_ERROR);
+            out.extend(lines);
+        }
+    }
 }
 
 fn emit_line_with_skip(

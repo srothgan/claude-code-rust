@@ -241,13 +241,31 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
     !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
     let input_version_before = app.input.version;
     let cursor_before_key =
         super::SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col };
 
+    if should_ignore_key_during_paste(app, key, cursor_before_key) {
+        return;
+    }
+
+    handle_normal_key_actions(app, key);
+
+    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
+        mention::sync_with_cursor(app);
+        slash::sync_with_cursor(app);
+    }
+
+    sync_help_focus(app);
+}
+
+fn should_ignore_key_during_paste(
+    app: &mut App,
+    key: KeyEvent,
+    cursor_before_key: super::SelectionPoint,
+) -> bool {
     // Timing-based paste detection: if key events arrive faster than the
     // burst interval, this is a paste (not typing). Cancel any pending submit.
     app.drain_key_count += 1;
@@ -260,6 +278,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     if in_paste && app.pending_submit {
         app.pending_submit = false;
     }
+
     let on_placeholder_line = app
         .input
         .lines
@@ -267,76 +286,107 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         .and_then(|line| parse_paste_placeholder_before_cursor(line, app.input.cursor_col))
         .is_some();
     if in_paste && on_placeholder_line {
-        // First transition into paste mode: remove the known leaked leading key
-        // pattern (`<one char line>` + `<placeholder line>`).
         if !was_paste {
             cleanup_leaked_char_before_placeholder(app);
         }
-        // While burst mode is active and a placeholder already represents the paste,
-        // ignore burst key payload so no extra characters leak into the input.
-        if matches!(
-            key.code,
-            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
-        ) {
-            return;
+        if is_editing_like_key(key) {
+            return true;
         }
-    }
-    if !app.pending_paste_text.is_empty()
-        && matches!(
-            key.code,
-            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
-        )
-    {
-        return;
     }
 
+    !app.pending_paste_text.is_empty() && is_editing_like_key(key)
+}
+
+fn is_editing_like_key(key: KeyEvent) -> bool {
+    matches!(
+        key.code,
+        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
+    )
+}
+
+fn handle_normal_key_actions(app: &mut App, key: KeyEvent) {
+    if handle_turn_control_key(app, key) {
+        return;
+    }
+    if handle_submit_key(app, key) {
+        return;
+    }
+    if handle_history_key(app, key) {
+        return;
+    }
+    if handle_navigation_key(app, key) {
+        return;
+    }
+    if handle_focus_toggle_key(app, key) {
+        return;
+    }
+    if handle_mode_cycle_key(app, key) {
+        return;
+    }
+    if handle_editing_key(app, key) {
+        return;
+    }
+    let _ = handle_printable_key(app, key);
+}
+
+fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
+    if !matches!(key.code, KeyCode::Esc) {
+        return false;
+    }
+    if app.focus_owner() == FocusOwner::TodoList {
+        app.release_focus_target(FocusTarget::TodoList);
+        return true;
+    }
+    if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
+    {
+        tracing::error!("Failed to send cancel: {message}");
+    }
+    true
+}
+
+fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
+    if !matches!(key.code, KeyCode::Enter) || app.focus_owner() == FocusOwner::TodoList {
+        return false;
+    }
+    if !key.modifiers.contains(KeyModifiers::SHIFT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        let _ = app.input.textarea_insert_newline();
+        app.pending_submit = true;
+        return true;
+    }
+    app.pending_submit = false;
+    let _ = app.input.textarea_insert_newline();
+    true
+}
+
+fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.focus_owner() == FocusOwner::TodoList {
+        return false;
+    }
     match (key.code, key.modifiers) {
-        // Esc: cancel current turn if thinking/running
-        (KeyCode::Esc, _) => {
-            if app.focus_owner() == FocusOwner::TodoList {
-                app.release_focus_target(FocusTarget::TodoList);
-                return;
-            }
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
-            {
-                tracing::error!("Failed to send cancel: {message}");
-            }
-        }
-        // Enter (no modifiers): deferred submit for paste detection.
-        // Insert a newline now; if no more keys arrive in this drain cycle
-        // the main loop strips the trailing newline and calls submit_input().
-        (KeyCode::Enter, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && !m.contains(KeyModifiers::SHIFT)
-                && !m.contains(KeyModifiers::CONTROL) =>
-        {
-            let _ = app.input.textarea_insert_newline();
-            app.pending_submit = true;
-        }
-        // Ctrl+Enter or Shift+Enter: explicit newline (never submits)
-        (KeyCode::Enter, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.pending_submit = false;
-            let _ = app.input.textarea_insert_newline();
-        }
-        // TextArea-native history
-        (KeyCode::Char('z'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::CONTROL =>
-        {
+        (KeyCode::Char('z'), m) if m == KeyModifiers::CONTROL => {
             let _ = app.input.textarea_undo();
+            true
         }
-        (KeyCode::Char('y'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::CONTROL =>
-        {
+        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => {
             let _ = app.input.textarea_redo();
+            true
         }
-        // Navigation
+        _ => false,
+    }
+}
+
+fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
         (KeyCode::Left, m)
             if app.focus_owner() != FocusOwner::TodoList
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
             let _ = app.input.textarea_move_word_left();
+            true
         }
         (KeyCode::Right, m)
             if app.focus_owner() != FocusOwner::TodoList
@@ -344,36 +394,50 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 && !m.contains(KeyModifiers::ALT) =>
         {
             let _ = app.input.textarea_move_word_right();
+            true
         }
         (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_move_left();
+            true
         }
         (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_move_right();
+            true
         }
         (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_up(app);
+            true
         }
         (KeyCode::Down, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_down(app);
+            true
         }
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
                 app.viewport.scroll_up(1);
             }
+            true
         }
         (KeyCode::Down, _) => {
             if !try_move_input_cursor_down(app) {
                 app.viewport.scroll_down(1);
             }
+            true
         }
         (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_move_home();
+            true
         }
         (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_move_end();
+            true
         }
-        // Tab: toggle focus between input and open todo list
+        _ => false,
+    }
+}
+
+fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
         (KeyCode::Tab, m)
             if !m.contains(KeyModifiers::SHIFT)
                 && !m.contains(KeyModifiers::CONTROL)
@@ -386,56 +450,65 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
             } else {
                 app.claim_focus_target(FocusTarget::TodoList);
             }
+            true
         }
-        // Shift+Tab: cycle session mode
-        (KeyCode::BackTab, _) => {
-            if let Some(ref mode) = app.mode
-                && mode.available_modes.len() > 1
-            {
-                let current_idx = mode
-                    .available_modes
-                    .iter()
-                    .position(|m| m.id == mode.current_mode_id)
-                    .unwrap_or(0);
-                let next_idx = (current_idx + 1) % mode.available_modes.len();
-                let next = &mode.available_modes[next_idx];
+        _ => false,
+    }
+}
 
-                // Fire-and-forget mode switch
-                if let Some(ref conn) = app.conn
-                    && let Some(sid) = app.session_id.clone()
-                {
-                    let mode_id = next.id.clone();
-                    let conn = Rc::clone(conn);
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
-                            tracing::error!("Failed to set mode: {e}");
-                        }
-                    });
-                }
+fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
+    if !matches!(key.code, KeyCode::BackTab) {
+        return false;
+    }
+    let Some(ref mode) = app.mode else {
+        return true;
+    };
+    if mode.available_modes.len() <= 1 {
+        return true;
+    }
 
-                // Optimistic UI update (CurrentModeUpdate will confirm)
-                let next_id = next.id.clone();
-                let next_name = next.name.clone();
-                let modes = mode
-                    .available_modes
-                    .iter()
-                    .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
-                    .collect();
-                app.mode = Some(ModeState {
-                    current_mode_id: next_id,
-                    current_mode_name: next_name,
-                    available_modes: modes,
-                });
-                app.cached_footer_line = None;
+    let current_idx =
+        mode.available_modes.iter().position(|m| m.id == mode.current_mode_id).unwrap_or(0);
+    let next_idx = (current_idx + 1) % mode.available_modes.len();
+    let next = &mode.available_modes[next_idx];
+
+    if let Some(ref conn) = app.conn
+        && let Some(sid) = app.session_id.clone()
+    {
+        let mode_id = next.id.clone();
+        let conn = Rc::clone(conn);
+        tokio::task::spawn_local(async move {
+            if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
+                tracing::error!("Failed to set mode: {e}");
             }
-        }
-        // Editing
+        });
+    }
+
+    let next_id = next.id.clone();
+    let next_name = next.name.clone();
+    let modes = mode
+        .available_modes
+        .iter()
+        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+        .collect();
+    app.mode = Some(ModeState {
+        current_mode_id: next_id,
+        current_mode_name: next_name,
+        available_modes: modes,
+    });
+    app.cached_footer_line = None;
+    true
+}
+
+fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
             if app.focus_owner() != FocusOwner::TodoList
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
             let _ = app.input.textarea_delete_word_before();
+            true
         }
         (KeyCode::Delete, m)
             if app.focus_owner() != FocusOwner::TodoList
@@ -443,34 +516,37 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 && !m.contains(KeyModifiers::ALT) =>
         {
             let _ = app.input.textarea_delete_word_after();
+            true
         }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_delete_char_before();
+            true
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
             let _ = app.input.textarea_delete_char_after();
+            true
         }
-        // Printable characters
-        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            if app.focus_owner() == FocusOwner::TodoList {
-                app.release_focus_target(FocusTarget::TodoList);
-            }
-            let _ = app.input.textarea_insert_char(c);
-            if c == '@' {
-                mention::activate(app);
-            } else if c == '/' {
-                slash::activate(app);
-            }
-        }
-        _ => {}
+        _ => false,
     }
+}
 
-    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
-        mention::sync_with_cursor(app);
-        slash::sync_with_cursor(app);
+fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
+    let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
+        return false;
+    };
+    if !is_printable_text_modifiers(m) {
+        return false;
     }
-
-    sync_help_focus(app);
+    if app.focus_owner() == FocusOwner::TodoList {
+        app.release_focus_target(FocusTarget::TodoList);
+    }
+    let _ = app.input.textarea_insert_char(c);
+    if c == '@' {
+        mention::activate(app);
+    } else if c == '/' {
+        slash::activate(app);
+    }
+    true
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {

@@ -53,14 +53,9 @@ impl FocusContext {
     }
 
     #[must_use]
-    #[allow(clippy::fn_params_excessive_bools)]
-    pub const fn with_help(
-        todo_focus_available: bool,
-        mention_active: bool,
-        permission_active: bool,
-        help_active: bool,
-    ) -> Self {
-        Self { todo_focus_available, mention_active, permission_active, help_active }
+    pub const fn with_help(mut self, help_active: bool) -> Self {
+        self.help_active = help_active;
+        self
     }
 
     #[must_use]
@@ -160,7 +155,7 @@ mod tests {
     #[test]
     fn help_focus_target_works_when_enabled() {
         let mut mgr = FocusManager::default();
-        let ctx = FocusContext::with_help(false, false, false, true);
+        let ctx = FocusContext::new(false, false, false).with_help(true);
         mgr.claim(FocusTarget::Help, ctx);
         assert_eq!(mgr.owner(ctx), FocusOwner::Help);
     }

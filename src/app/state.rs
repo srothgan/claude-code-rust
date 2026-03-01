@@ -115,11 +115,17 @@ impl SessionUsageState {
 
     #[must_use]
     pub fn context_used_tokens(&self) -> Option<u64> {
+        // Context used = total input tokens for this turn.
+        // The Anthropic API splits input into three non-overlapping buckets:
+        //   input_tokens          = non-cached input
+        //   cache_read_tokens     = tokens served from the prompt cache
+        //   cache_write_tokens    = tokens written into the prompt cache
+        // Output tokens are NOT part of the current-turn context; they become
+        // input on the *next* turn. Including them here would over-inflate the %.
         let input = self.latest_input_tokens?;
-        let output = self.latest_output_tokens?;
         let cache_read = self.latest_cache_read_tokens.unwrap_or(0);
         let cache_write = self.latest_cache_write_tokens.unwrap_or(0);
-        Some(input.saturating_add(output).saturating_add(cache_read).saturating_add(cache_write))
+        Some(input.saturating_add(cache_read).saturating_add(cache_write))
     }
 }
 
@@ -1106,12 +1112,12 @@ impl App {
 
     #[must_use]
     fn focus_context(&self) -> FocusContext {
-        FocusContext::with_help(
+        FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
             self.mention.is_some() || self.slash.is_some(),
             !self.pending_permission_ids.is_empty(),
-            self.is_help_active(),
         )
+        .with_help(self.is_help_active())
     }
 }
 
@@ -1758,6 +1764,11 @@ impl ToolCallInfo {
         is_ask_question_tool_name(&self.sdk_tool_name)
     }
 
+    #[must_use]
+    pub fn is_exit_plan_mode_tool(&self) -> bool {
+        is_exit_plan_mode_tool_name(&self.sdk_tool_name)
+    }
+
     /// Mark render cache for this tool call as stale.
     pub fn mark_tool_call_render_dirty(&mut self) {
         crate::perf::mark("tc_invalidations_requested");
@@ -1799,6 +1810,11 @@ pub fn is_execute_tool_name(tool_name: &str) -> bool {
 #[must_use]
 pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
+}
+
+#[must_use]
+pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("exitplanmode")
 }
 
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
@@ -2824,6 +2840,7 @@ mod tests {
 
     #[test]
     fn session_usage_context_used_tokens_ignores_compaction_pre_tokens() {
+        // output_tokens (1_500) must NOT be included; only input+cache_read+cache_write count.
         let usage = SessionUsageState {
             latest_input_tokens: Some(3_000),
             latest_output_tokens: Some(1_500),
@@ -2833,7 +2850,21 @@ mod tests {
             ..SessionUsageState::default()
         };
 
-        assert_eq!(usage.context_used_tokens(), Some(64_500));
+        assert_eq!(usage.context_used_tokens(), Some(63_000));
+    }
+
+    #[test]
+    fn session_usage_context_used_tokens_works_without_output_tokens() {
+        // output_tokens being absent must not block the calculation.
+        let usage = SessionUsageState {
+            latest_input_tokens: Some(5_000),
+            latest_output_tokens: None,
+            latest_cache_read_tokens: Some(40_000),
+            latest_cache_write_tokens: Some(8_000),
+            ..SessionUsageState::default()
+        };
+
+        assert_eq!(usage.context_used_tokens(), Some(53_000));
     }
 
     #[test]
