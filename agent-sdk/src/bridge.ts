@@ -19,6 +19,7 @@ import type {
   BridgeCommand,
   BridgeEvent,
   BridgeEventEnvelope,
+  FastModeState,
   Json,
   PermissionOutcome,
   PermissionOption,
@@ -86,6 +87,7 @@ type SessionState = {
   cwd: string;
   model: string;
   mode: PermissionMode;
+  fastModeState: FastModeState;
   yolo: boolean;
   query: Query;
   input: AsyncQueue<SDKUserMessage>;
@@ -749,11 +751,28 @@ function numberField(record: Record<string, unknown>, ...keys: string[]): number
   return undefined;
 }
 
+export function parseFastModeState(value: unknown): FastModeState | null {
+  if (value === "off" || value === "cooldown" || value === "on") {
+    return value;
+  }
+  return null;
+}
+
+function emitFastModeUpdateIfChanged(session: SessionState, value: unknown): void {
+  const next = parseFastModeState(value);
+  if (!next || next === session.fastModeState) {
+    return;
+  }
+  session.fastModeState = next;
+  emitSessionUpdate(session.sessionId, { type: "fast_mode_update", fast_mode_state: next });
+}
+
 function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
   const usageUpdate = buildUsageUpdateFromResultForSession(session, message);
   if (usageUpdate) {
     emitSessionUpdate(session.sessionId, usageUpdate);
   }
+  emitFastModeUpdateIfChanged(session, message.fast_mode_state);
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
@@ -806,6 +825,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
       if (incomingMode) {
         session.mode = incomingMode;
       }
+      emitFastModeUpdateIfChanged(session, msg.fast_mode_state);
 
       if (!session.connected) {
         emitConnectEvent(session);
@@ -861,6 +881,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
       } else if (msg.status === null) {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
       }
+      emitFastModeUpdateIfChanged(session, msg.fast_mode_state);
       return;
     }
 
@@ -1340,6 +1361,7 @@ async function createSession(params: {
     cwd: params.cwd,
     model: params.model ?? "default",
     mode: startMode,
+    fastModeState: "off",
     yolo: params.yolo,
     query: queryHandle,
     input,
@@ -1368,6 +1390,7 @@ async function createSession(params: {
       if (!session.connected) {
         emitConnectEvent(session);
       }
+      emitFastModeUpdateIfChanged(session, result.fast_mode_state);
 
       const commands = Array.isArray(result.commands)
         ? result.commands.map((command) => ({

@@ -34,6 +34,8 @@ export interface UsageUpdate {
   max_output_tokens?: number;
 }
 
+export type FastModeState = "off" | "cooldown" | "on";
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; mime_type?: string; uri?: string; data?: string };
@@ -92,6 +94,7 @@ export type SessionUpdate =
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "config_option_update"; option_id: string; value: Json }
   | { type: "usage_update"; usage: UsageUpdate }
+  | { type: "fast_mode_update"; fast_mode_state: FastModeState }
   | { type: "session_status_update"; status: "compacting" | "idle" }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 

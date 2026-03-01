@@ -508,6 +508,7 @@ fn handle_connected_client_event(
     app.pending_compact_clear = false;
     app.is_compacting = false;
     app.session_usage = super::SessionUsageState::default();
+    app.fast_mode_state = model::FastModeState::Off;
     app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
@@ -947,6 +948,7 @@ fn reset_session_identity_state(
     app.pending_compact_clear = false;
     app.is_compacting = false;
     app.session_usage = super::SessionUsageState::default();
+    app.fast_mode_state = model::FastModeState::Off;
     app.should_quit = false;
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
@@ -1265,6 +1267,10 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             tracing::debug!("Config update: {:?}", config);
         }
         model::SessionUpdate::UsageUpdate(usage) => handle_usage_update(app, &usage),
+        model::SessionUpdate::FastModeUpdate(state) => {
+            app.fast_mode_state = state;
+            app.cached_footer_line = None;
+        }
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
@@ -1796,6 +1802,7 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
+        model::SessionUpdate::FastModeUpdate(_) => "FastModeUpdate",
         model::SessionUpdate::SessionStatusUpdate(_) => "SessionStatusUpdate",
         model::SessionUpdate::CompactionBoundary(_) => "CompactionBoundary",
     }
@@ -2980,6 +2987,23 @@ mod tests {
             Some(model::CompactionTrigger::Manual)
         );
         assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
+    }
+
+    #[test]
+    fn fast_mode_update_sets_state_and_invalidates_footer_cache() {
+        let mut app = make_test_app();
+        app.cached_footer_line = Some(ratatui::text::Line::from("cached"));
+        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::FastModeUpdate(
+                model::FastModeState::Cooldown,
+            )),
+        );
+
+        assert_eq!(app.fast_mode_state, model::FastModeState::Cooldown);
+        assert!(app.cached_footer_line.is_none());
     }
 
     #[test]

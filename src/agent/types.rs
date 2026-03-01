@@ -52,6 +52,14 @@ pub struct UsageUpdate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum FastModeState {
+    Off,
+    Cooldown,
+    On,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
     Idle,
@@ -136,6 +144,7 @@ pub enum SessionUpdate {
     CurrentModeUpdate { current_mode_id: String },
     ConfigOptionUpdate { option_id: String, value: serde_json::Value },
     UsageUpdate { usage: UsageUpdate },
+    FastModeUpdate { fast_mode_state: FastModeState },
     SessionStatusUpdate { status: SessionStatus },
     CompactionBoundary { trigger: CompactionTrigger, pre_tokens: u64 },
 }

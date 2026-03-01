@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::model;
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -44,10 +45,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.cached_footer_line.is_none() {
         let line = if let Some(ref mode) = app.mode {
             let color = mode_color(&mode.current_mode_id);
+            let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
             Line::from(vec![
                 Span::styled("[", Style::default().fg(color)),
                 Span::styled(mode.current_mode_name.clone(), Style::default().fg(color)),
                 Span::styled("]", Style::default().fg(color)),
+                Span::raw("  "),
+                Span::styled("[", Style::default().fg(fast_mode_color)),
+                Span::styled(fast_mode_text, Style::default().fg(fast_mode_color)),
+                Span::styled("]", Style::default().fg(fast_mode_color)),
                 Span::raw("  "),
                 Span::styled("?", Style::default().fg(Color::White)),
                 Span::styled(" : Shortcuts + Commands", Style::default().fg(theme::DIM)),
@@ -293,6 +299,14 @@ fn mode_color(mode_id: &str) -> Color {
     }
 }
 
+fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
+    match state {
+        model::FastModeState::Off => ("FAST:OFF", theme::DIM),
+        model::FastModeState::Cooldown => ("FAST:CD", Color::Yellow),
+        model::FastModeState::On => ("FAST:ON", theme::RUST_ORANGE),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,5 +542,11 @@ mod tests {
 
         let text = footer_telemetry_text(&app).expect("footer telemetry");
         assert_eq!(text, "Context: -");
+    }
+
+    #[test]
+    fn fast_mode_badge_maps_cooldown_to_cd() {
+        let (label, _) = fast_mode_badge(model::FastModeState::Cooldown);
+        assert_eq!(label, "FAST:CD");
     }
 }

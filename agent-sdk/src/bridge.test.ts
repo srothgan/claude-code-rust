@@ -12,6 +12,7 @@ import {
   agentSdkVersionCompatibilityError,
   looksLikeAuthRequired,
   normalizeToolResultText,
+  parseFastModeState,
   normalizeToolKind,
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
@@ -68,6 +69,14 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("TodoWrite"), "other");
+});
+
+test("parseFastModeState accepts known values and rejects unknown values", () => {
+  assert.equal(parseFastModeState("off"), "off");
+  assert.equal(parseFastModeState("cooldown"), "cooldown");
+  assert.equal(parseFastModeState("on"), "on");
+  assert.equal(parseFastModeState("CD"), null);
+  assert.equal(parseFastModeState(undefined), null);
 });
 
 test("createToolCall builds edit diff content", () => {

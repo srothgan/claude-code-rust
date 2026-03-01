@@ -145,6 +145,7 @@ pub fn create_app(cli: &Cli) -> App {
         cached_footer_line: None,
         update_check_hint: None,
         session_usage: super::SessionUsageState::default(),
+        fast_mode_state: model::FastModeState::Off,
         is_compacting: false,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
@@ -677,6 +678,13 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
                 turn_cost_usd: usage.turn_cost_usd,
                 context_window: usage.context_window,
                 max_output_tokens: usage.max_output_tokens,
+            }))
+        }
+        types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
+            Some(model::SessionUpdate::FastModeUpdate(match fast_mode_state {
+                types::FastModeState::Off => model::FastModeState::Off,
+                types::FastModeState::Cooldown => model::FastModeState::Cooldown,
+                types::FastModeState::On => model::FastModeState::On,
             }))
         }
         types::SessionUpdate::SessionStatusUpdate { status } => {

@@ -489,6 +489,14 @@ pub struct UsageUpdate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum FastModeState {
+    Off,
+    Cooldown,
+    On,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
     Idle,
@@ -519,6 +527,7 @@ pub enum SessionUpdate {
     CurrentModeUpdate(CurrentModeUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     UsageUpdate(UsageUpdate),
+    FastModeUpdate(FastModeState),
     SessionStatusUpdate(SessionStatus),
     CompactionBoundary(CompactionBoundary),
 }

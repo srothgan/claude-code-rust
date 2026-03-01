@@ -349,6 +349,8 @@ pub struct App {
     pub update_check_hint: Option<String>,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
+    /// Fast mode state telemetry from the SDK.
+    pub fast_mode_state: model::FastModeState,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
 
@@ -1047,6 +1049,7 @@ impl App {
             cached_footer_line: None,
             update_check_hint: None,
             session_usage: SessionUsageState::default(),
+            fast_mode_state: model::FastModeState::Off,
             is_compacting: false,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
