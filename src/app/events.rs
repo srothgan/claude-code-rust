@@ -337,235 +337,280 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     super::keys::dispatch_key_by_focus(app, key);
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
-        ClientEvent::SessionUpdate(update) => {
-            let needs_history_retention = matches!(
-                &update,
-                model::SessionUpdate::AgentMessageChunk(_)
-                    | model::SessionUpdate::ToolCall(_)
-                    | model::SessionUpdate::ToolCallUpdate(_)
-                    | model::SessionUpdate::CompactionBoundary(_)
-            );
-            handle_session_update(app, update);
-            if needs_history_retention {
-                app.enforce_history_retention();
-            }
-        }
+        ClientEvent::SessionUpdate(update) => handle_session_update_event(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
-            let tool_id = request.tool_call.tool_call_id.clone();
-            if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
-                if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
-                    tracing::warn!(
-                        "Duplicate permission request for tool call: {tool_id}; auto-rejecting duplicate"
-                    );
-                    // Keep the original pending prompt and reject duplicate request.
-                    if let Some(last_opt) = request.options.last() {
-                        let _ = response_tx.send(model::RequestPermissionResponse::new(
-                            model::RequestPermissionOutcome::Selected(
-                                model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                            ),
-                        ));
-                    }
-                    return;
-                }
-
-                let mut layout_dirty = false;
-                if let Some(MessageBlock::ToolCall(tc)) =
-                    app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-                {
-                    let tc = tc.as_mut();
-                    let is_first = app.pending_permission_ids.is_empty();
-                    tc.pending_permission = Some(InlinePermission {
-                        options: request.options,
-                        response_tx,
-                        selected_index: 0,
-                        focused: is_first,
-                    });
-                    tc.mark_tool_call_layout_dirty();
-                    layout_dirty = true;
-                    app.pending_permission_ids.push(tool_id);
-                    app.claim_focus_target(FocusTarget::Permission);
-                    app.viewport.engage_auto_scroll();
-                } else {
-                    tracing::warn!(
-                        "Permission request for non-tool block index: {tool_id}; auto-rejecting"
-                    );
-                    if let Some(last_opt) = request.options.last() {
-                        let _ = response_tx.send(model::RequestPermissionResponse::new(
-                            model::RequestPermissionOutcome::Selected(
-                                model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                            ),
-                        ));
-                    }
-                }
-                if layout_dirty {
-                    app.mark_message_layout_dirty(mi);
-                }
-            } else {
-                tracing::warn!(
-                    "Permission request for unknown tool call: {tool_id}; auto-rejecting"
-                );
-                // Tool call not found -- reject by selecting last option
-                if let Some(last_opt) = request.options.last() {
-                    let _ = response_tx.send(model::RequestPermissionResponse::new(
-                        model::RequestPermissionOutcome::Selected(
-                            model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                        ),
-                    ));
-                }
-            }
+            handle_permission_request_event(app, request, response_tx);
         }
-        ClientEvent::TurnCancelled => {
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            if app.pending_cancel_origin.is_none() {
-                app.pending_cancel_origin = Some(CancelOrigin::Manual);
-            }
-            app.cancelled_turn_pending_hint =
-                matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
-            let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-        }
-        ClientEvent::TurnComplete => {
-            let tail_assistant_idx =
-                app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
-            let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-            let should_compact_clear = app.pending_compact_clear;
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            let cancelled_requested = app.pending_cancel_origin.is_some();
-            let show_interrupted_hint =
-                matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
-            app.pending_cancel_origin = None;
-            app.cancelled_turn_pending_hint = false;
-            if cancelled_requested {
-                let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-            } else {
-                let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
-            }
-            app.status = AppStatus::Ready;
-            app.files_accessed = 0;
-            app.clear_tool_scope_tracking();
-            app.refresh_git_branch();
-            if show_interrupted_hint {
-                push_interrupted_hint(app);
-            }
-            if should_compact_clear {
-                super::slash::clear_conversation_history(app);
-            } else if turn_was_active || cancelled_requested {
-                mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
-            }
-            super::input_submit::drain_queued_submission(app);
-        }
+        ClientEvent::TurnCancelled => handle_turn_cancelled_event(app),
+        ClientEvent::TurnComplete => handle_turn_complete_event(app),
         ClientEvent::TurnError(msg) => handle_turn_error_event(app, &msg, None),
         ClientEvent::TurnErrorClassified { message, class } => {
             handle_turn_error_event(app, &message, Some(class));
         }
         ClientEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
-            // Grab connection from the shared slot
-            if let Some(slot) = take_connection_slot() {
-                app.conn = Some(slot.conn);
-            }
-            apply_session_cwd(app, cwd);
-            app.session_id = Some(session_id);
-            app.model_name = model_name;
-            app.mode = mode;
-            app.login_hint = None;
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            app.session_usage = super::SessionUsageState::default();
-            app.history_retention_stats = super::state::HistoryRetentionStats::default();
-            app.cancelled_turn_pending_hint = false;
-            app.pending_cancel_origin = None;
-            app.queued_submission = None;
-            app.cached_header_line = None;
-            app.cached_footer_line = None;
-            app.update_welcome_model_if_pristine();
-            app.sync_welcome_recent_sessions();
-            if !history_updates.is_empty() {
-                load_resume_history(app, &history_updates);
-            }
-            app.status = AppStatus::Ready;
-            app.resuming_session_id = None;
+            handle_connected_client_event(app, session_id, cwd, model_name, mode, &history_updates);
         }
-        ClientEvent::SessionsListed { sessions, .. } => {
-            app.recent_sessions = sessions
-                .into_iter()
-                .map(|entry| RecentSessionInfo {
-                    session_id: entry.session_id,
-                    cwd: entry.cwd,
-                    title: entry.title,
-                    updated_at: entry.updated_at,
-                })
-                .collect();
-            app.sync_welcome_recent_sessions();
-        }
+        ClientEvent::SessionsListed { sessions, .. } => handle_sessions_listed_event(app, sessions),
         ClientEvent::AuthRequired { method_name, method_description } => {
-            // Show auth context without pre-filling /login. Slash login/logout
-            // discoverability is intentionally deferred for now.
-            app.status = AppStatus::Ready;
-            app.resuming_session_id = None;
-            app.login_hint = Some(LoginHint { method_name, method_description });
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            app.cancelled_turn_pending_hint = false;
-            app.pending_cancel_origin = None;
-            app.queued_submission = None;
+            handle_auth_required_event(app, method_name, method_description);
         }
-        ClientEvent::ConnectionFailed(msg) => {
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            app.cancelled_turn_pending_hint = false;
-            app.pending_cancel_origin = None;
-            app.queued_submission = None;
-            app.resuming_session_id = None;
-            app.input.clear();
-            app.pending_submit = false;
-            app.status = AppStatus::Error;
-            push_connection_error_message(app, &msg);
-        }
-        ClientEvent::SlashCommandError(msg) => {
-            app.messages.push(ChatMessage {
-                role: MessageRole::System,
-                blocks: vec![MessageBlock::Text(
-                    msg.clone(),
-                    BlockCache::default(),
-                    IncrementalMarkdown::from_complete(&msg),
-                )],
-                usage: None,
-            });
-            app.enforce_history_retention();
-            app.viewport.engage_auto_scroll();
-            app.status = AppStatus::Ready;
-            app.resuming_session_id = None;
-        }
+        ClientEvent::ConnectionFailed(msg) => handle_connection_failed_event(app, &msg),
+        ClientEvent::SlashCommandError(msg) => handle_slash_command_error_event(app, &msg),
         ClientEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
-            app.pending_compact_clear = false;
-            app.is_compacting = false;
-            app.pending_cancel_origin = None;
-            app.queued_submission = None;
-            apply_session_cwd(app, cwd);
-            reset_for_new_session(app, session_id, model_name, mode);
-            if !history_updates.is_empty() {
-                load_resume_history(app, &history_updates);
-            }
-            app.status = AppStatus::Ready;
-            app.resuming_session_id = None;
+            handle_session_replaced_event(app, session_id, cwd, model_name, mode, &history_updates);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
-            app.update_check_hint = Some(format!(
-                "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
-            ));
+            handle_update_available_event(app, &latest_version, &current_version);
         }
-        ClientEvent::FatalError(error) => {
-            app.exit_error = Some(error);
-            app.should_quit = true;
-            app.status = AppStatus::Error;
-            app.pending_submit = false;
-        }
+        ClientEvent::FatalError(error) => handle_fatal_error_event(app, error),
     }
+}
+
+fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
+    let needs_history_retention = matches!(
+        &update,
+        model::SessionUpdate::AgentMessageChunk(_)
+            | model::SessionUpdate::ToolCall(_)
+            | model::SessionUpdate::ToolCallUpdate(_)
+            | model::SessionUpdate::CompactionBoundary(_)
+    );
+    handle_session_update(app, update);
+    if needs_history_retention {
+        app.enforce_history_retention();
+    }
+}
+
+fn reject_permission_request(
+    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+    options: &[model::PermissionOption],
+) {
+    if let Some(last_opt) = options.last() {
+        let _ = response_tx.send(model::RequestPermissionResponse::new(
+            model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
+                last_opt.option_id.clone(),
+            )),
+        ));
+    }
+}
+
+fn handle_permission_request_event(
+    app: &mut App,
+    request: model::RequestPermissionRequest,
+    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+) {
+    let tool_id = request.tool_call.tool_call_id.clone();
+    let options = request.options.clone();
+
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
+        tracing::warn!("Permission request for unknown tool call: {tool_id}; auto-rejecting");
+        reject_permission_request(response_tx, &options);
+        return;
+    };
+
+    if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
+        tracing::warn!(
+            "Duplicate permission request for tool call: {tool_id}; auto-rejecting duplicate"
+        );
+        reject_permission_request(response_tx, &options);
+        return;
+    }
+
+    let mut layout_dirty = false;
+    if let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let tc = tc.as_mut();
+        let is_first = app.pending_permission_ids.is_empty();
+        tc.pending_permission = Some(InlinePermission {
+            options: request.options,
+            response_tx,
+            selected_index: 0,
+            focused: is_first,
+        });
+        tc.mark_tool_call_layout_dirty();
+        layout_dirty = true;
+        app.pending_permission_ids.push(tool_id);
+        app.claim_focus_target(FocusTarget::Permission);
+        app.viewport.engage_auto_scroll();
+    } else {
+        tracing::warn!("Permission request for non-tool block index: {tool_id}; auto-rejecting");
+        reject_permission_request(response_tx, &options);
+    }
+
+    if layout_dirty {
+        app.mark_message_layout_dirty(mi);
+    }
+}
+
+fn handle_turn_cancelled_event(app: &mut App) {
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    if app.pending_cancel_origin.is_none() {
+        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+    }
+    app.cancelled_turn_pending_hint =
+        matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+}
+
+fn handle_turn_complete_event(app: &mut App) {
+    let tail_assistant_idx =
+        app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+    let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
+    let should_compact_clear = app.pending_compact_clear;
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    let cancelled_requested = app.pending_cancel_origin.is_some();
+    let show_interrupted_hint = matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+    app.pending_cancel_origin = None;
+    app.cancelled_turn_pending_hint = false;
+
+    if cancelled_requested {
+        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    } else {
+        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
+    }
+
+    app.status = AppStatus::Ready;
+    app.files_accessed = 0;
+    app.clear_tool_scope_tracking();
+    app.refresh_git_branch();
+    if show_interrupted_hint {
+        push_interrupted_hint(app);
+    }
+    if should_compact_clear {
+        super::slash::clear_conversation_history(app);
+    } else if turn_was_active || cancelled_requested {
+        mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
+    }
+    super::input_submit::drain_queued_submission(app);
+}
+
+fn handle_connected_client_event(
+    app: &mut App,
+    session_id: model::SessionId,
+    cwd: String,
+    model_name: String,
+    mode: Option<super::ModeState>,
+    history_updates: &[model::SessionUpdate],
+) {
+    if let Some(slot) = take_connection_slot() {
+        app.conn = Some(slot.conn);
+    }
+    apply_session_cwd(app, cwd);
+    app.session_id = Some(session_id);
+    app.model_name = model_name;
+    app.mode = mode;
+    app.login_hint = None;
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.session_usage = super::SessionUsageState::default();
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.queued_submission = None;
+    app.cached_header_line = None;
+    app.cached_footer_line = None;
+    app.update_welcome_model_if_pristine();
+    app.sync_welcome_recent_sessions();
+    if !history_updates.is_empty() {
+        load_resume_history(app, history_updates);
+    }
+    app.status = AppStatus::Ready;
+    app.resuming_session_id = None;
+}
+
+fn handle_sessions_listed_event(
+    app: &mut App,
+    sessions: Vec<crate::agent::types::SessionListEntry>,
+) {
+    app.recent_sessions = sessions
+        .into_iter()
+        .map(|entry| RecentSessionInfo {
+            session_id: entry.session_id,
+            cwd: entry.cwd,
+            title: entry.title,
+            updated_at: entry.updated_at,
+        })
+        .collect();
+    app.sync_welcome_recent_sessions();
+}
+
+fn handle_auth_required_event(app: &mut App, method_name: String, method_description: String) {
+    app.status = AppStatus::Ready;
+    app.resuming_session_id = None;
+    app.login_hint = Some(LoginHint { method_name, method_description });
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.queued_submission = None;
+}
+
+fn handle_connection_failed_event(app: &mut App, msg: &str) {
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.queued_submission = None;
+    app.resuming_session_id = None;
+    app.input.clear();
+    app.pending_submit = false;
+    app.status = AppStatus::Error;
+    push_connection_error_message(app, msg);
+}
+
+fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+    app.messages.push(ChatMessage {
+        role: MessageRole::System,
+        blocks: vec![MessageBlock::Text(
+            msg.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(msg),
+        )],
+        usage: None,
+    });
+    app.enforce_history_retention();
+    app.viewport.engage_auto_scroll();
+    app.status = AppStatus::Ready;
+    app.resuming_session_id = None;
+}
+
+fn handle_session_replaced_event(
+    app: &mut App,
+    session_id: model::SessionId,
+    cwd: String,
+    model_name: String,
+    mode: Option<super::ModeState>,
+    history_updates: &[model::SessionUpdate],
+) {
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.pending_cancel_origin = None;
+    app.queued_submission = None;
+    apply_session_cwd(app, cwd);
+    reset_for_new_session(app, session_id, model_name, mode);
+    if !history_updates.is_empty() {
+        load_resume_history(app, history_updates);
+    }
+    app.status = AppStatus::Ready;
+    app.resuming_session_id = None;
+}
+
+fn handle_update_available_event(app: &mut App, latest_version: &str, current_version: &str) {
+    app.update_check_hint = Some(format!(
+        "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
+    ));
+}
+
+fn handle_fatal_error_event(app: &mut App, error: AppError) {
+    app.exit_error = Some(error);
+    app.should_quit = true;
+    app.status = AppStatus::Error;
+    app.pending_submit = false;
 }
 
 fn push_interrupted_hint(app: &mut App) {
@@ -872,7 +917,6 @@ fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) 
     app.viewport.engage_auto_scroll();
 }
 
-#[allow(clippy::too_many_lines)]
 fn reset_for_new_session(
     app: &mut App,
     session_id: model::SessionId,
@@ -881,6 +925,21 @@ fn reset_for_new_session(
 ) {
     crate::agent::events::kill_all_terminals(&app.terminals);
 
+    reset_session_identity_state(app, session_id, model_name, mode);
+    reset_messages_for_new_session(app);
+    reset_input_state_for_new_session(app);
+    reset_interaction_state_for_new_session(app);
+    reset_render_state_for_new_session(app);
+    reset_cache_and_footer_state_for_new_session(app);
+    app.refresh_git_branch();
+}
+
+fn reset_session_identity_state(
+    app: &mut App,
+    session_id: model::SessionId,
+    model_name: String,
+    mode: Option<super::ModeState>,
+) {
     app.session_id = Some(session_id);
     app.model_name = model_name;
     app.mode = mode;
@@ -893,7 +952,9 @@ fn reset_for_new_session(
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.queued_submission = None;
+}
 
+fn reset_messages_for_new_session(app: &mut App) {
     app.messages.clear();
     app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.messages.push(ChatMessage::welcome_with_recent(
@@ -902,7 +963,9 @@ fn reset_for_new_session(
         &app.recent_sessions,
     ));
     app.viewport = super::ChatViewport::new();
+}
 
+fn reset_input_state_for_new_session(app: &mut App) {
     app.input.clear();
     app.pending_submit = false;
     app.drain_key_count = 0;
@@ -911,7 +974,9 @@ fn reset_for_new_session(
     app.pending_paste_session = None;
     app.active_paste_session = None;
     app.paste_burst_start = None;
+}
 
+fn reset_interaction_state_for_new_session(app: &mut App) {
     app.pending_permission_ids.clear();
     app.clear_tool_scope_tracking();
     app.tool_call_index.clear();
@@ -921,7 +986,9 @@ fn reset_for_new_session(
     app.todo_selected = 0;
     app.focus = super::FocusManager::default();
     app.available_commands.clear();
+}
 
+fn reset_render_state_for_new_session(app: &mut App) {
     app.selection = None;
     app.scrollbar_drag = None;
     app.rendered_chat_lines.clear();
@@ -931,14 +998,15 @@ fn reset_for_new_session(
     app.mention = None;
     app.slash = None;
     app.file_cache = None;
+}
 
+fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     app.cached_todo_compact = None;
     app.cached_header_line = None;
     app.cached_footer_line = None;
     app.terminal_tool_calls.clear();
     app.force_redraw = true;
     app.needs_redraw = true;
-    app.refresh_git_branch();
 }
 
 fn sdk_tool_name_from_meta(meta: Option<&serde_json::Value>) -> Option<&str> {
@@ -966,19 +1034,34 @@ fn resolve_sdk_tool_name(kind: model::ToolKind, meta: Option<&serde_json::Value>
         .map_or_else(|| fallback_sdk_tool_name(kind).to_owned(), str::to_owned)
 }
 
-#[allow(clippy::too_many_lines)]
 fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
+    log_tool_call_received(&tc);
+    let id_str = tc.tool_call_id.clone();
+    let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
+    let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name);
+    maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
+    update_subagent_scope_state(app, scope, tc.status, &id_str);
+
+    let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name);
+    upsert_tool_call_into_assistant_message(app, tool_info);
+
+    app.status = AppStatus::Running;
+    app.files_accessed += 1;
+}
+
+fn log_tool_call_received(tc: &model::ToolCall) {
+    let id_str = tc.tool_call_id.clone();
     let title = tc.title.clone();
     let kind = tc.kind;
-    let id_str = tc.tool_call_id.clone();
     tracing::debug!(
         "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={} has_raw_output={}",
         tc.status,
         tc.content.len(),
         tc.raw_output.is_some()
     );
+}
 
-    let sdk_tool_name = resolve_sdk_tool_name(kind, tc.meta.as_ref());
+fn register_tool_call_scope(app: &mut App, id: &str, sdk_tool_name: &str) -> ToolCallScope {
     let is_task = sdk_tool_name == "Task";
     let scope = if is_task {
         ToolCallScope::Task
@@ -987,52 +1070,61 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     } else {
         ToolCallScope::Subagent
     };
-    app.register_tool_call_scope(id_str.clone(), scope);
-
-    // Subagent children are never hidden -- they need to be visible so
-    // permission prompts render and the user can interact with them.
-    let hidden = false;
-
-    // Extract todos from TodoWrite tool calls
-    if sdk_tool_name == "TodoWrite" {
-        tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
-        if let Some(ref raw_input) = tc.raw_input {
-            if let Some(todos) = parse_todos_if_present(raw_input) {
-                tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
-                set_todos(app, todos);
-            } else {
-                tracing::debug!(
-                    "TodoWrite ToolCall raw_input has no todos array yet; preserving existing todos"
-                );
-            }
-        } else {
-            tracing::warn!("TodoWrite ToolCall has no raw_input");
-        }
-    }
-
-    // Track new Task tool calls as active subagents
+    app.register_tool_call_scope(id.to_owned(), scope);
     if is_task {
-        app.insert_active_task(id_str.clone());
+        app.insert_active_task(id.to_owned());
     }
+    scope
+}
 
-    match (scope, tc.status) {
+fn maybe_apply_todo_write_from_tool_call(
+    app: &mut App,
+    id: &str,
+    sdk_tool_name: &str,
+    raw_input: Option<&serde_json::Value>,
+) {
+    if sdk_tool_name != "TodoWrite" {
+        return;
+    }
+    tracing::info!("TodoWrite ToolCall detected: id={id}, raw_input={raw_input:?}");
+    if let Some(raw_input) = raw_input {
+        if let Some(todos) = parse_todos_if_present(raw_input) {
+            tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
+            set_todos(app, todos);
+        } else {
+            tracing::debug!(
+                "TodoWrite ToolCall raw_input has no todos array yet; preserving existing todos"
+            );
+        }
+    } else {
+        tracing::warn!("TodoWrite ToolCall has no raw_input");
+    }
+}
+
+fn update_subagent_scope_state(
+    app: &mut App,
+    scope: ToolCallScope,
+    status: model::ToolCallStatus,
+    id: &str,
+) {
+    match (scope, status) {
         (
             ToolCallScope::Subagent,
             model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending,
-        ) => {
-            app.mark_subagent_tool_started(&id_str);
-        }
+        ) => app.mark_subagent_tool_started(id),
         (
             ToolCallScope::Subagent,
             model::ToolCallStatus::Completed | model::ToolCallStatus::Failed,
-        ) => {
-            app.mark_subagent_tool_finished(&id_str, Instant::now());
-        }
-        _ => {
-            app.refresh_subagent_idle_since(Instant::now());
-        }
+        ) => app.mark_subagent_tool_finished(id, Instant::now()),
+        _ => app.refresh_subagent_idle_since(Instant::now()),
     }
+}
 
+fn build_tool_info_from_tool_call(
+    app: &App,
+    tc: model::ToolCall,
+    sdk_tool_name: String,
+) -> ToolCallInfo {
     let initial_execute_output = if super::is_execute_tool_name(&sdk_tool_name) {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
@@ -1040,14 +1132,14 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     };
 
     let mut tool_info = ToolCallInfo {
-        id: id_str,
+        id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         sdk_tool_name,
         raw_input: tc.raw_input,
         status: tc.status,
         content: tc.content,
         collapsed: app.tools_collapsed,
-        hidden,
+        hidden: false,
         terminal_id: None,
         terminal_command: None,
         terminal_output: None,
@@ -1069,8 +1161,10 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         tool_info.terminal_output = Some(output);
         tool_info.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
     }
+    tool_info
+}
 
-    // Attach to current assistant message -- update existing or add new
+fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: ToolCallInfo) {
     let msg_idx = app.messages.len().saturating_sub(1);
     let existing_pos = app.lookup_tool_call(&tool_info.id);
     let is_assistant =
@@ -1078,42 +1172,7 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
 
     if is_assistant {
         if let Some((mi, bi)) = existing_pos {
-            let mut layout_dirty = false;
-            if let Some(MessageBlock::ToolCall(existing)) =
-                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-            {
-                let existing = existing.as_mut();
-                let mut changed = false;
-                if existing.title != tool_info.title {
-                    existing.title.clone_from(&tool_info.title);
-                    changed = true;
-                }
-                if existing.status != tool_info.status {
-                    existing.status = tool_info.status;
-                    changed = true;
-                }
-                if existing.content != tool_info.content {
-                    existing.content.clone_from(&tool_info.content);
-                    changed = true;
-                }
-                if existing.sdk_tool_name != tool_info.sdk_tool_name {
-                    existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
-                    changed = true;
-                }
-                if existing.raw_input != tool_info.raw_input {
-                    existing.raw_input.clone_from(&tool_info.raw_input);
-                    changed = true;
-                }
-                if changed {
-                    existing.mark_tool_call_layout_dirty();
-                    layout_dirty = true;
-                } else {
-                    crate::perf::mark("tool_update_noop_skips");
-                }
-            }
-            if layout_dirty {
-                app.mark_message_layout_dirty(mi);
-            }
+            update_existing_tool_call(app, mi, bi, &tool_info);
         } else if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
@@ -1121,7 +1180,6 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
     } else {
-        // No assistant message yet - create one for this tool call
         let tc_id = tool_info.id.clone();
         let new_idx = app.messages.len();
         app.messages.push(ChatMessage {
@@ -1131,235 +1189,47 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         });
         app.index_tool_call(tc_id, new_idx, 0);
     }
+}
 
-    app.status = AppStatus::Running;
-    if !hidden {
-        app.files_accessed += 1;
+fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {
+    let mut layout_dirty = false;
+    if let Some(MessageBlock::ToolCall(existing)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let existing = existing.as_mut();
+        let mut changed = false;
+        changed |= sync_if_changed(&mut existing.title, &tool_info.title);
+        changed |= sync_if_changed(&mut existing.status, &tool_info.status);
+        changed |= sync_if_changed(&mut existing.content, &tool_info.content);
+        changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
+        changed |= sync_if_changed(&mut existing.raw_input, &tool_info.raw_input);
+        if changed {
+            existing.mark_tool_call_layout_dirty();
+            layout_dirty = true;
+        } else {
+            crate::perf::mark("tool_update_noop_skips");
+        }
+    }
+    if layout_dirty {
+        app.mark_message_layout_dirty(mi);
     }
 }
 
-#[allow(clippy::too_many_lines)]
+fn sync_if_changed<T: PartialEq + Clone>(dst: &mut T, src: &T) -> bool {
+    if dst == src {
+        return false;
+    }
+    dst.clone_from(src);
+    true
+}
+
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
     match update {
-        model::SessionUpdate::AgentMessageChunk(chunk) => {
-            if let model::ContentBlock::Text(text) = chunk.content {
-                // Text is actively streaming - suppress the "Thinking..." spinner
-                app.status = AppStatus::Running;
-                if text.text.is_empty() {
-                    return;
-                }
-
-                // Append to last text block in current assistant message, splitting
-                // the block into frozen chunks at prioritized boundaries.
-                if let Some(last) = app.messages.last_mut()
-                    && matches!(last.role, MessageRole::Assistant)
-                {
-                    append_agent_stream_text(&mut last.blocks, &text.text);
-                    return;
-                }
-
-                let mut blocks = Vec::new();
-                append_agent_stream_text(&mut blocks, &text.text);
-                app.messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    blocks,
-                    usage: None,
-                });
-            }
-        }
-        model::SessionUpdate::ToolCall(tc) => {
-            handle_tool_call(app, tc);
-        }
-        model::SessionUpdate::ToolCallUpdate(tcu) => {
-            // Find and update the tool call by id (in-place)
-            let id_str = tcu.tool_call_id.clone();
-            let tool_scope = app.tool_call_scope(&id_str);
-            let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
-            let has_raw_output = tcu.fields.raw_output.is_some();
-            tracing::debug!(
-                "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content} has_raw_output={has_raw_output}",
-                tcu.fields.title,
-                tcu.fields.status
-            );
-            if has_raw_output {
-                tracing::debug!(
-                    "ToolCallUpdate raw_output: id={id_str} {:?}",
-                    tcu.fields.raw_output
-                );
-            }
-            if matches!(tcu.fields.status, Some(model::ToolCallStatus::Failed))
-                && let Some(content_preview) = internal_failed_tool_content_preview(
-                    tcu.fields.content.as_deref(),
-                    tcu.fields.raw_output.as_ref(),
-                )
-            {
-                let sdk_tool_name = sdk_tool_name_from_meta(tcu.meta.as_ref());
-                tracing::debug!(
-                    tool_call_id = %id_str,
-                    title = ?tcu.fields.title,
-                    sdk_tool_name = ?sdk_tool_name,
-                    content_preview = %content_preview,
-                    "Internal failed ToolCallUpdate payload"
-                );
-            }
-
-            if let Some(status) = tcu.fields.status {
-                match tool_scope {
-                    Some(ToolCallScope::Subagent) => match status {
-                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
-                            app.mark_subagent_tool_started(&id_str);
-                        }
-                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
-                            app.mark_subagent_tool_finished(&id_str, Instant::now());
-                        }
-                    },
-                    Some(ToolCallScope::Task) => match status {
-                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
-                            app.refresh_subagent_idle_since(Instant::now());
-                        }
-                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
-                            app.remove_active_task(&id_str);
-                            app.refresh_subagent_idle_since(Instant::now());
-                        }
-                    },
-                    Some(ToolCallScope::MainAgent) | None => {}
-                }
-            }
-
-            let mut pending_todos: Option<Vec<super::TodoItem>> = None;
-            let mut layout_dirty_idx: Option<usize> = None;
-            if let Some((mi, bi)) = app.lookup_tool_call(&id_str) {
-                if let Some(MessageBlock::ToolCall(tc)) =
-                    app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-                {
-                    let tc = tc.as_mut();
-                    let mut changed = false;
-                    if let Some(status) = tcu.fields.status
-                        && tc.status != status
-                    {
-                        tc.status = status;
-                        changed = true;
-                    }
-                    if let Some(title) = &tcu.fields.title {
-                        let shortened = shorten_tool_title(title, &app.cwd_raw);
-                        if tc.title != shortened {
-                            tc.title = shortened;
-                            changed = true;
-                        }
-                    }
-                    if let Some(content) = tcu.fields.content {
-                        // Extract terminal_id and command from Terminal content blocks
-                        for cb in &content {
-                            if let model::ToolCallContent::Terminal(t) = cb {
-                                let tid = t.terminal_id.clone();
-                                if let Some(terminal) = app.terminals.borrow().get(&tid)
-                                    && tc.terminal_command.as_deref()
-                                        != Some(terminal.command.as_str())
-                                {
-                                    tc.terminal_command = Some(terminal.command.clone());
-                                    changed = true;
-                                }
-                                if tc.terminal_id.as_deref() != Some(tid.as_str()) {
-                                    tc.terminal_id = Some(tid.clone());
-                                    changed = true;
-                                }
-                                if !app
-                                    .terminal_tool_calls
-                                    .iter()
-                                    .any(|(id, m, b)| id == &tid && *m == mi && *b == bi)
-                                {
-                                    app.terminal_tool_calls.push((tid, mi, bi));
-                                }
-                            }
-                        }
-                        if tc.content != content {
-                            tc.content = content;
-                            changed = true;
-                        }
-                    }
-                    if let Some(raw_input) = tcu.fields.raw_input.as_ref()
-                        && tc.raw_input.as_ref() != Some(raw_input)
-                    {
-                        tc.raw_input = Some(raw_input.clone());
-                        changed = true;
-                    }
-                    // Keep updating Execute output from raw_output so long-running commands
-                    // can stream visible terminal text before completion.
-                    if tc.is_execute_tool()
-                        && let Some(raw_output) = tcu.fields.raw_output.as_ref()
-                        && let Some(output) = raw_output_to_terminal_text(raw_output)
-                        && tc.terminal_output.as_deref() != Some(output.as_str())
-                    {
-                        tc.terminal_output_len = output.len();
-                        tc.terminal_bytes_seen = output.len();
-                        tc.terminal_output = Some(output);
-                        tc.terminal_snapshot_mode =
-                            crate::app::TerminalSnapshotMode::ReplaceSnapshot;
-                        changed = true;
-                    }
-                    // Update sdk_tool_name from update meta when provided.
-                    if let Some(name) = sdk_tool_name_from_meta(tcu.meta.as_ref())
-                        && !name.trim().is_empty()
-                        && tc.sdk_tool_name != name
-                    {
-                        tc.sdk_tool_name = name.to_owned();
-                        changed = true;
-                    }
-                    // Update todos from TodoWrite raw_input updates
-                    if tc.sdk_tool_name == "TodoWrite" {
-                        tracing::info!(
-                            "TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}",
-                            tcu.fields.raw_input
-                        );
-                        if let Some(ref raw_input) = tcu.fields.raw_input {
-                            if let Some(todos) = parse_todos_if_present(raw_input) {
-                                tracing::info!(
-                                    "Parsed {} todos from ToolCallUpdate raw_input",
-                                    todos.len()
-                                );
-                                pending_todos = Some(todos);
-                            } else {
-                                tracing::debug!(
-                                    "TodoWrite ToolCallUpdate raw_input has no todos array yet; preserving existing todos"
-                                );
-                            }
-                        }
-                    }
-                    if matches!(
-                        tc.status,
-                        model::ToolCallStatus::Completed | model::ToolCallStatus::Failed
-                    ) && tc.collapsed != app.tools_collapsed
-                    {
-                        tc.collapsed = app.tools_collapsed;
-                        changed = true;
-                    }
-                    if changed {
-                        tc.mark_tool_call_layout_dirty();
-                        layout_dirty_idx = Some(mi);
-                    } else {
-                        crate::perf::mark("tool_update_noop_skips");
-                    }
-                }
-            } else {
-                tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
-            }
-            if let Some(mi) = layout_dirty_idx {
-                app.mark_message_layout_dirty(mi);
-            }
-            if let Some(todos) = pending_todos {
-                set_todos(app, todos);
-            }
-
-            // If all tool calls have completed/failed, flip back to Thinking
-            // (the turn is still active - TurnComplete hasn't arrived yet).
-            if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
-                app.status = AppStatus::Thinking;
-            }
-        }
-        model::SessionUpdate::UserMessageChunk(_) => {
-            // Our own message echoed back -- we already display it
-        }
+        model::SessionUpdate::AgentMessageChunk(chunk) => handle_agent_message_chunk(app, chunk),
+        model::SessionUpdate::ToolCall(tc) => handle_tool_call(app, tc),
+        model::SessionUpdate::ToolCallUpdate(tcu) => handle_tool_call_update_session(app, &tcu),
+        model::SessionUpdate::UserMessageChunk(_) => {}
         model::SessionUpdate::AgentThoughtChunk(chunk) => {
             tracing::debug!("Agent thought: {:?}", chunk);
             app.status = AppStatus::Thinking;
@@ -1391,21 +1261,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             tracing::debug!("Config update: {:?}", config);
         }
-        model::SessionUpdate::UsageUpdate(usage) => {
-            let message_usage = update_session_usage(app, &usage);
-            attach_usage_to_latest_assistant_message(app, message_usage);
-            app.cached_footer_line = None;
-            tracing::debug!(
-                "UsageUpdate: in={:?} out={:?} cache_read={:?} cache_write={:?} total_cost={:?} turn_cost={:?} ctx_window={:?}",
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.cache_read_tokens,
-                usage.cache_write_tokens,
-                usage.total_cost_usd,
-                usage.turn_cost_usd,
-                usage.context_window
-            );
-        }
+        model::SessionUpdate::UsageUpdate(usage) => handle_usage_update(app, &usage),
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
@@ -1414,29 +1270,339 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             tracing::debug!("SessionStatusUpdate: compacting={}", app.is_compacting);
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
-            app.is_compacting = true;
-            app.session_usage.last_compaction_trigger = Some(boundary.trigger);
-            app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
-            app.cached_footer_line = None;
-            tracing::debug!(
-                "CompactionBoundary: trigger={:?} pre_tokens={}",
-                boundary.trigger,
-                boundary.pre_tokens
-            );
-            if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
-                let text = "Auto-compacting context...";
-                app.messages.push(ChatMessage {
-                    role: MessageRole::System,
-                    blocks: vec![MessageBlock::Text(
-                        text.to_owned(),
-                        BlockCache::default(),
-                        IncrementalMarkdown::from_complete(text),
-                    )],
-                    usage: None,
-                });
-                app.viewport.engage_auto_scroll();
+            handle_compaction_boundary_update(app, boundary);
+        }
+    }
+}
+
+fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChunk) {
+    let model::ContentBlock::Text(text) = chunk.content else {
+        return;
+    };
+
+    app.status = AppStatus::Running;
+    if text.text.is_empty() {
+        return;
+    }
+    if let Some(last) = app.messages.last_mut()
+        && matches!(last.role, MessageRole::Assistant)
+    {
+        append_agent_stream_text(&mut last.blocks, &text.text);
+        return;
+    }
+
+    let mut blocks = Vec::new();
+    append_agent_stream_text(&mut blocks, &text.text);
+    app.messages.push(ChatMessage { role: MessageRole::Assistant, blocks, usage: None });
+}
+
+fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
+    let id_str = tcu.tool_call_id.clone();
+    let tool_scope = app.tool_call_scope(&id_str);
+    log_tool_call_update_received(&id_str, tcu);
+    maybe_log_internal_failed_tool_update(&id_str, tcu);
+    apply_tool_scope_status_update(app, &id_str, tool_scope, tcu.fields.status);
+
+    let update_outcome = apply_tool_call_update_to_indexed_block(app, &id_str, tcu);
+    if let Some(mi) = update_outcome.layout_dirty_idx {
+        app.mark_message_layout_dirty(mi);
+    }
+    if let Some(todos) = update_outcome.pending_todos {
+        set_todos(app, todos);
+    }
+    if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
+        app.status = AppStatus::Thinking;
+    }
+}
+
+fn log_tool_call_update_received(id_str: &str, tcu: &model::ToolCallUpdate) {
+    let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
+    let has_raw_output = tcu.fields.raw_output.is_some();
+    tracing::debug!(
+        "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content} has_raw_output={has_raw_output}",
+        tcu.fields.title,
+        tcu.fields.status
+    );
+    if has_raw_output {
+        tracing::debug!("ToolCallUpdate raw_output: id={id_str} {:?}", tcu.fields.raw_output);
+    }
+}
+
+fn maybe_log_internal_failed_tool_update(id_str: &str, tcu: &model::ToolCallUpdate) {
+    if matches!(tcu.fields.status, Some(model::ToolCallStatus::Failed))
+        && let Some(content_preview) = internal_failed_tool_content_preview(
+            tcu.fields.content.as_deref(),
+            tcu.fields.raw_output.as_ref(),
+        )
+    {
+        let sdk_tool_name = sdk_tool_name_from_meta(tcu.meta.as_ref());
+        tracing::debug!(
+            tool_call_id = %id_str,
+            title = ?tcu.fields.title,
+            sdk_tool_name = ?sdk_tool_name,
+            content_preview = %content_preview,
+            "Internal failed ToolCallUpdate payload"
+        );
+    }
+}
+
+fn apply_tool_scope_status_update(
+    app: &mut App,
+    id_str: &str,
+    tool_scope: Option<ToolCallScope>,
+    status: Option<model::ToolCallStatus>,
+) {
+    let Some(status) = status else {
+        return;
+    };
+    match tool_scope {
+        Some(ToolCallScope::Subagent) => match status {
+            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+                app.mark_subagent_tool_started(id_str);
+            }
+            model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
+                app.mark_subagent_tool_finished(id_str, Instant::now());
+            }
+        },
+        Some(ToolCallScope::Task) => match status {
+            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+                app.refresh_subagent_idle_since(Instant::now());
+            }
+            model::ToolCallStatus::Completed | model::ToolCallStatus::Failed => {
+                app.remove_active_task(id_str);
+                app.refresh_subagent_idle_since(Instant::now());
+            }
+        },
+        Some(ToolCallScope::MainAgent) | None => {}
+    }
+}
+
+struct ToolCallUpdateApplyOutcome {
+    layout_dirty_idx: Option<usize>,
+    pending_todos: Option<Vec<super::TodoItem>>,
+}
+
+fn apply_tool_call_update_to_indexed_block(
+    app: &mut App,
+    id_str: &str,
+    tcu: &model::ToolCallUpdate,
+) -> ToolCallUpdateApplyOutcome {
+    let mut out = ToolCallUpdateApplyOutcome { layout_dirty_idx: None, pending_todos: None };
+    let Some((mi, bi)) = app.lookup_tool_call(id_str) else {
+        tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
+        return out;
+    };
+    let terminals = std::rc::Rc::clone(&app.terminals);
+    let terminal_tool_calls = &mut app.terminal_tool_calls;
+
+    if let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let tc = tc.as_mut();
+        let mut changed = false;
+        changed |= apply_tool_call_status_update(tc, tcu.fields.status);
+        changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
+        changed |= apply_tool_call_content_update(
+            tc,
+            mi,
+            bi,
+            tcu.fields.content.as_deref(),
+            &terminals,
+            terminal_tool_calls,
+        );
+        changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+        changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
+        changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
+        out.pending_todos =
+            extract_todo_updates_from_tool_call_update(id_str, tc, tcu.fields.raw_input.as_ref());
+        changed |= sync_tool_collapse_state(tc, app.tools_collapsed);
+
+        if changed {
+            tc.mark_tool_call_layout_dirty();
+            out.layout_dirty_idx = Some(mi);
+        } else {
+            crate::perf::mark("tool_update_noop_skips");
+        }
+    }
+
+    out
+}
+
+fn apply_tool_call_status_update(
+    tc: &mut ToolCallInfo,
+    status: Option<model::ToolCallStatus>,
+) -> bool {
+    if let Some(status) = status
+        && tc.status != status
+    {
+        tc.status = status;
+        return true;
+    }
+    false
+}
+
+fn apply_tool_call_title_update(tc: &mut ToolCallInfo, title: Option<&str>, cwd_raw: &str) -> bool {
+    let Some(title) = title else {
+        return false;
+    };
+    let shortened = shorten_tool_title(title, cwd_raw);
+    if tc.title == shortened {
+        return false;
+    }
+    tc.title = shortened;
+    true
+}
+
+fn apply_tool_call_content_update(
+    tc: &mut ToolCallInfo,
+    mi: usize,
+    bi: usize,
+    content: Option<&[model::ToolCallContent]>,
+    terminals: &crate::agent::events::TerminalMap,
+    terminal_tool_calls: &mut Vec<(String, usize, usize)>,
+) -> bool {
+    let Some(content) = content else {
+        return false;
+    };
+    for cb in content {
+        if let model::ToolCallContent::Terminal(t) = cb {
+            let tid = t.terminal_id.clone();
+            if let Some(terminal) = terminals.borrow().get(&tid)
+                && tc.terminal_command.as_deref() != Some(terminal.command.as_str())
+            {
+                tc.terminal_command = Some(terminal.command.clone());
+            }
+            if tc.terminal_id.as_deref() != Some(tid.as_str()) {
+                tc.terminal_id = Some(tid.clone());
+            }
+            if !terminal_tool_calls.iter().any(|(id, m, b)| id == &tid && *m == mi && *b == bi) {
+                terminal_tool_calls.push((tid, mi, bi));
             }
         }
+    }
+    if tc.content == content {
+        return false;
+    }
+    tc.content = content.to_vec();
+    true
+}
+
+fn apply_tool_call_raw_input_update(
+    tc: &mut ToolCallInfo,
+    raw_input: Option<&serde_json::Value>,
+) -> bool {
+    let Some(raw_input) = raw_input else {
+        return false;
+    };
+    if tc.raw_input.as_ref() == Some(raw_input) {
+        return false;
+    }
+    tc.raw_input = Some(raw_input.clone());
+    true
+}
+
+fn apply_tool_call_raw_output_update(
+    tc: &mut ToolCallInfo,
+    raw_output: Option<&serde_json::Value>,
+) -> bool {
+    if !tc.is_execute_tool() {
+        return false;
+    }
+    let Some(raw_output) = raw_output else {
+        return false;
+    };
+    let Some(output) = raw_output_to_terminal_text(raw_output) else {
+        return false;
+    };
+    if tc.terminal_output.as_deref() == Some(output.as_str()) {
+        return false;
+    }
+    tc.terminal_output_len = output.len();
+    tc.terminal_bytes_seen = output.len();
+    tc.terminal_output = Some(output);
+    tc.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
+    true
+}
+
+fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
+    let Some(name) = sdk_tool_name_from_meta(meta) else {
+        return false;
+    };
+    if name.trim().is_empty() || tc.sdk_tool_name == name {
+        return false;
+    }
+    name.clone_into(&mut tc.sdk_tool_name);
+    true
+}
+
+fn extract_todo_updates_from_tool_call_update(
+    id_str: &str,
+    tc: &ToolCallInfo,
+    raw_input: Option<&serde_json::Value>,
+) -> Option<Vec<super::TodoItem>> {
+    if tc.sdk_tool_name != "TodoWrite" {
+        return None;
+    }
+    tracing::info!("TodoWrite ToolCallUpdate: id={id_str}, raw_input={raw_input:?}");
+    let raw_input = raw_input?;
+    if let Some(todos) = parse_todos_if_present(raw_input) {
+        tracing::info!("Parsed {} todos from ToolCallUpdate raw_input", todos.len());
+        return Some(todos);
+    }
+    tracing::debug!(
+        "TodoWrite ToolCallUpdate raw_input has no todos array yet; preserving existing todos"
+    );
+    None
+}
+
+fn sync_tool_collapse_state(tc: &mut ToolCallInfo, collapsed: bool) -> bool {
+    if !matches!(tc.status, model::ToolCallStatus::Completed | model::ToolCallStatus::Failed)
+        || tc.collapsed == collapsed
+    {
+        return false;
+    }
+    tc.collapsed = collapsed;
+    true
+}
+
+fn handle_usage_update(app: &mut App, usage: &model::UsageUpdate) {
+    let message_usage = update_session_usage(app, usage);
+    attach_usage_to_latest_assistant_message(app, message_usage);
+    app.cached_footer_line = None;
+    tracing::debug!(
+        "UsageUpdate: in={:?} out={:?} cache_read={:?} cache_write={:?} total_cost={:?} turn_cost={:?} ctx_window={:?}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        usage.total_cost_usd,
+        usage.turn_cost_usd,
+        usage.context_window
+    );
+}
+
+fn handle_compaction_boundary_update(app: &mut App, boundary: model::CompactionBoundary) {
+    app.is_compacting = true;
+    app.session_usage.last_compaction_trigger = Some(boundary.trigger);
+    app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    app.cached_footer_line = None;
+    tracing::debug!(
+        "CompactionBoundary: trigger={:?} pre_tokens={}",
+        boundary.trigger,
+        boundary.pre_tokens
+    );
+    if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
+        let text = "Auto-compacting context...";
+        app.messages.push(ChatMessage {
+            role: MessageRole::System,
+            blocks: vec![MessageBlock::Text(
+                text.to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete(text),
+            )],
+            usage: None,
+        });
+        app.viewport.engage_auto_scroll();
     }
 }
 

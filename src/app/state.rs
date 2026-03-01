@@ -1106,12 +1106,12 @@ impl App {
 
     #[must_use]
     fn focus_context(&self) -> FocusContext {
-        FocusContext::with_help(
+        FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
             self.mention.is_some() || self.slash.is_some(),
             !self.pending_permission_ids.is_empty(),
-            self.is_help_active(),
         )
+        .with_help(self.is_help_active())
     }
 }
 

@@ -757,179 +757,183 @@ pub fn confirm_selection(app: &mut App) {
 ///
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
 /// Returns `false` when the input should continue through the normal prompt path.
-#[allow(clippy::too_many_lines)]
 pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     let Some(parsed) = parse(text) else {
         return false;
     };
 
     match parsed.name {
-        "/cancel" => {
-            if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-                push_system_message(app, "Cannot cancel: no active turn.");
-                return true;
-            }
-            if let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual) {
-                push_system_message(app, format!("Failed to run /cancel: {message}"));
-            }
-            true
-        }
-        "/compact" => {
-            if !parsed.args.is_empty() {
-                push_system_message(app, "Usage: /compact");
-                return true;
-            }
-
-            if require_active_session(
-                app,
-                "Cannot compact: not connected yet.",
-                "Cannot compact: no active session.",
-            )
-            .is_none()
-            {
-                return true;
-            }
-
-            // Forward `/compact` through the bridge via the normal prompt path, then clear
-            // local history once the turn completes.
-            app.pending_compact_clear = true;
-            app.is_compacting = true;
-            false
-        }
-        "/mode" => {
-            let [requested_mode_arg] = parsed.args.as_slice() else {
-                push_system_message(app, "Usage: /mode <id>");
-                return true;
-            };
-            let requested_mode = *requested_mode_arg;
-            let requested_mode_owned = requested_mode.to_owned();
-
-            let Some((conn, sid)) = require_active_session(
-                app,
-                "Cannot switch mode: not connected yet.",
-                "Cannot switch mode: no active session.",
-            ) else {
-                return true;
-            };
-
-            if let Some(ref mode) = app.mode
-                && !mode.available_modes.iter().any(|m| m.id == requested_mode)
-            {
-                push_system_message(app, format!("Unknown mode: {requested_mode}"));
-                return true;
-            }
-
-            if let Some(ref mut mode_state) = app.mode
-                && let Some(info) =
-                    mode_state.available_modes.iter().find(|m| m.id == requested_mode)
-            {
-                mode_state.current_mode_id = info.id.clone();
-                mode_state.current_mode_name = info.name.clone();
-                app.cached_footer_line = None;
-            }
-
-            let tx = app.event_tx.clone();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = conn.set_mode(sid.to_string(), requested_mode_owned) {
-                    let _ = tx
-                        .send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
-                }
-            });
-            true
-        }
-        "/model" => {
-            let model_name = parsed.args.join(" ");
-            if model_name.trim().is_empty() {
-                push_system_message(app, "Usage: /model <name>");
-                return true;
-            }
-
-            let Some((conn, sid)) = require_active_session(
-                app,
-                "Cannot switch model: not connected yet.",
-                "Cannot switch model: no active session.",
-            ) else {
-                return true;
-            };
-
-            app.model_name.clone_from(&model_name);
-            app.cached_header_line = None;
-
-            let tx = app.event_tx.clone();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = conn.set_model(sid.to_string(), model_name) {
-                    let _ = tx
-                        .send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
-                }
-            });
-            true
-        }
-        "/new-session" => {
-            if !parsed.args.is_empty() {
-                push_system_message(app, "Usage: /new-session");
-                return true;
-            }
-
-            push_user_message(app, "/new-session");
-
-            let Some(conn) =
-                require_connection(app, "Cannot create new session: not connected yet.")
-            else {
-                return true;
-            };
-            let tx = app.event_tx.clone();
-            let cwd = app.cwd_raw.clone();
-            let model_override = Some(app.model_name.clone());
-            let yolo = false;
-            tokio::task::spawn_local(async move {
-                if let Err(e) = conn.new_session(cwd, yolo, model_override) {
-                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                        "Failed to run /new-session: {e}"
-                    )));
-                }
-            });
-            true
-        }
-        "/resume" => {
-            let [session_id_arg] = parsed.args.as_slice() else {
-                push_system_message(app, "Usage: /resume <session_id>");
-                return true;
-            };
-            let session_id = (*session_id_arg).trim();
-            if session_id.is_empty() {
-                push_system_message(app, "Usage: /resume <session_id>");
-                return true;
-            }
-
-            push_user_message(app, format!("/resume {session_id}"));
-
-            let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.")
-            else {
-                return true;
-            };
-            app.status = AppStatus::Resuming;
-            app.resuming_session_id = Some(session_id.to_owned());
-            let tx = app.event_tx.clone();
-            let session_id = session_id.to_owned();
-            tokio::task::spawn_local(async move {
-                if let Err(e) = conn.load_session(session_id) {
-                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                        "Failed to run /resume: {e}"
-                    )));
-                }
-            });
-            true
-        }
-        _ => {
-            if is_supported_command(app, parsed.name) {
-                // Adapter-advertised slash command: let normal prompt path send it.
-                false
-            } else {
-                push_system_message(app, format!("{} is not yet supported", parsed.name));
-                true
-            }
-        }
+        "/cancel" => handle_cancel_submit(app),
+        "/compact" => handle_compact_submit(app, &parsed.args),
+        "/mode" => handle_mode_submit(app, &parsed.args),
+        "/model" => handle_model_submit(app, &parsed.args),
+        "/new-session" => handle_new_session_submit(app, &parsed.args),
+        "/resume" => handle_resume_submit(app, &parsed.args),
+        _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+fn handle_cancel_submit(app: &mut App) -> bool {
+    if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+        push_system_message(app, "Cannot cancel: no active turn.");
+        return true;
+    }
+    if let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual) {
+        push_system_message(app, format!("Failed to run /cancel: {message}"));
+    }
+    true
+}
+
+fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /compact");
+        return true;
+    }
+    if require_active_session(
+        app,
+        "Cannot compact: not connected yet.",
+        "Cannot compact: no active session.",
+    )
+    .is_none()
+    {
+        return true;
+    }
+
+    app.pending_compact_clear = true;
+    app.is_compacting = true;
+    false
+}
+
+fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
+    let [requested_mode_arg] = args else {
+        push_system_message(app, "Usage: /mode <id>");
+        return true;
+    };
+    let requested_mode = requested_mode_arg.trim();
+    if requested_mode.is_empty() {
+        push_system_message(app, "Usage: /mode <id>");
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch mode: not connected yet.",
+        "Cannot switch mode: no active session.",
+    ) else {
+        return true;
+    };
+
+    if let Some(ref mode) = app.mode
+        && !mode.available_modes.iter().any(|m| m.id == requested_mode)
+    {
+        push_system_message(app, format!("Unknown mode: {requested_mode}"));
+        return true;
+    }
+
+    if let Some(ref mut mode_state) = app.mode
+        && let Some(info) = mode_state.available_modes.iter().find(|m| m.id == requested_mode)
+    {
+        mode_state.current_mode_id = info.id.clone();
+        mode_state.current_mode_name = info.name.clone();
+        app.cached_footer_line = None;
+    }
+
+    let tx = app.event_tx.clone();
+    let requested_mode_owned = requested_mode.to_owned();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.set_mode(sid.to_string(), requested_mode_owned) {
+            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
+        }
+    });
+    true
+}
+
+fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
+    let model_name = args.join(" ");
+    if model_name.trim().is_empty() {
+        push_system_message(app, "Usage: /model <name>");
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch model: not connected yet.",
+        "Cannot switch model: no active session.",
+    ) else {
+        return true;
+    };
+
+    app.model_name.clone_from(&model_name);
+    app.cached_header_line = None;
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.set_model(sid.to_string(), model_name) {
+            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
+        }
+    });
+    true
+}
+
+fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /new-session");
+        return true;
+    }
+
+    push_user_message(app, "/new-session");
+
+    let Some(conn) = require_connection(app, "Cannot create new session: not connected yet.")
+    else {
+        return true;
+    };
+    let tx = app.event_tx.clone();
+    let cwd = app.cwd_raw.clone();
+    let model_override = Some(app.model_name.clone());
+    let yolo = false;
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.new_session(cwd, yolo, model_override) {
+            let _ =
+                tx.send(ClientEvent::SlashCommandError(format!("Failed to run /new-session: {e}")));
+        }
+    });
+    true
+}
+
+fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
+    let [session_id_arg] = args else {
+        push_system_message(app, "Usage: /resume <session_id>");
+        return true;
+    };
+    let session_id = session_id_arg.trim();
+    if session_id.is_empty() {
+        push_system_message(app, "Usage: /resume <session_id>");
+        return true;
+    }
+
+    push_user_message(app, format!("/resume {session_id}"));
+    let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
+        return true;
+    };
+
+    app.status = AppStatus::Resuming;
+    app.resuming_session_id = Some(session_id.to_owned());
+    let tx = app.event_tx.clone();
+    let session_id = session_id.to_owned();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.load_session(session_id) {
+            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
+        }
+    });
+    true
+}
+
+fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
+    if is_supported_command(app, command_name) {
+        return false;
+    }
+    push_system_message(app, format!("{command_name} is not yet supported"));
+    true
 }
 
 #[cfg(test)]
