@@ -107,6 +107,20 @@ export interface PermissionRequest {
   options: PermissionOption[];
 }
 
+export type ElicitationMode = "form" | "url";
+
+export type ElicitationAction = "accept" | "decline" | "cancel";
+
+export interface ElicitationRequest {
+  request_id: string;
+  server_name: string;
+  message: string;
+  mode: ElicitationMode;
+  url?: string;
+  elicitation_id?: string;
+  requested_schema?: Record<string, Json>;
+}
+
 export type PermissionOutcome =
   | { outcome: "selected"; option_id: string }
   | { outcome: "cancelled" };
@@ -168,6 +182,13 @@ export type BridgeCommand =
       outcome: PermissionOutcome;
     }
   | {
+      command: "elicitation_response";
+      session_id: string;
+      elicitation_request_id: string;
+      action: ElicitationAction;
+      content?: Record<string, Json>;
+    }
+  | {
       command: "shutdown";
     };
 
@@ -205,6 +226,7 @@ export type BridgeEvent =
   | { event: "connection_failed"; message: string }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
+  | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
   | { event: "turn_complete"; session_id: string }
   | {
       event: "turn_error";

@@ -38,6 +38,7 @@ export function normalizeToolKind(name: string): string {
     case "TodoWrite":
       return "other";
     case "Task":
+    case "Agent":
       return "think";
     case "ExitPlanMode":
       return "switch_mode";

@@ -1065,7 +1065,7 @@ fn log_tool_call_received(tc: &model::ToolCall) {
 }
 
 fn register_tool_call_scope(app: &mut App, id: &str, sdk_tool_name: &str) -> ToolCallScope {
-    let is_task = sdk_tool_name == "Task";
+    let is_task = matches!(sdk_tool_name, "Task" | "Agent");
     let scope = if is_task {
         ToolCallScope::Task
     } else if app.active_task_ids.is_empty() {
@@ -1866,6 +1866,22 @@ mod tests {
         let result =
             shorten_tool_title("Read /home/user/project/src/main.rs", "/home/user/project");
         assert_eq!(result, "Read src/main.rs");
+    }
+
+    #[test]
+    fn register_tool_call_scope_treats_agent_as_task_scope() {
+        let mut app = make_test_app();
+        let scope = register_tool_call_scope(&mut app, "tool-agent", "Agent");
+        assert_eq!(scope, ToolCallScope::Task);
+        assert!(app.active_task_ids.contains("tool-agent"));
+    }
+
+    #[test]
+    fn register_tool_call_scope_treats_task_as_task_scope() {
+        let mut app = make_test_app();
+        let scope = register_tool_call_scope(&mut app, "tool-task", "Task");
+        assert_eq!(scope, ToolCallScope::Task);
+        assert!(app.active_task_ids.contains("tool-task"));
     }
 
     #[test]

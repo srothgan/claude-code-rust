@@ -64,6 +64,8 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Bash"), "execute");
   assert.equal(normalizeToolKind("Delete"), "delete");
   assert.equal(normalizeToolKind("Move"), "move");
+  assert.equal(normalizeToolKind("Task"), "think");
+  assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("TodoWrite"), "other");
 });
@@ -433,7 +435,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.52");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.63");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -545,6 +547,44 @@ test("extractSessionHistoryUpdatesFromJsonl parses nested progress message recor
       cache_write_tokens: 3,
     });
   });
+});
+
+test("extractSessionHistoryUpdatesFromJsonl includes local command output as assistant text", () => {
+  withTempJsonl(
+    [
+      {
+        type: "system",
+        subtype: "local_command_output",
+        content: "/cost total: $0.01",
+      },
+      {
+        type: "progress",
+        data: {
+          message: {
+            type: "system",
+            subtype: "local_command_output",
+            content: "Voice mode enabled.",
+          },
+        },
+      },
+    ],
+    (filePath) => {
+      const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
+      assert.deepEqual(
+        updates,
+        [
+          {
+            type: "agent_message_chunk",
+            content: { type: "text", text: "/cost total: $0.01" },
+          },
+          {
+            type: "agent_message_chunk",
+            content: { type: "text", text: "Voice mode enabled." },
+          },
+        ],
+      );
+    },
+  );
 });
 
 test("extractSessionHistoryUpdatesFromJsonl ignores invalid records", () => {

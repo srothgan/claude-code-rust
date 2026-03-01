@@ -253,6 +253,21 @@ function persistedMessageCandidates(record: Record<string, unknown>): Record<str
   return candidates;
 }
 
+function persistedSystemCandidates(record: Record<string, unknown>): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [];
+
+  if (record.type === "system") {
+    candidates.push(record);
+  }
+
+  const nested = asRecordOrNull(asRecordOrNull(record.data)?.message);
+  if (nested?.type === "system") {
+    candidates.push(nested);
+  }
+
+  return candidates;
+}
+
 function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
   if (!text.trim()) {
     return;
@@ -356,6 +371,16 @@ export function extractSessionHistoryUpdatesFromJsonl(filePath: string): Session
     if (!record) {
       continue;
     }
+
+    for (const systemMessage of persistedSystemCandidates(record)) {
+      const subtype = typeof systemMessage.subtype === "string" ? systemMessage.subtype : "";
+      if (subtype !== "local_command_output") {
+        continue;
+      }
+      const content = typeof systemMessage.content === "string" ? systemMessage.content : "";
+      pushResumeTextChunk(updates, "assistant", content);
+    }
+
     for (const message of persistedMessageCandidates(record)) {
       const role = message.role;
       if (role !== "user" && role !== "assistant") {

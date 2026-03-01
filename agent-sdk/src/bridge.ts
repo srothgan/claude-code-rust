@@ -103,7 +103,7 @@ type SessionState = {
 };
 
 const sessions = new Map<string, SessionState>();
-const EXPECTED_AGENT_SDK_VERSION = "0.2.52";
+const EXPECTED_AGENT_SDK_VERSION = "0.2.63";
 const require = createRequire(import.meta.url);
 const permissionDebugEnabled =
   process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || process.env.CLAUDE_RS_SDK_DEBUG === "1";
@@ -489,7 +489,7 @@ function handleTaskSystemMessage(
     return;
   }
 
-  const toolCall = ensureToolCallVisible(session, toolUseId, "Task", {});
+  const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
   if (toolCall.status === "pending") {
     toolCall.status = "in_progress";
     emitSessionUpdate(session.sessionId, {
@@ -880,6 +880,23 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
       }
       return;
     }
+
+    if (subtype === "local_command_output") {
+      const content = typeof msg.content === "string" ? msg.content : "";
+      if (content.trim().length > 0) {
+        emitSessionUpdate(session.sessionId, {
+          type: "agent_message_chunk",
+          content: { type: "text", text: content },
+        });
+      }
+      return;
+    }
+
+    if (subtype === "elicitation_complete") {
+      // Compatibility no-op for now; full elicitation UX is a later migration step.
+      return;
+    }
+
     handleTaskSystemMessage(session, subtype, msg);
     return;
   }

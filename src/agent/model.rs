@@ -525,6 +525,74 @@ pub enum SessionUpdate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ElicitationMode {
+    Form,
+    Url,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationRequest {
+    pub session_id: SessionId,
+    pub request_id: String,
+    pub server_name: String,
+    pub message: String,
+    pub mode: ElicitationMode,
+    pub url: Option<String>,
+    pub elicitation_id: Option<String>,
+    pub requested_schema: Option<serde_json::Value>,
+}
+
+impl ElicitationRequest {
+    #[must_use]
+    pub fn new(
+        session_id: impl Into<SessionId>,
+        request_id: impl Into<String>,
+        server_name: impl Into<String>,
+        message: impl Into<String>,
+        mode: ElicitationMode,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            server_name: server_name.into(),
+            message: message.into(),
+            mode,
+            url: None,
+            elicitation_id: None,
+            requested_schema: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationResponse {
+    pub session_id: SessionId,
+    pub request_id: String,
+    pub action: ElicitationAction,
+    pub content: Option<serde_json::Value>,
+}
+
+impl ElicitationResponse {
+    #[must_use]
+    pub fn new(
+        session_id: impl Into<SessionId>,
+        request_id: impl Into<String>,
+        action: ElicitationAction,
+    ) -> Self {
+        Self { session_id: session_id.into(), request_id: request_id.into(), action, content: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PermissionOptionKind {
     AllowOnce,
     AllowSession,

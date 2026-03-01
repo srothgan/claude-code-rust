@@ -259,12 +259,12 @@ pub struct App {
     /// Session-level default for tool call collapsed state.
     /// Toggled by Ctrl+O - new tool calls inherit this value.
     pub tools_collapsed: bool,
-    /// IDs of Task tool calls currently `InProgress` -- their children get hidden.
+    /// IDs of Task/Agent tool calls currently `InProgress` -- their children get hidden.
     /// Use `insert_active_task()`, `remove_active_task()`.
     pub active_task_ids: HashSet<String>,
     /// Tool scope keyed by tool call ID; used to distinguish main-agent from subagent tools.
     pub tool_call_scopes: HashMap<String, ToolCallScope>,
-    /// IDs of non-Task subagent tool calls currently `InProgress`/`Pending`.
+    /// IDs of non Task/Agent subagent tool calls currently `InProgress`/`Pending`.
     pub active_subagent_tool_ids: HashSet<String>,
     /// Timestamp when subagent entered an idle gap (no active child tool calls).
     pub subagent_idle_since: Option<Instant>,
@@ -442,12 +442,12 @@ impl App {
         self.mark_message_layout_dirty(0);
     }
 
-    /// Track a Task tool call as active (in-progress subagent).
+    /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
         self.active_task_ids.insert(id);
     }
 
-    /// Remove a Task tool call from the active set (completed/failed).
+    /// Remove a Task/Agent tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
         self.active_task_ids.remove(id);
     }
