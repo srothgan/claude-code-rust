@@ -527,7 +527,7 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     assert_eq!(tc.id, "tc-err");
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
-    assert!(matches!(app.messages[1].role, MessageRole::System));
+    assert!(matches!(app.messages[1].role, MessageRole::System(_)));
     let Some(MessageBlock::Text(text, ..)) = app.messages[1].blocks.first() else {
         panic!("expected system error text block");
     };

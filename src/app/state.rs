@@ -351,6 +351,8 @@ pub struct App {
     pub session_usage: SessionUsageState,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
+    /// Latest rate-limit telemetry from the SDK.
+    pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
 
@@ -569,7 +571,7 @@ impl App {
 
     #[must_use]
     fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
-        if !matches!(msg.role, MessageRole::System) {
+        if !matches!(msg.role, MessageRole::System(_)) {
             return false;
         }
         let Some(MessageBlock::Text(text, _, _)) = msg.blocks.first() else {
@@ -788,7 +790,7 @@ impl App {
         self.messages.insert(
             insert_idx,
             ChatMessage {
-                role: MessageRole::System,
+                role: MessageRole::System(None),
                 blocks: vec![MessageBlock::Text(
                     marker_text.clone(),
                     BlockCache::default(),
@@ -1050,6 +1052,7 @@ impl App {
             update_check_hint: None,
             session_usage: SessionUsageState::default(),
             fast_mode_state: model::FastModeState::Off,
+            last_rate_limit_update: None,
             is_compacting: false,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
@@ -1696,8 +1699,15 @@ pub enum MessageBlock {
 pub enum MessageRole {
     User,
     Assistant,
-    System,
+    System(Option<SystemSeverity>),
     Welcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemSeverity {
+    Info,
+    Warning,
+    Error,
 }
 
 pub struct WelcomeBlock {

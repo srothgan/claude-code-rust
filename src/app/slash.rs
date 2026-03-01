@@ -176,7 +176,7 @@ fn detect_slash_at_cursor(
 fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.messages.push(ChatMessage {
-        role: MessageRole::System,
+        role: MessageRole::System(None),
         blocks: vec![MessageBlock::Text(
             text.clone(),
             BlockCache::default(),
@@ -775,7 +775,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 
 fn handle_cancel_submit(app: &mut App) -> bool {
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-        push_system_message(app, "Cannot cancel: no active turn.");
         return true;
     }
     if let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual) {
@@ -961,7 +960,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected system message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(_)));
     }
 
     #[test]
@@ -1184,7 +1183,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected system message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(_)));
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };
@@ -1223,7 +1222,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected system usage message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(_)));
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };
@@ -1239,7 +1238,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected system usage message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(_)));
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };

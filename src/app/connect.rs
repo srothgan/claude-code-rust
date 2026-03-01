@@ -146,6 +146,7 @@ pub fn create_app(cli: &Cli) -> App {
         update_check_hint: None,
         session_usage: super::SessionUsageState::default(),
         fast_mode_state: model::FastModeState::Off,
+        last_rate_limit_update: None,
         is_compacting: false,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
@@ -623,6 +624,47 @@ fn spawn_permission_response_forwarder(
     });
 }
 
+fn map_rate_limit_status(status: types::RateLimitStatus) -> model::RateLimitStatus {
+    match status {
+        types::RateLimitStatus::Allowed => model::RateLimitStatus::Allowed,
+        types::RateLimitStatus::AllowedWarning => model::RateLimitStatus::AllowedWarning,
+        types::RateLimitStatus::Rejected => model::RateLimitStatus::Rejected,
+    }
+}
+
+fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
+    model::RateLimitUpdate {
+        status: map_rate_limit_status(update.status),
+        resets_at: update.resets_at,
+        utilization: update.utilization,
+        rate_limit_type: update.rate_limit_type,
+        overage_status: update.overage_status.map(map_rate_limit_status),
+        overage_resets_at: update.overage_resets_at,
+        overage_disabled_reason: update.overage_disabled_reason,
+        is_using_overage: update.is_using_overage,
+        surpassed_threshold: update.surpassed_threshold,
+    }
+}
+
+fn map_available_commands_update(
+    commands: Vec<types::AvailableCommand>,
+) -> model::AvailableCommandsUpdate {
+    model::AvailableCommandsUpdate::new(
+        commands
+            .into_iter()
+            .map(|cmd| {
+                let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
+                if let Some(input_hint) = cmd.input_hint
+                    && !input_hint.trim().is_empty()
+                {
+                    mapped = mapped.input_hint(input_hint);
+                }
+                mapped
+            })
+            .collect(),
+    )
+}
+
 fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {
@@ -647,20 +689,7 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
             model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
         )),
         types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
-            model::SessionUpdate::AvailableCommandsUpdate(model::AvailableCommandsUpdate::new(
-                commands
-                    .into_iter()
-                    .map(|cmd| {
-                        let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
-                        if let Some(input_hint) = cmd.input_hint
-                            && !input_hint.trim().is_empty()
-                        {
-                            mapped = mapped.input_hint(input_hint);
-                        }
-                        mapped
-                    })
-                    .collect(),
-            )),
+            model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(commands)),
         ),
         types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
             Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
@@ -687,6 +716,29 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
                 types::FastModeState::On => model::FastModeState::On,
             }))
         }
+        types::SessionUpdate::RateLimitUpdate {
+            status,
+            resets_at,
+            utilization,
+            rate_limit_type,
+            overage_status,
+            overage_resets_at,
+            overage_disabled_reason,
+            is_using_overage,
+            surpassed_threshold,
+        } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
+            types::RateLimitUpdate {
+                status,
+                resets_at,
+                utilization,
+                rate_limit_type,
+                overage_status,
+                overage_resets_at,
+                overage_disabled_reason,
+                is_using_overage,
+                surpassed_threshold,
+            },
+        ))),
         types::SessionUpdate::SessionStatusUpdate { status } => {
             Some(model::SessionUpdate::SessionStatusUpdate(match status {
                 types::SessionStatus::Compacting => model::SessionStatus::Compacting,

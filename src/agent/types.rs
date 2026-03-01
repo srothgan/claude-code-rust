@@ -60,6 +60,27 @@ pub enum FastModeState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RateLimitStatus {
+    Allowed,
+    AllowedWarning,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitUpdate {
+    pub status: RateLimitStatus,
+    pub resets_at: Option<f64>,
+    pub utilization: Option<f64>,
+    pub rate_limit_type: Option<String>,
+    pub overage_status: Option<RateLimitStatus>,
+    pub overage_resets_at: Option<f64>,
+    pub overage_disabled_reason: Option<String>,
+    pub is_using_overage: Option<bool>,
+    pub surpassed_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
     Idle,
@@ -134,19 +155,58 @@ pub struct PlanEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
-    AgentMessageChunk { content: ContentBlock },
-    UserMessageChunk { content: ContentBlock },
-    AgentThoughtChunk { content: ContentBlock },
-    ToolCall { tool_call: ToolCall },
-    ToolCallUpdate { tool_call_update: ToolCallUpdate },
-    Plan { entries: Vec<PlanEntry> },
-    AvailableCommandsUpdate { commands: Vec<AvailableCommand> },
-    CurrentModeUpdate { current_mode_id: String },
-    ConfigOptionUpdate { option_id: String, value: serde_json::Value },
-    UsageUpdate { usage: UsageUpdate },
-    FastModeUpdate { fast_mode_state: FastModeState },
-    SessionStatusUpdate { status: SessionStatus },
-    CompactionBoundary { trigger: CompactionTrigger, pre_tokens: u64 },
+    AgentMessageChunk {
+        content: ContentBlock,
+    },
+    UserMessageChunk {
+        content: ContentBlock,
+    },
+    AgentThoughtChunk {
+        content: ContentBlock,
+    },
+    ToolCall {
+        tool_call: ToolCall,
+    },
+    ToolCallUpdate {
+        tool_call_update: ToolCallUpdate,
+    },
+    Plan {
+        entries: Vec<PlanEntry>,
+    },
+    AvailableCommandsUpdate {
+        commands: Vec<AvailableCommand>,
+    },
+    CurrentModeUpdate {
+        current_mode_id: String,
+    },
+    ConfigOptionUpdate {
+        option_id: String,
+        value: serde_json::Value,
+    },
+    UsageUpdate {
+        usage: UsageUpdate,
+    },
+    FastModeUpdate {
+        fast_mode_state: FastModeState,
+    },
+    RateLimitUpdate {
+        status: RateLimitStatus,
+        resets_at: Option<f64>,
+        utilization: Option<f64>,
+        rate_limit_type: Option<String>,
+        overage_status: Option<RateLimitStatus>,
+        overage_resets_at: Option<f64>,
+        overage_disabled_reason: Option<String>,
+        is_using_overage: Option<bool>,
+        surpassed_threshold: Option<f64>,
+    },
+    SessionStatusUpdate {
+        status: SessionStatus,
+    },
+    CompactionBoundary {
+        trigger: CompactionTrigger,
+        pre_tokens: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -35,6 +35,19 @@ export interface UsageUpdate {
 }
 
 export type FastModeState = "off" | "cooldown" | "on";
+export type RateLimitStatus = "allowed" | "allowed_warning" | "rejected";
+
+export interface RateLimitUpdate {
+  status: RateLimitStatus;
+  resets_at?: number;
+  utilization?: number;
+  rate_limit_type?: string;
+  overage_status?: RateLimitStatus;
+  overage_resets_at?: number;
+  overage_disabled_reason?: string;
+  is_using_overage?: boolean;
+  surpassed_threshold?: number;
+}
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -95,6 +108,7 @@ export type SessionUpdate =
   | { type: "config_option_update"; option_id: string; value: Json }
   | { type: "usage_update"; usage: UsageUpdate }
   | { type: "fast_mode_update"; fast_mode_state: FastModeState }
+  | ({ type: "rate_limit_update" } & RateLimitUpdate)
   | { type: "session_status_update"; status: "compacting" | "idle" }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 

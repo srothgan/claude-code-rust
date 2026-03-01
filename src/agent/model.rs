@@ -497,6 +497,27 @@ pub enum FastModeState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RateLimitStatus {
+    Allowed,
+    AllowedWarning,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitUpdate {
+    pub status: RateLimitStatus,
+    pub resets_at: Option<f64>,
+    pub utilization: Option<f64>,
+    pub rate_limit_type: Option<String>,
+    pub overage_status: Option<RateLimitStatus>,
+    pub overage_resets_at: Option<f64>,
+    pub overage_disabled_reason: Option<String>,
+    pub is_using_overage: Option<bool>,
+    pub surpassed_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
     Idle,
@@ -528,6 +549,7 @@ pub enum SessionUpdate {
     ConfigOptionUpdate(ConfigOptionUpdate),
     UsageUpdate(UsageUpdate),
     FastModeUpdate(FastModeState),
+    RateLimitUpdate(RateLimitUpdate),
     SessionStatusUpdate(SessionStatus),
     CompactionBoundary(CompactionBoundary),
 }

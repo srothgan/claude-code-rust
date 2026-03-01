@@ -15,7 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{
-    BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, WelcomeBlock,
+    BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity,
+    WelcomeBlock,
 };
 use crate::ui::tables;
 use crate::ui::theme;
@@ -134,105 +135,113 @@ pub fn render_message(
             }
         }
         MessageRole::User => {
-            // "User" label in gray bold
-            out.push(Line::from(Span::styled(
-                "User",
-                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-            )));
-
-            // User message: markdown-rendered with background overlay
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    render_text_cached(
-                        text,
-                        cache,
-                        incr,
-                        width,
-                        Some(theme::USER_MSG_BG),
-                        true,
-                        out,
-                    );
-                }
-            }
+            out.push(role_label_line(&msg.role));
+            render_user_blocks(msg, width, out);
         }
         MessageRole::Assistant => {
-            out.push(assistant_role_label_line(msg, spinner));
-
-            // Empty blocks + thinking = show spinner (only on the last message)
-            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-                let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
-                out.push(Line::from(Span::styled(
-                    format!("{ch} Thinking..."),
-                    Style::default().fg(theme::DIM),
-                )));
-                out.push(Line::default());
+            if render_assistant_message(msg, spinner, width, out) {
                 return;
             }
-
-            // Render blocks in order with spacing at text<->tool transitions
-            let show_subagent_thinking = spinner.is_subagent_thinking;
-            let mut prev_was_tool = false;
-            for block in &mut msg.blocks {
-                match block {
-                    MessageBlock::Text(text, cache, incr) => {
-                        // Add half-spacing when transitioning from tools back to text
-                        if prev_was_tool {
-                            out.push(Line::default());
-                        }
-                        render_text_cached(text, cache, incr, width, None, false, out);
-                        prev_was_tool = false;
-                    }
-                    MessageBlock::ToolCall(tc) => {
-                        let tc = tc.as_mut();
-                        // Skip hidden tool calls (subagent children)
-                        if tc.hidden {
-                            continue;
-                        }
-                        // Add half-spacing when transitioning from text to tools
-                        if !prev_was_tool && out.len() > 1 {
-                            out.push(Line::default());
-                        }
-                        tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
-                        prev_was_tool = true;
-                    }
-                    MessageBlock::Welcome(_) => {}
-                }
-            }
-
-            if show_subagent_thinking {
-                out.push(Line::default());
-                out.push(subagent_thinking_line(spinner.frame));
-            }
-
-            // Trailing "Thinking..." spinner when all tool calls finished mid-turn
-            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
-                out.push(Line::default());
-                let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
-                out.push(Line::from(Span::styled(
-                    format!("{ch} Thinking..."),
-                    Style::default().fg(theme::DIM),
-                )));
-            }
         }
-        MessageRole::System => {
-            out.push(Line::from(Span::styled(
-                "System",
-                Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
-            )));
-
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    let mut lines = Vec::new();
-                    render_text_cached(text, cache, incr, width, None, false, &mut lines);
-                    tint_lines(&mut lines, theme::STATUS_ERROR);
-                    out.extend(lines);
-                }
-            }
+        MessageRole::System(_) => {
+            let severity = system_severity_from_role(&msg.role);
+            out.push(system_role_label_line(severity));
+            render_system_blocks(msg, width, system_severity_color(severity), out);
         }
     }
 
     // Blank separator between messages
     out.push(Line::default());
+}
+
+fn render_user_blocks(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'static>>) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Text(text, cache, incr) = block {
+            render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
+        }
+    }
+}
+
+fn render_assistant_message(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+) -> bool {
+    out.push(assistant_role_label_line(msg, spinner));
+
+    if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
+        out.push(thinking_line(spinner.frame));
+        out.push(Line::default());
+        return true;
+    }
+
+    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let mut prev_was_tool = false;
+    for block in &mut msg.blocks {
+        match block {
+            MessageBlock::Text(text, cache, incr) => {
+                if prev_was_tool {
+                    out.push(Line::default());
+                }
+                render_text_cached(text, cache, incr, width, None, false, out);
+                prev_was_tool = false;
+            }
+            MessageBlock::ToolCall(tc) => {
+                let tc = tc.as_mut();
+                if tc.hidden {
+                    continue;
+                }
+                if !prev_was_tool && out.len() > 1 {
+                    out.push(Line::default());
+                }
+                tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
+                prev_was_tool = true;
+            }
+            MessageBlock::Welcome(_) => {}
+        }
+    }
+
+    if show_subagent_thinking {
+        out.push(Line::default());
+        out.push(subagent_thinking_line(spinner.frame));
+    }
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+        out.push(Line::default());
+        out.push(thinking_line(spinner.frame));
+    }
+    false
+}
+
+fn render_system_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    color: Color,
+    out: &mut Vec<Line<'static>>,
+) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Text(text, cache, incr) = block {
+            let mut lines = Vec::new();
+            render_text_cached(text, cache, incr, width, None, false, &mut lines);
+            tint_lines(&mut lines, color);
+            out.extend(lines);
+        }
+    }
+}
+
+fn system_severity_color(severity: SystemSeverity) -> Color {
+    match severity {
+        SystemSeverity::Info => theme::DIM,
+        SystemSeverity::Warning => theme::STATUS_WARNING,
+        SystemSeverity::Error => theme::STATUS_ERROR,
+    }
+}
+
+fn system_severity_from_role(role: &MessageRole) -> SystemSeverity {
+    match role {
+        MessageRole::System(level) => level.unwrap_or(SystemSeverity::Error),
+        _ => SystemSeverity::Error,
+    }
 }
 
 /// Measure message height from block caches + width-aware wrapped heights.
@@ -249,22 +258,20 @@ pub fn measure_message_height_cached(
     let mut height = 1usize; // role label
     let mut wrapped_lines = 0usize;
 
+    if matches!(msg.role, MessageRole::Assistant)
+        && msg.blocks.is_empty()
+        && spinner.is_active
+        && spinner.is_last_message
+    {
+        // role label + "Thinking..." line + trailing separator
+        return (3, 0);
+    }
+
     match msg.role {
         MessageRole::User => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    let (h, lines) = text_block_height_cached(
-                        text,
-                        cache,
-                        incr,
-                        width,
-                        Some(theme::USER_MSG_BG),
-                        true,
-                    );
-                    height += h;
-                    wrapped_lines += lines;
-                }
-            }
+            let (h, lines) = measure_text_blocks_height(msg, width, Some(theme::USER_MSG_BG), true);
+            height += h;
+            wrapped_lines += lines;
         }
         MessageRole::Welcome => {
             for block in &mut msg.blocks {
@@ -276,75 +283,97 @@ pub fn measure_message_height_cached(
             }
         }
         MessageRole::Assistant => {
-            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-                // "Thinking..." line + trailing message separator
-                return (height + 2, wrapped_lines);
-            }
-
-            let show_subagent_thinking = spinner.is_subagent_thinking;
-            let mut prev_was_tool = false;
-            let mut lines_after_label = 0usize;
-            for block in &mut msg.blocks {
-                match block {
-                    MessageBlock::Text(text, cache, incr) => {
-                        if prev_was_tool {
-                            height += 1;
-                            lines_after_label += 1;
-                        }
-                        let (h, lines) =
-                            text_block_height_cached(text, cache, incr, width, None, false);
-                        height += h;
-                        lines_after_label += h;
-                        wrapped_lines += lines;
-                        prev_was_tool = false;
-                    }
-                    MessageBlock::ToolCall(tc) => {
-                        let tc = tc.as_mut();
-                        if tc.hidden {
-                            continue;
-                        }
-                        if !prev_was_tool && lines_after_label > 0 {
-                            height += 1;
-                            lines_after_label += 1;
-                        }
-                        let (h, lines) = tool_call::measure_tool_call_height_cached(
-                            tc,
-                            width,
-                            spinner.frame,
-                            layout_generation,
-                        );
-                        height += h;
-                        lines_after_label += h;
-                        wrapped_lines += lines;
-                        prev_was_tool = true;
-                    }
-                    MessageBlock::Welcome(_) => {}
-                }
-            }
-
-            if show_subagent_thinking {
-                height += 2;
-            }
-
-            if spinner.is_thinking_mid_turn && !show_subagent_thinking {
-                // Blank line + "Thinking..."
-                height += 2;
-            }
+            let (h, lines) =
+                measure_assistant_blocks_height(msg, spinner, width, layout_generation);
+            height += h;
+            wrapped_lines += lines;
         }
-        MessageRole::System => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    let (h, lines) =
-                        text_block_height_cached(text, cache, incr, width, None, false);
-                    height += h;
-                    wrapped_lines += lines;
-                }
-            }
+        MessageRole::System(_) => {
+            let (h, lines) = measure_text_blocks_height(msg, width, None, false);
+            height += h;
+            wrapped_lines += lines;
         }
     }
 
     // Blank separator between messages
     (height + 1, wrapped_lines)
+}
+
+fn measure_text_blocks_height(
+    msg: &mut ChatMessage,
+    width: u16,
+    bg: Option<Color>,
+    overlay_background: bool,
+) -> (usize, usize) {
+    let mut height = 0usize;
+    let mut wrapped_lines = 0usize;
+    for block in &mut msg.blocks {
+        if let MessageBlock::Text(text, cache, incr) = block {
+            let (h, lines) =
+                text_block_height_cached(text, cache, incr, width, bg, overlay_background);
+            height += h;
+            wrapped_lines += lines;
+        }
+    }
+    (height, wrapped_lines)
+}
+
+fn measure_assistant_blocks_height(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+) -> (usize, usize) {
+    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let mut prev_was_tool = false;
+    let mut lines_after_label = 0usize;
+    let mut height = 0usize;
+    let mut wrapped_lines = 0usize;
+
+    for block in &mut msg.blocks {
+        match block {
+            MessageBlock::Text(text, cache, incr) => {
+                if prev_was_tool {
+                    height += 1;
+                    lines_after_label += 1;
+                }
+                let (h, lines) = text_block_height_cached(text, cache, incr, width, None, false);
+                height += h;
+                lines_after_label += h;
+                wrapped_lines += lines;
+                prev_was_tool = false;
+            }
+            MessageBlock::ToolCall(tc) => {
+                let tc = tc.as_mut();
+                if tc.hidden {
+                    continue;
+                }
+                if !prev_was_tool && lines_after_label > 0 {
+                    height += 1;
+                    lines_after_label += 1;
+                }
+                let (h, lines) = tool_call::measure_tool_call_height_cached(
+                    tc,
+                    width,
+                    spinner.frame,
+                    layout_generation,
+                );
+                height += h;
+                lines_after_label += h;
+                wrapped_lines += lines;
+                prev_was_tool = true;
+            }
+            MessageBlock::Welcome(_) => {}
+        }
+    }
+
+    if show_subagent_thinking {
+        height += 2;
+    }
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+        height += 2;
+    }
+    (height, wrapped_lines)
 }
 
 /// Render a message while consuming as many whole leading rows as possible.
@@ -364,10 +393,10 @@ pub fn render_message_from_offset(
     let mut remaining_skip = skip_rows;
     let mut can_consume_skip = true;
 
-    let role_line = if matches!(msg.role, MessageRole::Assistant) {
-        assistant_role_label_line(msg, spinner)
-    } else {
-        role_label_line(&msg.role)
+    let role_line = match msg.role {
+        MessageRole::Assistant => assistant_role_label_line(msg, spinner),
+        MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
+        _ => role_label_line(&msg.role),
     };
     emit_line_with_skip(role_line, out, &mut remaining_skip, can_consume_skip);
 
@@ -393,7 +422,7 @@ pub fn render_message_from_offset(
                 return remaining_skip;
             }
         }
-        MessageRole::System => {
+        MessageRole::System(_) => {
             render_system_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
         }
     }
@@ -517,6 +546,7 @@ fn render_system_from_offset(
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
+    let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
         if let MessageBlock::Text(text, cache, incr) = block {
             let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
@@ -525,7 +555,7 @@ fn render_system_from_offset(
             }
             let mut lines = Vec::new();
             render_text_cached(text, cache, incr, width, None, false, &mut lines);
-            tint_lines(&mut lines, theme::STATUS_ERROR);
+            tint_lines(&mut lines, color);
             out.extend(lines);
         }
     }
@@ -578,11 +608,17 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
             "Claude",
             Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
         )),
-        MessageRole::System => Line::from(Span::styled(
-            "System",
-            Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
-        )),
+        MessageRole::System(_) => system_role_label_line(SystemSeverity::Error),
     }
+}
+
+fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
+    let (label, color) = match severity {
+        SystemSeverity::Info => ("Info", theme::DIM),
+        SystemSeverity::Warning => ("Warning", theme::STATUS_WARNING),
+        SystemSeverity::Error => ("Error", theme::STATUS_ERROR),
+    };
+    Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
 fn thinking_line(frame: usize) -> Line<'static> {
@@ -1227,6 +1263,28 @@ mod tests {
         let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 52);
         assert_eq!(h, truth);
+    }
+
+    #[test]
+    fn system_warning_severity_renders_warning_label() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_text_message(
+            MessageRole::System(Some(SystemSeverity::Warning)),
+            "Rate limit warning",
+        );
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(rendered.iter().any(|line| line.contains("Warning")));
+        assert!(rendered.iter().any(|line| line.contains("Rate limit warning")));
     }
 
     #[test]

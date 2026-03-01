@@ -36,6 +36,7 @@ pub const ICON_FAILED: &str = "\u{2717}";
 
 // Status colors
 pub const STATUS_ERROR: Color = Color::Red;
+pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 
 /// SDK tool icon + label pair. Monochrome Unicode symbols.

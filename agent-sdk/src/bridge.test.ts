@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   CACHE_SPLIT_POLICY,
+  buildRateLimitUpdate,
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
@@ -13,6 +14,7 @@ import {
   looksLikeAuthRequired,
   normalizeToolResultText,
   parseFastModeState,
+  parseRateLimitStatus,
   normalizeToolKind,
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
@@ -77,6 +79,54 @@ test("parseFastModeState accepts known values and rejects unknown values", () =>
   assert.equal(parseFastModeState("on"), "on");
   assert.equal(parseFastModeState("CD"), null);
   assert.equal(parseFastModeState(undefined), null);
+});
+
+test("parseRateLimitStatus accepts known values and rejects unknown values", () => {
+  assert.equal(parseRateLimitStatus("allowed"), "allowed");
+  assert.equal(parseRateLimitStatus("allowed_warning"), "allowed_warning");
+  assert.equal(parseRateLimitStatus("rejected"), "rejected");
+  assert.equal(parseRateLimitStatus("warn"), null);
+  assert.equal(parseRateLimitStatus(undefined), null);
+});
+
+test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
+  const update = buildRateLimitUpdate({
+    status: "allowed_warning",
+    resetsAt: 1_741_280_000,
+    utilization: 0.92,
+    rateLimitType: "five_hour",
+    overageStatus: "rejected",
+    overageResetsAt: 1_741_280_600,
+    overageDisabledReason: "out_of_credits",
+    isUsingOverage: false,
+    surpassedThreshold: 0.9,
+  });
+
+  assert.deepEqual(update, {
+    type: "rate_limit_update",
+    status: "allowed_warning",
+    resets_at: 1_741_280_000,
+    utilization: 0.92,
+    rate_limit_type: "five_hour",
+    overage_status: "rejected",
+    overage_resets_at: 1_741_280_600,
+    overage_disabled_reason: "out_of_credits",
+    is_using_overage: false,
+    surpassed_threshold: 0.9,
+  });
+});
+
+test("buildRateLimitUpdate rejects invalid payloads", () => {
+  assert.equal(buildRateLimitUpdate(null), null);
+  assert.equal(buildRateLimitUpdate({}), null);
+  assert.equal(buildRateLimitUpdate({ status: "warning" }), null);
+  assert.deepEqual(
+    buildRateLimitUpdate({
+      status: "rejected",
+      overageStatus: "bad_status",
+    }),
+    { type: "rate_limit_update", status: "rejected" },
+  );
 });
 
 test("createToolCall builds edit diff content", () => {

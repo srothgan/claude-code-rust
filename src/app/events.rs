@@ -20,7 +20,8 @@ use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
     InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind,
-    SelectionPoint, ToolCallInfo, ToolCallScope, default_cache_split_policy, find_text_split_index,
+    SelectionPoint, SystemSeverity, ToolCallInfo, ToolCallScope, default_cache_split_policy,
+    find_text_split_index,
 };
 use crate::agent::error_handling::{
     TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,
@@ -509,6 +510,7 @@ fn handle_connected_client_event(
     app.is_compacting = false;
     app.session_usage = super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
+    app.last_rate_limit_update = None;
     app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
@@ -546,6 +548,7 @@ fn handle_auth_required_event(app: &mut App, method_name: String, method_descrip
     app.login_hint = Some(LoginHint { method_name, method_description });
     app.pending_compact_clear = false;
     app.is_compacting = false;
+    app.last_rate_limit_update = None;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.queued_submission = None;
@@ -557,6 +560,7 @@ fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.queued_submission = None;
+    app.last_rate_limit_update = None;
     app.resuming_session_id = None;
     app.input.clear();
     app.pending_submit = false;
@@ -566,7 +570,7 @@ fn handle_connection_failed_event(app: &mut App, msg: &str) {
 
 fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     app.messages.push(ChatMessage {
-        role: MessageRole::System,
+        role: MessageRole::System(None),
         blocks: vec![MessageBlock::Text(
             msg.to_owned(),
             BlockCache::default(),
@@ -616,7 +620,7 @@ fn handle_fatal_error_event(app: &mut App, error: AppError) {
 
 fn push_interrupted_hint(app: &mut App) {
     app.messages.push(ChatMessage {
-        role: MessageRole::System,
+        role: MessageRole::System(Some(SystemSeverity::Info)),
         blocks: vec![MessageBlock::Text(
             CONVERSATION_INTERRUPTED_HINT.to_owned(),
             BlockCache::default(),
@@ -707,14 +711,26 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
     app.input.clear();
     app.pending_submit = false;
     app.status = AppStatus::Error;
-    push_turn_error_message(app, msg, error_class);
+    let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
+        app.last_rate_limit_update
+            .clone()
+            .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
+    } else {
+        None
+    };
+    push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
     if !should_compact_clear && turn_was_active {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
 }
 
-fn push_turn_error_message(app: &mut App, error: &str, class: TurnErrorClass) {
-    let message = match class {
+fn push_turn_error_message(
+    app: &mut App,
+    error: &str,
+    class: TurnErrorClass,
+    rate_limit_context: Option<&model::RateLimitUpdate>,
+) {
+    let base_message = match class {
         TurnErrorClass::PlanLimit => {
             let summary = summarize_internal_error(error);
             format!(
@@ -728,32 +744,24 @@ fn push_turn_error_message(app: &mut App, error: &str, class: TurnErrorClass) {
             format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
         }
     };
-    app.messages.push(ChatMessage {
-        role: MessageRole::System,
-        blocks: vec![MessageBlock::Text(
-            message.clone(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(&message),
-        )],
-        usage: None,
-    });
-    app.enforce_history_retention();
-    app.viewport.engage_auto_scroll();
+    let (severity, message) = if matches!(class, TurnErrorClass::PlanLimit)
+        && let Some(update) = rate_limit_context
+    {
+        let prefix = format_rate_limit_summary(update);
+        let severity = match update.status {
+            model::RateLimitStatus::AllowedWarning => Some(SystemSeverity::Warning),
+            model::RateLimitStatus::Rejected | model::RateLimitStatus::Allowed => None,
+        };
+        (severity, format!("{prefix}\n\n{base_message}"))
+    } else {
+        (None, base_message)
+    };
+    push_system_message_with_severity(app, severity, &message);
 }
 
 fn push_connection_error_message(app: &mut App, error: &str) {
     let message = format!("Connection failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
-    app.messages.push(ChatMessage {
-        role: MessageRole::System,
-        blocks: vec![MessageBlock::Text(
-            message.clone(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(&message),
-        )],
-        usage: None,
-    });
-    app.enforce_history_retention();
-    app.viewport.engage_auto_scroll();
+    push_system_message_with_severity(app, None, &message);
 }
 
 fn shorten_cwd_display(cwd_raw: &str) -> String {
@@ -949,6 +957,7 @@ fn reset_session_identity_state(
     app.is_compacting = false;
     app.session_usage = super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
+    app.last_rate_limit_update = None;
     app.should_quit = false;
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
@@ -1271,6 +1280,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             app.fast_mode_state = state;
             app.cached_footer_line = None;
         }
+        model::SessionUpdate::RateLimitUpdate(update) => {
+            handle_rate_limit_update(app, &update);
+        }
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
@@ -1280,6 +1292,89 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
             handle_compaction_boundary_update(app, boundary);
+        }
+    }
+}
+
+fn format_optional_number(value: Option<f64>) -> Option<String> {
+    let value = value?;
+    if (value.fract()).abs() < f64::EPSILON {
+        return Some(format!("{value:.0}"));
+    }
+    Some(format!("{value}"))
+}
+
+fn rate_limit_status_token(status: model::RateLimitStatus) -> &'static str {
+    match status {
+        model::RateLimitStatus::Allowed => "allowed",
+        model::RateLimitStatus::AllowedWarning => "allowed_warning",
+        model::RateLimitStatus::Rejected => "rejected",
+    }
+}
+
+fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
+    let mut parts = vec![format!("Rate limit status={}", rate_limit_status_token(update.status))];
+    if let Some(v) = format_optional_number(update.utilization) {
+        parts.push(format!("utilization={v}"));
+    }
+    if let Some(v) = format_optional_number(update.resets_at) {
+        parts.push(format!("resets_at={v}"));
+    }
+    if let Some(v) = &update.rate_limit_type {
+        parts.push(format!("rate_limit_type={v}"));
+    }
+    if let Some(v) = &update.overage_status {
+        parts.push(format!("overage_status={}", rate_limit_status_token(*v)));
+    }
+    if let Some(v) = format_optional_number(update.overage_resets_at) {
+        parts.push(format!("overage_resets_at={v}"));
+    }
+    if let Some(v) = &update.overage_disabled_reason {
+        parts.push(format!("overage_disabled_reason={v}"));
+    }
+    if let Some(v) = update.is_using_overage {
+        parts.push(format!("is_using_overage={v}"));
+    }
+    if let Some(v) = format_optional_number(update.surpassed_threshold) {
+        parts.push(format!("surpassed_threshold={v}"));
+    }
+    parts.join(" ")
+}
+
+fn push_system_message_with_severity(
+    app: &mut App,
+    severity: Option<SystemSeverity>,
+    message: &str,
+) {
+    app.messages.push(ChatMessage {
+        role: MessageRole::System(severity),
+        blocks: vec![MessageBlock::Text(
+            message.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(message),
+        )],
+        usage: None,
+    });
+    app.enforce_history_retention();
+    app.viewport.engage_auto_scroll();
+}
+
+fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
+    let previous_status = app.last_rate_limit_update.as_ref().map(|existing| existing.status);
+    app.last_rate_limit_update = Some(update.clone());
+
+    match update.status {
+        model::RateLimitStatus::Allowed => {}
+        model::RateLimitStatus::AllowedWarning => {
+            if previous_status == Some(model::RateLimitStatus::AllowedWarning) {
+                return;
+            }
+            let summary = format_rate_limit_summary(update);
+            push_system_message_with_severity(app, Some(SystemSeverity::Warning), &summary);
+        }
+        model::RateLimitStatus::Rejected => {
+            let summary = format_rate_limit_summary(update);
+            push_system_message_with_severity(app, None, &summary);
         }
     }
 }
@@ -1622,7 +1717,7 @@ fn handle_compaction_boundary_update(app: &mut App, boundary: model::CompactionB
     if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
         let text = "Auto-compacting context...";
         app.messages.push(ChatMessage {
-            role: MessageRole::System,
+            role: MessageRole::System(Some(SystemSeverity::Info)),
             blocks: vec![MessageBlock::Text(
                 text.to_owned(),
                 BlockCache::default(),
@@ -1803,6 +1898,7 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
         model::SessionUpdate::FastModeUpdate(_) => "FastModeUpdate",
+        model::SessionUpdate::RateLimitUpdate(_) => "RateLimitUpdate",
         model::SessionUpdate::SessionStatusUpdate(_) => "SessionStatusUpdate",
         model::SessionUpdate::CompactionBoundary(_) => "CompactionBoundary",
     }
@@ -2476,7 +2572,7 @@ mod tests {
 
         assert!(!app.cancelled_turn_pending_hint);
         let last = app.messages.last().expect("expected interruption hint message");
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };
@@ -2502,7 +2598,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected interruption hint message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
     }
 
     #[test]
@@ -2881,7 +2977,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
         assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-        let Some(ChatMessage { role: MessageRole::System, blocks, .. }) = app.messages.get(1)
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.get(1)
         else {
             panic!("expected system error message");
         };
@@ -2902,7 +2998,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        let Some(ChatMessage { role: MessageRole::System, blocks, .. }) = app.messages.last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last()
         else {
             panic!("expected system error message");
         };
@@ -2927,7 +3023,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        let Some(ChatMessage { role: MessageRole::System, blocks, .. }) = app.messages.last()
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last()
         else {
             panic!("expected system error message");
         };
@@ -3007,6 +3103,90 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_warning_transitions_once_and_rejected_emits_each_event() {
+        let mut app = make_test_app();
+
+        let warning_update = model::RateLimitUpdate {
+            status: model::RateLimitStatus::AllowedWarning,
+            resets_at: Some(123.0),
+            utilization: Some(0.92),
+            rate_limit_type: Some("five_hour".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+        };
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                warning_update.clone(),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                warning_update.clone(),
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Warning))));
+
+        let rejected_update =
+            model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                rejected_update.clone(),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
+        );
+
+        assert_eq!(app.messages.len(), 3);
+        assert!(matches!(app.messages[1].role, MessageRole::System(_)));
+        assert!(matches!(app.messages[2].role, MessageRole::System(_)));
+    }
+
+    #[test]
+    fn plan_limit_turn_error_includes_rate_limit_context_and_warning_severity() {
+        let mut app = make_test_app();
+        app.last_rate_limit_update = Some(model::RateLimitUpdate {
+            status: model::RateLimitStatus::AllowedWarning,
+            resets_at: Some(1741280000.0),
+            utilization: Some(0.95),
+            rate_limit_type: Some("five_hour".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+        });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "HTTP 429 Too Many Requests".to_owned(),
+                class: TurnErrorClass::PlanLimit,
+            },
+        );
+
+        let Some(last) = app.messages.last() else {
+            panic!("expected combined system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(text.contains("Rate limit status=allowed_warning"));
+        assert!(text.contains("Turn blocked by account or plan limits"));
+    }
+
+    #[test]
     fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         let mut app = make_test_app();
         app.messages.push(user_msg("build app"));
@@ -3025,7 +3205,7 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected interruption hint message");
         };
-        assert!(matches!(last.role, MessageRole::System));
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };
