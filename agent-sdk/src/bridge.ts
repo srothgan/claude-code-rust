@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
+  getSessionMessages,
+  listSessions,
   query,
   type CanUseTool,
   type PermissionMode,
@@ -53,9 +55,8 @@ import {
   permissionResultFromOutcome,
 } from "./bridge/permissions.js";
 import {
-  extractSessionHistoryUpdatesFromJsonl,
-  listRecentPersistedSessions,
-  resolvePersistedSessionEntry,
+  mapSdkSessions,
+  mapSessionMessagesToUpdates,
 } from "./bridge/history.js";
 
 export {
@@ -63,7 +64,8 @@ export {
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
-  extractSessionHistoryUpdatesFromJsonl,
+  mapSessionMessagesToUpdates,
+  mapSdkSessions,
   looksLikeAuthRequired,
   normalizeToolKind,
   normalizeToolResultText,
@@ -109,6 +111,7 @@ type SessionState = {
 
 const sessions = new Map<string, SessionState>();
 const EXPECTED_AGENT_SDK_VERSION = "0.2.63";
+const SESSION_LIST_LIMIT = 50;
 const require = createRequire(import.meta.url);
 const permissionDebugEnabled =
   process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || process.env.CLAUDE_RS_SDK_DEBUG === "1";
@@ -241,6 +244,7 @@ function emitConnectEvent(session: SessionState): void {
   const staleSessions = session.sessionsToCloseAfterConnect;
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
+    refreshSessionsList();
     return;
   }
   void (async () => {
@@ -253,7 +257,25 @@ function emitConnectEvent(session: SessionState): void {
       }
       await closeSession(stale);
     }
+    refreshSessionsList();
   })();
+}
+
+async function emitSessionsList(requestId?: string): Promise<void> {
+  try {
+    const sdkSessions = await listSessions({ limit: SESSION_LIST_LIMIT });
+    writeEvent({ event: "sessions_listed", sessions: mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT) }, requestId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[sdk warn] listSessions failed: ${message}`);
+    writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
+  }
+}
+
+function refreshSessionsList(): void {
+  void emitSessionsList().catch(() => {
+    // Defensive no-op.
+  });
 }
 
 function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
@@ -992,6 +1014,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
             : {}),
         });
         session.resumeUpdates = undefined;
+        refreshSessionsList();
       }
 
       if (Array.isArray(msg.slash_commands)) {
@@ -1687,23 +1710,14 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
             capabilities: {
               prompt_image: false,
               prompt_embedded_context: true,
-              load_session: true,
-              supports_list_sessions: true,
-              supports_resume: true,
+              supports_session_listing: true,
+              supports_resume_session: true,
             },
           },
         },
         requestId,
       );
-      writeEvent({
-        event: "sessions_listed",
-        sessions: listRecentPersistedSessions().map((entry) => ({
-          session_id: entry.session_id,
-          cwd: entry.cwd,
-          ...(entry.title ? { title: entry.title } : {}),
-          ...(entry.updated_at ? { updated_at: entry.updated_at } : {}),
-        })),
-      });
+      await emitSessionsList(requestId);
       return;
 
     case "create_session":
@@ -1717,18 +1731,23 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       });
       return;
 
-    case "load_session": {
-      const persisted = resolvePersistedSessionEntry(command.session_id);
-      if (!persisted) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      const resumeUpdates = extractSessionHistoryUpdatesFromJsonl(persisted.file_path);
-      const staleSessions = Array.from(sessions.values());
-      const hadActiveSession = staleSessions.length > 0;
+    case "resume_session": {
       try {
+        const sdkSessions = await listSessions();
+        const matched = sdkSessions.find((entry) => entry.sessionId === command.session_id);
+        if (!matched) {
+          slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+          return;
+        }
+        const historyMessages = await getSessionMessages(
+          command.session_id,
+          matched.cwd ? { dir: matched.cwd } : undefined,
+        );
+        const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
+        const staleSessions = Array.from(sessions.values());
+        const hadActiveSession = staleSessions.length > 0;
         await createSession({
-          cwd: persisted.cwd,
+          cwd: matched.cwd ?? process.cwd(),
           yolo: false,
           resume: command.session_id,
           ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),

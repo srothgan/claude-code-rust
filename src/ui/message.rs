@@ -1024,9 +1024,13 @@ mod tests {
             "/cwd",
             &[crate::app::RecentSessionInfo {
                 session_id: "11111111-1111-1111-1111-111111111111".to_owned(),
-                cwd: "/a".to_owned(),
-                title: Some("Title".to_owned()),
-                updated_at: None,
+                summary: "Title".to_owned(),
+                last_modified_ms: 0,
+                file_size_bytes: 0,
+                cwd: Some("/a".to_owned()),
+                git_branch: None,
+                custom_title: Some("Title".to_owned()),
+                first_prompt: None,
             }],
         );
         let MessageBlock::Welcome(block) = &message.blocks[0] else {

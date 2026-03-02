@@ -368,95 +368,6 @@ fn filter_argument_candidates(candidates: &[SlashCandidate], query: &str) -> Vec
         .collect()
 }
 
-fn parse_date_ymd(raw: &str) -> Option<(i32, u32, u32)> {
-    if raw.len() != 10 {
-        return None;
-    }
-    let bytes = raw.as_bytes();
-    if bytes.get(4).copied() != Some(b'-') || bytes.get(7).copied() != Some(b'-') {
-        return None;
-    }
-    let year: i32 = raw[0..4].parse().ok()?;
-    let month: u32 = raw[5..7].parse().ok()?;
-    let day: u32 = raw[8..10].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    Some((year, month, day))
-}
-
-fn parse_time_hms(raw: &str) -> Option<(u32, u32, u32)> {
-    let time_raw = raw.split('.').next()?;
-    if time_raw.len() != 8 {
-        return None;
-    }
-    let bytes = time_raw.as_bytes();
-    if bytes.get(2).copied() != Some(b':') || bytes.get(5).copied() != Some(b':') {
-        return None;
-    }
-    let hour: u32 = time_raw[0..2].parse().ok()?;
-    let minute: u32 = time_raw[3..5].parse().ok()?;
-    let second: u32 = time_raw[6..8].parse().ok()?;
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    Some((hour, minute, second))
-}
-
-fn parse_timezone_offset_seconds(raw: &str) -> Option<i64> {
-    if raw.eq_ignore_ascii_case("z") {
-        return Some(0);
-    }
-    if raw.len() != 6 || (!raw.starts_with('+') && !raw.starts_with('-')) {
-        return None;
-    }
-    let bytes = raw.as_bytes();
-    if bytes.get(3).copied() != Some(b':') {
-        return None;
-    }
-    let hours: i64 = raw[1..3].parse().ok()?;
-    let minutes: i64 = raw[4..6].parse().ok()?;
-    if hours > 23 || minutes > 59 {
-        return None;
-    }
-    let sign = if raw.starts_with('-') { -1 } else { 1 };
-    Some(sign * (hours * 3600 + minutes * 60))
-}
-
-fn days_since_unix_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    let month_i32 = i32::try_from(month).ok()?;
-    let day_i32 = i32::try_from(day).ok()?;
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = month_i32 + if month > 2 { -3 } else { 9 };
-    let doy = (153 * mp + 2) / 5 + day_i32 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(i64::from(era) * 146_097 + i64::from(doe) - 719_468)
-}
-
-fn parse_timestamp_epoch_seconds(raw: &str) -> Option<i64> {
-    let trimmed = raw.trim();
-    let (date_raw, time_and_zone_raw) =
-        trimmed.split_once('T').or_else(|| trimmed.split_once(' '))?;
-    let (year, month, day) = parse_date_ymd(date_raw)?;
-
-    let tz_split = time_and_zone_raw
-        .char_indices()
-        .find(|(idx, ch)| *idx >= 5 && matches!(ch, 'Z' | 'z' | '+' | '-'))
-        .map(|(idx, _)| idx);
-    let (time_raw, tz_raw) = match tz_split {
-        Some(idx) => (&time_and_zone_raw[..idx], Some(&time_and_zone_raw[idx..])),
-        None => (time_and_zone_raw, None),
-    };
-    let (hour, minute, second) = parse_time_hms(time_raw)?;
-    let tz_offset = tz_raw.map_or(Some(0), parse_timezone_offset_seconds)?;
-
-    let days = days_since_unix_epoch(year, month, day)?;
-    let seconds_in_day = i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second);
-    days.checked_mul(86_400)?.checked_add(seconds_in_day)?.checked_sub(tz_offset)
-}
-
 fn now_epoch_seconds() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
@@ -488,11 +399,12 @@ fn format_relative_age(epoch_seconds: i64) -> String {
     format!("{days}d {hours}h")
 }
 
-fn session_age_label(updated_at: Option<&str>) -> String {
-    let Some(raw) = updated_at else {
+fn session_age_label(last_modified_ms: Option<u64>) -> String {
+    let Some(last_modified_ms) = last_modified_ms else {
         return "--".to_owned();
     };
-    let Some(epoch) = parse_timestamp_epoch_seconds(raw) else {
+    let epoch = i64::try_from(last_modified_ms / 1_000).ok();
+    let Some(epoch) = epoch else {
         return "--".to_owned();
     };
     format_relative_age(epoch)
@@ -519,12 +431,12 @@ fn argument_candidates(app: &App, command_name: &str, arg_index: usize) -> Vec<S
             .recent_sessions
             .iter()
             .map(|session| {
-                let title = session.title.as_deref().map_or("", str::trim);
-                let title = if title.is_empty() { "(no message)" } else { title };
-                let age = session_age_label(session.updated_at.as_deref());
+                let summary = session.summary.trim();
+                let summary = if summary.is_empty() { "(no summary)" } else { summary };
+                let age = session_age_label(Some(session.last_modified_ms));
                 SlashCandidate {
                     insert_value: session.session_id.clone(),
-                    primary: format!("{age} - {title}"),
+                    primary: format!("{age} - {summary}"),
                     secondary: Some(session.session_id.clone()),
                 }
             })
@@ -922,7 +834,7 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     let tx = app.event_tx.clone();
     let session_id = session_id.to_owned();
     tokio::task::spawn_local(async move {
-        if let Err(e) = conn.load_session(session_id) {
+        if let Err(e) = conn.resume_session(session_id) {
             let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
         }
     });

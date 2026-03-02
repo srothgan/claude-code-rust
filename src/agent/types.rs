@@ -284,9 +284,8 @@ pub struct AuthMethod {
 pub struct AgentCapabilities {
     pub prompt_image: bool,
     pub prompt_embedded_context: bool,
-    pub load_session: bool,
-    pub supports_list_sessions: bool,
-    pub supports_resume: bool,
+    pub supports_session_listing: bool,
+    pub supports_resume_session: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,9 +299,13 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionListEntry {
     pub session_id: String,
-    pub cwd: String,
-    pub title: Option<String>,
-    pub updated_at: Option<String>,
+    pub summary: String,
+    pub last_modified_ms: u64,
+    pub file_size_bytes: u64,
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+    pub custom_title: Option<String>,
+    pub first_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -61,11 +61,8 @@ pub enum ClientEvent {
         mode: Option<crate::app::ModeState>,
         history_updates: Vec<model::SessionUpdate>,
     },
-    /// Recent persisted sessions discovered by the bridge.
-    SessionsListed {
-        sessions: Vec<crate::agent::types::SessionListEntry>,
-        next_cursor: Option<String>,
-    },
+    /// Recent sessions discovered via SDK session listing.
+    SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
     /// Startup update check found a newer published version.
     UpdateAvailable { latest_version: String, current_version: String },
     /// Fatal app error that should terminate and map to an exit code.

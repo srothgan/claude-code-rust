@@ -75,9 +75,13 @@ pub enum TodoStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentSessionInfo {
     pub session_id: String,
-    pub cwd: String,
-    pub title: Option<String>,
-    pub updated_at: Option<String>,
+    pub summary: String,
+    pub last_modified_ms: u64,
+    pub file_size_bytes: u64,
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+    pub custom_title: Option<String>,
+    pub first_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -683,9 +687,11 @@ impl App {
                     for session in &welcome.recent_sessions {
                         total = total
                             .saturating_add(session.session_id.len())
-                            .saturating_add(session.cwd.len())
-                            .saturating_add(session.title.as_ref().map_or(0, String::len))
-                            .saturating_add(session.updated_at.as_ref().map_or(0, String::len));
+                            .saturating_add(session.summary.len())
+                            .saturating_add(session.cwd.as_ref().map_or(0, String::len))
+                            .saturating_add(session.git_branch.as_ref().map_or(0, String::len))
+                            .saturating_add(session.custom_title.as_ref().map_or(0, String::len))
+                            .saturating_add(session.first_prompt.as_ref().map_or(0, String::len));
                     }
                 }
             }

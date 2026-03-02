@@ -149,6 +149,17 @@ export type PermissionOutcome =
   | { outcome: "selected"; option_id: string }
   | { outcome: "cancelled" };
 
+export interface SessionListEntry {
+  session_id: string;
+  summary: string;
+  last_modified_ms: number;
+  file_size_bytes: number;
+  cwd?: string;
+  git_branch?: string;
+  custom_title?: string;
+  first_prompt?: string;
+}
+
 export interface BridgeCommandEnvelope {
   request_id?: string;
   command: string;
@@ -170,7 +181,7 @@ export type BridgeCommand =
       metadata?: Record<string, Json>;
     }
   | {
-      command: "load_session";
+      command: "resume_session";
       session_id: string;
       metadata?: Record<string, Json>;
     }
@@ -229,9 +240,8 @@ export interface InitializeResult {
   capabilities: {
     prompt_image: boolean;
     prompt_embedded_context: boolean;
-    load_session: boolean;
-    supports_list_sessions: boolean;
-    supports_resume: boolean;
+    supports_session_listing: boolean;
+    supports_resume_session: boolean;
   };
 }
 
@@ -270,4 +280,4 @@ export type BridgeEvent =
       history_updates?: SessionUpdate[];
     }
   | { event: "initialized"; result: InitializeResult }
-  | { event: "sessions_listed"; sessions: Array<{ session_id: string; cwd: string; title?: string; updated_at?: string }>; next_cursor?: string };
+  | { event: "sessions_listed"; sessions: SessionListEntry[] };

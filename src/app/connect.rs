@@ -309,7 +309,7 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
     if let Some(resume) = &params.resume_id {
         CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::LoadSession {
+            command: BridgeCommand::ResumeSession {
                 session_id: resume.clone(),
                 metadata: std::collections::BTreeMap::new(),
             },
@@ -331,7 +331,7 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
 async fn send_session_command(params: &StartConnectionParams, bridge: &mut BridgeClient) -> bool {
     let command = build_session_command(params);
     if let Err(err) = bridge.send(command).await {
-        tracing::error!("failed to send create/load session command to bridge: {err}");
+        tracing::error!("failed to send create/resume session command to bridge: {err}");
         emit_connection_failed(
             &params.event_tx,
             format!("Failed to create bridge session: {err}"),
@@ -339,7 +339,7 @@ async fn send_session_command(params: &StartConnectionParams, bridge: &mut Bridg
         );
         return false;
     }
-    tracing::debug!("sent create/load session command to bridge");
+    tracing::debug!("sent create/resume session command to bridge");
     true
 }
 
@@ -530,8 +530,8 @@ fn handle_bridge_event(
                 history_updates,
             });
         }
-        BridgeEvent::SessionsListed { sessions, next_cursor } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions, next_cursor });
+        BridgeEvent::SessionsListed { sessions } => {
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
         BridgeEvent::Initialized { .. } => {}
     }

@@ -165,10 +165,10 @@ impl AgentConnection {
         })
     }
 
-    pub fn load_session(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn resume_session(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::LoadSession {
+            command: BridgeCommand::ResumeSession {
                 session_id,
                 metadata: std::collections::BTreeMap::new(),
             },

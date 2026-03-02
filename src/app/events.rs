@@ -354,7 +354,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
             handle_connected_client_event(app, session_id, cwd, model_name, mode, &history_updates);
         }
-        ClientEvent::SessionsListed { sessions, .. } => handle_sessions_listed_event(app, sessions),
+        ClientEvent::SessionsListed { sessions } => handle_sessions_listed_event(app, sessions),
         ClientEvent::AuthRequired { method_name, method_description } => {
             handle_auth_required_event(app, method_name, method_description);
         }
@@ -534,9 +534,13 @@ fn handle_sessions_listed_event(
         .into_iter()
         .map(|entry| RecentSessionInfo {
             session_id: entry.session_id,
+            summary: entry.summary,
+            last_modified_ms: entry.last_modified_ms,
+            file_size_bytes: entry.file_size_bytes,
             cwd: entry.cwd,
-            title: entry.title,
-            updated_at: entry.updated_at,
+            git_branch: entry.git_branch,
+            custom_title: entry.custom_title,
+            first_prompt: entry.first_prompt,
         })
         .collect();
     app.sync_welcome_recent_sessions();

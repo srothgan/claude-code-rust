@@ -107,10 +107,10 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           resume: optionalString(raw, "resume", "create_session"),
           metadata: optionalMetadata(raw, "metadata"),
         };
-      case "load_session":
+      case "resume_session":
         return {
-          command: "load_session",
-          session_id: expectString(raw, "session_id", "load_session"),
+          command: "resume_session",
+          session_id: expectString(raw, "session_id", "resume_session"),
           metadata: optionalMetadata(raw, "metadata"),
         };
       case "new_session":

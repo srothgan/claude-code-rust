@@ -1,16 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import {
   CACHE_SPLIT_POLICY,
   buildRateLimitUpdate,
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
-  extractSessionHistoryUpdatesFromJsonl,
   mapAvailableAgents,
+  mapSessionMessagesToUpdates,
+  mapSdkSessions,
   agentSdkVersionCompatibilityError,
   looksLikeAuthRequired,
   normalizeToolResultText,
@@ -41,17 +39,17 @@ test("parseCommandEnvelope validates initialize command", () => {
   assert.equal(parsed.command.cwd, "C:/work");
 });
 
-test("parseCommandEnvelope validates load_session command without cwd", () => {
+test("parseCommandEnvelope validates resume_session command without cwd", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
       request_id: "req-2",
-      command: "load_session",
+      command: "resume_session",
       session_id: "session-123",
     }),
   );
   assert.equal(parsed.requestId, "req-2");
-  assert.equal(parsed.command.command, "load_session");
-  if (parsed.command.command !== "load_session") {
+  assert.equal(parsed.command.command, "resume_session");
+  if (parsed.command.command !== "resume_session") {
     throw new Error("unexpected command variant");
   }
   assert.equal(parsed.command.session_id, "session-123");
@@ -519,164 +517,130 @@ test("agent sdk version compatibility check matches pinned version", () => {
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
-function withTempJsonl(lines: unknown[], run: (filePath: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-resume-test-"));
-  const filePath = path.join(dir, "session.jsonl");
-  fs.writeFileSync(filePath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
-  try {
-    run(filePath);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-test("extractSessionHistoryUpdatesFromJsonl parses nested progress message records", () => {
-  const lines = [
+test("mapSessionMessagesToUpdates maps message content blocks", () => {
+  const updates = mapSessionMessagesToUpdates([
     {
       type: "user",
+      uuid: "u1",
+      session_id: "s1",
+      parent_tool_use_id: null,
       message: {
         role: "user",
         content: [{ type: "text", text: "Top-level user prompt" }],
       },
     },
     {
-      type: "progress",
-      data: {
-        message: {
-          type: "assistant",
-          message: {
-            id: "msg-nested-1",
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: "tool-nested-1",
-                name: "Bash",
-                input: { command: "echo hello" },
-              },
-            ],
-            usage: {
-              input_tokens: 11,
-              output_tokens: 7,
-              cache_read_input_tokens: 5,
-              cache_creation_input_tokens: 3,
-            },
-          },
+      type: "assistant",
+      uuid: "a1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        id: "msg-1",
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo hello" } },
+          { type: "text", text: "Nested assistant final" },
+        ],
+        usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 3,
         },
       },
     },
     {
-      type: "progress",
-      data: {
-        message: {
-          type: "user",
-          message: {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: "tool-nested-1",
-                content: "ok",
-                is_error: false,
-              },
-            ],
+      type: "user",
+      uuid: "u2",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "ok",
+            is_error: false,
           },
-        },
+        ],
       },
     },
-    {
-      type: "progress",
-      data: {
-        message: {
-          type: "assistant",
-          message: {
-            id: "msg-nested-1",
-            role: "assistant",
-            content: [{ type: "text", text: "Nested assistant final" }],
-            usage: {
-              input_tokens: 11,
-              output_tokens: 7,
-              cache_read_input_tokens: 5,
-              cache_creation_input_tokens: 3,
-            },
-          },
-        },
-      },
-    },
-  ];
+  ]);
 
-  withTempJsonl(lines, (filePath) => {
-    const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
-    const variantCounts = new Map<string, number>();
-    for (const update of updates) {
-      variantCounts.set(update.type, (variantCounts.get(update.type) ?? 0) + 1);
-    }
+  const variantCounts = new Map<string, number>();
+  for (const update of updates) {
+    variantCounts.set(update.type, (variantCounts.get(update.type) ?? 0) + 1);
+  }
 
-    assert.equal(variantCounts.get("user_message_chunk"), 1);
-    assert.equal(variantCounts.get("agent_message_chunk"), 1);
-    assert.equal(variantCounts.get("tool_call"), 1);
-    assert.equal(variantCounts.get("tool_call_update"), 1);
-    assert.equal(variantCounts.get("usage_update"), 1);
+  assert.equal(variantCounts.get("user_message_chunk"), 1);
+  assert.equal(variantCounts.get("agent_message_chunk"), 1);
+  assert.equal(variantCounts.get("tool_call"), 1);
+  assert.equal(variantCounts.get("tool_call_update"), 1);
+  assert.equal(variantCounts.get("usage_update"), 1);
 
-    const usage = updates.find((update) => update.type === "usage_update");
-    assert.ok(usage && usage.type === "usage_update");
-    assert.deepEqual(usage.usage, {
-      input_tokens: 11,
-      output_tokens: 7,
-      cache_read_tokens: 5,
-      cache_write_tokens: 3,
-    });
+  const usage = updates.find((update) => update.type === "usage_update");
+  assert.ok(usage && usage.type === "usage_update");
+  assert.deepEqual(usage.usage, {
+    input_tokens: 11,
+    output_tokens: 7,
+    cache_read_tokens: 5,
+    cache_write_tokens: 3,
   });
 });
 
-test("extractSessionHistoryUpdatesFromJsonl includes local command output as assistant text", () => {
-  withTempJsonl(
-    [
-      {
-        type: "system",
-        subtype: "local_command_output",
-        content: "/cost total: $0.01",
+test("mapSessionMessagesToUpdates ignores unsupported records", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "user",
+      uuid: "u1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "h" }],
       },
-      {
-        type: "progress",
-        data: {
-          message: {
-            type: "system",
-            subtype: "local_command_output",
-            content: "Voice mode enabled.",
-          },
-        },
-      },
-    ],
-    (filePath) => {
-      const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
-      assert.deepEqual(
-        updates,
-        [
-          {
-            type: "agent_message_chunk",
-            content: { type: "text", text: "/cost total: $0.01" },
-          },
-          {
-            type: "agent_message_chunk",
-            content: { type: "text", text: "Voice mode enabled." },
-          },
-        ],
-      );
     },
-  );
+  ]);
+  assert.equal(updates.length, 0);
 });
 
-test("extractSessionHistoryUpdatesFromJsonl ignores invalid records", () => {
-  withTempJsonl(
-    [
-      { type: "queue-operation", operation: "enqueue" },
-      { type: "progress", data: { not_message: true } },
-      { type: "user", message: { role: "assistant", content: [{ type: "thinking", thinking: "h" }] } },
-    ],
-    (filePath) => {
-      const updates = extractSessionHistoryUpdatesFromJsonl(filePath);
-      assert.equal(updates.length, 0);
+test("mapSdkSessions normalizes and sorts sessions", () => {
+  const mapped = mapSdkSessions([
+    {
+      sessionId: "older",
+      summary: " Older summary ",
+      lastModified: 100,
+      fileSize: 10,
+      cwd: "C:/work",
     },
-  );
+    {
+      sessionId: "latest",
+      summary: "",
+      lastModified: 200,
+      fileSize: 20,
+      customTitle: "Custom title",
+      gitBranch: "main",
+      firstPrompt: "hello",
+    },
+  ]);
+
+  assert.deepEqual(mapped, [
+    {
+      session_id: "latest",
+      summary: "Custom title",
+      last_modified_ms: 200,
+      file_size_bytes: 20,
+      git_branch: "main",
+      custom_title: "Custom title",
+      first_prompt: "hello",
+    },
+    {
+      session_id: "older",
+      summary: "Older summary",
+      last_modified_ms: 100,
+      file_size_bytes: 10,
+      cwd: "C:/work",
+    },
+  ]);
 });

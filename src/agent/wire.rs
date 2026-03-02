@@ -42,7 +42,7 @@ pub enum BridgeCommand {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
     },
-    LoadSession {
+    ResumeSession {
         session_id: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
@@ -144,7 +144,6 @@ pub enum BridgeEvent {
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
-        next_cursor: Option<String>,
     },
 }
 
