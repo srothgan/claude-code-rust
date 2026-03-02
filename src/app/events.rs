@@ -3171,7 +3171,7 @@ mod tests {
         let mut app = make_test_app();
         app.last_rate_limit_update = Some(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
-            resets_at: Some(1741280000.0),
+            resets_at: Some(1_741_280_000.0),
             utilization: Some(0.95),
             rate_limit_type: Some("five_hour".to_owned()),
             overage_status: None,

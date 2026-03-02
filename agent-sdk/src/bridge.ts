@@ -1092,7 +1092,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
     }
 
     if (subtype === "elicitation_complete") {
-      // Compatibility no-op for now; full elicitation UX is a later migration step.
+      // No-op: elicitation flow is auto-canceled in the onElicitation callback.
       return;
     }
 
