@@ -178,6 +178,7 @@ pub fn activate(app: &mut App) {
         dialog: DialogState::default(),
     });
     app.slash = None;
+    app.subagent = None;
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -263,7 +264,7 @@ pub fn confirm_selection(app: &mut App) {
 /// Deactivate mention autocomplete.
 pub fn deactivate(app: &mut App) {
     app.mention = None;
-    if app.slash.is_none() {
+    if app.slash.is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }

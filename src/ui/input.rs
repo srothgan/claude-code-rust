@@ -16,6 +16,7 @@
 
 use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
+use crate::app::subagent;
 use crate::app::{App, AppStatus};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -37,7 +38,8 @@ const PROMPT_WIDTH: u16 = 2;
 const MAX_INPUT_HEIGHT: u16 = 12;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
-const HIGHLIGHT_PASTE_PRIORITY: u8 = 8;
+const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
+const HIGHLIGHT_PASTE_PRIORITY: u8 = 9;
 
 /// Braille spinner frames (same as message.rs) for the connecting animation.
 const SPINNER_FRAMES: &[char] = &[
@@ -193,6 +195,7 @@ fn build_input_textarea(app: &App) -> TextArea<'static> {
 fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
     let slash_style = Style::default().fg(theme::SLASH_COMMAND);
     let mention_style = Style::default().fg(Color::Cyan);
+    let subagent_style = Style::default().fg(theme::SUBAGENT_TOKEN);
     let paste_style = Style::default().fg(Color::Green);
 
     for (row, line) in lines.iter().enumerate() {
@@ -209,6 +212,14 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
                 ((row, start), (row, end)),
                 mention_style,
                 HIGHLIGHT_MENTION_PRIORITY,
+            );
+        }
+
+        for (start, end, _) in subagent::find_subagent_spans(line) {
+            textarea.custom_highlight(
+                ((row, start), (row, end)),
+                subagent_style,
+                HIGHLIGHT_SUBAGENT_PRIORITY,
             );
         }
 
@@ -297,6 +308,7 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, slash_command_range, visual_line_count};
+    use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, LoginHint};
 
     #[test]
@@ -310,6 +322,20 @@ mod tests {
         assert_eq!(slash_command_range("hello /mode"), None);
         assert_eq!(slash_command_range("/"), None);
         assert_eq!(slash_command_range("   "), None);
+    }
+
+    #[test]
+    fn subagent_spans_match_valid_ampersand_tokens() {
+        let spans = find_subagent_spans("&reviewer and &explore");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].2, "reviewer");
+        assert_eq!(spans[1].2, "explore");
+    }
+
+    #[test]
+    fn subagent_spans_reject_double_ampersand_shell_syntax() {
+        let spans = find_subagent_spans("cargo test && cargo clippy");
+        assert!(spans.is_empty());
     }
 
     #[test]

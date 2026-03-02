@@ -23,6 +23,12 @@ export interface AvailableCommand {
   input_hint?: string;
 }
 
+export interface AvailableAgent {
+  name: string;
+  description: string;
+  model?: string;
+}
+
 export interface UsageUpdate {
   input_tokens?: number;
   output_tokens?: number;
@@ -104,6 +110,7 @@ export type SessionUpdate =
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
   | { type: "plan"; entries: PlanEntry[] }
   | { type: "available_commands_update"; commands: AvailableCommand[] }
+  | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "config_option_update"; option_id: string; value: Json }
   | { type: "usage_update"; usage: UsageUpdate }

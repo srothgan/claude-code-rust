@@ -120,6 +120,7 @@ pub fn create_app(cli: &Cli) -> App {
         todo_selected: 0,
         focus: FocusManager::default(),
         available_commands: Vec::new(),
+        available_agents: Vec::new(),
         recent_sessions: Vec::new(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
@@ -130,6 +131,7 @@ pub fn create_app(cli: &Cli) -> App {
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         mention: None,
         slash: None,
+        subagent: None,
         pending_submit: false,
         drain_key_count: 0,
         paste_burst: crate::app::paste_burst::PasteBurstDetector::new(),
@@ -665,6 +667,23 @@ fn map_available_commands_update(
     )
 }
 
+fn map_available_agents_update(agents: Vec<types::AvailableAgent>) -> model::AvailableAgentsUpdate {
+    model::AvailableAgentsUpdate::new(
+        agents
+            .into_iter()
+            .map(|agent| {
+                let mut mapped = model::AvailableAgent::new(agent.name, agent.description);
+                if let Some(model_name) = agent.model
+                    && !model_name.trim().is_empty()
+                {
+                    mapped = mapped.model(model_name);
+                }
+                mapped
+            })
+            .collect(),
+    )
+}
+
 fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {
@@ -691,6 +710,9 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
         types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
             model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(commands)),
         ),
+        types::SessionUpdate::AvailableAgentsUpdate { agents } => {
+            Some(model::SessionUpdate::AvailableAgentsUpdate(map_available_agents_update(agents)))
+        }
         types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
             Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
                 model::SessionModeId::new(current_mode_id),

@@ -37,6 +37,13 @@ pub struct AvailableCommand {
     pub input_hint: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailableAgent {
+    pub name: String,
+    pub description: String,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)]
 pub struct UsageUpdate {
@@ -175,6 +182,9 @@ pub enum SessionUpdate {
     },
     AvailableCommandsUpdate {
         commands: Vec<AvailableCommand>,
+    },
+    AvailableAgentsUpdate {
+        agents: Vec<AvailableAgent>,
     },
     CurrentModeUpdate {
         current_mode_id: String,

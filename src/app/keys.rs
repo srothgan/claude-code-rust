@@ -21,7 +21,7 @@ use super::{
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::clear_selection;
-use crate::app::{mention, slash};
+use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
 
@@ -175,10 +175,10 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
             }
         }
         (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
-            set_help_view(app, HelpView::Keys);
+            set_help_view(app, prev_help_view(app.help_view));
         }
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
-            set_help_view(app, HelpView::SlashCommands);
+            set_help_view(app, next_help_view(app.help_view));
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
             app.viewport.scroll_up(1);
@@ -256,6 +256,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
         slash::sync_with_cursor(app);
+        subagent::sync_with_cursor(app);
     }
 
     sync_help_focus(app);
@@ -651,16 +652,38 @@ pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) {
         handle_slash_key(app, key);
         return;
     }
+    if app.subagent.is_some() {
+        handle_subagent_key(app, key);
+        return;
+    }
     dispatch_key_by_focus(app, key);
 }
 
 fn handle_help_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => set_help_view(app, HelpView::Keys),
+        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => {
+            set_help_view(app, prev_help_view(app.help_view));
+        }
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
-            set_help_view(app, HelpView::SlashCommands);
+            set_help_view(app, next_help_view(app.help_view));
         }
         _ => handle_normal_key(app, key),
+    }
+}
+
+const fn next_help_view(current: HelpView) -> HelpView {
+    match current {
+        HelpView::Keys => HelpView::SlashCommands,
+        HelpView::SlashCommands => HelpView::Subagents,
+        HelpView::Subagents => HelpView::Keys,
+    }
+}
+
+const fn prev_help_view(current: HelpView) -> HelpView {
+    match current {
+        HelpView::Keys => HelpView::Subagents,
+        HelpView::SlashCommands => HelpView::Keys,
+        HelpView::Subagents => HelpView::SlashCommands,
     }
 }
 
@@ -676,6 +699,7 @@ fn sync_help_focus(app: &mut App) {
         && app.pending_permission_ids.is_empty()
         && app.mention.is_none()
         && app.slash.is_none()
+        && app.subagent.is_none()
     {
         app.claim_focus_target(FocusTarget::Help);
     } else {
@@ -727,6 +751,28 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) {
         }
         _ => {
             slash::deactivate(app);
+            dispatch_key_by_focus(app, key);
+        }
+    }
+}
+
+/// Handle keystrokes while `&` subagent autocomplete dropdown is active.
+fn handle_subagent_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) => subagent::move_up(app),
+        (KeyCode::Down, _) => subagent::move_down(app),
+        (KeyCode::Enter | KeyCode::Tab, _) => subagent::confirm_selection(app),
+        (KeyCode::Esc, _) => subagent::deactivate(app),
+        (KeyCode::Backspace, _) => {
+            let _ = app.input.textarea_delete_char_before();
+            subagent::update_query(app);
+        }
+        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
+            let _ = app.input.textarea_insert_char(c);
+            subagent::update_query(app);
+        }
+        _ => {
+            subagent::deactivate(app);
             dispatch_key_by_focus(app, key);
         }
     }

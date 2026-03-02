@@ -15,6 +15,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
+  AvailableAgent,
   AvailableCommand,
   BridgeCommand,
   BridgeEvent,
@@ -99,6 +100,7 @@ type SessionState = {
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   authHintSent: boolean;
+  lastAvailableAgentsSignature?: string;
   lastAssistantError?: string;
   lastTotalCostUsd?: number;
   sessionsToCloseAfterConnect?: SessionState[];
@@ -824,6 +826,88 @@ export function buildRateLimitUpdate(
   return update;
 }
 
+function availableAgentsSignature(agents: AvailableAgent[]): string {
+  return JSON.stringify(agents);
+}
+
+function normalizeAvailableAgentName(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+}
+
+export function mapAvailableAgents(value: unknown): AvailableAgent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const byName = new Map<string, AvailableAgent>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const name = normalizeAvailableAgentName(record.name);
+    if (!name) {
+      continue;
+    }
+    const description = typeof record.description === "string" ? record.description : "";
+    const model = typeof record.model === "string" && record.model.trim().length > 0 ? record.model : undefined;
+    const existing = byName.get(name);
+    if (!existing) {
+      byName.set(name, { name, description, model });
+      continue;
+    }
+    if (existing.description.trim().length === 0 && description.trim().length > 0) {
+      existing.description = description;
+    }
+    if (!existing.model && model) {
+      existing.model = model;
+    }
+  }
+
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function mapAvailableAgentsFromNames(value: unknown): AvailableAgent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const byName = new Map<string, AvailableAgent>();
+  for (const entry of value) {
+    const name = normalizeAvailableAgentName(entry);
+    if (!name || byName.has(name)) {
+      continue;
+    }
+    byName.set(name, { name, description: "" });
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function emitAvailableAgentsIfChanged(session: SessionState, agents: AvailableAgent[]): void {
+  const signature = availableAgentsSignature(agents);
+  if (session.lastAvailableAgentsSignature === signature) {
+    return;
+  }
+  session.lastAvailableAgentsSignature = signature;
+  emitSessionUpdate(session.sessionId, { type: "available_agents_update", agents });
+}
+
+function refreshAvailableAgents(session: SessionState): void {
+  if (typeof session.query.supportedAgents !== "function") {
+    return;
+  }
+  void session.query
+    .supportedAgents()
+    .then((agents) => {
+      emitAvailableAgentsIfChanged(session, mapAvailableAgents(agents));
+    })
+    .catch(() => {
+      // Best-effort only.
+    });
+}
+
 function emitFastModeUpdateIfChanged(session: SessionState, value: unknown): void {
   const next = parseFastModeState(value);
   if (!next || next === session.fastModeState) {
@@ -919,6 +1003,10 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
         }
       }
 
+      if (session.lastAvailableAgentsSignature === undefined && Array.isArray(msg.agents)) {
+        emitAvailableAgentsIfChanged(session, mapAvailableAgentsFromNames(msg.agents));
+      }
+
       void session.query
         .supportedCommands()
         .then((commands) => {
@@ -932,6 +1020,7 @@ function handleSdkMessage(session: SessionState, message: SDKMessage): void {
         .catch(() => {
           // Best-effort only; slash commands from init were already emitted.
         });
+      refreshAvailableAgents(session);
       return;
     }
 
@@ -1476,6 +1565,8 @@ async function createSession(params: {
       if (commands.length > 0) {
         emitSessionUpdate(session.sessionId, { type: "available_commands_update", commands });
       }
+      emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
+      refreshAvailableAgents(session);
     })
     .catch((error) => {
       if (session.connected) {

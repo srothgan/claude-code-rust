@@ -458,6 +458,38 @@ impl AvailableCommandsUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailableAgent {
+    pub name: String,
+    pub description: String,
+    pub model: Option<String>,
+}
+
+impl AvailableAgent {
+    #[must_use]
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { name: name.into(), description: description.into(), model: None }
+    }
+
+    #[must_use]
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailableAgentsUpdate {
+    pub available_agents: Vec<AvailableAgent>,
+}
+
+impl AvailableAgentsUpdate {
+    #[must_use]
+    pub fn new(available_agents: Vec<AvailableAgent>) -> Self {
+        Self { available_agents }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentModeUpdate {
     pub current_mode_id: SessionModeId,
 }
@@ -545,6 +577,7 @@ pub enum SessionUpdate {
     ToolCallUpdate(ToolCallUpdate),
     Plan(Plan),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
+    AvailableAgentsUpdate(AvailableAgentsUpdate),
     CurrentModeUpdate(CurrentModeUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     UsageUpdate(UsageUpdate),

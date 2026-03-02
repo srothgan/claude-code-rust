@@ -28,6 +28,7 @@ mod permissions;
 mod selection;
 pub(crate) mod slash;
 mod state;
+pub(crate) mod subagent;
 mod terminal;
 mod todos;
 mod update_check;

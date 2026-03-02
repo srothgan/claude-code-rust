@@ -27,6 +27,7 @@ use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::InputState;
 use super::mention;
 use super::slash;
+use super::subagent;
 
 #[derive(Debug)]
 pub struct ModeInfo {
@@ -46,6 +47,7 @@ pub enum HelpView {
     #[default]
     Keys,
     SlashCommands,
+    Subagents,
 }
 
 /// Login hint displayed when authentication is required during connection.
@@ -291,6 +293,8 @@ pub struct App {
     pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
+    /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
+    pub available_agents: Vec<model::AvailableAgent>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Last known frame area (for mouse selection mapping).
@@ -311,6 +315,8 @@ pub struct App {
     pub mention: Option<mention::MentionState>,
     /// Active slash-command autocomplete state.
     pub slash: Option<slash::SlashState>,
+    /// Active subagent autocomplete state (`&name`).
+    pub subagent: Option<subagent::SubagentState>,
     /// Deferred submit: set `true` when Enter is pressed. If another key event
     /// arrives during the same drain cycle (paste), this is cleared and the Enter
     /// becomes a newline. After the drain, the main loop checks: if still `true`,
@@ -1026,6 +1032,7 @@ impl App {
             todo_selected: 0,
             focus: FocusManager::default(),
             available_commands: Vec::new(),
+            available_agents: Vec::new(),
             recent_sessions: Vec::new(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,
@@ -1036,6 +1043,7 @@ impl App {
             rendered_input_area: ratatui::layout::Rect::default(),
             mention: None,
             slash: None,
+            subagent: None,
             pending_submit: false,
             drain_key_count: 0,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
@@ -1120,7 +1128,7 @@ impl App {
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
-            self.mention.is_some() || self.slash.is_some(),
+            self.mention.is_some() || self.slash.is_some() || self.subagent.is_some(),
             !self.pending_permission_ids.is_empty(),
         )
         .with_help(self.is_help_active())

@@ -997,6 +997,7 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.todo_selected = 0;
     app.focus = super::FocusManager::default();
     app.available_commands.clear();
+    app.available_agents.clear();
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
@@ -1008,6 +1009,7 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.rendered_input_area = ratatui::layout::Rect::default();
     app.mention = None;
     app.slash = None;
+    app.subagent = None;
     app.file_cache = None;
 }
 
@@ -1257,6 +1259,13 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             app.available_commands = cmds.available_commands;
             if app.slash.is_some() {
                 super::slash::update_query(app);
+            }
+        }
+        model::SessionUpdate::AvailableAgentsUpdate(agents) => {
+            tracing::debug!("Available subagents: {} agents", agents.available_agents.len());
+            app.available_agents = agents.available_agents;
+            if app.subagent.is_some() {
+                super::subagent::update_query(app);
             }
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
@@ -1894,6 +1903,7 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::AgentThoughtChunk(_) => "AgentThoughtChunk",
         model::SessionUpdate::Plan(_) => "Plan",
         model::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
+        model::SessionUpdate::AvailableAgentsUpdate(_) => "AvailableAgentsUpdate",
         model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
@@ -3395,6 +3405,12 @@ mod tests {
         app.help_view = HelpView::Keys;
 
         dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.help_view, HelpView::SlashCommands);
+
+        dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.help_view, HelpView::Subagents);
+
+        dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.help_view, HelpView::SlashCommands);
 
         dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));

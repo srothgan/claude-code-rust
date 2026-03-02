@@ -10,6 +10,7 @@ import {
   buildUsageUpdateFromResult,
   createToolCall,
   extractSessionHistoryUpdatesFromJsonl,
+  mapAvailableAgents,
   agentSdkVersionCompatibilityError,
   looksLikeAuthRequired,
   normalizeToolResultText,
@@ -127,6 +128,26 @@ test("buildRateLimitUpdate rejects invalid payloads", () => {
     }),
     { type: "rate_limit_update", status: "rejected" },
   );
+});
+
+test("mapAvailableAgents normalizes and deduplicates agents", () => {
+  const agents = mapAvailableAgents([
+    { name: "reviewer", description: "", model: "" },
+    { name: "reviewer", description: "Reviews code", model: "haiku" },
+    { name: "explore", description: "Explore codebase", model: "sonnet" },
+    { name: "  ", description: "ignored" },
+    {},
+  ]);
+
+  assert.deepEqual(agents, [
+    { name: "explore", description: "Explore codebase", model: "sonnet" },
+    { name: "reviewer", description: "Reviews code", model: "haiku" },
+  ]);
+});
+
+test("mapAvailableAgents rejects non-array payload", () => {
+  assert.deepEqual(mapAvailableAgents(null), []);
+  assert.deepEqual(mapAvailableAgents({}), []);
 });
 
 test("createToolCall builds edit diff content", () => {

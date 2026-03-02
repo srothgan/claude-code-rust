@@ -16,7 +16,7 @@
 
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
-use crate::app::{mention, slash};
+use crate::app::{mention, slash, subagent};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -41,6 +41,7 @@ const LOGIN_HINT_LINES: u16 = 2;
 enum Dropdown<'a> {
     Mention(&'a mention::MentionState),
     Slash(&'a slash::SlashState),
+    Subagent(&'a subagent::SubagentState),
 }
 
 struct DropdownMeta {
@@ -53,6 +54,7 @@ struct DropdownMeta {
 pub fn is_active(app: &App) -> bool {
     app.mention.as_ref().is_some_and(|m| !m.candidates.is_empty())
         || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
+        || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -60,6 +62,8 @@ pub fn compute_height(app: &App) -> u16 {
     let count = if let Some(m) = &app.mention {
         m.candidates.len()
     } else if let Some(s) = &app.slash {
+        s.candidates.len()
+    } else if let Some(s) = &app.subagent {
         s.candidates.len()
     } else {
         0
@@ -129,6 +133,11 @@ fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
     {
         return Some(Dropdown::Slash(s));
     }
+    if let Some(s) = &app.subagent
+        && !s.candidates.is_empty()
+    {
+        return Some(Dropdown::Subagent(s));
+    }
     None
 }
 
@@ -136,6 +145,7 @@ fn dropdown_trigger(dropdown: &Dropdown<'_>) -> (usize, usize) {
     match dropdown {
         Dropdown::Mention(m) => (m.trigger_row, m.trigger_col),
         Dropdown::Slash(s) => (s.trigger_row, s.trigger_col),
+        Dropdown::Subagent(s) => (s.trigger_row, s.trigger_col),
     }
 }
 
@@ -162,6 +172,16 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
             };
             DropdownMeta { visible_count, start, end, title }
         }
+        Dropdown::Subagent(s) => {
+            let visible_count = s.candidates.len().min(MAX_VISIBLE);
+            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
+            DropdownMeta {
+                visible_count,
+                start,
+                end,
+                title: format!(" Subagents ({}) ", s.candidates.len()),
+            }
+        }
     }
 }
 
@@ -176,6 +196,11 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
         Dropdown::Slash(s) => {
             for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
                 lines.push(slash_candidate_line(s, candidate, meta.start + i));
+            }
+        }
+        Dropdown::Subagent(s) => {
+            for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
+                lines.push(subagent_candidate_line(s, candidate, meta.start + i));
             }
         }
     }
@@ -237,6 +262,39 @@ fn slash_candidate_line(
     if let Some(secondary) = &candidate.secondary {
         spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
         spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::DIM)));
+    }
+
+    Line::from(spans)
+}
+
+fn subagent_candidate_line(
+    subagent: &subagent::SubagentState,
+    candidate: &subagent::SubagentCandidate,
+    global_idx: usize,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    push_selection_prefix(&mut spans, global_idx == subagent.dialog.selected);
+
+    let primary = format!("&{}", candidate.name);
+    if subagent.query.is_empty() {
+        spans.push(Span::raw(primary));
+    } else if let Some((match_start, match_end)) =
+        find_case_insensitive_range(&candidate.name, &subagent.query)
+    {
+        push_highlighted_text(&mut spans, &primary, match_start + 1, match_end + 1);
+    } else {
+        spans.push(Span::raw(primary));
+    }
+
+    let secondary = match (&candidate.description, &candidate.model) {
+        (desc, Some(model)) if !desc.trim().is_empty() => Some(format!("{desc} | model: {model}")),
+        (desc, None) if !desc.trim().is_empty() => Some(desc.clone()),
+        (_, Some(model)) => Some(format!("model: {model}")),
+        _ => None,
+    };
+    if let Some(secondary) = secondary {
+        spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(secondary, Style::default().fg(theme::DIM)));
     }
 
     Line::from(spans)

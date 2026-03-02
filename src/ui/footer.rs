@@ -56,12 +56,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled("]", Style::default().fg(fast_mode_color)),
                 Span::raw("  "),
                 Span::styled("?", Style::default().fg(Color::White)),
-                Span::styled(" : Shortcuts + Commands", Style::default().fg(theme::DIM)),
+                Span::styled(" : Help", Style::default().fg(theme::DIM)),
             ])
         } else {
             Line::from(vec![
                 Span::styled("?", Style::default().fg(Color::White)),
-                Span::styled(" : Shortcuts + Commands", Style::default().fg(theme::DIM)),
+                Span::styled(" : Help", Style::default().fg(theme::DIM)),
             ])
         };
         app.cached_footer_line = Some(line);
@@ -217,7 +217,7 @@ fn split_footer_columns_hint(area: Rect, left_min_width: u16) -> (Rect, Rect) {
 /// Note: `Length` (not `Min`) is intentional for left — `Min` allows left to grow beyond
 /// its minimum when there is excess space, which would steal that space from the hint.
 ///
-/// Example at 80 cols (78 available after 2 gaps), `left_min=24` ("? : Shortcuts + Commands"),
+/// Example at 80 cols (78 available after 2 gaps), `left_min=24`,
 /// `context_width=13` ("Context: 37%"):
 ///   left  = 24  (pinned, Length satisfied)
 ///   right = 13  (exact, Length satisfied)
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn split_footer_columns_hint_left_gets_its_minimum() {
-        // Left (mode/help, 24 chars "? : Shortcuts + Commands") must never shrink
+        // Left (mode/help) must never shrink even with wide update hints.
         // even when the update hint is wide.
         let area = Rect::new(0, 0, 80, 1);
         let left_min = 24u16;
@@ -405,7 +405,7 @@ mod tests {
     fn split_footer_three_columns_anchors_left_and_right() {
         // Columns 1 and 3 are anchored; mid (update hint) gets whatever is left.
         let area = Rect::new(0, 0, 80, 1);
-        let left_min = 24u16; // "? : Shortcuts + Commands"
+        let left_min = 24u16;
         let ctx_width = 13u16; // "Context: 37%"
         let (left, mid, right) = split_footer_three_columns(area, left_min, ctx_width);
 

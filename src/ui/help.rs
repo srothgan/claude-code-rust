@@ -17,6 +17,7 @@
 use crate::app::{App, AppStatus, FocusOwner, HelpView};
 use crate::ui::theme;
 use ratatui::Frame;
+use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -26,6 +27,10 @@ use unicode_width::UnicodeWidthStr;
 const COLUMN_GAP: usize = 4;
 const MAX_ROWS: usize = 8;
 const HELP_VERTICAL_PADDING_LINES: usize = 1;
+const SUBAGENT_NAME_MIN_WIDTH: usize = 12;
+const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
+const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
+const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 
 pub fn is_active(app: &App) -> bool {
     app.is_help_active()
@@ -61,11 +66,9 @@ pub fn compute_height(app: &App, area_width: u16) -> u16 {
             }
             height
         }
-        HelpView::SlashCommands => items
-            .iter()
-            .take(MAX_ROWS)
-            .map(|item| format_item_cell_lines(item, inner_width).len().max(1))
-            .sum(),
+        HelpView::SlashCommands | HelpView::Subagents => {
+            two_column_help_content_height(&items, inner_width)
+        }
     };
 
     let inner_height = (content_height + HELP_VERTICAL_PADDING_LINES * 2) as u16;
@@ -85,105 +88,130 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     match app.help_view {
-        HelpView::Keys => {
-            let rows = items.len().div_ceil(2).min(MAX_ROWS);
-            let max_items = rows * 2;
-            let items = &items[..items.len().min(max_items)];
-            let inner_width = area.width.saturating_sub(2) as usize;
-            let col_width = (inner_width.saturating_sub(COLUMN_GAP)) / 2;
-            let left_width = col_width;
-            let right_width = col_width;
+        HelpView::Keys => render_keys_help(frame, area, app, &items),
+        HelpView::SlashCommands => render_slash_help(frame, area, app, &items),
+        HelpView::Subagents => render_subagent_help(frame, area, app, &items),
+    }
+}
 
-            let mut table_rows: Vec<Row<'static>> =
-                Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2);
+#[allow(clippy::cast_possible_truncation)]
+fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
+    let rows = items.len().div_ceil(2).min(MAX_ROWS);
+    let max_items = rows * 2;
+    let items = &items[..items.len().min(max_items)];
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let col_width = (inner_width.saturating_sub(COLUMN_GAP)) / 2;
+    let left_width = col_width;
+    let right_width = col_width;
 
-            for _ in 0..HELP_VERTICAL_PADDING_LINES {
-                table_rows
-                    .push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
-            }
+    let mut table_rows: Vec<Row<'static>> =
+        Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2);
 
-            for row in 0..rows {
-                let left_idx = row;
-                let right_idx = row + rows;
+    for _ in 0..HELP_VERTICAL_PADDING_LINES {
+        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+    }
 
-                let left = items.get(left_idx).cloned().unwrap_or_default();
-                let right = items.get(right_idx).cloned().unwrap_or_default();
+    for row in 0..rows {
+        let left_idx = row;
+        let right_idx = row + rows;
 
-                let left_lines = format_item_cell_lines(&left, left_width);
-                let right_lines = format_item_cell_lines(&right, right_width);
-                let row_height = left_lines.len().max(right_lines.len()).max(1);
+        let left = items.get(left_idx).cloned().unwrap_or_default();
+        let right = items.get(right_idx).cloned().unwrap_or_default();
 
-                table_rows.push(
-                    Row::new(vec![
-                        Cell::from(Text::from(left_lines)),
-                        Cell::from(Text::from(right_lines)),
-                    ])
-                    .height(row_height as u16),
-                );
-            }
+        let left_lines = format_item_cell_lines(&left, left_width);
+        let right_lines = format_item_cell_lines(&right, right_width);
+        let row_height = left_lines.len().max(right_lines.len()).max(1);
 
-            for _ in 0..HELP_VERTICAL_PADDING_LINES {
-                table_rows
-                    .push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
-            }
+        table_rows.push(
+            Row::new(vec![Cell::from(Text::from(left_lines)), Cell::from(Text::from(right_lines))])
+                .height(row_height as u16),
+        );
+    }
 
-            let block = Block::default()
-                .title(help_title(app.help_view))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded);
+    for _ in 0..HELP_VERTICAL_PADDING_LINES {
+        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+    }
 
-            let table = Table::new(
-                table_rows,
-                [
-                    ratatui::layout::Constraint::Length(left_width as u16),
-                    ratatui::layout::Constraint::Length(right_width as u16),
-                ],
-            )
-            .column_spacing(COLUMN_GAP as u16)
-            .block(block);
+    let block = Block::default()
+        .title(help_title(app.help_view))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
 
-            frame.render_widget(table, area);
-        }
-        HelpView::SlashCommands => {
-            let rows = items.len().min(MAX_ROWS);
-            let items = &items[..rows];
-            let inner_width = area.width.saturating_sub(2) as usize;
-            let mut table_rows: Vec<Row<'static>> =
-                Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2);
+    let table = Table::new(
+        table_rows,
+        [Constraint::Length(left_width as u16), Constraint::Length(right_width as u16)],
+    )
+    .column_spacing(COLUMN_GAP as u16)
+    .block(block);
 
-            for _ in 0..HELP_VERTICAL_PADDING_LINES {
-                table_rows.push(Row::new(vec![Cell::from(Line::default())]));
-            }
+    frame.render_widget(table, area);
+}
 
-            for item in items {
-                let lines = format_item_cell_lines(item, inner_width);
-                let row_height = lines.len().max(1);
-                table_rows
-                    .push(Row::new(vec![Cell::from(Text::from(lines))]).height(row_height as u16));
-            }
+#[allow(clippy::cast_possible_truncation)]
+fn render_slash_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
+    render_two_column_help(frame, area, app, items);
+}
 
-            for _ in 0..HELP_VERTICAL_PADDING_LINES {
-                table_rows.push(Row::new(vec![Cell::from(Line::default())]));
-            }
+#[allow(clippy::cast_possible_truncation)]
+fn render_subagent_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
+    render_two_column_help(frame, area, app, items);
+}
 
-            let block = Block::default()
-                .title(help_title(app.help_view))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded);
+#[allow(clippy::cast_possible_truncation)]
+fn render_two_column_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
+    let rows = items.len().min(MAX_ROWS);
+    let items = &items[..rows];
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let (name_width, desc_width) = help_item_column_widths(items, inner_width);
 
-            let table =
-                Table::new(table_rows, [ratatui::layout::Constraint::Length(inner_width as u16)])
-                    .block(block);
+    let mut table_rows: Vec<Row<'static>> =
+        Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2 + rows.saturating_sub(2));
 
-            frame.render_widget(table, area);
+    for _ in 0..HELP_VERTICAL_PADDING_LINES {
+        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+    }
+
+    for (index, (name, description)) in items.iter().enumerate() {
+        let name_lines = wrap_text_lines(name, name_width, true);
+        let desc_lines = wrap_text_lines(description, desc_width, false);
+        let row_height = name_lines.len().max(desc_lines.len()).max(1);
+
+        table_rows.push(
+            Row::new(vec![Cell::from(Text::from(name_lines)), Cell::from(Text::from(desc_lines))])
+                .height(row_height as u16),
+        );
+
+        if index + 1 < items.len() {
+            table_rows.push(
+                Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]).height(1),
+            );
         }
     }
+
+    for _ in 0..HELP_VERTICAL_PADDING_LINES {
+        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+    }
+
+    let block = Block::default()
+        .title(help_title(app.help_view))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+
+    let table = Table::new(
+        table_rows,
+        [Constraint::Length(name_width as u16), Constraint::Length(desc_width as u16)],
+    )
+    .column_spacing(COLUMN_GAP as u16)
+    .block(block);
+
+    frame.render_widget(table, area);
 }
 
 fn build_help_items(app: &App) -> Vec<(String, String)> {
     match app.help_view {
         HelpView::Keys => build_key_help_items(app),
         HelpView::SlashCommands => build_slash_help_items(app),
+        HelpView::Subagents => build_subagent_help_items(app),
     }
 }
 
@@ -211,7 +239,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     let mut items: Vec<(String, String)> = vec![
-        ("Left/Right".to_owned(), "Switch help tab".to_owned()),
         // Global
         ("Ctrl+c".to_owned(), "Quit".to_owned()),
         ("Ctrl+q".to_owned(), "Quit".to_owned()),
@@ -282,7 +309,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 
 fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
     vec![
-        ("Left/Right".to_owned(), "Switch help tab".to_owned()),
         ("?".to_owned(), "Toggle help".to_owned()),
         ("Ctrl+c".to_owned(), "Quit".to_owned()),
         ("Ctrl+q".to_owned(), "Quit".to_owned()),
@@ -296,7 +322,7 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
-    let mut rows = vec![("Left/Right".to_owned(), "Switch help tab".to_owned())];
+    let mut rows = Vec::new();
     if app.status == AppStatus::Connecting {
         rows.push(("Loading commands...".to_owned(), String::new()));
         return rows;
@@ -337,6 +363,125 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
     rows
 }
 
+fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if app.status == AppStatus::Connecting {
+        rows.push(("Loading subagents...".to_owned(), String::new()));
+        return rows;
+    }
+    if app.status == AppStatus::Resuming {
+        rows.push(("Switching sessions...".to_owned(), String::new()));
+        return rows;
+    }
+
+    let mut agents: Vec<(String, String)> = app
+        .available_agents
+        .iter()
+        .filter(|agent| !agent.name.trim().is_empty())
+        .map(|agent| {
+            let description = if agent.description.trim().is_empty() {
+                "No description provided".to_owned()
+            } else {
+                agent.description.clone()
+            };
+            let label = match &agent.model {
+                Some(model) if !model.trim().is_empty() => {
+                    format!("&{}\nModel: {}", agent.name, model.trim())
+                }
+                _ => format!("&{}", agent.name),
+            };
+            (label, description)
+        })
+        .collect();
+
+    agents.sort_by(|a, b| a.0.cmp(&b.0));
+    agents.dedup_by(|a, b| a.0 == b.0);
+    if agents.is_empty() {
+        rows.push((
+            "No subagents advertised".to_owned(),
+            "Not advertised in this session".to_owned(),
+        ));
+        return rows;
+    }
+
+    rows.extend(agents);
+    rows
+}
+
+fn two_column_help_content_height(items: &[(String, String)], inner_width: usize) -> usize {
+    let rows = items.len().min(MAX_ROWS);
+    let items = &items[..rows];
+    let (name_width, desc_width) = help_item_column_widths(items, inner_width);
+    let row_height: usize = items
+        .iter()
+        .map(|(name, description)| {
+            let name_h = wrap_text_lines(name, name_width, true).len().max(1);
+            let desc_h = wrap_text_lines(description, desc_width, false).len().max(1);
+            name_h.max(desc_h)
+        })
+        .sum();
+    let spacer_rows = rows.saturating_sub(1);
+    row_height + spacer_rows
+}
+
+fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (usize, usize) {
+    if inner_width == 0 {
+        return (0, 0);
+    }
+    if inner_width <= COLUMN_GAP + 1 {
+        return (inner_width, 1);
+    }
+
+    let max_name_width =
+        items.iter().map(|(name, _)| UnicodeWidthStr::width(name.as_str())).max().unwrap_or(0);
+    let share_cap =
+        inner_width.saturating_mul(SUBAGENT_NAME_MAX_SHARE_NUM) / SUBAGENT_NAME_MAX_SHARE_DEN;
+    let min_name_width = SUBAGENT_NAME_MIN_WIDTH.min(share_cap.max(1));
+    let preferred_name_width =
+        max_name_width.max(min_name_width).min(SUBAGENT_NAME_MAX_WIDTH).min(share_cap.max(1));
+    let max_name_fit = inner_width.saturating_sub(COLUMN_GAP + 1);
+    let name_width = preferred_name_width.clamp(1, max_name_fit.max(1));
+    let desc_width = inner_width.saturating_sub(name_width + COLUMN_GAP).max(1);
+
+    (name_width, desc_width)
+}
+
+fn wrap_text_lines(text: &str, width: usize, bold: bool) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![Line::default()];
+    }
+    if text.is_empty() {
+        return vec![Line::default()];
+    }
+
+    let mut lines = Vec::new();
+    for segment in text.split('\n') {
+        if segment.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
+
+        let mut rest = segment.to_owned();
+        while !rest.is_empty() {
+            let (chunk, remaining) = take_prefix_by_width(&rest, width);
+            if chunk.is_empty() {
+                break;
+            }
+            if bold {
+                lines.push(Line::from(Span::styled(
+                    chunk,
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::raw(chunk));
+            }
+            rest = remaining;
+        }
+    }
+
+    if lines.is_empty() { vec![Line::default()] } else { lines }
+}
+
 fn help_title(view: HelpView) -> Line<'static> {
     let keys_style = if matches!(view, HelpView::Keys) {
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
@@ -344,6 +489,11 @@ fn help_title(view: HelpView) -> Line<'static> {
         Style::default().fg(theme::DIM)
     };
     let slash_style = if matches!(view, HelpView::SlashCommands) {
+        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::DIM)
+    };
+    let subagent_style = if matches!(view, HelpView::Subagents) {
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::DIM)
@@ -358,7 +508,10 @@ fn help_title(view: HelpView) -> Line<'static> {
         Span::styled("Keys", keys_style),
         Span::styled(" | ", Style::default().fg(theme::DIM)),
         Span::styled("Slash", slash_style),
+        Span::styled(" | ", Style::default().fg(theme::DIM)),
+        Span::styled("Subagents", subagent_style),
         Span::styled("]", Style::default().fg(theme::DIM)),
+        Span::styled("  (< > switch tabs)", Style::default().fg(theme::DIM)),
     ])
 }
 
@@ -559,6 +712,15 @@ mod tests {
     }
 
     #[test]
+    fn slash_tab_does_not_repeat_tab_navigation_hint() {
+        let mut app = App::test_default();
+        app.help_view = HelpView::SlashCommands;
+
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
+    }
+
+    #[test]
     fn key_tab_connecting_shows_startup_shortcuts_only() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
@@ -583,5 +745,44 @@ mod tests {
         assert!(has_item(&items, "Up/Down", "Scroll chat"));
         assert!(has_item(&items, "Input keys", "Unavailable after error"));
         assert!(!has_item(&items, "Enter", "Send message"));
+    }
+
+    #[test]
+    fn key_tab_does_not_repeat_tab_navigation_hint() {
+        let app = App::test_default();
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
+    }
+
+    #[test]
+    fn subagent_tab_shows_advertised_subagents() {
+        let mut app = App::test_default();
+        app.help_view = HelpView::Subagents;
+        app.available_agents = vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("haiku"),
+            crate::agent::model::AvailableAgent::new("explore", ""),
+        ];
+
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "&reviewer\nModel: haiku", "Review code"));
+        assert!(has_item(&items, "&explore", "No description provided"));
+    }
+
+    #[test]
+    fn subagent_tab_shows_loading_while_connecting() {
+        let mut app = App::test_default();
+        app.help_view = HelpView::Subagents;
+        app.status = AppStatus::Connecting;
+
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Loading subagents...", ""));
+    }
+
+    #[test]
+    fn subagent_tab_does_not_repeat_tab_navigation_hint() {
+        let mut app = App::test_default();
+        app.help_view = HelpView::Subagents;
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
     }
 }

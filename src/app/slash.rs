@@ -260,6 +260,7 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.rendered_input_lines.clear();
     app.mention = None;
     app.slash = None;
+    app.subagent = None;
     app.pending_submit = false;
     app.drain_key_count = 0;
     app.pending_paste_text.clear();
@@ -598,6 +599,7 @@ pub fn activate(app: &mut App) {
 
     app.slash = Some(state);
     app.mention = None;
+    app.subagent = None;
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -634,7 +636,7 @@ pub fn sync_with_cursor(app: &mut App) {
 
 pub fn deactivate(app: &mut App) {
     app.slash = None;
-    if app.mention.is_none() {
+    if app.mention.is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
@@ -658,7 +660,7 @@ pub fn confirm_selection(app: &mut App) {
     };
 
     let Some(candidate) = slash.candidates.get(slash.dialog.selected) else {
-        if app.mention.is_none() {
+        if app.mention.is_none() && app.subagent.is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -670,7 +672,7 @@ pub fn confirm_selection(app: &mut App) {
             line_count = app.input.lines.len(),
             "Slash confirm aborted: trigger row out of bounds"
         );
-        if app.mention.is_none() {
+        if app.mention.is_none() && app.subagent.is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -685,7 +687,7 @@ pub fn confirm_selection(app: &mut App) {
                     line_len = chars.len(),
                     "Slash confirm aborted: trigger column out of bounds"
                 );
-                if app.mention.is_none() {
+                if app.mention.is_none() && app.subagent.is_none() {
                     app.release_focus_target(FocusTarget::Mention);
                 }
                 return;
@@ -696,7 +698,7 @@ pub fn confirm_selection(app: &mut App) {
                     found = ?chars[slash.trigger_col],
                     "Slash confirm aborted: trigger column is not slash"
                 );
-                if app.mention.is_none() {
+                if app.mention.is_none() && app.subagent.is_none() {
                     app.release_focus_target(FocusTarget::Mention);
                 }
                 return;
@@ -716,7 +718,7 @@ pub fn confirm_selection(app: &mut App) {
                     line_len = chars.len(),
                     "Slash confirm aborted: invalid argument token range"
                 );
-                if app.mention.is_none() {
+                if app.mention.is_none() && app.subagent.is_none() {
                     app.release_focus_target(FocusTarget::Mention);
                 }
                 return;
@@ -748,7 +750,7 @@ pub fn confirm_selection(app: &mut App) {
     app.input.sync_textarea_engine();
 
     sync_with_cursor(app);
-    if app.slash.is_none() && app.mention.is_none() {
+    if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }

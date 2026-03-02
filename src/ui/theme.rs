@@ -38,6 +38,7 @@ pub const ICON_FAILED: &str = "\u{2717}";
 pub const STATUS_ERROR: Color = Color::Red;
 pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
+pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
 /// SDK tool icon + label pair. Monochrome Unicode symbols.
 /// Unknown tool names fall back to a generic Tool label.
