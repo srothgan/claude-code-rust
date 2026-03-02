@@ -485,15 +485,6 @@ fn handle_bridge_event(
         BridgeEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, cmd_tx, session_id, request);
         }
-        BridgeEvent::ElicitationRequest { session_id, request } => {
-            tracing::debug!(
-                "bridge elicitation_request received (types-only phase): session_id={} request_id={} mode={:?} server={}",
-                session_id,
-                request.request_id,
-                request.mode,
-                request.server_name
-            );
-        }
         BridgeEvent::TurnComplete { .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete);
         }

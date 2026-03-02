@@ -1531,6 +1531,23 @@ async function createSession(params: {
         resume: params.resume,
         model: params.model,
         canUseTool,
+        onElicitation: async (request) => {
+          const requestMode = typeof request.mode === "string" ? request.mode : "unknown";
+          const requestServer =
+            typeof request.serverName === "string" && request.serverName.trim().length > 0
+              ? request.serverName
+              : "unknown";
+          const requestMessage =
+            typeof request.message === "string" && request.message.trim().length > 0
+              ? request.message
+              : "<no message>";
+          console.error(
+            `[sdk warn] elicitation unsupported without MCP settings UI; ` +
+              `auto-canceling session_id=${session.sessionId} server=${requestServer} ` +
+              `mode=${requestMode} message=${JSON.stringify(requestMessage)}`,
+          );
+          return { action: "cancel" as const };
+        },
       },
     });
   } catch (error) {

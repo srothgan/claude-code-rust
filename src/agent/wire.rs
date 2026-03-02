@@ -72,12 +72,6 @@ pub enum BridgeCommand {
         tool_call_id: String,
         outcome: types::PermissionOutcome,
     },
-    ElicitationResponse {
-        session_id: String,
-        elicitation_request_id: String,
-        action: types::ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
     Shutdown,
 }
 
@@ -113,10 +107,6 @@ pub enum BridgeEvent {
     PermissionRequest {
         session_id: String,
         request: types::PermissionRequest,
-    },
-    ElicitationRequest {
-        session_id: String,
-        request: types::ElicitationRequest,
     },
     TurnComplete {
         session_id: String,
@@ -174,44 +164,6 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 update: types::SessionUpdate::CurrentModeUpdate {
                     current_mode_id: "default".to_owned(),
-                },
-            },
-        };
-        let json = serde_json::to_string(&env).expect("serialize");
-        let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, env);
-    }
-
-    #[test]
-    fn command_envelope_roundtrip_elicitation_response_json() {
-        let env = CommandEnvelope {
-            request_id: Some("req-elicitation-1".to_owned()),
-            command: BridgeCommand::ElicitationResponse {
-                session_id: "s1".to_owned(),
-                elicitation_request_id: "elic-1".to_owned(),
-                action: types::ElicitationAction::Accept,
-                content: Some(serde_json::json!({ "code": "123456" })),
-            },
-        };
-        let json = serde_json::to_string(&env).expect("serialize");
-        let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, env);
-    }
-
-    #[test]
-    fn event_envelope_roundtrip_elicitation_request_json() {
-        let env = EventEnvelope {
-            request_id: None,
-            event: BridgeEvent::ElicitationRequest {
-                session_id: "s1".to_owned(),
-                request: types::ElicitationRequest {
-                    request_id: "elic-1".to_owned(),
-                    server_name: "mcp-auth".to_owned(),
-                    message: "Please approve browser sign-in".to_owned(),
-                    mode: types::ElicitationMode::Url,
-                    url: Some("https://example.test/auth".to_owned()),
-                    elicitation_id: Some("oauth-flow-1".to_owned()),
-                    requested_schema: None,
                 },
             },
         };
