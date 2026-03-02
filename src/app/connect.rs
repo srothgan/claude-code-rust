@@ -146,6 +146,7 @@ pub fn create_app(cli: &Cli) -> App {
         cached_header_line: None,
         cached_footer_line: None,
         update_check_hint: None,
+        startup_status_blocking_error: false,
         session_usage: super::SessionUsageState::default(),
         fast_mode_state: model::FastModeState::Off,
         last_rate_limit_update: None,

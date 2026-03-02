@@ -26,6 +26,7 @@ pub(crate) mod mention;
 pub(crate) mod paste_burst;
 mod permissions;
 mod selection;
+mod service_status_check;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
@@ -43,6 +44,7 @@ pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
+pub use service_status_check::start_service_status_check;
 pub use state::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
     IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,

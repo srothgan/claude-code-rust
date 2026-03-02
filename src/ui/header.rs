@@ -26,7 +26,7 @@ const HEADER_PAD: u16 = 2;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
-        x: area.x + HEADER_PAD,
+        x: area.x.saturating_add(HEADER_PAD),
         y: area.y,
         width: area.width.saturating_sub(HEADER_PAD * 2),
         height: area.height,

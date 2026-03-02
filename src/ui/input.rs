@@ -31,6 +31,9 @@ use tui_textarea::{CursorMove, TextArea, WrapMode};
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
 
+/// Extra right-side breathing room so text doesn't touch the padded edge.
+const INPUT_RIGHT_PAD: u16 = 1;
+
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
@@ -72,9 +75,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Render login hint banner if present
     if let (Some(hint_area), Some(hint)) = (hint_area, &app.login_hint) {
         let hint_pad = Rect {
-            x: hint_area.x + INPUT_PAD,
+            x: hint_area.x.saturating_add(INPUT_PAD),
             y: hint_area.y,
-            width: hint_area.width.saturating_sub(INPUT_PAD * 2),
+            width: hint_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
             height: hint_area.height,
         };
         let lines = vec![
@@ -94,9 +97,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let padded = Rect {
-        x: input_main_area.x + INPUT_PAD,
+        x: input_main_area.x.saturating_add(INPUT_PAD),
         y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2),
+        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
 
@@ -296,7 +299,8 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 /// Called by the layout to allocate the correct input area height.
 pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     let hint = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
-    let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
+    let content_width =
+        area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
     let mut textarea = build_input_textarea(app);
     textarea.set_min_rows(1);
     textarea.set_max_rows(MAX_INPUT_HEIGHT);

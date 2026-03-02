@@ -214,6 +214,37 @@ test("normalizeToolResultText collapses persisted-output payload to first meanin
   assert.equal(normalized, "Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt");
 });
 
+test("normalizeToolResultText does not sanitize non-error output", () => {
+  const text =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+  assert.equal(normalizeToolResultText(text), text);
+});
+
+test("normalizeToolResultText sanitizes exact SDK rejection payloads for errors", () => {
+  const cancelledText =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+  assert.equal(normalizeToolResultText(cancelledText, true), "Cancelled by user.");
+
+  const deniedText =
+    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.";
+  assert.equal(normalizeToolResultText(deniedText, true), "Permission denied.");
+});
+
+test("normalizeToolResultText sanitizes SDK rejection prefixes with user follow-up", () => {
+  const cancelledWithUserMessage =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nPlease skip this";
+  assert.equal(normalizeToolResultText(cancelledWithUserMessage, true), "Cancelled by user.");
+
+  const deniedWithUserMessage =
+    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:\nNot now";
+  assert.equal(normalizeToolResultText(deniedWithUserMessage, true), "Permission denied.");
+});
+
+test("normalizeToolResultText does not sanitize substring matches in error output", () => {
+  const bashOutput = "grep output: doesn't want to proceed with this tool use";
+  assert.equal(normalizeToolResultText(bashOutput, true), bashOutput);
+});
+
 test("cache split policy defaults stay aligned with UI thresholds", () => {
   assert.equal(CACHE_SPLIT_POLICY.softLimitBytes, 1536);
   assert.equal(CACHE_SPLIT_POLICY.hardLimitBytes, 4096);
@@ -241,6 +272,17 @@ test("buildToolResultFields uses normalized persisted-output text", () => {
       },
     },
   ]);
+});
+
+test("buildToolResultFields sanitizes SDK rejection text only for failed results", () => {
+  const sdkRejectionText =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+
+  const successFields = buildToolResultFields(false, sdkRejectionText);
+  assert.equal(successFields.raw_output, sdkRejectionText);
+
+  const errorFields = buildToolResultFields(true, sdkRejectionText);
+  assert.equal(errorFields.raw_output, "Cancelled by user.");
 });
 
 test("buildToolResultFields maps structured Write output to diff content", () => {

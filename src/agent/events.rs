@@ -65,8 +65,16 @@ pub enum ClientEvent {
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
     /// Startup update check found a newer published version.
     UpdateAvailable { latest_version: String, current_version: String },
+    /// Startup Claude Code status check detected degraded/outage conditions.
+    ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceStatusSeverity {
+    Warning,
+    Error,
 }
 
 /// Shared handle to all spawned terminal processes.
