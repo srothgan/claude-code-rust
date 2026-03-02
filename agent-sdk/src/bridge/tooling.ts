@@ -186,16 +186,47 @@ function persistedOutputFirstLine(text: string): string | null {
   return null;
 }
 
-export function normalizeToolResultText(value: unknown): string {
+/**
+ * Replace verbose SDK-internal tool rejection messages with short user-facing text.
+ * The SDK sends these as tool result content meant for Claude, not for the user.
+ */
+const USER_REJECTED_TOOL_USE_EXACT =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+const USER_REJECTED_TOOL_USE_PREFIX =
+  "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:";
+const PERMISSION_DENIED_TOOL_USE_EXACT =
+  "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.";
+const PERMISSION_DENIED_TOOL_USE_PREFIX =
+  "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:";
+
+function sanitizeSdkRejectionText(text: string): string {
+  const normalized = text.trim();
+  if (
+    normalized === USER_REJECTED_TOOL_USE_EXACT ||
+    normalized.startsWith(USER_REJECTED_TOOL_USE_PREFIX)
+  ) {
+    return "Cancelled by user.";
+  }
+  if (
+    normalized === PERMISSION_DENIED_TOOL_USE_EXACT ||
+    normalized.startsWith(PERMISSION_DENIED_TOOL_USE_PREFIX)
+  ) {
+    return "Permission denied.";
+  }
+  return text;
+}
+
+export function normalizeToolResultText(value: unknown, isError = false): string {
   const text = extractText(value);
   if (!text) {
     return "";
   }
   const persistedLine = persistedOutputFirstLine(text);
-  if (persistedLine) {
-    return persistedLine;
+  const normalized = persistedLine || text;
+  if (!isError) {
+    return normalized;
   }
-  return text;
+  return sanitizeSdkRejectionText(normalized);
 }
 
 function resolveToolName(toolCall: ToolCall | undefined): string {
@@ -272,7 +303,7 @@ export function buildToolResultFields(
   rawContent: unknown,
   base?: ToolCall,
 ): ToolCallUpdateFields {
-  const rawOutput = normalizeToolResultText(rawContent);
+  const rawOutput = normalizeToolResultText(rawContent, isError);
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",

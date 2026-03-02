@@ -357,6 +357,8 @@ pub struct App {
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
     /// Optional startup update-check hint rendered at the footer's right edge.
     pub update_check_hint: Option<String>,
+    /// True when startup service-status check reported an outage and input should remain blocked.
+    pub startup_status_blocking_error: bool,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
     /// Fast mode state telemetry from the SDK.
@@ -506,6 +508,7 @@ impl App {
 
     pub fn clear_tool_scope_tracking(&mut self) {
         self.tool_call_scopes.clear();
+        self.active_task_ids.clear();
         self.active_subagent_tool_ids.clear();
         self.subagent_idle_since = None;
     }
@@ -1064,6 +1067,7 @@ impl App {
             cached_header_line: None,
             cached_footer_line: None,
             update_check_hint: None,
+            startup_status_blocking_error: false,
             session_usage: SessionUsageState::default(),
             fast_mode_state: model::FastModeState::Off,
             last_rate_limit_update: None,
@@ -2580,6 +2584,20 @@ mod tests {
             app.remove_active_task(&format!("ghost-{i}"));
         }
         assert!(app.active_task_ids.is_empty());
+    }
+
+    /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
+    /// Regression test: before the fix, a leaked task ID from a cancelled turn
+    /// caused main-agent tools on the next turn to be misclassified as Subagent scope.
+    #[test]
+    fn clear_tool_scope_tracking_also_clears_active_task_ids() {
+        let mut app = make_test_app();
+        app.insert_active_task("task-leaked".into());
+        assert!(!app.active_task_ids.is_empty());
+        app.clear_tool_scope_tracking();
+        assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
+        assert!(app.active_subagent_tool_ids.is_empty());
+        assert!(app.subagent_idle_since.is_none());
     }
 
     // IncrementalMarkdown

@@ -66,7 +66,11 @@ fn msg_spinner(
     let is_last = index + 1 == msg_count;
     let is_assistant = matches!(msg.role, MessageRole::Assistant);
     let mid_turn = is_last && is_thinking && is_assistant && !msg.blocks.is_empty();
-    let subagent = is_last && is_assistant && show_subagent_thinking && !msg.blocks.is_empty();
+    let subagent = is_last
+        && is_assistant
+        && base.is_active
+        && show_subagent_thinking
+        && !msg.blocks.is_empty();
     SpinnerState {
         is_last_message: is_last,
         is_thinking_mid_turn: mid_turn,

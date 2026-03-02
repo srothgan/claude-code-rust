@@ -26,7 +26,7 @@ use super::{
 use crate::agent::error_handling::{
     TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,
 };
-use crate::agent::events::ClientEvent;
+use crate::agent::events::{ClientEvent, ServiceStatusSeverity};
 use crate::agent::model;
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
@@ -366,6 +366,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
             handle_update_available_event(app, &latest_version, &current_version);
         }
+        ClientEvent::ServiceStatus { severity, message } => {
+            handle_service_status_event(app, severity, &message);
+        }
         ClientEvent::FatalError(error) => handle_fatal_error_event(app, error),
     }
 }
@@ -475,7 +478,7 @@ fn handle_turn_complete_event(app: &mut App) {
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
     }
 
-    app.status = AppStatus::Ready;
+    set_ready_status_unless_startup_blocked(app);
     app.files_accessed = 0;
     app.clear_tool_scope_tracking();
     app.refresh_git_branch();
@@ -488,6 +491,14 @@ fn handle_turn_complete_event(app: &mut App) {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
     super::input_submit::drain_queued_submission(app);
+}
+
+fn set_ready_status_unless_startup_blocked(app: &mut App) {
+    if app.startup_status_blocking_error {
+        app.status = AppStatus::Error;
+        return;
+    }
+    app.status = AppStatus::Ready;
 }
 
 fn handle_connected_client_event(
@@ -522,7 +533,7 @@ fn handle_connected_client_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
-    app.status = AppStatus::Ready;
+    set_ready_status_unless_startup_blocked(app);
     app.resuming_session_id = None;
 }
 
@@ -547,7 +558,7 @@ fn handle_sessions_listed_event(
 }
 
 fn handle_auth_required_event(app: &mut App, method_name: String, method_description: String) {
-    app.status = AppStatus::Ready;
+    set_ready_status_unless_startup_blocked(app);
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
     app.pending_compact_clear = false;
@@ -584,7 +595,7 @@ fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     });
     app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
-    app.status = AppStatus::Ready;
+    set_ready_status_unless_startup_blocked(app);
     app.resuming_session_id = None;
 }
 
@@ -605,7 +616,7 @@ fn handle_session_replaced_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
-    app.status = AppStatus::Ready;
+    set_ready_status_unless_startup_blocked(app);
     app.resuming_session_id = None;
 }
 
@@ -613,6 +624,26 @@ fn handle_update_available_event(app: &mut App, latest_version: &str, current_ve
     app.update_check_hint = Some(format!(
         "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
     ));
+}
+
+fn handle_service_status_event(app: &mut App, severity: ServiceStatusSeverity, message: &str) {
+    let mut full_message = message.to_owned();
+    if matches!(severity, ServiceStatusSeverity::Error) {
+        full_message.push_str("\n\n");
+        full_message.push_str(TURN_ERROR_INPUT_LOCK_HINT);
+    }
+    let ui_severity = match severity {
+        ServiceStatusSeverity::Warning => SystemSeverity::Warning,
+        ServiceStatusSeverity::Error => SystemSeverity::Error,
+    };
+    push_system_message_with_severity(app, Some(ui_severity), &full_message);
+
+    if matches!(severity, ServiceStatusSeverity::Error) {
+        app.startup_status_blocking_error = true;
+        app.input.clear();
+        app.pending_submit = false;
+        app.status = AppStatus::Error;
+    }
 }
 
 fn handle_fatal_error_event(app: &mut App, error: AppError) {
@@ -669,7 +700,6 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
             mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         }
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-        app.input.clear();
         app.pending_submit = false;
         app.status = AppStatus::Ready;
         app.files_accessed = 0;
@@ -1046,9 +1076,19 @@ fn fallback_sdk_tool_name(kind: model::ToolKind) -> &'static str {
 }
 
 fn resolve_sdk_tool_name(kind: model::ToolKind, meta: Option<&serde_json::Value>) -> String {
-    sdk_tool_name_from_meta(meta)
-        .filter(|name| !name.trim().is_empty())
-        .map_or_else(|| fallback_sdk_tool_name(kind).to_owned(), str::to_owned)
+    match sdk_tool_name_from_meta(meta).filter(|name| !name.trim().is_empty()) {
+        Some(name) => name.to_owned(),
+        None => {
+            let fallback = fallback_sdk_tool_name(kind);
+            if matches!(kind, model::ToolKind::Think) {
+                tracing::warn!(
+                    "ToolKind::Think tool arrived with no meta.claudeCode.toolName -- \
+                     Task/Agent scope detection may be incorrect; falling back to '{fallback}'"
+                );
+            }
+            fallback.to_owned()
+        }
+    }
 }
 
 fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
@@ -1309,49 +1349,91 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     }
 }
 
-fn format_optional_number(value: Option<f64>) -> Option<String> {
-    let value = value?;
-    if (value.fract()).abs() < f64::EPSILON {
-        return Some(format!("{value:.0}"));
+fn format_rate_limit_type(raw: &str) -> &str {
+    match raw {
+        "five_hour" => "5-hour",
+        "daily" => "daily",
+        "minute" => "per-minute",
+        "seven_day" => "7-day",
+        "seven_day_opus" => "7-day Opus",
+        "seven_day_sonnet" => "7-day Sonnet",
+        "overage" => "overage",
+        other => other,
     }
-    Some(format!("{value}"))
 }
 
-fn rate_limit_status_token(status: model::RateLimitStatus) -> &'static str {
-    match status {
-        model::RateLimitStatus::Allowed => "allowed",
-        model::RateLimitStatus::AllowedWarning => "allowed_warning",
-        model::RateLimitStatus::Rejected => "rejected",
-    }
+/// Format an epoch timestamp as a countdown and UTC wall-clock: "4h 23m at 14:30 UTC".
+fn format_resets_at(epoch_secs: f64) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let now = std::time::SystemTime::now();
+
+    let countdown = match (UNIX_EPOCH + Duration::from_secs_f64(epoch_secs)).duration_since(now) {
+        Ok(d) => {
+            let total_secs = d.as_secs();
+            if total_secs < 60 {
+                "< 1 minute".to_owned()
+            } else {
+                let hours = total_secs / 3600;
+                let minutes = (total_secs % 3600) / 60;
+                if hours > 0 { format!("{hours}h {minutes}m") } else { format!("{minutes}m") }
+            }
+        }
+        Err(_) => "now".to_owned(),
+    };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let epoch_u64 = epoch_secs.max(0.0) as u64;
+    let h = (epoch_u64 % 86400) / 3600;
+    let m = (epoch_u64 % 3600) / 60;
+
+    format!("{countdown} at {h:02}:{m:02} UTC")
 }
 
 fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
-    let mut parts = vec![format!("Rate limit status={}", rate_limit_status_token(update.status))];
-    if let Some(v) = format_optional_number(update.utilization) {
-        parts.push(format!("utilization={v}"));
+    let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
+
+    // Intro
+    let intro = if is_rejected { "Rate limit reached" } else { "Approaching rate limit" };
+
+    // "you've used 91% of your 5-hour rate limit"
+    let usage_part = match (update.utilization, &update.rate_limit_type) {
+        (Some(util), Some(rlt)) => {
+            format!(
+                "you've used {:.0}% of your {} rate limit",
+                util * 100.0,
+                format_rate_limit_type(rlt),
+            )
+        }
+        (Some(util), None) => format!("you've used {:.0}% of your rate limit", util * 100.0),
+        (None, Some(rlt)) => {
+            format!("you've hit your {} rate limit", format_rate_limit_type(rlt))
+        }
+        (None, None) => "you've hit your rate limit".to_owned(),
+    };
+
+    let mut message = format!("{intro}, {usage_part}.");
+
+    // Overage hint
+    if is_rejected {
+        // Rejected: state if overage is in use
+        if update.is_using_overage == Some(true) {
+            message.push_str(" You are using your overage allowance.");
+        }
+    } else {
+        // Warning: hint that overage is available
+        if update.is_using_overage == Some(false) || update.overage_status.is_some() {
+            message.push_str(" You can continue using your overage allowance.");
+        }
     }
-    if let Some(v) = format_optional_number(update.resets_at) {
-        parts.push(format!("resets_at={v}"));
+
+    // Resets in X at HH:MM
+    if let Some(resets_at) = update.resets_at {
+        use std::fmt::Write;
+        let _ = write!(message, " Resets in {}.", format_resets_at(resets_at));
     }
-    if let Some(v) = &update.rate_limit_type {
-        parts.push(format!("rate_limit_type={v}"));
-    }
-    if let Some(v) = &update.overage_status {
-        parts.push(format!("overage_status={}", rate_limit_status_token(*v)));
-    }
-    if let Some(v) = format_optional_number(update.overage_resets_at) {
-        parts.push(format!("overage_resets_at={v}"));
-    }
-    if let Some(v) = &update.overage_disabled_reason {
-        parts.push(format!("overage_disabled_reason={v}"));
-    }
-    if let Some(v) = update.is_using_overage {
-        parts.push(format!("is_using_overage={v}"));
-    }
-    if let Some(v) = format_optional_number(update.surpassed_threshold) {
-        parts.push(format!("surpassed_threshold={v}"));
-    }
-    parts.join(" ")
+
+    message
 }
 
 fn push_system_message_with_severity(
@@ -1999,6 +2081,55 @@ mod tests {
         let scope = register_tool_call_scope(&mut app, "tool-task", "Task");
         assert_eq!(scope, ToolCallScope::Task);
         assert!(app.active_task_ids.contains("tool-task"));
+    }
+
+    /// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
+    /// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
+    /// `clear_tool_scope_tracking` (called on TurnComplete) did not clear `active_task_ids`.
+    /// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
+    /// which eventually triggered the subagent thinking indicator spuriously.
+    #[test]
+    fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
+        let mut app = make_test_app();
+
+        // Simulate a Task tool call arriving as InProgress (no Completed update will follow)
+        let task_tc = model::ToolCall::new("task-1", "Research")
+            .kind(model::ToolKind::Think)
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(task_tc)),
+        );
+        assert!(app.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
+
+        // User cancels then TurnComplete finalizes the turn
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
+
+        // Stale task ID must be gone after turn boundary
+        assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
+        assert!(app.active_subagent_tool_ids.is_empty());
+        assert!(app.subagent_idle_since.is_none());
+
+        // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
+        let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
+            .kind(model::ToolKind::Search)
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode": {"toolName": "Glob"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(glob_tc)),
+        );
+        assert_eq!(
+            app.tool_call_scope("glob-1"),
+            Some(ToolCallScope::MainAgent),
+            "main-agent tool must not be misclassified as Subagent after stale task is cleared"
+        );
+        assert!(
+            app.active_subagent_tool_ids.is_empty(),
+            "main-agent tool must not enter subagent tracking"
+        );
     }
 
     #[test]
@@ -2743,6 +2874,49 @@ mod tests {
     }
 
     #[test]
+    fn service_status_warning_pushes_system_warning_without_locking_input() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::ServiceStatus {
+                severity: ServiceStatusSeverity::Warning,
+                message: "Claude Code status: Partial Outage (indicator: minor).".into(),
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(!app.startup_status_blocking_error);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
+    }
+
+    #[test]
+    fn service_status_error_locks_input_and_survives_connected_event() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::ServiceStatus {
+                severity: ServiceStatusSeverity::Error,
+                message: "Claude Code status: Major Outage (indicator: major).".into(),
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(app.startup_status_blocking_error);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+        assert!(matches!(app.status, AppStatus::Error));
+    }
+
+    #[test]
     fn session_replaced_resets_chat_and_transient_state() {
         let mut app = make_test_app();
         app.messages.push(user_msg("hello"));
@@ -3196,7 +3370,7 @@ mod tests {
         let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert!(text.contains("Rate limit status=allowed_warning"));
+        assert!(text.contains("Approaching rate limit"));
         assert!(text.contains("Turn blocked by account or plan limits"));
     }
 

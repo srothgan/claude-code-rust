@@ -27,6 +27,8 @@ use unicode_width::UnicodeWidthChar;
 
 /// Horizontal padding to match input inset.
 const INPUT_PAD: u16 = 2;
+/// Extra right-side breathing room -- keep in sync with `ui/input.rs`.
+const INPUT_RIGHT_PAD: u16 = 1;
 /// Prompt column width: prompt plus trailing space = 2 columns.
 const PROMPT_WIDTH: u16 = 2;
 /// Max dropdown width (characters).
@@ -388,9 +390,9 @@ fn compute_text_area(input_area: Rect, has_login_hint: bool) -> Rect {
     };
 
     let padded = Rect {
-        x: input_main_area.x + INPUT_PAD,
+        x: input_main_area.x.saturating_add(INPUT_PAD),
         y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2),
+        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
     let [_prompt_area, text_area] =

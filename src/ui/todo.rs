@@ -25,6 +25,9 @@ use ratatui::widgets::Paragraph;
 /// Maximum visible lines in the expanded todo panel.
 const MAX_VISIBLE: usize = 5;
 
+/// Horizontal padding to match header/input/footer inset.
+const TODO_PAD: u16 = 2;
+
 /// Compute the height the todo panel needs in the layout.
 /// Returns 0 when there are no todos, 1 for the closed compact line,
 /// or min(`todo_count`, `MAX_VISIBLE`) for the open panel.
@@ -89,7 +92,7 @@ fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
         };
 
         app.cached_todo_compact = Some(Line::from(vec![
-            Span::styled("  [", Style::default().fg(theme::DIM)),
+            Span::styled("[", Style::default().fg(theme::DIM)),
             Span::styled(format!("{completed}/{total}"), Style::default().fg(theme::RUST_ORANGE)),
             Span::styled("] ", Style::default().fg(theme::DIM)),
             Span::styled(task_text, Style::default().fg(Color::White)),
@@ -97,7 +100,13 @@ fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(line) = &app.cached_todo_compact {
-        frame.render_widget(Paragraph::new(line.clone()), area);
+        let padded = Rect {
+            x: area.x.saturating_add(TODO_PAD),
+            y: area.y,
+            width: area.width.saturating_sub(TODO_PAD * 2),
+            height: area.height,
+        };
+        frame.render_widget(Paragraph::new(line.clone()), padded);
     }
 }
 
@@ -157,10 +166,16 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
+            Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
             Span::styled(display_text.clone(), text_style),
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    let padded = Rect {
+        x: area.x.saturating_add(TODO_PAD),
+        y: area.y,
+        width: area.width.saturating_sub(TODO_PAD * 2),
+        height: area.height,
+    };
+    frame.render_widget(Paragraph::new(lines), padded);
 }

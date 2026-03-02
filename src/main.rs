@@ -60,6 +60,7 @@ fn run() -> anyhow::Result<()> {
         // Phase 2: start background connection + TUI in parallel
         claude_code_rust::app::start_connection(&app, &cli);
         claude_code_rust::app::start_update_check(&app, &cli);
+        claude_code_rust::app::start_service_status_check(&app);
         let result = claude_code_rust::app::run_tui(&mut app).await;
         maybe_print_resume_hint(&cli, &app, result.is_ok());
 
