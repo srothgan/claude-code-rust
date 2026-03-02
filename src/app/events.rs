@@ -1076,18 +1076,17 @@ fn fallback_sdk_tool_name(kind: model::ToolKind) -> &'static str {
 }
 
 fn resolve_sdk_tool_name(kind: model::ToolKind, meta: Option<&serde_json::Value>) -> String {
-    match sdk_tool_name_from_meta(meta).filter(|name| !name.trim().is_empty()) {
-        Some(name) => name.to_owned(),
-        None => {
-            let fallback = fallback_sdk_tool_name(kind);
-            if matches!(kind, model::ToolKind::Think) {
-                tracing::warn!(
-                    "ToolKind::Think tool arrived with no meta.claudeCode.toolName -- \
-                     Task/Agent scope detection may be incorrect; falling back to '{fallback}'"
-                );
-            }
-            fallback.to_owned()
+    if let Some(name) = sdk_tool_name_from_meta(meta).filter(|name| !name.trim().is_empty()) {
+        name.to_owned()
+    } else {
+        let fallback = fallback_sdk_tool_name(kind);
+        if matches!(kind, model::ToolKind::Think) {
+            tracing::warn!(
+                "ToolKind::Think tool arrived with no meta.claudeCode.toolName -- \
+                 Task/Agent scope detection may be incorrect; falling back to '{fallback}'"
+            );
         }
+        fallback.to_owned()
     }
 }
 
@@ -2085,7 +2084,7 @@ mod tests {
 
     /// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
     /// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
-    /// `clear_tool_scope_tracking` (called on TurnComplete) did not clear `active_task_ids`.
+    /// `clear_tool_scope_tracking` (called on `TurnComplete`) did not clear `active_task_ids`.
     /// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
     /// which eventually triggered the subagent thinking indicator spuriously.
     #[test]
