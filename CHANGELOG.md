@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-03-03 [Changes][v0.6.0]
+
+### Features
+
+- **Agent SDK 0.2.63 migration** (#64): Upgrade from SDK 0.2.52 to 0.2.63; align bridge, wire types, and session APIs with the new SDK surface
+- **Fast mode support** (#64): Wire fast mode state end-to-end from bridge to TUI; footer badge shows `FAST` or `FAST:CD` during cooldown; deduplicated state change emission
+- **Rate limit updates** (#64): Parse and display rate limit events with readable user-facing summaries including overage and reset timing
+- **Available agents and subagent autocomplete** (#64): Wire `available_agents_update` across bridge and rust layers; `&` ampersand autocomplete for subagents; new Subagents help tab with two-column layout
+- **Session resume via SDK-native APIs** (#64): Replace legacy JSONL parsing with `resume_session` backed by `listSessions` and `getSessionMessages`; align to SDK session metadata fields
+- **Interactive plan approval** (#61): Intercept `ExitPlanMode` and render structured Approve/Reject widget with arrow navigation, `y`/`n` quick shortcuts, and `allowedPrompts` display
+- **Write diff capping** (#61): Truncate Write tool diffs exceeding 50 lines to head/tail window with omission marker; auto-scroll on oversized writes; plan files exempted
+- **Startup service status checks** (#65): Query status.claude.com during startup; emit warning or error system messages; lock input on outage-level errors
+- **Subagent thinking indicator** (#60): Debounced (1500ms) idle indicator between subagent tool calls to avoid flicker; suppress normal spinner when subagent indicator is active
+- **System message severity levels** (#64): Replace `SystemWarning` with `MessageRole::System` plus Info/Warning/Error severity with matching label colors
+- **Slash command output in transcript** (#64): Local slash command results now surface in assistant transcript
+
+### Fixes
+
+- **Context percentage formula** (#61): Exclude `output_tokens` from context calculation -- Anthropic input formula is cache_read + cache_creation + input only; context % now updates as soon as `input_tokens` arrive
+- **Stale task scope cleanup** (#65): Clear `active_task_ids` on tool scope reset to prevent subagent misclassification after cancelled tasks
+- **Subagent indicator false positives** (#65): Gate thinking indicator on active spinner state to prevent false idle rendering
+- **SDK rejection sanitization** (#65): Harden bridge rejection replacement with exact and known-prefix matching only on failed tool results
+- **Saturating coordinate math** (#65): Use saturating arithmetic for header, input, autocomplete, and todo padding to prevent overflow panics
+
+### UI
+
+- **Footer module extraction** (#61): Move all footer logic into dedicated `src/ui/footer.rs`; clean up imports in `mod.rs`
+- **Autocomplete stabilization** (#61): Stable popover width; shift left near right edge; UTF-8-safe case-insensitive highlight ranges
+- **Help overlay improvements** (#64): Add subagents tab; move tab-switch hint into help title; rename footer hint from "Shortcuts + Commands" to "Help"
+
+### Refactoring
+
+- **Handler decomposition** (#61): Split large connection/event/key/slash/message handlers into smaller helpers; remove `clippy::too_many_lines` suppressions; `FocusContext` builder-style API
+
+### CI and Dependencies
+
+- Bump `actions/upload-artifact` from 6 to 7 (#62)
+- Bump `actions/download-artifact` from 7 to 8 (#63)
+- Migrate from npm `package-lock.json` to pnpm `pnpm-lock.yaml` in agent-sdk (#64)
+
 ## [0.5.1] - 2026-02-27 [Changes][v0.5.1]
 
 ### Fixes
@@ -219,6 +259,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.6.0]: https://github.com/srothgan/claude-code-rust/compare/v0.5.1...v0.6.0
 [v0.5.1]: https://github.com/srothgan/claude-code-rust/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/srothgan/claude-code-rust/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/srothgan/claude-code-rust/compare/v0.4.0...v0.4.1

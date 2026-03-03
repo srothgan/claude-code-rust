@@ -27,7 +27,7 @@
   },
   "scripts": {
     "postinstall": "node ./scripts/postinstall.js",
-    "prepack": "npm --prefix agent-sdk run build"
+    "prepack": "pnpm -C agent-sdk run build"
   },
   "engines": {
     "node": ">=18"

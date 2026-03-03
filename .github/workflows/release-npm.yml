@@ -142,11 +142,13 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install latest npm
-        run: npm install -g npm@latest
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
 
       - name: Install agent-sdk dependencies
-        run: npm --prefix agent-sdk install
+        run: pnpm -C agent-sdk install
 
       - name: Sync npm version from Cargo.toml
         run: npm version "${{ needs.verify.outputs.version }}" --no-git-tag-version --allow-same-version

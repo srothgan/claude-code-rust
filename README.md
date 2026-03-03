@@ -2,9 +2,11 @@
 
 A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
 
+[![npm version](https://img.shields.io/npm/v/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
+[![npm downloads](https://img.shields.io/npm/dm/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
 [![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88.0-blue.svg)](https://blog.rust-lang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
 ## About
 
@@ -56,8 +58,6 @@ Three-layer design:
 
 ## Known Limitations
 
-- Token usage and cost tracking can be partial when upstream runtime events do not include full usage data.
-- Session resume via `--resume` depends on runtime support and account/session availability.
 - `/login` and `/logout` are intentionally not offered in command discovery for this release.
 
 ## Status
