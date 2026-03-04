@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::dialog::DialogState;
 use super::{
     App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo,
     ModeState,
@@ -122,7 +123,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         handle_blocked_input_shortcuts(app, key);
         return;
     }
@@ -145,7 +146,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// During blocked-input states (Connecting, Resuming, Error), keep input disabled and only allow
+/// During blocked-input states (Connecting, `CommandPending`, Error), keep input disabled and only allow
 /// navigation/help shortcuts.
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
@@ -667,6 +668,18 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
             set_help_view(app, next_help_view(app.help_view));
         }
+        (KeyCode::Up, m) if m == KeyModifiers::NONE => {
+            if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
+                let count = crate::ui::help::help_item_count(app);
+                app.help_dialog.move_up(count, app.help_visible_count);
+            }
+        }
+        (KeyCode::Down, m) if m == KeyModifiers::NONE => {
+            if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
+                let count = crate::ui::help::help_item_count(app);
+                app.help_dialog.move_down(count, app.help_visible_count);
+            }
+        }
         _ => handle_normal_key(app, key),
     }
 }
@@ -691,6 +704,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
     if app.help_view != next {
         tracing::debug!(from = ?app.help_view, to = ?next, "Help view changed via keyboard");
         app.help_view = next;
+        app.help_dialog = DialogState::default();
     }
 }
 

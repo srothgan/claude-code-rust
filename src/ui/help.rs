@@ -25,7 +25,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
 use unicode_width::UnicodeWidthStr;
 
 const COLUMN_GAP: usize = 4;
-const MAX_ROWS: usize = 8;
+/// Content lines available in the help panel (excluding padding and borders).
+const MAX_ROWS: usize = 10;
 const HELP_VERTICAL_PADDING_LINES: usize = 1;
 const SUBAGENT_NAME_MIN_WIDTH: usize = 12;
 const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
@@ -36,48 +37,23 @@ pub fn is_active(app: &App) -> bool {
     app.is_help_active()
 }
 
-#[allow(clippy::cast_possible_truncation)]
-pub fn compute_height(app: &App, area_width: u16) -> u16 {
-    if !is_active(app) {
-        return 0;
-    }
-    let items = build_help_items(app);
-    if items.is_empty() {
-        return 0;
-    }
-    let inner_width = area_width.saturating_sub(2) as usize;
-    let content_height = match app.help_view {
-        HelpView::Keys => {
-            let rows = items.len().div_ceil(2).min(MAX_ROWS);
-            let col_width = (inner_width.saturating_sub(COLUMN_GAP)) / 2;
-            let left_width = col_width;
-            let right_width = col_width;
-
-            let mut height = 0usize;
-            for row in 0..rows {
-                let left_idx = row;
-                let right_idx = row + rows;
-                let left = items.get(left_idx).cloned().unwrap_or_default();
-                let right = items.get(right_idx).cloned().unwrap_or_default();
-
-                let left_h = format_item_cell_lines(&left, left_width).len().max(1);
-                let right_h = format_item_cell_lines(&right, right_width).len().max(1);
-                height += left_h.max(right_h);
-            }
-            height
-        }
-        HelpView::SlashCommands | HelpView::Subagents => {
-            two_column_help_content_height(&items, inner_width)
-        }
-    };
-
-    let inner_height = (content_height + HELP_VERTICAL_PADDING_LINES * 2) as u16;
-    // Border top + bottom.
-    inner_height.saturating_add(2)
+/// Returns the number of items in the current help tab (for key navigation).
+pub fn help_item_count(app: &App) -> usize {
+    build_help_items(app).len()
 }
 
 #[allow(clippy::cast_possible_truncation)]
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub fn compute_height(app: &App, _area_width: u16) -> u16 {
+    if !is_active(app) {
+        return 0;
+    }
+    // Fixed height for all tabs so the panel does not jump when switching.
+    // MAX_ROWS content lines + vertical padding + border top/bottom.
+    (MAX_ROWS + HELP_VERTICAL_PADDING_LINES * 2) as u16 + 2
+}
+
+#[allow(clippy::cast_possible_truncation)]
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.height == 0 || area.width == 0 || !is_active(app) {
         return;
     }
@@ -89,8 +65,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     match app.help_view {
         HelpView::Keys => render_keys_help(frame, area, app, &items),
-        HelpView::SlashCommands => render_slash_help(frame, area, app, &items),
-        HelpView::Subagents => render_subagent_help(frame, area, app, &items),
+        HelpView::SlashCommands | HelpView::Subagents => {
+            render_two_column_help(frame, area, app, &items);
+        }
     }
 }
 
@@ -148,32 +125,64 @@ fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, 
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn render_slash_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
-    render_two_column_help(frame, area, app, items);
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn render_subagent_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
-    render_two_column_help(frame, area, app, items);
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn render_two_column_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
-    let rows = items.len().min(MAX_ROWS);
-    let items = &items[..rows];
+fn render_two_column_help(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    items: &[(String, String)],
+) {
     let inner_width = area.width.saturating_sub(2) as usize;
+    // Compute column widths from ALL items so they stay stable while scrolling.
     let (name_width, desc_width) = help_item_column_widths(items, inner_width);
 
-    let mut table_rows: Vec<Row<'static>> =
-        Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2 + rows.saturating_sub(2));
+    // Available content lines after borders and vertical padding.
+    let available_lines =
+        area.height.saturating_sub(2).saturating_sub(HELP_VERTICAL_PADDING_LINES as u16 * 2)
+            as usize;
+
+    // Dynamically compute how many items fit from the current scroll offset,
+    // accounting for each item's actual wrapped height and spacer lines.
+    let visible_count = compute_visible_count(
+        items,
+        app.help_dialog.scroll_offset,
+        available_lines,
+        name_width,
+        desc_width,
+    );
+
+    // Clamp scroll/selection with the dynamic viewport size and cache it
+    // so the key handler uses the same value on the next keypress.
+    app.help_dialog.clamp(items.len(), visible_count);
+    app.help_visible_count = visible_count;
+
+    let start = app.help_dialog.scroll_offset;
+    let end = (start + visible_count).min(items.len());
+    let visible_items = &items[start..end];
+    let selected = app.help_dialog.selected;
+
+    // Capacity: items + spacers between items + vertical padding.
+    let mut table_rows: Vec<Row<'static>> = Vec::with_capacity(
+        visible_count + visible_count.saturating_sub(1) + HELP_VERTICAL_PADDING_LINES * 2,
+    );
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
         table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
     }
 
-    for (index, (name, description)) in items.iter().enumerate() {
-        let name_lines = wrap_text_lines(name, name_width, true);
-        let desc_lines = wrap_text_lines(description, desc_width, false);
+    for (view_index, (name, description)) in visible_items.iter().enumerate() {
+        let abs_index = start + view_index;
+        let is_selected = abs_index == selected;
+
+        let name_style = if is_selected {
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        let desc_style =
+            if is_selected { Style::default().fg(theme::RUST_ORANGE) } else { Style::default() };
+
+        let name_lines = wrap_text_lines_styled(name, name_width, name_style);
+        let desc_lines = wrap_text_lines_styled(description, desc_width, desc_style);
         let row_height = name_lines.len().max(desc_lines.len()).max(1);
 
         table_rows.push(
@@ -181,7 +190,8 @@ fn render_two_column_help(frame: &mut Frame, area: Rect, app: &App, items: &[(St
                 .height(row_height as u16),
         );
 
-        if index + 1 < items.len() {
+        // Spacer row between items for readability.
+        if view_index + 1 < visible_count {
             table_rows.push(
                 Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]).height(1),
             );
@@ -223,8 +233,11 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         }
         return items;
     }
-    if app.status == AppStatus::Resuming {
-        let mut items = blocked_input_help_items("Unavailable while resuming");
+    if app.status == AppStatus::CommandPending {
+        let mut items = blocked_input_help_items(&format!(
+            "Unavailable while command runs ({})",
+            pending_command_help_label(app)
+        ));
         if app.update_check_hint.is_some() {
             items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
         }
@@ -321,14 +334,18 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
     ]
 }
 
+fn pending_command_help_label(app: &App) -> String {
+    app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
+}
+
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     if app.status == AppStatus::Connecting {
         rows.push(("Loading commands...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::Resuming {
-        rows.push(("Switching sessions...".to_owned(), String::new()));
+    if app.status == AppStatus::CommandPending {
+        rows.push((pending_command_help_label(app), String::new()));
         return rows;
     }
 
@@ -340,7 +357,6 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
                 if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
             (name, cmd.description.clone())
         })
-        .filter(|(name, _)| !matches!(name.as_str(), "/login" | "/logout"))
         .collect();
 
     commands.sort_by(|a, b| a.0.cmp(&b.0));
@@ -369,8 +385,8 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
         rows.push(("Loading subagents...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::Resuming {
-        rows.push(("Switching sessions...".to_owned(), String::new()));
+    if app.status == AppStatus::CommandPending {
+        rows.push((pending_command_help_label(app), String::new()));
         return rows;
     }
 
@@ -408,20 +424,60 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     rows
 }
 
-fn two_column_help_content_height(items: &[(String, String)], inner_width: usize) -> usize {
-    let rows = items.len().min(MAX_ROWS);
-    let items = &items[..rows];
-    let (name_width, desc_width) = help_item_column_widths(items, inner_width);
-    let row_height: usize = items
-        .iter()
-        .map(|(name, description)| {
-            let name_h = wrap_text_lines(name, name_width, true).len().max(1);
-            let desc_h = wrap_text_lines(description, desc_width, false).len().max(1);
-            name_h.max(desc_h)
-        })
-        .sum();
-    let spacer_rows = rows.saturating_sub(1);
-    row_height + spacer_rows
+/// Count how many terminal lines `text` wraps into at the given column `width`.
+/// Uses the same splitting logic as `take_prefix_by_width` / `wrap_text_lines_styled`.
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    if width == 0 || text.is_empty() {
+        return 1;
+    }
+    let mut count = 0;
+    for segment in text.split('\n') {
+        if segment.is_empty() {
+            count += 1;
+            continue;
+        }
+        let mut rest = segment.to_owned();
+        while !rest.is_empty() {
+            let (chunk, remaining) = take_prefix_by_width(&rest, width);
+            if chunk.is_empty() {
+                break;
+            }
+            count += 1;
+            rest = remaining;
+        }
+    }
+    count.max(1)
+}
+
+/// Compute how many items (starting from `start`) fit within `available_lines`,
+/// accounting for each item's actual wrapped height and 1-line spacers between items.
+fn compute_visible_count(
+    items: &[(String, String)],
+    start: usize,
+    available_lines: usize,
+    name_width: usize,
+    desc_width: usize,
+) -> usize {
+    let mut used = 0;
+    let mut count = 0;
+
+    for (name, desc) in items.iter().skip(start) {
+        let name_h = wrapped_line_count(name, name_width);
+        let desc_h = wrapped_line_count(desc, desc_width);
+        let item_h = name_h.max(desc_h).max(1);
+
+        // 1-line spacer before every item except the first.
+        let spacer = usize::from(count > 0);
+
+        if used + spacer + item_h > available_lines {
+            break;
+        }
+
+        used += spacer + item_h;
+        count += 1;
+    }
+
+    count.max(1)
 }
 
 fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (usize, usize) {
@@ -446,11 +502,8 @@ fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (u
     (name_width, desc_width)
 }
 
-fn wrap_text_lines(text: &str, width: usize, bold: bool) -> Vec<Line<'static>> {
-    if width == 0 {
-        return vec![Line::default()];
-    }
-    if text.is_empty() {
+fn wrap_text_lines_styled(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    if width == 0 || text.is_empty() {
         return vec![Line::default()];
     }
 
@@ -467,14 +520,7 @@ fn wrap_text_lines(text: &str, width: usize, bold: bool) -> Vec<Line<'static>> {
             if chunk.is_empty() {
                 break;
             }
-            if bold {
-                lines.push(Line::from(Span::styled(
-                    chunk,
-                    Style::default().add_modifier(Modifier::BOLD),
-                )));
-            } else {
-                lines.push(Line::raw(chunk));
-            }
+            lines.push(Line::from(Span::styled(chunk, style)));
             rest = remaining;
         }
     }
@@ -499,6 +545,12 @@ fn help_title(view: HelpView) -> Line<'static> {
         Style::default().fg(theme::DIM)
     };
 
+    let hint = if matches!(view, HelpView::SlashCommands | HelpView::Subagents) {
+        "  (< > tabs  \u{25b2}\u{25bc} scroll)"
+    } else {
+        "  (< > switch tabs)"
+    };
+
     Line::from(vec![
         Span::styled(
             " Help ",
@@ -511,7 +563,7 @@ fn help_title(view: HelpView) -> Line<'static> {
         Span::styled(" | ", Style::default().fg(theme::DIM)),
         Span::styled("Subagents", subagent_style),
         Span::styled("]", Style::default().fg(theme::DIM)),
-        Span::styled("  (< > switch tabs)", Style::default().fg(theme::DIM)),
+        Span::styled(hint, Style::default().fg(theme::DIM)),
     ])
 }
 
@@ -681,19 +733,17 @@ mod tests {
     }
 
     #[test]
-    fn slash_tab_hides_login_logout_commands() {
+    fn slash_tab_shows_login_logout_when_advertised() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
         app.available_commands = vec![
             crate::agent::model::AvailableCommand::new("/login", "Login"),
             crate::agent::model::AvailableCommand::new("/logout", "Logout"),
-            crate::agent::model::AvailableCommand::new("/mode", "Switch mode"),
         ];
 
         let items = build_help_items(&app);
-        assert!(!has_item(&items, "/login", "Login"));
-        assert!(!has_item(&items, "/logout", "Logout"));
-        assert!(has_item(&items, "/mode", "Switch mode"));
+        assert!(has_item(&items, "/login", "Login"));
+        assert!(has_item(&items, "/logout", "Logout"));
     }
 
     #[test]

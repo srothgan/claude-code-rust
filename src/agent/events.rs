@@ -67,6 +67,10 @@ pub enum ClientEvent {
     UpdateAvailable { latest_version: String, current_version: String },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
+    /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
+    AuthCompleted { conn: Rc<crate::agent::client::AgentConnection>, cwd: String, model: String },
+    /// /logout completed via `claude auth logout`.
+    LogoutCompleted,
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
 }

@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub(crate) mod auth;
 mod cache_policy;
 mod connect;
 mod dialog;
@@ -48,9 +49,9 @@ pub use service_status_check::start_service_status_check;
 pub use state::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
     IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
-    ModeInfo, ModeState, PasteSessionState, RecentSessionInfo, SelectionKind, SelectionPoint,
-    SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
+    ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionKind,
+    SelectionPoint, SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 
@@ -63,6 +64,39 @@ use futures::{FutureExt as _, StreamExt};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
+// Terminal suspend / resume helpers (reused by /login, /logout)
+// ---------------------------------------------------------------------------
+
+/// Disable raw mode and crossterm features so a child process can own the
+/// terminal (e.g. `claude auth login` which opens a browser flow).
+pub(crate) fn suspend_terminal() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableFocusChange,
+        PopKeyboardEnhancementFlags
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// Re-enable raw mode and crossterm features after a child process finishes.
+pub(crate) fn resume_terminal() {
+    let _ = crossterm::terminal::enable_raw_mode();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableFocusChange,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TUI event loop
 // ---------------------------------------------------------------------------
 
@@ -71,19 +105,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
-    // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableFocusChange,
-        // Enable enhanced keyboard protocol for reliable modifier detection (e.g. Shift+Enter)
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
-    );
+    // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
+    resume_terminal();
 
     let mut events = EventStream::new();
     let tick_duration = Duration::from_millis(16);
@@ -163,7 +186,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Phase 3: render once (only when something changed)
         let is_animating = matches!(
             app.status,
-            AppStatus::Connecting | AppStatus::Resuming | AppStatus::Thinking | AppStatus::Running
+            AppStatus::Connecting
+                | AppStatus::CommandPending
+                | AppStatus::Thinking
+                | AppStatus::Running
         ) || app.is_compacting;
         if is_animating {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
@@ -232,13 +258,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     }
 
     // Restore terminal
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::DisableBracketedPaste,
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange,
-        PopKeyboardEnhancementFlags
-    );
+    suspend_terminal();
     ratatui::restore();
 
     Ok(())

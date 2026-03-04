@@ -19,7 +19,7 @@ mod chat;
 mod diff;
 mod footer;
 mod header;
-mod help;
+pub(crate) mod help;
 mod input;
 mod layout;
 mod markdown;

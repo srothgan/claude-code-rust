@@ -17,12 +17,13 @@
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::InputState;
 use super::mention;
@@ -55,6 +56,12 @@ pub enum HelpView {
 pub struct LoginHint {
     pub method_name: String,
     pub method_description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingCommandAck {
+    CurrentModeUpdate,
+    ConfigOptionUpdate { option_id: String },
 }
 
 /// A single todo item from Claude's `TodoWrite` tool call.
@@ -229,6 +236,10 @@ pub struct App {
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
     pub resuming_session_id: Option<String>,
+    /// Spinner label shown while a slash command is in flight (`CommandPending`).
+    pub pending_command_label: Option<String>,
+    /// Ack marker required to clear `CommandPending` for strict completion semantics.
+    pub pending_command_ack: Option<PendingCommandAck>,
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
@@ -240,6 +251,8 @@ pub struct App {
     pub cwd_raw: String,
     pub files_accessed: usize,
     pub mode: Option<ModeState>,
+    /// Latest config options observed from bridge `config_option_update` events.
+    pub config_options: BTreeMap<String, serde_json::Value>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
     /// When true, the current/next turn completion should clear local conversation history.
@@ -247,6 +260,11 @@ pub struct App {
     pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
+    /// Scroll/selection state for the Slash and Subagents help tabs.
+    pub help_dialog: dialog::DialogState,
+    /// Number of items that currently fit in the help viewport (updated each render).
+    /// Used by key handlers for accurate scroll step size.
+    pub help_visible_count: usize,
     /// Tool call IDs with pending permission prompts, ordered by arrival.
     /// The first entry is the "focused" permission that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -1007,6 +1025,8 @@ impl App {
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
+            pending_command_label: None,
+            pending_command_ack: None,
             should_quit: false,
             exit_error: None,
             session_id: None,
@@ -1016,9 +1036,12 @@ impl App {
             cwd_raw: "/test".into(),
             files_accessed: 0,
             mode: None,
+            config_options: BTreeMap::new(),
             login_hint: None,
             pending_compact_clear: false,
             help_view: HelpView::Keys,
+            help_dialog: dialog::DialogState::default(),
+            help_visible_count: 5,
             pending_permission_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             queued_submission: None,
@@ -1353,8 +1376,8 @@ impl Default for ChatViewport {
 pub enum AppStatus {
     /// Waiting for bridge adapter connection (TUI shown, input disabled).
     Connecting,
-    /// Switching to another existing session via `/resume`.
-    Resuming,
+    /// A slash command is in flight (input disabled, spinner shown).
+    CommandPending,
     Ready,
     Thinking,
     Running,
