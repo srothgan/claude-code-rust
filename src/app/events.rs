@@ -89,7 +89,11 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             }
         }
         Event::FocusGained => {
+            app.notifications.on_focus_gained();
             app.refresh_git_branch();
+        }
+        Event::FocusLost => {
+            app.notifications.on_focus_lost();
         }
         Event::Resize(_, _) => {
             // Force a full terminal clear on resize. Without this, terminal
@@ -99,7 +103,8 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             // resets the terminal's internal state.
             app.force_redraw = true;
         }
-        _ => {}
+        // Non-press key events (Release, Repeat) -- ignored.
+        Event::Key(_) => {}
     }
 }
 
@@ -448,6 +453,7 @@ fn handle_permission_request_event(
         app.pending_permission_ids.push(tool_id);
         app.claim_focus_target(FocusTarget::Permission);
         app.viewport.engage_auto_scroll();
+        app.notifications.notify(super::notify::NotifyEvent::PermissionRequired);
     } else {
         tracing::warn!("Permission request for non-tool block index: {tool_id}; auto-rejecting");
         reject_permission_request(response_tx, &options);
@@ -498,6 +504,9 @@ fn handle_turn_complete_event(app: &mut App) {
         super::slash::clear_conversation_history(app);
     } else if turn_was_active || cancelled_requested {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
+    }
+    if turn_was_active {
+        app.notifications.notify(super::notify::NotifyEvent::TurnComplete);
     }
     super::input_submit::maybe_auto_submit_after_cancel(app);
 }

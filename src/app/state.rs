@@ -391,6 +391,8 @@ pub struct App {
     pub terminal_tool_calls: Vec<(String, usize, usize)>,
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
+    /// Central notification manager (bell + desktop toast when unfocused).
+    pub notifications: super::notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
@@ -1097,6 +1099,7 @@ impl App {
             is_compacting: false,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
+            notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),

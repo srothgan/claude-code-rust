@@ -159,6 +159,7 @@ pub fn create_app(cli: &Cli) -> App {
         is_compacting: false,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
+        notifications: super::notify::NotificationManager::new(),
         perf: cli
             .perf_log
             .as_deref()
