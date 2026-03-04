@@ -37,8 +37,6 @@ const MAX_WIDTH: u16 = 60;
 const MIN_WIDTH: u16 = 20;
 /// Vertical gap (in rows) between the trigger line and the dropdown.
 const ANCHOR_VERTICAL_GAP: u16 = 1;
-/// Keep in sync with `ui/input.rs`.
-const LOGIN_HINT_LINES: u16 = 2;
 
 enum Dropdown<'a> {
     Mention(&'a mention::MentionState),
@@ -91,7 +89,7 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         return;
     }
 
-    let text_area = compute_text_area(input_area, app.login_hint.is_some());
+    let text_area = compute_text_area(input_area, crate::ui::input::hint_line_count(app));
     if text_area.width == 0 || text_area.height == 0 {
         return;
     }
@@ -379,11 +377,10 @@ fn push_highlighted_text(
     }
 }
 
-fn compute_text_area(input_area: Rect, has_login_hint: bool) -> Rect {
-    let input_main_area = if has_login_hint {
-        let [_hint, main] =
-            Layout::vertical([Constraint::Length(LOGIN_HINT_LINES), Constraint::Min(1)])
-                .areas(input_area);
+fn compute_text_area(input_area: Rect, hint_lines: u16) -> Rect {
+    let input_main_area = if hint_lines > 0 {
+        let [_hint, main] = Layout::vertical([Constraint::Length(hint_lines), Constraint::Min(1)])
+            .areas(input_area);
         main
     } else {
         input_area

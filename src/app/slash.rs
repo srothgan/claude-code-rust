@@ -247,6 +247,7 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.is_compacting = false;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
 
     app.messages.clear();
     app.messages.push(ChatMessage::welcome_with_recent(

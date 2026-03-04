@@ -272,11 +272,11 @@ pub struct App {
     /// Set when a cancel notification succeeds; consumed on `TurnComplete`
     /// to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
-    /// Queued submit text while a turn is still active.
-    /// Latest submission wins and replaces older queued text.
-    pub queued_submission: Option<String>,
     /// Origin of the in-flight cancellation request, if any.
     pub pending_cancel_origin: Option<CancelOrigin>,
+    /// Auto-submit the current input draft once cancellation transitions the app
+    /// back to `Ready`.
+    pub pending_auto_submit_after_cancel: bool,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
@@ -1044,8 +1044,8 @@ impl App {
             help_visible_count: 5,
             pending_permission_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
-            queued_submission: None,
             pending_cancel_origin: None,
+            pending_auto_submit_after_cancel: false,
             event_tx: tx,
             event_rx: rx,
             spinner_frame: 0,

@@ -499,7 +499,7 @@ fn handle_turn_complete_event(app: &mut App) {
     } else if turn_was_active || cancelled_requested {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
-    super::input_submit::drain_queued_submission(app);
+    super::input_submit::maybe_auto_submit_after_cancel(app);
 }
 
 fn set_ready_status_unless_startup_blocked(app: &mut App) {
@@ -544,7 +544,7 @@ fn handle_connected_client_event(
     app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
-    app.queued_submission = None;
+    app.pending_auto_submit_after_cancel = false;
     app.cached_header_line = None;
     app.cached_footer_line = None;
     app.update_welcome_model_if_pristine();
@@ -585,7 +585,7 @@ fn handle_auth_required_event(app: &mut App, method_name: String, method_descrip
     app.last_rate_limit_update = None;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
-    app.queued_submission = None;
+    app.pending_auto_submit_after_cancel = false;
 }
 
 fn handle_connection_failed_event(app: &mut App, msg: &str) {
@@ -593,7 +593,7 @@ fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.is_compacting = false;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
-    app.queued_submission = None;
+    app.pending_auto_submit_after_cancel = false;
     app.last_rate_limit_update = None;
     app.resuming_session_id = None;
     app.pending_command_label = None;
@@ -690,7 +690,7 @@ fn handle_session_replaced_event(
     app.pending_compact_clear = false;
     app.is_compacting = false;
     app.pending_cancel_origin = None;
-    app.queued_submission = None;
+    app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, model_name, mode);
     if !history_updates.is_empty() {
@@ -790,7 +790,7 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
         if show_interrupted_hint {
             push_interrupted_hint(app);
         }
-        super::input_submit::drain_queued_submission(app);
+        super::input_submit::maybe_auto_submit_after_cancel(app);
         return;
     }
 
@@ -824,6 +824,7 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
         super::slash::clear_conversation_history(app);
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.pending_auto_submit_after_cancel = false;
     app.input.clear();
     app.pending_submit = false;
     app.status = AppStatus::Error;
@@ -1081,7 +1082,7 @@ fn reset_session_identity_state(
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
-    app.queued_submission = None;
+    app.pending_auto_submit_after_cancel = false;
 }
 
 fn reset_messages_for_new_session(app: &mut App) {
