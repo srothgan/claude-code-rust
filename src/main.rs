@@ -62,7 +62,7 @@ fn run() -> anyhow::Result<()> {
         claude_code_rust::app::start_update_check(&app, &cli);
         claude_code_rust::app::start_service_status_check(&app);
         let result = claude_code_rust::app::run_tui(&mut app).await;
-        maybe_print_resume_hint(&cli, &app, result.is_ok());
+        maybe_print_resume_hint(&app, result.is_ok());
 
         // Kill any spawned terminal child processes before exiting
         claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
@@ -131,16 +131,12 @@ Use --log-file to enable diagnostics."
     Ok(())
 }
 
-fn maybe_print_resume_hint(cli: &Cli, app: &claude_code_rust::app::App, success: bool) {
+fn maybe_print_resume_hint(app: &claude_code_rust::app::App, success: bool) {
     if !success {
         return;
     }
     let Some(session_id) = app.session_id.as_ref() else {
         return;
     };
-    if cli.resume.is_some() {
-        eprintln!("Session: {session_id}");
-        return;
-    }
     eprintln!("Resume this session: claude-rs --resume {session_id}");
 }
