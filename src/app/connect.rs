@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::dialog::DialogState;
 use super::state::{HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget};
 use super::{
     App, AppStatus, ChatViewport, FocusManager, HelpView, ModeInfo, ModeState, SelectionState,
@@ -98,6 +99,8 @@ pub fn create_app(cli: &Cli) -> App {
         login_hint: None,
         pending_compact_clear: false,
         help_view: HelpView::Keys,
+        help_dialog: DialogState::default(),
+        help_visible_count: 5,
         pending_permission_ids: Vec::new(),
         cancelled_turn_pending_hint: false,
         queued_submission: None,

@@ -281,10 +281,6 @@ fn find_advertised_command<'a>(
     app.available_commands.iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
 }
 
-fn is_hidden_offer_command(command_name: &str) -> bool {
-    matches!(command_name, "/login" | "/logout")
-}
-
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
     matches!(command_name, "/mode" | "/model" | "/resume")
 }
@@ -312,9 +308,6 @@ fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
-        if is_hidden_offer_command(&name) {
-            continue;
-        }
         by_name.entry(name).or_insert_with(|| cmd.description.clone());
     }
 
@@ -886,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn login_logout_are_hidden_from_candidates() {
+    fn login_logout_appear_in_candidates_when_advertised() {
         let mut app = App::test_default();
         app.available_commands = vec![
             model::AvailableCommand::new("/login", "Login"),
@@ -897,8 +890,8 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/help"));
-        assert!(!names.iter().any(|n| n == "/login"));
-        assert!(!names.iter().any(|n| n == "/logout"));
+        assert!(names.iter().any(|n| n == "/login"));
+        assert!(names.iter().any(|n| n == "/logout"));
     }
 
     #[test]

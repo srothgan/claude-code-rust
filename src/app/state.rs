@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::InputState;
 use super::mention;
@@ -247,6 +248,11 @@ pub struct App {
     pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
+    /// Scroll/selection state for the Slash and Subagents help tabs.
+    pub help_dialog: dialog::DialogState,
+    /// Number of items that currently fit in the help viewport (updated each render).
+    /// Used by key handlers for accurate scroll step size.
+    pub help_visible_count: usize,
     /// Tool call IDs with pending permission prompts, ordered by arrival.
     /// The first entry is the "focused" permission that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -1019,6 +1025,8 @@ impl App {
             login_hint: None,
             pending_compact_clear: false,
             help_view: HelpView::Keys,
+            help_dialog: dialog::DialogState::default(),
+            help_visible_count: 5,
             pending_permission_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             queued_submission: None,
