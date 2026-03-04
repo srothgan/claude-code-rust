@@ -46,9 +46,7 @@ impl NotificationManager {
     pub const fn new() -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
-        Self {
-            terminal_focused: true,
-        }
+        Self { terminal_focused: true }
     }
 
     /// Call when the terminal emits a `FocusGained` event.
@@ -99,17 +97,13 @@ fn ring_bell() {
 /// Errors are silently discarded -- the bell is the reliable fallback.
 fn send_desktop_notification(event: NotifyEvent) {
     let (summary, body) = match event {
-        NotifyEvent::PermissionRequired => (
-            "Claude Code",
-            "Permission required -- waiting for your approval",
-        ),
+        NotifyEvent::PermissionRequired => {
+            ("Claude Code", "Permission required -- waiting for your approval")
+        }
         NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
     };
     std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new()
-            .summary(summary)
-            .body(body)
-            .show();
+        let _ = notify_rust::Notification::new().summary(summary).body(body).show();
     });
 }
 
@@ -124,10 +118,7 @@ mod tests {
     #[test]
     fn defaults_to_focused() {
         let mgr = NotificationManager::new();
-        assert!(
-            mgr.is_focused(),
-            "should default to focused to suppress spurious notifications"
-        );
+        assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
     }
 
     #[test]

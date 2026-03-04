@@ -1,0 +1,172 @@
+// Claude Code Rust - A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::super::{
+    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity,
+};
+use super::session_reset::{attach_usage_to_latest_assistant_message, update_session_usage};
+use crate::agent::model;
+
+fn format_rate_limit_type(raw: &str) -> &str {
+    match raw {
+        "five_hour" => "5-hour",
+        "daily" => "daily",
+        "minute" => "per-minute",
+        "seven_day" => "7-day",
+        "seven_day_opus" => "7-day Opus",
+        "seven_day_sonnet" => "7-day Sonnet",
+        "overage" => "overage",
+        other => other,
+    }
+}
+
+/// Format an epoch timestamp as a countdown and UTC wall-clock: "4h 23m at 14:30 UTC".
+fn format_resets_at(epoch_secs: f64) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let now = std::time::SystemTime::now();
+
+    let countdown = match (UNIX_EPOCH + Duration::from_secs_f64(epoch_secs)).duration_since(now) {
+        Ok(d) => {
+            let total_secs = d.as_secs();
+            if total_secs < 60 {
+                "< 1 minute".to_owned()
+            } else {
+                let hours = total_secs / 3600;
+                let minutes = (total_secs % 3600) / 60;
+                if hours > 0 { format!("{hours}h {minutes}m") } else { format!("{minutes}m") }
+            }
+        }
+        Err(_) => "now".to_owned(),
+    };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let epoch_u64 = epoch_secs.max(0.0) as u64;
+    let h = (epoch_u64 % 86400) / 3600;
+    let m = (epoch_u64 % 3600) / 60;
+
+    format!("{countdown} at {h:02}:{m:02} UTC")
+}
+
+pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
+    let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
+
+    // Intro
+    let intro = if is_rejected { "Rate limit reached" } else { "Approaching rate limit" };
+
+    // "you've used 91% of your 5-hour rate limit"
+    let usage_part = match (update.utilization, &update.rate_limit_type) {
+        (Some(util), Some(rlt)) => {
+            format!(
+                "you've used {:.0}% of your {} rate limit",
+                util * 100.0,
+                format_rate_limit_type(rlt),
+            )
+        }
+        (Some(util), None) => format!("you've used {:.0}% of your rate limit", util * 100.0),
+        (None, Some(rlt)) => {
+            format!("you've hit your {} rate limit", format_rate_limit_type(rlt))
+        }
+        (None, None) => "you've hit your rate limit".to_owned(),
+    };
+
+    let mut message = format!("{intro}, {usage_part}.");
+
+    // Overage hint
+    if is_rejected {
+        // Rejected: state if overage is in use
+        if update.is_using_overage == Some(true) {
+            message.push_str(" You are using your overage allowance.");
+        }
+    } else {
+        // Warning: hint that overage is available
+        if update.is_using_overage == Some(false) || update.overage_status.is_some() {
+            message.push_str(" You can continue using your overage allowance.");
+        }
+    }
+
+    // Resets in X at HH:MM
+    if let Some(resets_at) = update.resets_at {
+        use std::fmt::Write;
+        let _ = write!(message, " Resets in {}.", format_resets_at(resets_at));
+    }
+
+    message
+}
+
+pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
+    let previous_status = app.last_rate_limit_update.as_ref().map(|existing| existing.status);
+    app.last_rate_limit_update = Some(update.clone());
+
+    match update.status {
+        model::RateLimitStatus::Allowed => {}
+        model::RateLimitStatus::AllowedWarning => {
+            if previous_status == Some(model::RateLimitStatus::AllowedWarning) {
+                return;
+            }
+            let summary = format_rate_limit_summary(update);
+            super::push_system_message_with_severity(app, Some(SystemSeverity::Warning), &summary);
+        }
+        model::RateLimitStatus::Rejected => {
+            let summary = format_rate_limit_summary(update);
+            super::push_system_message_with_severity(app, None, &summary);
+        }
+    }
+}
+
+pub(super) fn handle_usage_update(app: &mut App, usage: &model::UsageUpdate) {
+    let message_usage = update_session_usage(app, usage);
+    attach_usage_to_latest_assistant_message(app, message_usage);
+    app.cached_footer_line = None;
+    tracing::debug!(
+        "UsageUpdate: in={:?} out={:?} cache_read={:?} cache_write={:?} total_cost={:?} turn_cost={:?} ctx_window={:?}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        usage.total_cost_usd,
+        usage.turn_cost_usd,
+        usage.context_window
+    );
+}
+
+pub(super) fn handle_compaction_boundary_update(
+    app: &mut App,
+    boundary: model::CompactionBoundary,
+) {
+    app.is_compacting = true;
+    app.session_usage.last_compaction_trigger = Some(boundary.trigger);
+    app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    app.cached_footer_line = None;
+    tracing::debug!(
+        "CompactionBoundary: trigger={:?} pre_tokens={}",
+        boundary.trigger,
+        boundary.pre_tokens
+    );
+    if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
+        let text = "Auto-compacting context...";
+        app.messages.push(ChatMessage {
+            role: MessageRole::System(Some(SystemSeverity::Info)),
+            blocks: vec![MessageBlock::Text(
+                text.to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete(text),
+            )],
+            usage: None,
+        });
+        app.viewport.engage_auto_scroll();
+    }
+}

@@ -1,0 +1,317 @@
+// Claude Code Rust - A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::super::connect::take_connection_slot;
+use super::super::state::RecentSessionInfo;
+use super::super::{
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, LoginHint, MessageBlock,
+    MessageRole, SystemSeverity,
+};
+use super::push_system_message_with_severity;
+use super::session_reset::{load_resume_history, reset_for_new_session};
+use crate::agent::client::AgentConnection;
+use crate::agent::events::{ClientEvent, ServiceStatusSeverity};
+use crate::agent::model;
+use crate::error::AppError;
+use std::rc::Rc;
+
+const TURN_ERROR_INPUT_LOCK_HINT: &str =
+    "Input disabled after an error. Press Ctrl+Q to quit and try again.";
+
+pub(super) fn handle_connected_client_event(
+    app: &mut App,
+    session_id: model::SessionId,
+    cwd: String,
+    model_name: String,
+    mode: Option<super::super::ModeState>,
+    history_updates: &[model::SessionUpdate],
+) {
+    if let Some(slot) = take_connection_slot() {
+        app.conn = Some(slot.conn);
+    }
+    apply_session_cwd(app, cwd);
+    app.session_id = Some(session_id);
+    app.model_name = model_name;
+    app.mode = mode;
+    app.config_options.clear();
+    app.config_options
+        .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
+    app.login_hint = None;
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.session_usage = super::super::SessionUsageState::default();
+    app.fast_mode_state = model::FastModeState::Off;
+    app.last_rate_limit_update = None;
+    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
+    app.cached_header_line = None;
+    app.cached_footer_line = None;
+    app.update_welcome_model_if_pristine();
+    app.sync_welcome_recent_sessions();
+    if !history_updates.is_empty() {
+        load_resume_history(app, history_updates);
+    }
+    clear_pending_command(app);
+    app.resuming_session_id = None;
+}
+
+pub(super) fn handle_sessions_listed_event(
+    app: &mut App,
+    sessions: Vec<crate::agent::types::SessionListEntry>,
+) {
+    app.recent_sessions = sessions
+        .into_iter()
+        .map(|entry| RecentSessionInfo {
+            session_id: entry.session_id,
+            summary: entry.summary,
+            last_modified_ms: entry.last_modified_ms,
+            file_size_bytes: entry.file_size_bytes,
+            cwd: entry.cwd,
+            git_branch: entry.git_branch,
+            custom_title: entry.custom_title,
+            first_prompt: entry.first_prompt,
+        })
+        .collect();
+    app.sync_welcome_recent_sessions();
+}
+
+pub(super) fn handle_auth_required_event(
+    app: &mut App,
+    method_name: String,
+    method_description: String,
+) {
+    clear_pending_command(app);
+    app.resuming_session_id = None;
+    app.login_hint = Some(LoginHint { method_name, method_description });
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.last_rate_limit_update = None;
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
+}
+
+pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
+    app.last_rate_limit_update = None;
+    app.resuming_session_id = None;
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
+    app.input.clear();
+    app.pending_submit = false;
+    app.status = AppStatus::Error;
+    push_connection_error_message(app, msg);
+}
+
+pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+    app.messages.push(ChatMessage {
+        role: MessageRole::System(None),
+        blocks: vec![MessageBlock::Text(
+            msg.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(msg),
+        )],
+        usage: None,
+    });
+    app.enforce_history_retention();
+    app.viewport.engage_auto_scroll();
+    clear_pending_command(app);
+    app.resuming_session_id = None;
+}
+
+pub(super) fn handle_auth_completed_event(
+    app: &mut App,
+    conn: Rc<AgentConnection>,
+    cwd: String,
+    model: String,
+) {
+    tracing::info!("Authentication completed via /login");
+    app.login_hint = None;
+    app.pending_command_label = Some("Starting session...".to_owned());
+    app.pending_command_ack = None;
+    push_system_message_with_severity(
+        app,
+        Some(SystemSeverity::Info),
+        "Authentication successful. Starting new session...",
+    );
+    app.force_redraw = true;
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.new_session(cwd, false, Some(model)) {
+            let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                "Failed to start session after login: {e}"
+            )));
+        }
+    });
+}
+
+pub(super) fn handle_logout_completed_event(app: &mut App) {
+    tracing::info!("Logout completed via /logout");
+    // Clear the session and start a new one. The bridge now checks auth
+    // during initialization and will fire AuthRequired immediately.
+    app.session_id = None;
+    app.force_redraw = true;
+
+    if let Some(ref conn) = app.conn {
+        app.pending_command_label = Some("Starting session...".to_owned());
+        app.pending_command_ack = None;
+        let conn = Rc::clone(conn);
+        let tx = app.event_tx.clone();
+        let cwd = app.cwd_raw.clone();
+        let model = Some(app.model_name.clone());
+        tokio::task::spawn_local(async move {
+            if let Err(e) = conn.new_session(cwd, false, model) {
+                let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                    "Failed to start new session after logout: {e}"
+                )));
+            }
+        });
+    } else {
+        tracing::warn!("No connection available after logout; cannot start new session");
+        clear_pending_command(app);
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Warning),
+            "Logged out, but no connection available to start a new session.",
+        );
+    }
+}
+
+pub(super) fn handle_session_replaced_event(
+    app: &mut App,
+    session_id: model::SessionId,
+    cwd: String,
+    model_name: String,
+    mode: Option<super::super::ModeState>,
+    history_updates: &[model::SessionUpdate],
+) {
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
+    apply_session_cwd(app, cwd);
+    reset_for_new_session(app, session_id, model_name, mode);
+    if !history_updates.is_empty() {
+        load_resume_history(app, history_updates);
+    }
+    clear_pending_command(app);
+    app.resuming_session_id = None;
+}
+
+pub(super) fn handle_update_available_event(
+    app: &mut App,
+    latest_version: &str,
+    current_version: &str,
+) {
+    app.update_check_hint = Some(format!(
+        "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
+    ));
+}
+
+pub(super) fn handle_service_status_event(
+    app: &mut App,
+    severity: ServiceStatusSeverity,
+    message: &str,
+) {
+    let mut full_message = message.to_owned();
+    if matches!(severity, ServiceStatusSeverity::Error) {
+        full_message.push_str("\n\n");
+        full_message.push_str(TURN_ERROR_INPUT_LOCK_HINT);
+    }
+    let ui_severity = match severity {
+        ServiceStatusSeverity::Warning => SystemSeverity::Warning,
+        ServiceStatusSeverity::Error => SystemSeverity::Error,
+    };
+    push_system_message_with_severity(app, Some(ui_severity), &full_message);
+
+    if matches!(severity, ServiceStatusSeverity::Error) {
+        app.startup_status_blocking_error = true;
+        app.input.clear();
+        app.pending_submit = false;
+        app.status = AppStatus::Error;
+    }
+}
+
+pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
+    app.exit_error = Some(error);
+    app.should_quit = true;
+    app.status = AppStatus::Error;
+    app.pending_submit = false;
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
+}
+
+pub(super) fn set_ready_status_unless_startup_blocked(app: &mut App) {
+    if app.startup_status_blocking_error {
+        app.status = AppStatus::Error;
+        return;
+    }
+    app.status = AppStatus::Ready;
+}
+
+/// Clear the `CommandPending` state and restore `Ready` (or `Error` if startup-blocked).
+pub(super) fn clear_pending_command(app: &mut App) {
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
+    set_ready_status_unless_startup_blocked(app);
+}
+
+fn push_connection_error_message(app: &mut App, error: &str) {
+    let message = format!("Connection failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+    push_system_message_with_severity(app, None, &message);
+}
+
+fn shorten_cwd_display(cwd_raw: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if cwd_raw.starts_with(home_str.as_ref()) {
+            return format!("~{}", &cwd_raw[home_str.len()..]);
+        }
+    }
+    cwd_raw.to_owned()
+}
+
+fn sync_welcome_cwd(app: &mut App) {
+    let Some(first) = app.messages.first_mut() else {
+        return;
+    };
+    if !matches!(first.role, MessageRole::Welcome) {
+        return;
+    }
+    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
+        return;
+    };
+    welcome.cwd.clone_from(&app.cwd);
+    welcome.cache.invalidate();
+    app.mark_message_layout_dirty(0);
+}
+
+pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
+    app.cwd_raw = cwd_raw;
+    app.cwd = shorten_cwd_display(&app.cwd_raw);
+    app.file_cache = None;
+    app.cached_header_line = None;
+    app.cached_footer_line = None;
+    app.refresh_git_branch();
+    sync_welcome_cwd(app);
+}

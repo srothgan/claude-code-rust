@@ -1,0 +1,429 @@
+// Claude Code Rust - A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! Type conversion functions: bridge wire types -> app model types.
+
+use crate::agent::model;
+use crate::agent::types;
+use crate::app::{ModeInfo, ModeState};
+
+pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::RateLimitStatus {
+    match status {
+        types::RateLimitStatus::Allowed => model::RateLimitStatus::Allowed,
+        types::RateLimitStatus::AllowedWarning => model::RateLimitStatus::AllowedWarning,
+        types::RateLimitStatus::Rejected => model::RateLimitStatus::Rejected,
+    }
+}
+
+pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
+    model::RateLimitUpdate {
+        status: map_rate_limit_status(update.status),
+        resets_at: update.resets_at,
+        utilization: update.utilization,
+        rate_limit_type: update.rate_limit_type,
+        overage_status: update.overage_status.map(map_rate_limit_status),
+        overage_resets_at: update.overage_resets_at,
+        overage_disabled_reason: update.overage_disabled_reason,
+        is_using_overage: update.is_using_overage,
+        surpassed_threshold: update.surpassed_threshold,
+    }
+}
+
+pub(super) fn map_available_commands_update(
+    commands: Vec<types::AvailableCommand>,
+) -> model::AvailableCommandsUpdate {
+    model::AvailableCommandsUpdate::new(
+        commands
+            .into_iter()
+            .map(|cmd| {
+                let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
+                if let Some(input_hint) = cmd.input_hint
+                    && !input_hint.trim().is_empty()
+                {
+                    mapped = mapped.input_hint(input_hint);
+                }
+                mapped
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn map_available_agents_update(
+    agents: Vec<types::AvailableAgent>,
+) -> model::AvailableAgentsUpdate {
+    model::AvailableAgentsUpdate::new(
+        agents
+            .into_iter()
+            .map(|agent| {
+                let mut mapped = model::AvailableAgent::new(agent.name, agent.description);
+                if let Some(model_name) = agent.model
+                    && !model_name.trim().is_empty()
+                {
+                    mapped = mapped.model(model_name);
+                }
+                mapped
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
+    match update {
+        types::SessionUpdate::UserMessageChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::AgentMessageChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::AgentThoughtChunk { content } => {
+            let content = convert_content_block(content)?;
+            Some(model::SessionUpdate::AgentThoughtChunk(model::ContentChunk::new(content)))
+        }
+        types::SessionUpdate::ToolCall { tool_call } => {
+            Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
+        }
+        types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
+            Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
+        }
+        types::SessionUpdate::Plan { entries } => Some(model::SessionUpdate::Plan(
+            model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
+        )),
+        types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
+            model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(commands)),
+        ),
+        types::SessionUpdate::AvailableAgentsUpdate { agents } => {
+            Some(model::SessionUpdate::AvailableAgentsUpdate(map_available_agents_update(agents)))
+        }
+        types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
+            Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
+                model::SessionModeId::new(current_mode_id),
+            )))
+        }
+        types::SessionUpdate::ConfigOptionUpdate { option_id, value } => {
+            Some(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                option_id,
+                value,
+            }))
+        }
+        types::SessionUpdate::UsageUpdate { usage } => {
+            Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+                total_cost_usd: usage.total_cost_usd,
+                turn_cost_usd: usage.turn_cost_usd,
+                context_window: usage.context_window,
+                max_output_tokens: usage.max_output_tokens,
+            }))
+        }
+        types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
+            Some(model::SessionUpdate::FastModeUpdate(match fast_mode_state {
+                types::FastModeState::Off => model::FastModeState::Off,
+                types::FastModeState::Cooldown => model::FastModeState::Cooldown,
+                types::FastModeState::On => model::FastModeState::On,
+            }))
+        }
+        types::SessionUpdate::RateLimitUpdate {
+            status,
+            resets_at,
+            utilization,
+            rate_limit_type,
+            overage_status,
+            overage_resets_at,
+            overage_disabled_reason,
+            is_using_overage,
+            surpassed_threshold,
+        } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
+            types::RateLimitUpdate {
+                status,
+                resets_at,
+                utilization,
+                rate_limit_type,
+                overage_status,
+                overage_resets_at,
+                overage_disabled_reason,
+                is_using_overage,
+                surpassed_threshold,
+            },
+        ))),
+        types::SessionUpdate::SessionStatusUpdate { status } => {
+            Some(model::SessionUpdate::SessionStatusUpdate(match status {
+                types::SessionStatus::Compacting => model::SessionStatus::Compacting,
+                types::SessionStatus::Idle => model::SessionStatus::Idle,
+            }))
+        }
+        types::SessionUpdate::CompactionBoundary { trigger, pre_tokens } => {
+            Some(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+                trigger: match trigger {
+                    types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
+                    types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
+                },
+                pre_tokens,
+            }))
+        }
+    }
+}
+
+pub(super) fn map_permission_request(
+    session_id: &str,
+    request: types::PermissionRequest,
+) -> (model::RequestPermissionRequest, String) {
+    let tool_call_id = request.tool_call.tool_call_id.clone();
+    let tool_call_meta = request.tool_call.meta.clone();
+    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
+    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
+    if let Some(meta) = tool_call_meta {
+        tool_call_update = tool_call_update.meta(meta);
+    }
+    let options = request
+        .options
+        .into_iter()
+        .map(|opt| {
+            let kind = match opt.kind.as_str() {
+                "allow_once" => model::PermissionOptionKind::AllowOnce,
+                "allow_session" => model::PermissionOptionKind::AllowSession,
+                "allow_always" => model::PermissionOptionKind::AllowAlways,
+                "reject_always" => model::PermissionOptionKind::RejectAlways,
+                "question_choice" => model::PermissionOptionKind::QuestionChoice,
+                "plan_approve" => model::PermissionOptionKind::PlanApprove,
+                "plan_reject" => model::PermissionOptionKind::PlanReject,
+                _ => {
+                    tracing::warn!(
+                        "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
+                        session_id,
+                        tool_call_id,
+                        opt.option_id,
+                        opt.name,
+                        opt.kind
+                    );
+                    model::PermissionOptionKind::RejectOnce
+                }
+            };
+            model::PermissionOption::new(opt.option_id, opt.name, kind).description(opt.description)
+        })
+        .collect();
+    (
+        model::RequestPermissionRequest::new(
+            model::SessionId::new(session_id),
+            tool_call_update,
+            options,
+        ),
+        tool_call_id,
+    )
+}
+
+pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
+    match content {
+        types::ContentBlock::Text { text } => {
+            Some(model::ContentBlock::Text(model::TextContent::new(text)))
+        }
+        // Deferred for parity follow-up per scope.
+        types::ContentBlock::Image { .. } => None,
+    }
+}
+
+pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
+    let types::ToolCall {
+        tool_call_id,
+        title,
+        kind,
+        status,
+        content,
+        raw_input,
+        raw_output,
+        locations,
+        meta,
+    } = tool_call;
+
+    let mut tc = model::ToolCall::new(tool_call_id, title)
+        .kind(convert_tool_kind(&kind))
+        .status(convert_tool_status(&status))
+        .content(content.into_iter().filter_map(convert_tool_call_content).collect())
+        .locations(
+            locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = model::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect(),
+        );
+
+    if let Some(raw_input) = raw_input {
+        tc = tc.raw_input(raw_input);
+    }
+
+    if let Some(raw_output) = raw_output {
+        tc = tc.raw_output(serde_json::Value::String(raw_output));
+    }
+    if let Some(meta) = meta {
+        tc = tc.meta(meta);
+    }
+
+    tc
+}
+
+pub(super) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
+    let update_meta = update.fields.meta.clone();
+    let mut out = model::ToolCallUpdate::new(
+        update.tool_call_id,
+        convert_tool_call_update_fields(update.fields),
+    );
+    if let Some(meta) = update_meta {
+        out = out.meta(meta);
+    }
+    out
+}
+
+pub(super) fn convert_tool_call_to_fields(
+    tool_call: types::ToolCall,
+) -> model::ToolCallUpdateFields {
+    let mut fields = model::ToolCallUpdateFields::new()
+        .title(tool_call.title)
+        .kind(convert_tool_kind(&tool_call.kind))
+        .status(convert_tool_status(&tool_call.status))
+        .content(
+            tool_call.content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>(),
+        )
+        .locations(
+            tool_call
+                .locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = model::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect::<Vec<_>>(),
+        );
+
+    if let Some(raw_input) = tool_call.raw_input {
+        fields = fields.raw_input(raw_input);
+    }
+
+    if let Some(raw_output) = tool_call.raw_output {
+        fields = fields.raw_output(serde_json::Value::String(raw_output));
+    }
+
+    fields
+}
+
+pub(super) fn convert_tool_call_update_fields(
+    fields: types::ToolCallUpdateFields,
+) -> model::ToolCallUpdateFields {
+    let mut out = model::ToolCallUpdateFields::new();
+
+    if let Some(title) = fields.title {
+        out = out.title(title);
+    }
+    if let Some(kind) = fields.kind {
+        out = out.kind(convert_tool_kind(&kind));
+    }
+    if let Some(status) = fields.status {
+        out = out.status(convert_tool_status(&status));
+    }
+    if let Some(content) = fields.content {
+        out = out
+            .content(content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>());
+    }
+    if let Some(raw_input) = fields.raw_input {
+        out = out.raw_input(raw_input);
+    }
+    if let Some(raw_output) = fields.raw_output {
+        out = out.raw_output(serde_json::Value::String(raw_output));
+    }
+    if let Some(locations) = fields.locations {
+        out = out.locations(
+            locations
+                .into_iter()
+                .map(|loc| {
+                    let mut location = model::ToolCallLocation::new(loc.path);
+                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
+                        location = location.line(line);
+                    }
+                    location
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    out
+}
+
+fn convert_tool_call_content(
+    tool_content: types::ToolCallContent,
+) -> Option<model::ToolCallContent> {
+    match tool_content {
+        types::ToolCallContent::Content { content } => {
+            let block = convert_content_block(content)?;
+            Some(model::ToolCallContent::Content(model::Content::new(block)))
+        }
+        types::ToolCallContent::Diff { old_path: _, new_path, old, new } => {
+            Some(model::ToolCallContent::Diff(model::Diff::new(new_path, new).old_text(Some(old))))
+        }
+    }
+}
+
+pub(super) fn convert_tool_kind(kind: &str) -> model::ToolKind {
+    match kind {
+        "read" => model::ToolKind::Read,
+        "edit" => model::ToolKind::Edit,
+        "delete" => model::ToolKind::Delete,
+        "move" => model::ToolKind::Move,
+        "execute" => model::ToolKind::Execute,
+        "search" => model::ToolKind::Search,
+        "fetch" => model::ToolKind::Fetch,
+        "switch_mode" => model::ToolKind::SwitchMode,
+        "other" => model::ToolKind::Other,
+        _ => model::ToolKind::Think,
+    }
+}
+
+pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
+    match status {
+        "in_progress" => model::ToolCallStatus::InProgress,
+        "completed" => model::ToolCallStatus::Completed,
+        "failed" => model::ToolCallStatus::Failed,
+        _ => model::ToolCallStatus::Pending,
+    }
+}
+
+pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
+    let status = match entry.status.as_str() {
+        "in_progress" => model::PlanEntryStatus::InProgress,
+        "completed" => model::PlanEntryStatus::Completed,
+        _ => model::PlanEntryStatus::Pending,
+    };
+    model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
+}
+
+pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
+    let available_modes: Vec<ModeInfo> =
+        mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
+    ModeState {
+        current_mode_id: mode.current_mode_id,
+        current_mode_name: mode.current_mode_name,
+        available_modes,
+    }
+}
