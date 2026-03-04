@@ -301,6 +301,8 @@ fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/cancel".into(), "Cancel active turn".into());
     by_name.insert("/compact".into(), "Clear conversation history".into());
+    by_name.insert("/login".into(), "Authenticate with Claude".into());
+    by_name.insert("/logout".into(), "Sign out of Claude".into());
     by_name.insert("/mode".into(), "Set session mode".into());
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
@@ -672,6 +674,8 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     match parsed.name {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
+        "/login" => handle_login_submit(app, &parsed.args),
+        "/logout" => handle_logout_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new-session" => handle_new_session_submit(app, &parsed.args),
@@ -708,6 +712,146 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     app.pending_compact_clear = true;
     app.is_compacting = true;
     false
+}
+
+fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /login");
+        return true;
+    }
+
+    push_user_message(app, "/login");
+    tracing::debug!("Handling /login command");
+
+    let claude_path = match resolve_claude_cli(app, "login") {
+        Some(p) => p,
+        None => return true,
+    };
+
+    let tx = app.event_tx.clone();
+    let conn = app.conn.clone();
+    let cwd = app.cwd_raw.clone();
+    let model = app.model_name.clone();
+    tokio::task::spawn_local(async move {
+        tracing::debug!("Suspending TUI for claude auth login");
+        crate::app::suspend_terminal();
+
+        let result = tokio::process::Command::new(&claude_path)
+            .args(["auth", "login"])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .await;
+
+        crate::app::resume_terminal();
+
+        match result {
+            Ok(status) => {
+                tracing::debug!(
+                    success = status.success(),
+                    code = ?status.code(),
+                    "claude auth login exited"
+                );
+                if status.success() {
+                    if let Some(conn) = conn {
+                        let _ =
+                            tx.send(ClientEvent::AuthCompleted { conn, cwd, model });
+                    } else {
+                        let _ = tx.send(ClientEvent::SlashCommandError(
+                            "Login succeeded but no connection available to start a session."
+                                .to_owned(),
+                        ));
+                    }
+                } else {
+                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                        "/login failed (exit code: {})",
+                        status.code().map_or("unknown".to_owned(), |c| c.to_string())
+                    )));
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                    "Failed to run claude auth login: {e}"
+                )));
+            }
+        }
+    });
+    true
+}
+
+fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /logout");
+        return true;
+    }
+
+    push_user_message(app, "/logout");
+    tracing::debug!("Handling /logout command");
+
+    let claude_path = match resolve_claude_cli(app, "logout") {
+        Some(p) => p,
+        None => return true,
+    };
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        tracing::debug!("Suspending TUI for claude auth logout");
+        crate::app::suspend_terminal();
+
+        let result = tokio::process::Command::new(&claude_path)
+            .args(["auth", "logout"])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .await;
+
+        crate::app::resume_terminal();
+
+        match result {
+            Ok(status) => {
+                tracing::debug!(
+                    success = status.success(),
+                    code = ?status.code(),
+                    "claude auth logout exited"
+                );
+                if status.success() {
+                    let _ = tx.send(ClientEvent::LogoutCompleted);
+                } else {
+                    let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                        "/logout failed (exit code: {})",
+                        status.code().map_or("unknown".to_owned(), |c| c.to_string())
+                    )));
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                    "Failed to run claude auth logout: {e}"
+                )));
+            }
+        }
+    });
+    true
+}
+
+/// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.
+fn resolve_claude_cli(app: &mut App, subcommand: &str) -> Option<std::path::PathBuf> {
+    match which::which("claude") {
+        Ok(path) => {
+            tracing::debug!(path = %path.display(), "Resolved claude CLI binary");
+            Some(path)
+        }
+        Err(_) => {
+            push_system_message(
+                app,
+                &format!(
+                    "claude CLI not found in PATH. Install it or run `claude auth {subcommand}` manually."
+                ),
+            );
+            None
+        }
+    }
 }
 
 fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
@@ -879,19 +1023,43 @@ mod tests {
     }
 
     #[test]
-    fn login_logout_appear_in_candidates_when_advertised() {
-        let mut app = App::test_default();
-        app.available_commands = vec![
-            model::AvailableCommand::new("/login", "Login"),
-            model::AvailableCommand::new("/logout", "Logout"),
-            model::AvailableCommand::new("/help", "Help"),
-        ];
-
+    fn login_logout_appear_in_candidates_as_builtins() {
+        let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        assert!(names.iter().any(|n| n == "/help"));
-        assert!(names.iter().any(|n| n == "/login"));
-        assert!(names.iter().any(|n| n == "/logout"));
+        assert!(names.iter().any(|n| n == "/login"), "missing /login");
+        assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn login_is_handled_as_builtin_command() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let consumed = try_handle_submit(&mut app, "/login");
+                assert!(consumed, "/login should be handled locally");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn logout_is_handled_as_builtin_command() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let consumed = try_handle_submit(&mut app, "/logout");
+                assert!(consumed, "/logout should be handled locally");
+            })
+            .await;
+    }
+
+    #[test]
+    fn login_rejects_extra_args() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/login somearg");
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        assert!(matches!(last.role, MessageRole::System(_)));
     }
 
     #[test]
@@ -1002,13 +1170,17 @@ mod tests {
         assert_eq!(app.input.text(), "/resume new-id trailing");
     }
 
-    #[test]
-    fn typed_login_is_still_forwarded_when_advertised() {
-        let mut app = App::test_default();
-        app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
+    #[tokio::test(flavor = "current_thread")]
+    async fn login_is_handled_as_builtin_even_when_advertised() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
 
-        let consumed = try_handle_submit(&mut app, "/login");
-        assert!(!consumed);
+                let consumed = try_handle_submit(&mut app, "/login");
+                assert!(consumed, "/login should be handled locally even when SDK advertises it");
+            })
+            .await;
     }
 
     #[test]

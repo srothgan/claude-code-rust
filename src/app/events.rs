@@ -23,11 +23,13 @@ use super::{
     SelectionPoint, SystemSeverity, ToolCallInfo, ToolCallScope, default_cache_split_policy,
     find_text_split_index,
 };
+use crate::agent::client::AgentConnection;
 use crate::agent::error_handling::{
     TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,
 };
 use crate::agent::events::{ClientEvent, ServiceStatusSeverity};
 use crate::agent::model;
+use std::rc::Rc;
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
 use crate::error::AppError;
@@ -44,8 +46,7 @@ const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
 1. Wait a few minutes and retry.\n\
 2. Reduce request size or request frequency.\n\
 3. Check quota/billing for your account or switch plans.";
-const AUTH_REQUIRED_NEXT_STEPS_HINT: &str =
-    "Authentication required. Run `claude /login` in a terminal, then restart and retry.";
+const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
@@ -369,6 +370,12 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::ServiceStatus { severity, message } => {
             handle_service_status_event(app, severity, &message);
         }
+        ClientEvent::AuthCompleted { conn, cwd, model } => {
+            handle_auth_completed_event(app, conn, cwd, model);
+        }
+        ClientEvent::LogoutCompleted => {
+            handle_logout_completed_event(app);
+        }
         ClientEvent::FatalError(error) => handle_fatal_error_event(app, error),
     }
 }
@@ -597,6 +604,60 @@ fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     app.viewport.engage_auto_scroll();
     set_ready_status_unless_startup_blocked(app);
     app.resuming_session_id = None;
+}
+
+fn handle_auth_completed_event(
+    app: &mut App,
+    conn: Rc<AgentConnection>,
+    cwd: String,
+    model: String,
+) {
+    tracing::info!("Authentication completed via /login");
+    app.login_hint = None;
+    push_system_message_with_severity(
+        app,
+        Some(SystemSeverity::Info),
+        "Authentication successful. Starting new session...",
+    );
+    app.force_redraw = true;
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.new_session(cwd, false, Some(model)) {
+            let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                "Failed to start session after login: {e}"
+            )));
+        }
+    });
+}
+
+fn handle_logout_completed_event(app: &mut App) {
+    tracing::info!("Logout completed via /logout");
+    // Clear the session and start a new one. The bridge now checks auth
+    // during initialization and will fire AuthRequired immediately.
+    app.session_id = None;
+    app.force_redraw = true;
+
+    if let Some(ref conn) = app.conn {
+        let conn = Rc::clone(conn);
+        let tx = app.event_tx.clone();
+        let cwd = app.cwd_raw.clone();
+        let model = Some(app.model_name.clone());
+        tokio::task::spawn_local(async move {
+            if let Err(e) = conn.new_session(cwd, false, model) {
+                let _ = tx.send(ClientEvent::SlashCommandError(format!(
+                    "Failed to start new session after logout: {e}"
+                )));
+            }
+        });
+    } else {
+        tracing::warn!("No connection available after logout; cannot start new session");
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Warning),
+            "Logged out, but no connection available to start a new session.",
+        );
+    }
 }
 
 fn handle_session_replaced_event(

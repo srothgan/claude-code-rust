@@ -63,6 +63,39 @@ use futures::{FutureExt as _, StreamExt};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
+// Terminal suspend / resume helpers (reused by /login, /logout)
+// ---------------------------------------------------------------------------
+
+/// Disable raw mode and crossterm features so a child process can own the
+/// terminal (e.g. `claude auth login` which opens a browser flow).
+pub(crate) fn suspend_terminal() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableFocusChange,
+        PopKeyboardEnhancementFlags
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// Re-enable raw mode and crossterm features after a child process finishes.
+pub(crate) fn resume_terminal() {
+    let _ = crossterm::terminal::enable_raw_mode();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableFocusChange,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TUI event loop
 // ---------------------------------------------------------------------------
 
@@ -71,19 +104,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
-    // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableFocusChange,
-        // Enable enhanced keyboard protocol for reliable modifier detection (e.g. Shift+Enter)
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
-    );
+    // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
+    resume_terminal();
 
     let mut events = EventStream::new();
     let tick_duration = Duration::from_millis(16);
@@ -232,13 +254,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     }
 
     // Restore terminal
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::DisableBracketedPaste,
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange,
-        PopKeyboardEnhancementFlags
-    );
+    suspend_terminal();
     ratatui::restore();
 
     Ok(())

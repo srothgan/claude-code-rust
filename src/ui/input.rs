@@ -89,7 +89,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Yellow),
             )),
             Line::from(Span::styled(
-                "Authentication command discoverability is not enabled in this build yet",
+                "Type /login to authenticate, or run `claude auth login` in another terminal",
                 Style::default().fg(theme::DIM),
             )),
         ];

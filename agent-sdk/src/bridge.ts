@@ -716,7 +716,7 @@ function emitAuthRequired(session: SessionState, detail?: string): void {
     method_description:
       detail && detail.trim().length > 0
         ? detail
-        : "Run `claude /login` in a terminal, then retry.",
+        : "Type /login to authenticate.",
   });
 }
 
@@ -1592,6 +1592,15 @@ async function createSession(params: {
     .then((result) => {
       if (!session.connected) {
         emitConnectEvent(session);
+      }
+      // Proactively detect missing auth from account info so the UI can
+      // show the login hint immediately, without waiting for the first prompt.
+      const acct = result.account;
+      const hasCredentials =
+        (typeof acct.email === "string" && acct.email.trim().length > 0) ||
+        (typeof acct.apiKeySource === "string" && acct.apiKeySource.trim().length > 0);
+      if (!hasCredentials) {
+        emitAuthRequired(session);
       }
       emitFastModeUpdateIfChanged(session, result.fast_mode_state);
 
