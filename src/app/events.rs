@@ -1544,7 +1544,7 @@ fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
     message
 }
 
-fn push_system_message_with_severity(
+pub(super) fn push_system_message_with_severity(
     app: &mut App,
     severity: Option<SystemSeverity>,
     message: &str,

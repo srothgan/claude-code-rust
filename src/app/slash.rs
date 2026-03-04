@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::SystemSeverity;
+use super::events::push_system_message_with_severity;
 use super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, FocusTarget,
     IncrementalMarkdown, MessageBlock, MessageRole, dialog::DialogState,
@@ -732,6 +734,15 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     push_user_message(app, "/login");
     tracing::debug!("Handling /login command");
 
+    if crate::app::auth::has_credentials() {
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Info),
+            "Already authenticated. Use /logout first to re-authenticate.",
+        );
+        return true;
+    }
+
     let Some(claude_path) = resolve_claude_cli(app, "login") else {
         return true;
     };
@@ -764,6 +775,14 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                     "claude auth login exited"
                 );
                 if status.success() {
+                    if !crate::app::auth::has_credentials() {
+                        let _ = tx.send(ClientEvent::SlashCommandError(
+                            "Login exited successfully but no credentials were saved. \
+                             Try /login again or run `claude auth login` in another terminal."
+                                .to_owned(),
+                        ));
+                        return;
+                    }
                     if let Some(conn) = conn {
                         let _ = tx.send(ClientEvent::AuthCompleted { conn, cwd, model });
                     } else {
@@ -798,6 +817,15 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
     push_user_message(app, "/logout");
     tracing::debug!("Handling /logout command");
 
+    if !crate::app::auth::has_credentials() {
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Info),
+            "Not currently authenticated. Nothing to log out from.",
+        );
+        return true;
+    }
+
     let Some(claude_path) = resolve_claude_cli(app, "logout") else {
         return true;
     };
@@ -827,6 +855,14 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
                     "claude auth logout exited"
                 );
                 if status.success() {
+                    if crate::app::auth::has_credentials() {
+                        let _ = tx.send(ClientEvent::SlashCommandError(
+                            "Logout exited successfully but credentials are still present. \
+                             Try /logout again or run `claude auth logout` in another terminal."
+                                .to_owned(),
+                        ));
+                        return;
+                    }
                     let _ = tx.send(ClientEvent::LogoutCompleted);
                 } else {
                     let _ = tx.send(ClientEvent::SlashCommandError(format!(
@@ -854,7 +890,8 @@ fn resolve_claude_cli(app: &mut App, subcommand: &str) -> Option<std::path::Path
         push_system_message(
             app,
             format!(
-                "claude CLI not found in PATH. Install it or run `claude auth {subcommand}` manually."
+                "claude CLI not found in PATH. Install it and retry /{subcommand}, \
+                 or run `claude auth {subcommand}` manually in another terminal."
             ),
         );
         None

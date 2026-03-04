@@ -58,7 +58,7 @@ impl AppError {
             }
             Self::SessionNotFound => "The requested session was not found.",
             Self::AuthRequired => {
-                "Authentication required. Run `claude /login` in a terminal, then retry."
+                "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal."
             }
         }
     }
