@@ -233,8 +233,11 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         }
         return items;
     }
-    if app.status == AppStatus::Resuming {
-        let mut items = blocked_input_help_items("Unavailable while resuming");
+    if app.status == AppStatus::CommandPending {
+        let mut items = blocked_input_help_items(&format!(
+            "Unavailable while command runs ({})",
+            pending_command_help_label(app)
+        ));
         if app.update_check_hint.is_some() {
             items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
         }
@@ -331,14 +334,18 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
     ]
 }
 
+fn pending_command_help_label(app: &App) -> String {
+    app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
+}
+
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     if app.status == AppStatus::Connecting {
         rows.push(("Loading commands...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::Resuming {
-        rows.push(("Switching sessions...".to_owned(), String::new()));
+    if app.status == AppStatus::CommandPending {
+        rows.push((pending_command_help_label(app), String::new()));
         return rows;
     }
 
@@ -378,8 +385,8 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
         rows.push(("Loading subagents...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::Resuming {
-        rows.push(("Switching sessions...".to_owned(), String::new()));
+    if app.status == AppStatus::CommandPending {
+        rows.push((pending_command_help_label(app), String::new()));
         return rows;
     }
 

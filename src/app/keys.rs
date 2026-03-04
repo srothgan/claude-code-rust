@@ -123,7 +123,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         handle_blocked_input_shortcuts(app, key);
         return;
     }
@@ -146,7 +146,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// During blocked-input states (Connecting, Resuming, Error), keep input disabled and only allow
+/// During blocked-input states (Connecting, `CommandPending`, Error), keep input disabled and only allow
 /// navigation/help shortcuts.
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {

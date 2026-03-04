@@ -23,7 +23,7 @@ use crate::agent::model;
 use crate::app::slash;
 
 pub(super) fn submit_input(app: &mut App) {
-    if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         return;
     }
 

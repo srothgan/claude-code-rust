@@ -48,9 +48,9 @@ pub use service_status_check::start_service_status_check;
 pub use state::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
     IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
-    ModeInfo, ModeState, PasteSessionState, RecentSessionInfo, SelectionKind, SelectionPoint,
-    SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
+    ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionKind,
+    SelectionPoint, SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 
@@ -185,7 +185,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Phase 3: render once (only when something changed)
         let is_animating = matches!(
             app.status,
-            AppStatus::Connecting | AppStatus::Resuming | AppStatus::Thinking | AppStatus::Running
+            AppStatus::Connecting
+                | AppStatus::CommandPending
+                | AppStatus::Thinking
+                | AppStatus::Running
         ) || app.is_compacting;
         if is_animating {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);

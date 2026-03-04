@@ -87,6 +87,8 @@ pub fn create_app(cli: &Cli) -> App {
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
+        pending_command_label: None,
+        pending_command_ack: None,
         should_quit: false,
         exit_error: None,
         session_id: None,
@@ -96,6 +98,7 @@ pub fn create_app(cli: &Cli) -> App {
         cwd: cwd_display,
         files_accessed: 0,
         mode: None,
+        config_options: std::collections::BTreeMap::new(),
         login_hint: None,
         pending_compact_clear: false,
         help_view: HelpView::Keys,
@@ -713,7 +716,12 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
                 model::SessionModeId::new(current_mode_id),
             )))
         }
-        types::SessionUpdate::ConfigOptionUpdate { .. } => None,
+        types::SessionUpdate::ConfigOptionUpdate { option_id, value } => {
+            Some(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                option_id,
+                value,
+            }))
+        }
         types::SessionUpdate::UsageUpdate { usage } => {
             Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
                 input_tokens: usage.input_tokens,
@@ -1033,4 +1041,23 @@ thread_local! {
 /// Take the connection data from the thread-local slot.
 pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
     CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_session_update_preserves_config_option_update() {
+        let mapped = map_session_update(types::SessionUpdate::ConfigOptionUpdate {
+            option_id: "model".to_owned(),
+            value: serde_json::Value::String("sonnet".to_owned()),
+        });
+
+        let Some(model::SessionUpdate::ConfigOptionUpdate(cfg)) = mapped else {
+            panic!("expected ConfigOptionUpdate mapping");
+        };
+        assert_eq!(cfg.option_id, "model");
+        assert_eq!(cfg.value, serde_json::Value::String("sonnet".to_owned()));
+    }
 }

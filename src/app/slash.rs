@@ -227,11 +227,20 @@ fn require_active_session(
     Some((conn, session_id))
 }
 
+/// Block the input field while a slash command is in flight.
+fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
+    app.status = AppStatus::CommandPending;
+    app.pending_command_label = Some(label.to_owned());
+    app.pending_command_ack = ack;
+}
+
 pub(crate) fn clear_conversation_history(app: &mut App) {
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     app.status = AppStatus::Ready;
     app.resuming_session_id = None;
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
     app.files_accessed = 0;
     app.is_compacting = false;
     app.cancelled_turn_pending_hint = false;
@@ -723,10 +732,11 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     push_user_message(app, "/login");
     tracing::debug!("Handling /login command");
 
-    let claude_path = match resolve_claude_cli(app, "login") {
-        Some(p) => p,
-        None => return true,
+    let Some(claude_path) = resolve_claude_cli(app, "login") else {
+        return true;
     };
+
+    set_command_pending(app, "Authenticating...", None);
 
     let tx = app.event_tx.clone();
     let conn = app.conn.clone();
@@ -755,8 +765,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                 );
                 if status.success() {
                     if let Some(conn) = conn {
-                        let _ =
-                            tx.send(ClientEvent::AuthCompleted { conn, cwd, model });
+                        let _ = tx.send(ClientEvent::AuthCompleted { conn, cwd, model });
                     } else {
                         let _ = tx.send(ClientEvent::SlashCommandError(
                             "Login succeeded but no connection available to start a session."
@@ -789,10 +798,11 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
     push_user_message(app, "/logout");
     tracing::debug!("Handling /logout command");
 
-    let claude_path = match resolve_claude_cli(app, "logout") {
-        Some(p) => p,
-        None => return true,
+    let Some(claude_path) = resolve_claude_cli(app, "logout") else {
+        return true;
     };
+
+    set_command_pending(app, "Signing out...", None);
 
     let tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
@@ -837,20 +847,17 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
 
 /// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.
 fn resolve_claude_cli(app: &mut App, subcommand: &str) -> Option<std::path::PathBuf> {
-    match which::which("claude") {
-        Ok(path) => {
-            tracing::debug!(path = %path.display(), "Resolved claude CLI binary");
-            Some(path)
-        }
-        Err(_) => {
-            push_system_message(
-                app,
-                &format!(
-                    "claude CLI not found in PATH. Install it or run `claude auth {subcommand}` manually."
-                ),
-            );
-            None
-        }
+    if let Ok(path) = which::which("claude") {
+        tracing::debug!(path = %path.display(), "Resolved claude CLI binary");
+        Some(path)
+    } else {
+        push_system_message(
+            app,
+            format!(
+                "claude CLI not found in PATH. Install it or run `claude auth {subcommand}` manually."
+            ),
+        );
+        None
     }
 }
 
@@ -880,19 +887,21 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    if let Some(ref mut mode_state) = app.mode
-        && let Some(info) = mode_state.available_modes.iter().find(|m| m.id == requested_mode)
-    {
-        mode_state.current_mode_id = info.id.clone();
-        mode_state.current_mode_name = info.name.clone();
-        app.cached_footer_line = None;
-    }
+    set_command_pending(
+        app,
+        "Switching mode...",
+        Some(super::PendingCommandAck::CurrentModeUpdate),
+    );
 
     let tx = app.event_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
     tokio::task::spawn_local(async move {
-        if let Err(e) = conn.set_mode(sid.to_string(), requested_mode_owned) {
-            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
+        match conn.set_mode(sid.to_string(), requested_mode_owned) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
+            }
         }
     });
     true
@@ -913,13 +922,20 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    app.model_name.clone_from(&model_name);
-    app.cached_header_line = None;
+    set_command_pending(
+        app,
+        "Switching model...",
+        Some(super::PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() }),
+    );
 
     let tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
-        if let Err(e) = conn.set_model(sid.to_string(), model_name) {
-            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
+        match conn.set_model(sid.to_string(), model_name) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
+            }
         }
     });
     true
@@ -937,6 +953,9 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
     else {
         return true;
     };
+
+    set_command_pending(app, "Starting new session...", None);
+
     let tx = app.event_tx.clone();
     let cwd = app.cwd_raw.clone();
     let model_override = Some(app.model_name.clone());
@@ -966,7 +985,7 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    app.status = AppStatus::Resuming;
+    set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     app.resuming_session_id = Some(session_id.to_owned());
     let tx = app.event_tx.clone();
     let session_id = session_id.to_owned();
@@ -1032,23 +1051,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn login_is_handled_as_builtin_command() {
+    async fn login_is_handled_as_builtin_and_sets_command_pending() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let consumed = try_handle_submit(&mut app, "/login");
                 assert!(consumed, "/login should be handled locally");
+                // Status becomes CommandPending (or stays Ready if claude CLI is not in PATH)
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
+                    "expected CommandPending or Ready, got {:?}",
+                    app.status
+                );
             })
             .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn logout_is_handled_as_builtin_command() {
+    async fn logout_is_handled_as_builtin_and_sets_command_pending() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let consumed = try_handle_submit(&mut app, "/logout");
                 assert!(consumed, "/logout should be handled locally");
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
+                    "expected CommandPending or Ready, got {:?}",
+                    app.status
+                );
             })
             .await;
     }
@@ -1234,7 +1264,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn resume_sets_resuming_state_when_connected() {
+    async fn resume_sets_command_pending_when_connected() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
@@ -1243,11 +1273,118 @@ mod tests {
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
-                assert!(matches!(app.status, AppStatus::Resuming));
+                assert!(matches!(app.status, AppStatus::CommandPending));
                 assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
 
                 tokio::task::yield_now().await;
                 assert!(rx.try_recv().is_ok());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mode_sets_command_pending_and_mode_update_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.mode = Some(super::super::ModeState {
+                    current_mode_id: "code".to_owned(),
+                    current_mode_name: "Code".to_owned(),
+                    available_modes: vec![
+                        super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                        super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                    ],
+                });
+
+                let consumed = try_handle_submit(&mut app, "/mode plan");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching mode..."));
+
+                // Simulate mode-update ack arriving from bridge.
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::CurrentModeUpdate(
+                            crate::agent::model::CurrentModeUpdate::new("plan"),
+                        ),
+                    ),
+                );
+                assert!(
+                    matches!(app.status, AppStatus::Ready),
+                    "expected Ready after CurrentModeUpdate ack, got {:?}",
+                    app.status
+                );
+                assert!(app.pending_command_label.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_sets_command_pending_and_config_ack_updates_model_and_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.model_name = "old-model".to_owned();
+
+                let consumed = try_handle_submit(&mut app, "/model sonnet");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+                assert_eq!(app.model_name, "old-model");
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "model".to_owned(),
+                                value: serde_json::Value::String("sonnet".to_owned()),
+                            },
+                        ),
+                    ),
+                );
+                assert!(
+                    matches!(app.status, AppStatus::Ready),
+                    "expected Ready after model config ack, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.model_name, "sonnet");
+                assert!(app.pending_command_label.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_session_sets_command_pending() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+
+                let consumed = try_handle_submit(&mut app, "/new-session");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
             })
             .await;
     }

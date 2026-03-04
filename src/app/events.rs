@@ -19,9 +19,9 @@ use super::selection::clear_selection;
 use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
-    InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind,
-    SelectionPoint, SystemSeverity, ToolCallInfo, ToolCallScope, default_cache_split_policy,
-    find_text_split_index,
+    InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, PendingCommandAck,
+    SelectionKind, SelectionPoint, SystemSeverity, ToolCallInfo, ToolCallScope,
+    default_cache_split_policy, find_text_split_index,
 };
 use crate::agent::client::AgentConnection;
 use crate::agent::error_handling::{
@@ -29,13 +29,13 @@ use crate::agent::error_handling::{
 };
 use crate::agent::events::{ClientEvent, ServiceStatusSeverity};
 use crate::agent::model;
-use std::rc::Rc;
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
 use crate::error::AppError;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
+use std::rc::Rc;
 use std::time::Instant;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
@@ -60,8 +60,10 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             handle_mouse_event(app, mouse);
         }
         Event::Paste(text) => {
-            if !matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error)
-            {
+            if !matches!(
+                app.status,
+                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
+            ) {
                 // Queue paste chunks for this drain cycle. Some terminals split a
                 // single clipboard paste into multiple `Event::Paste` payloads.
                 if app.pending_paste_text.is_empty() {
@@ -508,6 +510,13 @@ fn set_ready_status_unless_startup_blocked(app: &mut App) {
     app.status = AppStatus::Ready;
 }
 
+/// Clear the `CommandPending` state and restore `Ready` (or `Error` if startup-blocked).
+fn clear_pending_command(app: &mut App) {
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
+    set_ready_status_unless_startup_blocked(app);
+}
+
 fn handle_connected_client_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -523,6 +532,9 @@ fn handle_connected_client_event(
     app.session_id = Some(session_id);
     app.model_name = model_name;
     app.mode = mode;
+    app.config_options.clear();
+    app.config_options
+        .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
     app.login_hint = None;
     app.pending_compact_clear = false;
     app.is_compacting = false;
@@ -540,7 +552,7 @@ fn handle_connected_client_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
-    set_ready_status_unless_startup_blocked(app);
+    clear_pending_command(app);
     app.resuming_session_id = None;
 }
 
@@ -565,7 +577,7 @@ fn handle_sessions_listed_event(
 }
 
 fn handle_auth_required_event(app: &mut App, method_name: String, method_description: String) {
-    set_ready_status_unless_startup_blocked(app);
+    clear_pending_command(app);
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
     app.pending_compact_clear = false;
@@ -584,6 +596,8 @@ fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.queued_submission = None;
     app.last_rate_limit_update = None;
     app.resuming_session_id = None;
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
     app.input.clear();
     app.pending_submit = false;
     app.status = AppStatus::Error;
@@ -602,7 +616,7 @@ fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     });
     app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
-    set_ready_status_unless_startup_blocked(app);
+    clear_pending_command(app);
     app.resuming_session_id = None;
 }
 
@@ -614,6 +628,8 @@ fn handle_auth_completed_event(
 ) {
     tracing::info!("Authentication completed via /login");
     app.login_hint = None;
+    app.pending_command_label = Some("Starting session...".to_owned());
+    app.pending_command_ack = None;
     push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
@@ -639,6 +655,8 @@ fn handle_logout_completed_event(app: &mut App) {
     app.force_redraw = true;
 
     if let Some(ref conn) = app.conn {
+        app.pending_command_label = Some("Starting session...".to_owned());
+        app.pending_command_ack = None;
         let conn = Rc::clone(conn);
         let tx = app.event_tx.clone();
         let cwd = app.cwd_raw.clone();
@@ -652,6 +670,7 @@ fn handle_logout_completed_event(app: &mut App) {
         });
     } else {
         tracing::warn!("No connection available after logout; cannot start new session");
+        clear_pending_command(app);
         push_system_message_with_severity(
             app,
             Some(SystemSeverity::Warning),
@@ -677,7 +696,7 @@ fn handle_session_replaced_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
-    set_ready_status_unless_startup_blocked(app);
+    clear_pending_command(app);
     app.resuming_session_id = None;
 }
 
@@ -712,6 +731,8 @@ fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.should_quit = true;
     app.status = AppStatus::Error;
     app.pending_submit = false;
+    app.pending_command_label = None;
+    app.pending_command_ack = None;
 }
 
 fn push_interrupted_hint(app: &mut App) {
@@ -1047,6 +1068,9 @@ fn reset_session_identity_state(
     app.session_id = Some(session_id);
     app.model_name = model_name;
     app.mode = mode;
+    app.config_options.clear();
+    app.config_options
+        .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
     app.login_hint = None;
     app.pending_compact_clear = false;
     app.is_compacting = false;
@@ -1384,9 +1408,33 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 }
                 app.cached_footer_line = None;
             }
+            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
+                clear_pending_command(app);
+            }
         }
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             tracing::debug!("Config update: {:?}", config);
+            let option_id = config.option_id;
+            let value = config.value;
+            let model_name =
+                if option_id == "model" { value.as_str().map(ToOwned::to_owned) } else { None };
+            app.config_options.insert(option_id.clone(), value);
+
+            if let Some(model_name) = model_name {
+                app.model_name = model_name;
+                app.cached_header_line = None;
+                app.update_welcome_model_if_pristine();
+            } else if option_id == "model" {
+                tracing::warn!("ConfigOptionUpdate for model carried non-string value");
+            }
+
+            if matches!(
+                app.pending_command_ack.as_ref(),
+                Some(PendingCommandAck::ConfigOptionUpdate { option_id: expected })
+                    if expected == &option_id
+            ) {
+                clear_pending_command(app);
+            }
         }
         model::SessionUpdate::UsageUpdate(usage) => handle_usage_update(app, &usage),
         model::SessionUpdate::FastModeUpdate(state) => {
@@ -3038,13 +3086,99 @@ mod tests {
     #[test]
     fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
         let mut app = make_test_app();
-        app.status = AppStatus::Resuming;
+        app.status = AppStatus::CommandPending;
         app.resuming_session_id = Some("resume-123".into());
 
         handle_client_event(&mut app, ClientEvent::SlashCommandError("resume failed".into()));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
+    }
+
+    #[test]
+    fn current_mode_update_clears_pending_when_expected() {
+        let mut app = make_test_app();
+        app.status = AppStatus::CommandPending;
+        app.pending_command_label = Some("Switching mode...".into());
+        app.pending_command_ack = Some(PendingCommandAck::CurrentModeUpdate);
+        app.mode = Some(crate::app::ModeState {
+            current_mode_id: "code".to_owned(),
+            current_mode_name: "Code".to_owned(),
+            available_modes: vec![
+                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+            ],
+        });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
+                model::CurrentModeUpdate::new("plan"),
+            )),
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+        let mode = app.mode.expect("mode should be present");
+        assert_eq!(mode.current_mode_id, "plan");
+        assert_eq!(mode.current_mode_name, "Plan");
+    }
+
+    #[test]
+    fn model_config_option_update_updates_state_and_clears_pending_when_expected() {
+        let mut app = make_test_app();
+        app.status = AppStatus::CommandPending;
+        app.pending_command_label = Some("Switching model...".into());
+        app.pending_command_ack =
+            Some(PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() });
+        app.model_name = "old-model".to_owned();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
+                model::ConfigOptionUpdate {
+                    option_id: "model".to_owned(),
+                    value: serde_json::Value::String("sonnet".to_owned()),
+                },
+            )),
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.model_name, "sonnet");
+        assert_eq!(
+            app.config_options.get("model"),
+            Some(&serde_json::Value::String("sonnet".to_owned()))
+        );
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+    }
+
+    #[test]
+    fn non_matching_config_option_update_keeps_pending() {
+        let mut app = make_test_app();
+        app.status = AppStatus::CommandPending;
+        app.pending_command_label = Some("Switching model...".into());
+        app.pending_command_ack =
+            Some(PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
+                model::ConfigOptionUpdate {
+                    option_id: "max_thinking_tokens".to_owned(),
+                    value: serde_json::json!(2048),
+                },
+            )),
+        );
+
+        assert!(matches!(app.status, AppStatus::CommandPending));
+        assert_eq!(app.config_options.get("max_thinking_tokens"), Some(&serde_json::json!(2048)));
+        assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+        assert!(matches!(
+            app.pending_command_ack.as_ref(),
+            Some(PendingCommandAck::ConfigOptionUpdate { option_id }) if option_id == "model"
+        ));
     }
 
     #[test]

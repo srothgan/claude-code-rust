@@ -114,23 +114,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    if app.status == AppStatus::Resuming {
+    if app.status == AppStatus::CommandPending {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let headline = app.resuming_session_id.as_deref().map_or_else(
-            || "Resuming session...".to_owned(),
-            |id| format!("Resuming session {id}..."),
-        );
-        let lines = vec![
-            Line::from(vec![
-                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-                Span::styled(headline, Style::default().fg(theme::DIM)),
-            ]),
-            Line::from(Span::styled(
-                "Switching workspace directory...",
-                Style::default().fg(theme::DIM),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(lines), padded);
+        let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
+        let line = Line::from(vec![
+            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+            Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+        ]);
+        frame.render_widget(Paragraph::new(line), padded);
         return;
     }
 
