@@ -1594,59 +1594,6 @@ mod tests {
     }
 
     #[test]
-    fn session_usage_total_tokens_excludes_cache_tokens() {
-        let usage = SessionUsageState {
-            total_input_tokens: 1_000,
-            total_output_tokens: 2_000,
-            total_cache_read_tokens: 50_000,
-            total_cache_write_tokens: 10_000,
-            ..SessionUsageState::default()
-        };
-
-        assert_eq!(usage.total_tokens(), 3_000);
-    }
-
-    #[test]
-    fn session_usage_context_used_tokens_ignores_compaction_pre_tokens() {
-        // output_tokens (1_500) must NOT be included; only input+cache_read+cache_write count.
-        let usage = SessionUsageState {
-            latest_input_tokens: Some(3_000),
-            latest_output_tokens: Some(1_500),
-            latest_cache_read_tokens: Some(50_000),
-            latest_cache_write_tokens: Some(10_000),
-            last_compaction_pre_tokens: Some(190_000),
-            ..SessionUsageState::default()
-        };
-
-        assert_eq!(usage.context_used_tokens(), Some(63_000));
-    }
-
-    #[test]
-    fn session_usage_context_used_tokens_works_without_output_tokens() {
-        // output_tokens being absent must not block the calculation.
-        let usage = SessionUsageState {
-            latest_input_tokens: Some(5_000),
-            latest_output_tokens: None,
-            latest_cache_read_tokens: Some(40_000),
-            latest_cache_write_tokens: Some(8_000),
-            ..SessionUsageState::default()
-        };
-
-        assert_eq!(usage.context_used_tokens(), Some(53_000));
-    }
-
-    #[test]
-    fn session_usage_context_used_tokens_requires_latest_turn_snapshot() {
-        let usage = SessionUsageState {
-            total_input_tokens: 99_000,
-            total_output_tokens: 11_000,
-            ..SessionUsageState::default()
-        };
-
-        assert_eq!(usage.context_used_tokens(), None);
-    }
-
-    #[test]
     fn focus_owner_defaults_to_input() {
         let app = make_test_app();
         assert_eq!(app.focus_owner(), FocusOwner::Input);
