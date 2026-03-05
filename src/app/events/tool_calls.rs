@@ -15,7 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo, ToolCallScope,
+    App, AppStatus, BlockCache, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
+    ToolCallInfo, ToolCallScope,
 };
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
@@ -206,7 +207,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         }
     }
     if layout_dirty {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 }
 

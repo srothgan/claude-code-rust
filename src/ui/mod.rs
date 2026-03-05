@@ -29,6 +29,8 @@ pub mod theme;
 mod todo;
 mod tool_call;
 
+pub use message::{SpinnerState, measure_message_height_cached};
+
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;

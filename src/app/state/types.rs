@@ -142,6 +142,8 @@ pub struct CacheBudgetEnforceStats {
     pub total_after_bytes: usize,
     pub evicted_bytes: usize,
     pub evicted_blocks: usize,
+    /// Bytes in protected (non-evictable) blocks excluded from the budget comparison.
+    pub protected_bytes: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]

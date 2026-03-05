@@ -47,12 +47,14 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
+pub(crate) use state::cache_metrics;
 pub use state::{
-    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, ChatViewport, HelpView,
-    IncrementalMarkdown, InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage,
-    ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionKind,
-    SelectionPoint, SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
-    TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
+    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, HelpView,
+    IncrementalMarkdown, InlinePermission, InvalidationLevel, LoginHint, MessageBlock, MessageRole,
+    MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
+    SelectionKind, SelectionPoint, SelectionState, SessionUsageState, SystemSeverity,
+    TerminalSnapshotMode, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock,
+    is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 

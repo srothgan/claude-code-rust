@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, MessageBlock, TerminalSnapshotMode, ToolCallInfo};
+use super::{App, InvalidationLevel, MessageBlock, TerminalSnapshotMode, ToolCallInfo};
 
 enum TerminalUpdatePayload {
     Append { bytes: Vec<u8>, current_len: usize },
@@ -109,7 +109,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     drop(terminals);
 
     if let Some(mi) = dirty_from {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 
     changed

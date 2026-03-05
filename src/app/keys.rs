@@ -16,8 +16,8 @@
 
 use super::dialog::DialogState;
 use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo,
-    ModeState,
+    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel,
+    MessageBlock, ModeInfo, ModeState,
 };
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::permissions::handle_permission_key;
@@ -808,8 +808,7 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
             }
         }
     }
-    app.viewport.bump_layout_generation();
-    app.mark_all_message_layout_dirty();
+    app.invalidate_layout(InvalidationLevel::Global);
 }
 
 /// Toggle the header visibility.

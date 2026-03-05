@@ -14,7 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, AppStatus, MessageRole, SelectionKind, SelectionState};
+use crate::app::cache_metrics;
+use crate::app::{App, AppStatus, MessageBlock, MessageRole, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -453,7 +454,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Detect width change and invalidate layout caches
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
-        app.viewport.on_frame(width);
+        if app.viewport.on_frame(width) {
+            app.cache_metrics.record_resize();
+        }
     }
 
     // Update per-message visual heights
@@ -526,8 +529,75 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
     crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
     crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);
+    crate::perf::mark_with("cache::protected_bytes", "bytes", budget_stats.protected_bytes);
     crate::perf::mark_with("cache::evicted_bytes", "bytes", budget_stats.evicted_bytes);
     crate::perf::mark_with("cache::evicted_blocks", "count", budget_stats.evicted_blocks);
+
+    // -- Accumulate and conditionally log render cache metrics --
+    let should_log =
+        app.cache_metrics.record_render_enforcement(&budget_stats, &app.render_cache_budget);
+
+    let render_utilization_pct = if app.render_cache_budget.max_bytes > 0 {
+        (app.render_cache_budget.last_total_bytes as f32 / app.render_cache_budget.max_bytes as f32)
+            * 100.0
+    } else {
+        0.0
+    };
+    let history_utilization_pct = if app.history_retention.max_bytes > 0 {
+        (app.history_retention_stats.total_after_bytes as f32
+            / app.history_retention.max_bytes as f32)
+            * 100.0
+    } else {
+        0.0
+    };
+
+    if let Some(warn_kind) = app.cache_metrics.check_warn_condition(
+        render_utilization_pct,
+        history_utilization_pct,
+        budget_stats.evicted_blocks,
+    ) {
+        cache_metrics::emit_cache_warning(&warn_kind);
+    }
+
+    if should_log {
+        let entry_count = count_populated_cache_slots(&app.messages);
+        let snap = cache_metrics::build_snapshot(
+            &app.render_cache_budget,
+            &app.history_retention_stats,
+            app.history_retention,
+            &app.cache_metrics,
+            &app.viewport,
+            entry_count,
+            budget_stats.evicted_blocks,
+            0,
+            budget_stats.protected_bytes,
+        );
+        cache_metrics::emit_render_metrics(&snap);
+
+        crate::perf::mark_with("cache::entry_count", "count", entry_count);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::perf::mark_with(
+            "cache::utilization_pct_x10",
+            "pct",
+            (snap.render_utilization_pct * 10.0) as usize,
+        );
+        crate::perf::mark_with("cache::peak_bytes", "bytes", snap.render_peak_bytes);
+    }
+}
+
+/// Count cache slots with non-zero cached bytes across all message blocks.
+///
+/// Only called on log cadence (~every 60 frames), not per-frame.
+fn count_populated_cache_slots(messages: &[crate::app::ChatMessage]) -> usize {
+    messages
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter(|block| match block {
+            MessageBlock::Text(_, cache, _) => cache.cached_bytes() > 0,
+            MessageBlock::Welcome(w) => w.cache.cached_bytes() > 0,
+            MessageBlock::ToolCall(tc) => tc.cache.cached_bytes() > 0,
+        })
+        .count()
 }
 
 struct SelectionOverlay {
@@ -588,8 +658,8 @@ mod tests {
         compute_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, MessageBlock,
-        MessageRole,
+        App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown,
+        InvalidationLevel, MessageBlock, MessageRole,
     };
     use crate::ui::message::SpinnerState;
 
@@ -676,7 +746,7 @@ mod tests {
             incr.append(extra);
             cache.invalidate();
         }
-        app.mark_message_layout_dirty(0);
+        app.invalidate_layout(InvalidationLevel::From(0));
 
         update_visual_heights(&mut app, spinner, false, false, 12);
         assert!(

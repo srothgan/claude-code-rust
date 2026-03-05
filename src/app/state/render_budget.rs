@@ -54,7 +54,9 @@ impl super::App {
                 }
                 stats.total_before_bytes = stats.total_before_bytes.saturating_add(bytes);
 
-                if !(protect_message_tail || protect_block) {
+                if protect_message_tail || protect_block {
+                    stats.protected_bytes = stats.protected_bytes.saturating_add(bytes);
+                } else {
                     evictable.push(CacheSlotCandidate {
                         msg_idx,
                         block_idx,
@@ -65,30 +67,35 @@ impl super::App {
             }
         }
 
-        if stats.total_before_bytes <= self.render_cache_budget.max_bytes {
-            self.render_cache_budget.last_total_bytes = stats.total_before_bytes;
+        // Budget comparison uses only non-protected (evictable) bytes.
+        let budgeted_bytes = stats.total_before_bytes.saturating_sub(stats.protected_bytes);
+
+        if budgeted_bytes <= self.render_cache_budget.max_bytes {
+            self.render_cache_budget.last_total_bytes = budgeted_bytes;
             self.render_cache_budget.last_evicted_bytes = 0;
             stats.total_after_bytes = stats.total_before_bytes;
             return stats;
         }
 
         evictable.sort_by_key(|slot| (slot.last_access_tick, std::cmp::Reverse(slot.bytes)));
+        let mut current_budgeted = budgeted_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
         for slot in evictable {
-            if stats.total_after_bytes <= self.render_cache_budget.max_bytes {
+            if current_budgeted <= self.render_cache_budget.max_bytes {
                 break;
             }
             let removed = self.evict_cache_slot(slot.msg_idx, slot.block_idx);
             if removed == 0 {
                 continue;
             }
+            current_budgeted = current_budgeted.saturating_sub(removed);
             stats.total_after_bytes = stats.total_after_bytes.saturating_sub(removed);
             stats.evicted_bytes = stats.evicted_bytes.saturating_add(removed);
             stats.evicted_blocks = stats.evicted_blocks.saturating_add(1);
         }
 
-        self.render_cache_budget.last_total_bytes = stats.total_after_bytes;
+        self.render_cache_budget.last_total_bytes = current_budgeted;
         self.render_cache_budget.last_evicted_bytes = stats.evicted_bytes;
         self.render_cache_budget.total_evictions =
             self.render_cache_budget.total_evictions.saturating_add(stats.evicted_blocks);

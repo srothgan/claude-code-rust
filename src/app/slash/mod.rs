@@ -112,7 +112,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         )],
         usage: None,
     });
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
 
@@ -127,7 +127,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         )],
         usage: None,
     });
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
 

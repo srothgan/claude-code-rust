@@ -164,7 +164,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
         }
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport = super::super::ChatViewport::new();
     app.viewport.engage_auto_scroll();
 }

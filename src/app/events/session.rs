@@ -17,8 +17,8 @@
 use super::super::connect::take_connection_slot;
 use super::super::state::RecentSessionInfo;
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, LoginHint, MessageBlock,
-    MessageRole, SystemSeverity,
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InvalidationLevel, LoginHint,
+    MessageBlock, MessageRole, SystemSeverity,
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
@@ -129,7 +129,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
         )],
         usage: None,
     });
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
     clear_pending_command(app);
     app.resuming_session_id = None;
@@ -299,7 +299,7 @@ fn sync_welcome_cwd(app: &mut App) {
     };
     welcome.cwd.clone_from(&app.cwd);
     welcome.cache.invalidate();
-    app.mark_message_layout_dirty(0);
+    app.invalidate_layout(InvalidationLevel::From(0));
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {

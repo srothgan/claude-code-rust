@@ -26,7 +26,9 @@ mod event_dispatch;
 mod type_converters;
 
 use super::dialog::DialogState;
-use super::state::{HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget};
+use super::state::{
+    CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
+};
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::Cli;
 use crate::agent::client::AgentConnection;
@@ -172,6 +174,7 @@ pub fn create_app(cli: &Cli) -> App {
         render_cache_budget: RenderCacheBudget::default(),
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
+        cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
     };

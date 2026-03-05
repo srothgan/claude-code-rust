@@ -16,7 +16,7 @@
 
 use super::super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
-    InlinePermission, MessageBlock, MessageRole, SystemSeverity,
+    InlinePermission, InvalidationLevel, MessageBlock, MessageRole, SystemSeverity,
 };
 use super::clear_compaction_state;
 use super::rate_limit::format_rate_limit_summary;
@@ -80,7 +80,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     if layout_dirty {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 }
 
@@ -227,7 +227,7 @@ fn push_interrupted_hint(app: &mut App) {
         )],
         usage: None,
     });
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
 
@@ -236,7 +236,7 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
         return;
     };
     if app.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
-        app.mark_message_layout_dirty(idx);
+        app.invalidate_layout(InvalidationLevel::Single(idx));
     }
 }
 

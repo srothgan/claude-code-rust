@@ -167,7 +167,7 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
     );
     handle_session_update(app, update);
     if needs_history_retention {
-        app.enforce_history_retention();
+        app.enforce_history_retention_tracked();
     }
 }
 
@@ -283,7 +283,7 @@ pub(crate) fn push_system_message_with_severity(
         )],
         usage: None,
     });
-    app.enforce_history_retention();
+    app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
 

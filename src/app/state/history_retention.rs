@@ -16,17 +16,15 @@
 
 use crate::agent::model;
 use std::collections::HashSet;
+use std::mem::size_of;
 
 use super::block_cache::BlockCache;
-use super::messages::{ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
-use super::tool_call_info::ToolCallInfo;
-use super::types::HistoryRetentionStats;
+use super::messages::{ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, WelcomeBlock};
+use super::tool_call_info::{InlinePermission, ToolCallInfo};
+use super::types::{HistoryRetentionStats, MessageUsage, RecentSessionInfo};
+use super::viewport::InvalidationLevel;
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
-const HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES: usize = 64;
-const HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES: usize = 48;
-const HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES: usize = 256;
-const HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES: usize = 96;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HistoryDropCandidate {
@@ -66,21 +64,20 @@ impl super::App {
     }
 
     #[must_use]
-    fn estimate_tool_content_bytes(content: &model::ToolCallContent) -> usize {
+    fn measure_tool_content_bytes(content: &model::ToolCallContent) -> usize {
         match content {
             model::ToolCallContent::Content(inner) => match &inner.content {
-                model::ContentBlock::Text(text) => text.text.len(),
+                model::ContentBlock::Text(text) => text.text.capacity(),
                 model::ContentBlock::Image(image) => {
-                    image.data.len().saturating_add(image.mime_type.len())
+                    image.data.capacity().saturating_add(image.mime_type.capacity())
                 }
             },
             model::ToolCallContent::Diff(diff) => diff
                 .path
-                .to_string_lossy()
-                .len()
-                .saturating_add(diff.old_text.as_ref().map_or(0, String::len))
-                .saturating_add(diff.new_text.len()),
-            model::ToolCallContent::Terminal(term) => term.terminal_id.len(),
+                .capacity()
+                .saturating_add(diff.old_text.as_ref().map_or(0, String::capacity))
+                .saturating_add(diff.new_text.capacity()),
+            model::ToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
     }
 
@@ -90,65 +87,83 @@ impl super::App {
     }
 
     #[must_use]
-    fn estimate_tool_call_bytes(tc: &ToolCallInfo) -> usize {
-        let mut total = HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES
-            .saturating_add(tc.id.len())
-            .saturating_add(tc.title.len())
-            .saturating_add(tc.sdk_tool_name.len())
-            .saturating_add(tc.terminal_id.as_ref().map_or(0, String::len))
-            .saturating_add(tc.terminal_command.as_ref().map_or(0, String::len))
-            .saturating_add(tc.terminal_output.as_ref().map_or(0, String::len));
+    fn measure_tool_call_bytes(tc: &ToolCallInfo) -> usize {
+        let mut total = size_of::<ToolCallInfo>()
+            .saturating_add(tc.id.capacity())
+            .saturating_add(tc.title.capacity())
+            .saturating_add(tc.sdk_tool_name.capacity())
+            .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
+            .saturating_add(tc.terminal_command.as_ref().map_or(0, String::capacity))
+            .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                tc.content.capacity().saturating_mul(size_of::<model::ToolCallContent>()),
+            );
 
         if let Some(raw_input) = &tc.raw_input {
             total = total.saturating_add(Self::estimate_json_value_bytes(raw_input));
         }
         for content in &tc.content {
-            total = total.saturating_add(Self::estimate_tool_content_bytes(content));
+            total = total.saturating_add(Self::measure_tool_content_bytes(content));
         }
         if let Some(permission) = &tc.pending_permission {
-            total = total.saturating_add(64);
+            total = total.saturating_add(size_of::<InlinePermission>()).saturating_add(
+                permission.options.capacity().saturating_mul(size_of::<model::PermissionOption>()),
+            );
             for option in &permission.options {
                 total = total
-                    .saturating_add(option.option_id.len())
-                    .saturating_add(option.name.len())
-                    .saturating_add(option.description.as_ref().map_or(0, String::len));
+                    .saturating_add(option.option_id.capacity())
+                    .saturating_add(option.name.capacity())
+                    .saturating_add(option.description.as_ref().map_or(0, String::capacity));
             }
         }
 
         total
     }
 
+    /// Measure the approximate in-memory byte footprint of a single message.
+    ///
+    /// Uses `String::capacity()` and `std::mem::size_of` for actual heap
+    /// allocation sizes rather than content-length heuristics.
     #[must_use]
-    pub fn estimate_message_bytes(msg: &ChatMessage) -> usize {
-        let mut total = HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES;
+    pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
+        let mut total = size_of::<ChatMessage>()
+            .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
         if msg.usage.is_some() {
-            total = total.saturating_add(32);
+            total = total.saturating_add(size_of::<MessageUsage>());
         }
 
         for block in &msg.blocks {
-            total = total.saturating_add(HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES);
             match block {
-                MessageBlock::Text(text, _, _) => {
-                    // Text block source is currently held in both the plain String and
-                    // IncrementalMarkdown source; estimate both copies.
-                    total = total.saturating_add(text.len().saturating_mul(2));
+                MessageBlock::Text(text, _, md) => {
+                    total =
+                        total.saturating_add(text.capacity()).saturating_add(md.text_capacity());
                 }
                 MessageBlock::ToolCall(tc) => {
-                    total = total.saturating_add(Self::estimate_tool_call_bytes(tc));
+                    total = total.saturating_add(Self::measure_tool_call_bytes(tc));
                 }
                 MessageBlock::Welcome(welcome) => {
                     total = total
-                        .saturating_add(HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES)
-                        .saturating_add(welcome.model_name.len())
-                        .saturating_add(welcome.cwd.len());
+                        .saturating_add(size_of::<WelcomeBlock>())
+                        .saturating_add(welcome.model_name.capacity())
+                        .saturating_add(welcome.cwd.capacity())
+                        .saturating_add(
+                            welcome
+                                .recent_sessions
+                                .capacity()
+                                .saturating_mul(size_of::<RecentSessionInfo>()),
+                        );
                     for session in &welcome.recent_sessions {
                         total = total
-                            .saturating_add(session.session_id.len())
-                            .saturating_add(session.summary.len())
-                            .saturating_add(session.cwd.as_ref().map_or(0, String::len))
-                            .saturating_add(session.git_branch.as_ref().map_or(0, String::len))
-                            .saturating_add(session.custom_title.as_ref().map_or(0, String::len))
-                            .saturating_add(session.first_prompt.as_ref().map_or(0, String::len));
+                            .saturating_add(session.session_id.capacity())
+                            .saturating_add(session.summary.capacity())
+                            .saturating_add(session.cwd.as_ref().map_or(0, String::capacity))
+                            .saturating_add(session.git_branch.as_ref().map_or(0, String::capacity))
+                            .saturating_add(
+                                session.custom_title.as_ref().map_or(0, String::capacity),
+                            )
+                            .saturating_add(
+                                session.first_prompt.as_ref().map_or(0, String::capacity),
+                            );
                     }
                 }
             }
@@ -156,9 +171,10 @@ impl super::App {
         total
     }
 
+    /// Measure the total in-memory byte footprint of all retained messages.
     #[must_use]
-    pub fn estimate_history_bytes(&self) -> usize {
-        self.messages.iter().map(Self::estimate_message_bytes).sum()
+    pub fn measure_history_bytes(&self) -> usize {
+        self.messages.iter().map(Self::measure_message_bytes).sum()
     }
 
     pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
@@ -229,7 +245,7 @@ impl super::App {
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.messages.remove(idx);
-                self.mark_message_layout_dirty(idx);
+                self.invalidate_layout(InvalidationLevel::From(idx));
                 self.rebuild_tool_indices_and_terminal_refs();
             }
             return;
@@ -248,7 +264,7 @@ impl super::App {
                 text.clone_from(&marker_text);
                 *incr = IncrementalMarkdown::from_complete(&marker_text);
                 cache.invalidate();
-                self.mark_message_layout_dirty(idx);
+                self.invalidate_layout(InvalidationLevel::From(idx));
             }
             return;
         }
@@ -268,7 +284,7 @@ impl super::App {
                 usage: None,
             },
         );
-        self.mark_message_layout_dirty(insert_idx);
+        self.invalidate_layout(InvalidationLevel::From(insert_idx));
         self.rebuild_tool_indices_and_terminal_refs();
     }
 
@@ -276,7 +292,7 @@ impl super::App {
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
-        stats.total_before_bytes = self.estimate_history_bytes();
+        stats.total_before_bytes = self.measure_history_bytes();
         stats.total_after_bytes = stats.total_before_bytes;
 
         if stats.total_before_bytes > max_bytes {
@@ -287,7 +303,7 @@ impl super::App {
                 {
                     continue;
                 }
-                let bytes = Self::estimate_message_bytes(msg);
+                let bytes = Self::measure_message_bytes(msg);
                 if bytes == 0 {
                     continue;
                 }
@@ -341,7 +357,7 @@ impl super::App {
                     };
                 }
                 self.rebuild_tool_indices_and_terminal_refs();
-                self.mark_all_message_layout_dirty();
+                self.invalidate_layout(InvalidationLevel::From(0));
                 self.needs_redraw = true;
             }
         }
@@ -356,13 +372,20 @@ impl super::App {
 
         self.upsert_history_hidden_marker();
 
-        stats.total_after_bytes = self.estimate_history_bytes();
+        stats.total_after_bytes = self.measure_history_bytes();
         self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
         self.history_retention_stats.dropped_messages = stats.dropped_messages;
         self.history_retention_stats.dropped_bytes = stats.dropped_bytes;
 
         stats.total_dropped_messages = self.history_retention_stats.total_dropped_messages;
         stats.total_dropped_bytes = self.history_retention_stats.total_dropped_bytes;
+
+        crate::perf::mark_with("history::bytes_before", "bytes", stats.total_before_bytes);
+        crate::perf::mark_with("history::bytes_after", "bytes", stats.total_after_bytes);
+        crate::perf::mark_with("history::dropped_messages", "count", stats.dropped_messages);
+        crate::perf::mark_with("history::dropped_bytes", "bytes", stats.dropped_bytes);
+        crate::perf::mark_with("history::total_dropped", "count", stats.total_dropped_messages);
+
         stats
     }
 }

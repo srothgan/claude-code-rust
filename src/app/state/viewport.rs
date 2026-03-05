@@ -14,6 +14,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+/// Describes the intent behind a layout invalidation.
+///
+/// All variants currently reduce to the same `dirty_from` watermark model --
+/// the semantic distinction exists for documentation, tracing, and future
+/// optimization (e.g. O(1) prefix-sum patch for `Single` at non-tail indices).
+///
+/// Do NOT add `Range(start, end)` unless the underlying data structures
+/// support bounded invalidation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidationLevel {
+    /// One message's content changed (tool status, permission UI, terminal output).
+    /// Only that message needs re-measurement.
+    Single(usize),
+    /// Messages from `start` onward may have changed (insert/remove/reindex).
+    From(usize),
+    /// Terminal width changed. Handled internally by `on_frame()`.
+    /// Included for completeness; not dispatched through `App::invalidate_layout()`.
+    Resize,
+    /// Global layout change (e.g. tool collapse toggle).
+    /// All messages dirty + `layout_generation` bumped.
+    Global,
+}
+
 /// Single owner of all chat layout state: scroll, per-message heights, and prefix sums.
 ///
 /// Consolidates state previously scattered across `App` (scroll fields, prefix sums),
@@ -85,8 +108,11 @@ impl ChatViewport {
 
     /// Called at top of each render frame. Detects width change and invalidates
     /// all cached heights so they get re-measured at the new width.
-    pub fn on_frame(&mut self, width: u16) {
-        if self.width != 0 && self.width != width {
+    ///
+    /// Returns `true` if a resize was detected (width changed).
+    pub fn on_frame(&mut self, width: u16) -> bool {
+        let resized = self.width != 0 && self.width != width;
+        if resized {
             tracing::debug!(
                 "RESIZE: width {} -> {}, scroll_target={}, auto_scroll={}",
                 self.width,
@@ -97,6 +123,7 @@ impl ChatViewport {
             self.handle_resize();
         }
         self.width = width;
+        resized
     }
 
     /// Invalidate height caches on terminal resize.

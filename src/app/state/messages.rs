@@ -77,6 +77,12 @@ impl IncrementalMarkdown {
         self.text.clone()
     }
 
+    /// Allocated capacity of the internal text buffer in bytes.
+    #[must_use]
+    pub fn text_capacity(&self) -> usize {
+        self.text.capacity()
+    }
+
     /// Render this block source via the provided markdown renderer.
     /// `render_fn` converts a markdown source string into `Vec<Line>`.
     pub fn lines(

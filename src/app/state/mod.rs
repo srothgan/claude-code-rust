@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod block_cache;
+pub mod cache_metrics;
 mod history_retention;
 pub mod messages;
 mod render_budget;
@@ -24,6 +25,7 @@ pub mod viewport;
 
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
+pub use cache_metrics::CacheMetrics;
 pub use messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity, WelcomeBlock,
 };
@@ -36,7 +38,7 @@ pub use types::{
     RenderCacheBudget, SUBAGENT_THINKING_DEBOUNCE, ScrollbarDragState, SelectionKind,
     SelectionPoint, SelectionState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
 };
-pub use viewport::ChatViewport;
+pub use viewport::{ChatViewport, InvalidationLevel};
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -228,6 +230,8 @@ pub struct App {
     pub history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
     pub history_retention_stats: HistoryRetentionStats,
+    /// Cross-cutting cache metrics accumulator (enforcement counts, watermarks, rate limits).
+    pub cache_metrics: CacheMetrics,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
@@ -265,7 +269,7 @@ impl App {
             0,
             ChatMessage::welcome_with_recent(&self.model_name, &self.cwd, &self.recent_sessions),
         );
-        self.mark_all_message_layout_dirty();
+        self.invalidate_layout(InvalidationLevel::From(0));
     }
 
     /// Update the welcome message's model name, but only before chat starts.
@@ -284,7 +288,7 @@ impl App {
         };
         welcome.model_name.clone_from(&self.model_name);
         welcome.cache.invalidate();
-        self.mark_message_layout_dirty(0);
+        self.invalidate_layout(InvalidationLevel::From(0));
     }
 
     /// Update the welcome message with latest discovered recent sessions.
@@ -300,7 +304,7 @@ impl App {
         };
         welcome.recent_sessions.clone_from(&self.recent_sessions);
         welcome.cache.invalidate();
-        self.mark_message_layout_dirty(0);
+        self.invalidate_layout(InvalidationLevel::From(0));
     }
 
     /// Track a Task/Agent tool call as active (in-progress subagent).
@@ -369,23 +373,63 @@ impl App {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
     }
 
-    /// Mark message layout caches dirty from `msg_idx` onward.
+    /// Invalidate message layout caches at the given level.
     ///
-    /// Non-tail changes invalidate prefix-sum fast path so a full rebuild happens once.
-    pub fn mark_message_layout_dirty(&mut self, msg_idx: usize) {
-        self.viewport.mark_message_dirty(msg_idx);
-        if msg_idx + 1 < self.messages.len() {
-            self.viewport.prefix_sums_width = 0;
+    /// Single entry point for all layout invalidation. Replaces the former
+    /// `mark_message_layout_dirty` / `mark_all_message_layout_dirty` methods.
+    pub fn invalidate_layout(&mut self, level: InvalidationLevel) {
+        match level {
+            InvalidationLevel::Single(idx) => {
+                self.viewport.mark_message_dirty(idx);
+                // Non-tail single change: prefix sums from idx onward shift.
+                if idx + 1 < self.messages.len() {
+                    self.viewport.prefix_sums_width = 0;
+                }
+            }
+            InvalidationLevel::From(idx) => {
+                self.viewport.mark_message_dirty(idx);
+                // Structural change: always force full prefix-sum rebuild.
+                self.viewport.prefix_sums_width = 0;
+            }
+            InvalidationLevel::Global => {
+                if self.messages.is_empty() {
+                    return;
+                }
+                self.viewport.mark_message_dirty(0);
+                self.viewport.prefix_sums_width = 0;
+                self.viewport.bump_layout_generation();
+            }
+            InvalidationLevel::Resize => {
+                // Resize is handled by viewport.on_frame(). This arm exists
+                // for exhaustiveness; production code should not reach it.
+                debug_assert!(false, "Resize should not be dispatched through invalidate_layout");
+            }
         }
     }
 
-    /// Mark all message layout caches dirty.
-    pub fn mark_all_message_layout_dirty(&mut self) {
-        if self.messages.is_empty() {
-            return;
+    /// Enforce history retention and record metrics.
+    ///
+    /// Wrapper around [`enforce_history_retention`] that feeds the returned stats
+    /// into `CacheMetrics` and emits rate-limited structured tracing. Call this
+    /// instead of `enforce_history_retention()` at all non-test call sites.
+    pub fn enforce_history_retention_tracked(&mut self) {
+        let stats = self.enforce_history_retention();
+        let should_log =
+            self.cache_metrics.record_history_enforcement(&stats, self.history_retention);
+        if should_log {
+            let snap = cache_metrics::build_snapshot(
+                &self.render_cache_budget,
+                &self.history_retention_stats,
+                self.history_retention,
+                &self.cache_metrics,
+                &self.viewport,
+                0, // entry_count not needed for history-only log
+                0,
+                stats.dropped_messages,
+                0, // protected_bytes not relevant for history-only log
+            );
+            cache_metrics::emit_history_metrics(&snap);
         }
-        self.viewport.mark_message_dirty(0);
-        self.viewport.prefix_sums_width = 0;
     }
 
     /// Force-finish any lingering in-progress tool calls.
@@ -418,7 +462,7 @@ impl App {
 
         if changed > 0 || cleared_permission {
             if let Some(msg_idx) = first_changed_idx {
-                self.mark_message_layout_dirty(msg_idx);
+                self.invalidate_layout(InvalidationLevel::Single(msg_idx));
             }
             self.pending_permission_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
@@ -516,6 +560,7 @@ impl App {
             render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
+            cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
         }
@@ -1017,6 +1062,7 @@ mod tests {
         assert!(stats.evicted_blocks >= 1);
         assert!(stats.evicted_bytes >= bytes_a);
         assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
+        assert_eq!(stats.protected_bytes, 0);
 
         if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
             assert_eq!(cache.cached_bytes(), 0);
@@ -1050,12 +1096,136 @@ mod tests {
         let stats = app.enforce_render_cache_budget();
         assert_eq!(stats.evicted_blocks, 0);
         assert_eq!(stats.evicted_bytes, 0);
+        assert_eq!(stats.protected_bytes, before);
 
         if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
             assert_eq!(cache.cached_bytes(), before);
         } else {
             panic!("expected text block");
         }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_excludes_protected_from_budget() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("old message")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("streaming tail")],
+                usage: None,
+            },
+        ];
+
+        let bytes_a = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("x".repeat(2200))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
+            cache.store(vec![Line::from("y".repeat(5000))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+
+        // Budget fits old message alone but not old + tail combined.
+        app.render_cache_budget.max_bytes = bytes_a + 100;
+        assert!(bytes_a + bytes_b > app.render_cache_budget.max_bytes);
+
+        let stats = app.enforce_render_cache_budget();
+
+        // Protected bytes should be the streaming tail.
+        assert_eq!(stats.protected_bytes, bytes_b);
+        // No eviction: budgeted bytes (bytes_a) are under max_bytes.
+        assert_eq!(stats.evicted_blocks, 0);
+        assert_eq!(stats.evicted_bytes, 0);
+        // Old message cache intact.
+        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
+            assert_eq!(cache.cached_bytes(), bytes_a);
+        } else {
+            panic!("expected text block");
+        }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("old-a")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("old-b")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("streaming")],
+                usage: None,
+            },
+        ];
+
+        // Populate caches: messages 0 and 1 evictable, message 2 protected.
+        if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("x".repeat(3000))]);
+        }
+        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
+            cache.store(vec![Line::from("y".repeat(3000))]);
+            let _ = cache.get(); // touch to make more recently accessed
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        let bytes_c = if let MessageBlock::Text(_, cache, _) = &mut app.messages[2].blocks[0] {
+            cache.store(vec![Line::from("z".repeat(5000))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+
+        // Budget fits message B but not A+B (excludes C as protected).
+        app.render_cache_budget.max_bytes = bytes_b + 100;
+
+        let stats = app.enforce_render_cache_budget();
+
+        assert_eq!(stats.protected_bytes, bytes_c);
+        assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
+        // Message B should survive (more recent access).
+        if let MessageBlock::Text(_, cache, _) = &app.messages[1].blocks[0] {
+            assert_eq!(cache.cached_bytes(), bytes_b);
+        } else {
+            panic!("expected text block");
+        }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+        app.messages = vec![ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![assistant_text_block("done")],
+            usage: None,
+        }];
+
+        if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("x".repeat(2000))]);
+        }
+        app.render_cache_budget.max_bytes = usize::MAX;
+
+        let stats = app.enforce_render_cache_budget();
+        assert_eq!(stats.protected_bytes, 0);
     }
 
     #[test]
@@ -1701,5 +1871,137 @@ mod tests {
 
         app.release_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    }
+
+    // --- InvalidationLevel tests ---
+
+    #[test]
+    fn invalidate_single_tail_preserves_prefix_sums() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("a"));
+        app.messages.push(user_text_message("b"));
+        app.messages.push(user_text_message("c"));
+        app.viewport.on_frame(80);
+        app.viewport.set_message_height(0, 5);
+        app.viewport.set_message_height(1, 10);
+        app.viewport.set_message_height(2, 3);
+        app.viewport.rebuild_prefix_sums();
+        let prefix_width_before = app.viewport.prefix_sums_width;
+
+        app.invalidate_layout(InvalidationLevel::Single(2)); // tail
+
+        assert_eq!(app.viewport.dirty_from, Some(2));
+        assert_eq!(app.viewport.prefix_sums_width, prefix_width_before);
+    }
+
+    #[test]
+    fn invalidate_single_nontail_invalidates_prefix_sums() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("a"));
+        app.messages.push(user_text_message("b"));
+        app.messages.push(user_text_message("c"));
+        app.viewport.on_frame(80);
+        app.viewport.set_message_height(0, 5);
+        app.viewport.set_message_height(1, 10);
+        app.viewport.set_message_height(2, 3);
+        app.viewport.rebuild_prefix_sums();
+
+        app.invalidate_layout(InvalidationLevel::Single(1)); // non-tail
+
+        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert_eq!(app.viewport.prefix_sums_width, 0);
+    }
+
+    #[test]
+    fn invalidate_from_always_invalidates_prefix_sums() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("a"));
+        app.messages.push(user_text_message("b"));
+        app.messages.push(user_text_message("c"));
+        app.viewport.on_frame(80);
+        app.viewport.set_message_height(0, 5);
+        app.viewport.set_message_height(1, 10);
+        app.viewport.set_message_height(2, 3);
+        app.viewport.rebuild_prefix_sums();
+        assert_ne!(app.viewport.prefix_sums_width, 0);
+
+        // From at tail index still invalidates prefix sums (unlike Single).
+        app.invalidate_layout(InvalidationLevel::From(2));
+
+        assert_eq!(app.viewport.dirty_from, Some(2));
+        assert_eq!(app.viewport.prefix_sums_width, 0);
+    }
+
+    #[test]
+    fn invalidate_from_zero_matches_old_mark_all() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("a"));
+        app.messages.push(user_text_message("b"));
+        app.messages.push(user_text_message("c"));
+        app.viewport.on_frame(80);
+        app.viewport.set_message_height(0, 5);
+        app.viewport.set_message_height(1, 10);
+        app.viewport.set_message_height(2, 3);
+        app.viewport.rebuild_prefix_sums();
+
+        app.invalidate_layout(InvalidationLevel::From(0));
+
+        assert_eq!(app.viewport.dirty_from, Some(0));
+        assert_eq!(app.viewport.prefix_sums_width, 0);
+    }
+
+    #[test]
+    fn invalidate_global_bumps_generation() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("a"));
+        app.messages.push(user_text_message("b"));
+        app.messages.push(user_text_message("c"));
+        app.viewport.on_frame(80);
+        app.viewport.rebuild_prefix_sums();
+        let gen_before = app.viewport.layout_generation;
+
+        app.invalidate_layout(InvalidationLevel::Global);
+
+        assert_eq!(app.viewport.dirty_from, Some(0));
+        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport.layout_generation, gen_before + 1);
+    }
+
+    #[test]
+    fn invalidate_global_noop_on_empty() {
+        let mut app = make_test_app();
+        assert!(app.messages.is_empty());
+        let gen_before = app.viewport.layout_generation;
+
+        app.invalidate_layout(InvalidationLevel::Global);
+
+        assert!(app.viewport.dirty_from.is_none());
+        assert_eq!(app.viewport.layout_generation, gen_before);
+    }
+
+    #[test]
+    fn invalidate_single_watermark_tracks_oldest() {
+        let mut app = make_test_app();
+        // Need enough messages so all indices are non-tail for consistent behavior.
+        for _ in 0..10 {
+            app.messages.push(user_text_message("x"));
+        }
+
+        app.invalidate_layout(InvalidationLevel::Single(5));
+        app.invalidate_layout(InvalidationLevel::Single(2));
+        app.invalidate_layout(InvalidationLevel::Single(7));
+
+        assert_eq!(app.viewport.dirty_from, Some(2));
+    }
+
+    #[test]
+    fn invalidation_level_eq_and_debug() {
+        assert_eq!(InvalidationLevel::Single(5), InvalidationLevel::Single(5));
+        assert_ne!(InvalidationLevel::Single(5), InvalidationLevel::From(5));
+        assert_eq!(InvalidationLevel::Global, InvalidationLevel::Global);
+        assert_eq!(InvalidationLevel::Resize, InvalidationLevel::Resize);
+        // Debug derive works
+        let dbg = format!("{:?}", InvalidationLevel::From(3));
+        assert!(dbg.contains("From"));
     }
 }

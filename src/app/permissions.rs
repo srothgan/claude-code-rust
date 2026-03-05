@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, FocusTarget, MessageBlock, ToolCallInfo};
+use super::{App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crate::agent::model;
 use crate::agent::model::PermissionOptionKind;
 use crossterm::event::KeyCode;
@@ -56,7 +56,7 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
         }
     }
     if invalidated {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 }
 
@@ -248,7 +248,7 @@ fn move_permission_option_left(app: &mut App) {
         }
     }
     if changed && let Some((mi, _)) = dirty_idx {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 }
 
@@ -265,7 +265,7 @@ fn move_permission_option_right(app: &mut App, option_count: usize) {
         changed = true;
     }
     if changed && let Some((mi, _)) = dirty_idx {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 }
 
@@ -469,7 +469,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         invalidated = true;
     }
     if invalidated {
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 
     // Focus the next permission in the queue (now at index 0), if any.
@@ -501,7 +501,7 @@ fn respond_permission_cancel(app: &mut App) {
             model::RequestPermissionOutcome::Cancelled,
         ));
         tc.mark_tool_call_layout_dirty();
-        app.mark_message_layout_dirty(mi);
+        app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 
     set_permission_focused(app, 0, true);
