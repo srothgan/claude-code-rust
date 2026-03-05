@@ -80,6 +80,7 @@ pub(super) fn map_available_agents_update(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {
@@ -118,18 +119,6 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
                 option_id,
                 value,
-            }))
-        }
-        types::SessionUpdate::UsageUpdate { usage } => {
-            Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                cache_read_tokens: usage.cache_read_tokens,
-                cache_write_tokens: usage.cache_write_tokens,
-                total_cost_usd: usage.total_cost_usd,
-                turn_cost_usd: usage.turn_cost_usd,
-                context_window: usage.context_window,
-                max_output_tokens: usage.max_output_tokens,
             }))
         }
         types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
@@ -199,7 +188,7 @@ pub(super) fn map_permission_request(
                 "allow_once" => model::PermissionOptionKind::AllowOnce,
                 "allow_session" => model::PermissionOptionKind::AllowSession,
                 "allow_always" => model::PermissionOptionKind::AllowAlways,
-                "reject_always" => model::PermissionOptionKind::RejectAlways,
+                "reject_once" => model::PermissionOptionKind::RejectOnce,
                 "question_choice" => model::PermissionOptionKind::QuestionChoice,
                 "plan_approve" => model::PermissionOptionKind::PlanApprove,
                 "plan_reject" => model::PermissionOptionKind::PlanReject,

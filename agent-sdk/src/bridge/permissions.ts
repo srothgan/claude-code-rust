@@ -114,12 +114,25 @@ export function permissionResultFromOutcome(
       };
     }
     if (outcome.option_id === "allow_always") {
-      const suggestionsForAlways = scopedSuggestions.persistent;
+      const persistentSuggestions = scopedSuggestions.persistent;
+      const fallbackSuggestions: PermissionUpdate[] | undefined =
+        persistentSuggestions.length > 0
+          ? persistentSuggestions
+          : toolName
+            ? [
+                {
+                  type: "addRules",
+                  rules: [{ toolName }],
+                  behavior: "allow",
+                  destination: "projectSettings",
+                },
+              ]
+            : undefined;
       return {
         behavior: "allow",
         updatedInput: inputData,
-        ...(suggestionsForAlways && suggestionsForAlways.length > 0
-          ? { updatedPermissions: suggestionsForAlways }
+        ...(fallbackSuggestions && fallbackSuggestions.length > 0
+          ? { updatedPermissions: fallbackSuggestions }
           : {}),
         toolUseID: toolCallId,
       };
