@@ -24,6 +24,7 @@ pub(crate) mod input;
 mod input_submit;
 mod keys;
 pub(crate) mod mention;
+mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 mod selection;

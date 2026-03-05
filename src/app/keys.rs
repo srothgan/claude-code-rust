@@ -123,7 +123,9 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
+        || app.is_compacting
+    {
         handle_blocked_input_shortcuts(app, key);
         return;
     }

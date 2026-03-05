@@ -1,0 +1,647 @@
+// Claude Code Rust - A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! Slash command types, parsing, and delegation.
+//!
+//! Submodules:
+//! - `candidates`: candidate detection, filtering, and building
+//! - `navigation`: autocomplete activation, movement, and confirm
+//! - `executors`: slash command execution handlers
+
+mod candidates;
+mod executors;
+mod navigation;
+
+use super::{
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
+    dialog::DialogState,
+};
+use crate::agent::model;
+use std::rc::Rc;
+
+pub const MAX_VISIBLE: usize = 8;
+const MAX_CANDIDATES: usize = 50;
+
+// Re-export public API
+pub use executors::try_handle_submit;
+pub use navigation::{
+    activate, confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
+};
+
+#[derive(Debug, Clone)]
+pub struct SlashCandidate {
+    pub insert_value: String,
+    pub primary: String,
+    pub secondary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlashContext {
+    CommandName,
+    Argument { command: String, arg_index: usize, token_range: (usize, usize) },
+}
+
+#[derive(Debug, Clone)]
+pub struct SlashState {
+    /// Character position where `/` token starts.
+    pub trigger_row: usize,
+    pub trigger_col: usize,
+    /// Current typed query for the active slash context.
+    pub query: String,
+    /// Command-name or argument context.
+    pub context: SlashContext,
+    /// Filtered list of supported candidates.
+    pub candidates: Vec<SlashCandidate>,
+    /// Shared autocomplete dialog navigation state.
+    pub dialog: DialogState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SlashDetection {
+    trigger_row: usize,
+    trigger_col: usize,
+    query: String,
+    context: SlashContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedSlash<'a> {
+    name: &'a str,
+    args: Vec<&'a str>,
+}
+
+fn parse(text: &str) -> Option<ParsedSlash<'_>> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    let name = parts.next()?;
+    Some(ParsedSlash { name, args: parts.collect() })
+}
+
+pub fn is_cancel_command(text: &str) -> bool {
+    parse(text).is_some_and(|parsed| parsed.name == "/cancel")
+}
+
+fn normalize_slash_name(name: &str) -> String {
+    if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
+}
+
+fn push_system_message(app: &mut App, text: impl Into<String>) {
+    let text = text.into();
+    app.messages.push(ChatMessage {
+        role: MessageRole::System(None),
+        blocks: vec![MessageBlock::Text(
+            text.clone(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(&text),
+        )],
+        usage: None,
+    });
+    app.enforce_history_retention();
+    app.viewport.engage_auto_scroll();
+}
+
+fn push_user_message(app: &mut App, text: impl Into<String>) {
+    let text = text.into();
+    app.messages.push(ChatMessage {
+        role: MessageRole::User,
+        blocks: vec![MessageBlock::Text(
+            text.clone(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(&text),
+        )],
+        usage: None,
+    });
+    app.enforce_history_retention();
+    app.viewport.engage_auto_scroll();
+}
+
+fn require_connection(
+    app: &mut App,
+    not_connected_msg: &'static str,
+) -> Option<Rc<crate::agent::client::AgentConnection>> {
+    let Some(conn) = app.conn.as_ref() else {
+        push_system_message(app, not_connected_msg);
+        return None;
+    };
+    Some(Rc::clone(conn))
+}
+
+fn require_active_session(
+    app: &mut App,
+    not_connected_msg: &'static str,
+    no_session_msg: &'static str,
+) -> Option<(Rc<crate::agent::client::AgentConnection>, model::SessionId)> {
+    let conn = require_connection(app, not_connected_msg)?;
+    let Some(session_id) = app.session_id.clone() else {
+        push_system_message(app, no_session_msg);
+        return None;
+    };
+    Some((conn, session_id))
+}
+
+/// Block the input field while a slash command is in flight.
+fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
+    app.status = AppStatus::CommandPending;
+    app.pending_command_label = Some(label.to_owned());
+    app.pending_command_ack = ack;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+
+    // Re-import submodule items needed by tests
+    use super::candidates::{
+        argument_candidates, detect_slash_at_cursor, supported_command_candidates,
+    };
+
+    #[test]
+    fn parse_non_slash_returns_none() {
+        assert!(parse("hello world").is_none());
+    }
+
+    #[test]
+    fn parse_slash_name_and_args() {
+        let parsed = parse("/mode plan").expect("slash command");
+        assert_eq!(parsed.name, "/mode");
+        assert_eq!(parsed.args, vec!["plan"]);
+    }
+
+    #[test]
+    fn unsupported_command_is_handled_locally() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/definitely-unknown");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(_)));
+    }
+
+    #[test]
+    fn advertised_command_is_forwarded() {
+        let mut app = App::test_default();
+        app.available_commands = vec![model::AvailableCommand::new("/help", "Help")];
+        let consumed = try_handle_submit(&mut app, "/help");
+        assert!(!consumed);
+    }
+
+    #[test]
+    fn login_logout_appear_in_candidates_as_builtins() {
+        let app = App::test_default();
+        let names: Vec<String> =
+            supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
+        assert!(names.iter().any(|n| n == "/login"), "missing /login");
+        assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn login_is_handled_as_builtin_and_sets_command_pending() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let consumed = try_handle_submit(&mut app, "/login");
+                assert!(consumed, "/login should be handled locally");
+                // Status becomes CommandPending (or stays Ready if claude CLI is not in PATH)
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
+                    "expected CommandPending or Ready, got {:?}",
+                    app.status
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn logout_is_handled_as_builtin_and_sets_command_pending() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let consumed = try_handle_submit(&mut app, "/logout");
+                assert!(consumed, "/logout should be handled locally");
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
+                    "expected CommandPending or Ready, got {:?}",
+                    app.status
+                );
+            })
+            .await;
+    }
+
+    #[test]
+    fn login_rejects_extra_args() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/login somearg");
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        assert!(matches!(last.role, MessageRole::System(_)));
+    }
+
+    #[test]
+    fn detect_slash_argument_context_after_first_space() {
+        let lines = vec!["/mode pla".to_owned()];
+        let detection = detect_slash_at_cursor(&lines, 0, "/mode pla".chars().count())
+            .expect("slash detection");
+
+        match detection.context {
+            SlashContext::Argument { command, arg_index, token_range } => {
+                assert_eq!(command, "/mode");
+                assert_eq!(arg_index, 0);
+                assert_eq!(token_range, (6, 9));
+            }
+            SlashContext::CommandName => panic!("expected argument context"),
+        }
+        assert_eq!(detection.query, "pla");
+    }
+
+    #[test]
+    fn mode_argument_candidates_are_dynamic() {
+        let mut app = App::test_default();
+        app.mode = Some(super::super::ModeState {
+            current_mode_id: "plan".to_owned(),
+            current_mode_name: "Plan".to_owned(),
+            available_modes: vec![
+                super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+            ],
+        });
+
+        let candidates = argument_candidates(&app, "/mode", 0);
+        assert!(candidates.iter().any(|c| c.insert_value == "plan"));
+        assert!(candidates.iter().any(|c| c.insert_value == "code"));
+        assert!(candidates.iter().any(|c| c.primary == "Plan"));
+        assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("plan")));
+    }
+
+    #[test]
+    fn model_argument_candidates_include_aliases() {
+        let app = App::test_default();
+        let candidates = argument_candidates(&app, "/model", 0);
+        for alias in ["default", "sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"] {
+            assert!(candidates.iter().any(|c| c.insert_value == alias), "missing alias {alias}");
+        }
+    }
+
+    #[test]
+    fn model_argument_candidates_do_not_include_retired_37_alias() {
+        let app = App::test_default();
+        let candidates = argument_candidates(&app, "/model", 0);
+        assert!(!candidates.iter().any(|c| c.insert_value.contains("3-7")));
+    }
+
+    #[test]
+    fn non_variable_command_argument_mode_is_disabled() {
+        let mut app = App::test_default();
+        app.input.set_text("/cancel now");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = "/cancel now".chars().count();
+        sync_with_cursor(&mut app);
+        assert!(app.slash.is_none());
+    }
+
+    #[test]
+    fn variable_command_argument_mode_deactivates_when_no_match() {
+        let mut app = App::test_default();
+        app.mode = Some(super::super::ModeState {
+            current_mode_id: "plan".to_owned(),
+            current_mode_name: "Plan".to_owned(),
+            available_modes: vec![super::super::ModeInfo {
+                id: "plan".to_owned(),
+                name: "Plan".to_owned(),
+            }],
+        });
+        app.input.set_text("/mode xyz");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = "/mode xyz".chars().count();
+        sync_with_cursor(&mut app);
+        assert!(app.slash.is_none());
+    }
+
+    #[test]
+    fn confirm_selection_replaces_only_active_argument_token() {
+        let mut app = App::test_default();
+        app.input.set_text("/resume old-id trailing");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = "/resume old-id".chars().count();
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 8,
+            query: "old-id".to_owned(),
+            context: SlashContext::Argument {
+                command: "/resume".to_owned(),
+                arg_index: 0,
+                token_range: (8, 14),
+            },
+            candidates: vec![SlashCandidate {
+                insert_value: "new-id".to_owned(),
+                primary: "New".to_owned(),
+                secondary: None,
+            }],
+            dialog: DialogState::default(),
+        });
+
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.text(), "/resume new-id trailing");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn login_is_handled_as_builtin_even_when_advertised() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
+
+                let consumed = try_handle_submit(&mut app, "/login");
+                assert!(consumed, "/login should be handled locally even when SDK advertises it");
+            })
+            .await;
+    }
+
+    #[test]
+    fn new_session_command_is_rendered_as_user_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/new-session");
+        assert!(consumed);
+        assert!(app.messages.len() >= 2);
+
+        let Some(first) = app.messages.first() else {
+            panic!("expected first message");
+        };
+        assert!(matches!(first.role, MessageRole::User));
+        let Some(MessageBlock::Text(text, _, _)) = first.blocks.first() else {
+            panic!("expected user text block");
+        };
+        assert_eq!(text, "/new-session");
+    }
+
+    #[test]
+    fn resume_with_missing_id_returns_usage() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/resume");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Usage: /resume <session_id>");
+    }
+
+    #[test]
+    fn resume_command_is_rendered_as_user_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/resume abc-123");
+        assert!(consumed);
+        assert!(app.messages.len() >= 2);
+
+        let Some(first) = app.messages.first() else {
+            panic!("expected user message");
+        };
+        assert!(matches!(first.role, MessageRole::User));
+        let Some(MessageBlock::Text(text, _, _)) = first.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "/resume abc-123");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_sets_command_pending_when_connected() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+
+                let consumed = try_handle_submit(&mut app, "/resume abc-123");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
+
+                tokio::task::yield_now().await;
+                assert!(rx.try_recv().is_ok());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mode_sets_command_pending_and_mode_update_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.mode = Some(super::super::ModeState {
+                    current_mode_id: "code".to_owned(),
+                    current_mode_name: "Code".to_owned(),
+                    available_modes: vec![
+                        super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                        super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                    ],
+                });
+
+                let consumed = try_handle_submit(&mut app, "/mode plan");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching mode..."));
+
+                // Simulate mode-update ack arriving from bridge.
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::CurrentModeUpdate(
+                            crate::agent::model::CurrentModeUpdate::new("plan"),
+                        ),
+                    ),
+                );
+                assert!(
+                    matches!(app.status, AppStatus::Ready),
+                    "expected Ready after CurrentModeUpdate ack, got {:?}",
+                    app.status
+                );
+                assert!(app.pending_command_label.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_sets_command_pending_and_config_ack_updates_model_and_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.model_name = "old-model".to_owned();
+
+                let consumed = try_handle_submit(&mut app, "/model sonnet");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+                assert_eq!(app.model_name, "old-model");
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "model".to_owned(),
+                                value: serde_json::Value::String("sonnet".to_owned()),
+                            },
+                        ),
+                    ),
+                );
+                assert!(
+                    matches!(app.status, AppStatus::Ready),
+                    "expected Ready after model config ack, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.model_name, "sonnet");
+                assert!(app.pending_command_label.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_session_sets_command_pending() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+
+                let consumed = try_handle_submit(&mut app, "/new-session");
+                assert!(consumed);
+                assert!(
+                    matches!(app.status, AppStatus::CommandPending),
+                    "expected CommandPending, got {:?}",
+                    app.status
+                );
+                assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
+            })
+            .await;
+    }
+
+    #[test]
+    fn compact_without_connection_is_handled_locally() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/compact");
+        assert!(consumed);
+        assert!(!app.pending_compact_clear);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(_)));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Cannot compact: not connected yet.");
+    }
+
+    #[test]
+    fn compact_with_active_session_sets_compacting_without_success_pending() {
+        let mut app = App::test_default();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        let consumed = try_handle_submit(&mut app, "/compact");
+        assert!(!consumed);
+        assert!(!app.pending_compact_clear);
+        assert!(app.is_compacting);
+    }
+
+    #[test]
+    fn compact_with_args_returns_usage_message() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![MessageBlock::Text(
+                "keep".into(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete("keep"),
+            )],
+            usage: None,
+        });
+
+        let consumed = try_handle_submit(&mut app, "/compact now");
+        assert!(consumed);
+        assert!(app.messages.len() >= 2);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system usage message");
+        };
+        assert!(matches!(last.role, MessageRole::System(_)));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Usage: /compact");
+    }
+
+    #[test]
+    fn mode_with_extra_args_returns_usage_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/mode plan extra");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system usage message");
+        };
+        assert!(matches!(last.role, MessageRole::System(_)));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Usage: /mode <id>");
+    }
+
+    #[test]
+    fn confirm_selection_with_invalid_trigger_row_is_noop() {
+        let mut app = App::test_default();
+        app.input.set_text("/mode");
+        app.slash = Some(SlashState {
+            trigger_row: 99,
+            trigger_col: 0,
+            query: "m".into(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/mode".into(),
+                primary: "/mode".into(),
+                secondary: None,
+            }],
+            dialog: DialogState::default(),
+        });
+
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.text(), "/mode");
+    }
+}

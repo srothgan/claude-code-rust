@@ -1,0 +1,245 @@
+// Claude Code Rust - A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+//! App creation and bridge connection lifecycle.
+//!
+//! Submodules:
+//! - `bridge_lifecycle`: spawning the bridge process, init handshake, event loop
+//! - `event_dispatch`: routing `BridgeEvent` envelopes to `ClientEvent` messages
+//! - `type_converters`: bridge wire types -> app model types
+
+mod bridge_lifecycle;
+mod event_dispatch;
+mod type_converters;
+
+use super::dialog::DialogState;
+use super::state::{HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget};
+use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
+use crate::Cli;
+use crate::agent::client::AgentConnection;
+use crate::agent::events::ClientEvent;
+use crate::agent::model;
+use crate::error::AppError;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
+use tokio::sync::mpsc;
+
+/// Shorten cwd for display: use `~` for the home directory prefix.
+fn shorten_cwd(cwd: &std::path::Path) -> String {
+    let cwd_str = cwd.to_string_lossy().to_string();
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy().to_string();
+        if cwd_str.starts_with(&home_str) {
+            return format!("~{}", &cwd_str[home_str.len()..]);
+        }
+    }
+    cwd_str
+}
+
+fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
+    cli.dir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
+    err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
+}
+
+struct StartConnectionParams {
+    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    cwd_raw: String,
+    bridge_script: Option<std::path::PathBuf>,
+    yolo: bool,
+    model_override: Option<String>,
+    resume_id: Option<String>,
+    resume_requested: bool,
+}
+
+/// Create the `App` struct in `Connecting` state. No I/O - returns immediately.
+#[allow(clippy::too_many_lines)]
+pub fn create_app(cli: &Cli) -> App {
+    let cwd = resolve_startup_cwd(cli);
+
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let terminals: crate::agent::events::TerminalMap =
+        Rc::new(std::cell::RefCell::new(HashMap::new()));
+
+    let cwd_display = shorten_cwd(&cwd);
+    let initial_model_name = "Connecting...".to_owned();
+
+    let mut app = App {
+        messages: vec![super::ChatMessage::welcome_with_recent(
+            &initial_model_name,
+            &cwd_display,
+            &[],
+        )],
+        viewport: ChatViewport::new(),
+        input: super::InputState::new(),
+        status: AppStatus::Connecting,
+        resuming_session_id: None,
+        pending_command_label: None,
+        pending_command_ack: None,
+        should_quit: false,
+        exit_error: None,
+        session_id: None,
+        conn: None,
+        model_name: initial_model_name,
+        cwd_raw: cwd.to_string_lossy().to_string(),
+        cwd: cwd_display,
+        files_accessed: 0,
+        mode: None,
+        config_options: std::collections::BTreeMap::new(),
+        login_hint: None,
+        pending_compact_clear: false,
+        help_view: HelpView::Keys,
+        help_dialog: DialogState::default(),
+        help_visible_count: 5,
+        pending_permission_ids: Vec::new(),
+        cancelled_turn_pending_hint: false,
+        pending_cancel_origin: None,
+        pending_auto_submit_after_cancel: false,
+        event_tx,
+        event_rx,
+        spinner_frame: 0,
+        tools_collapsed: true,
+        active_task_ids: HashSet::new(),
+        tool_call_scopes: HashMap::new(),
+        active_subagent_tool_ids: HashSet::new(),
+        subagent_idle_since: None,
+        terminals,
+        force_redraw: false,
+        tool_call_index: HashMap::new(),
+        todos: Vec::<TodoItem>::new(),
+        show_header: true,
+        show_todo_panel: false,
+        todo_scroll: 0,
+        todo_selected: 0,
+        focus: FocusManager::default(),
+        available_commands: Vec::new(),
+        available_agents: Vec::new(),
+        recent_sessions: Vec::new(),
+        cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        selection: Option::<SelectionState>::None,
+        scrollbar_drag: None,
+        rendered_chat_lines: Vec::new(),
+        rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        rendered_input_lines: Vec::new(),
+        rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        mention: None,
+        slash: None,
+        subagent: None,
+        pending_submit: false,
+        drain_key_count: 0,
+        paste_burst: crate::app::paste_burst::PasteBurstDetector::new(),
+        pending_paste_text: String::new(),
+        pending_paste_session: None,
+        active_paste_session: None,
+        next_paste_session_id: 1,
+        paste_burst_start: None,
+        file_cache: None,
+        cached_todo_compact: None,
+        git_branch: None,
+        cached_header_line: None,
+        cached_footer_line: None,
+        update_check_hint: None,
+        startup_status_blocking_error: false,
+        session_usage: super::SessionUsageState::default(),
+        fast_mode_state: model::FastModeState::Off,
+        last_rate_limit_update: None,
+        is_compacting: false,
+        terminal_tool_calls: Vec::new(),
+        needs_redraw: true,
+        notifications: super::notify::NotificationManager::new(),
+        perf: cli
+            .perf_log
+            .as_deref()
+            .and_then(|path| crate::perf::PerfLogger::open(path, cli.perf_append)),
+        render_cache_budget: RenderCacheBudget::default(),
+        history_retention: HistoryRetentionPolicy::default(),
+        history_retention_stats: HistoryRetentionStats::default(),
+        fps_ema: None,
+        last_frame_at: None,
+    };
+
+    app.refresh_git_branch();
+    app
+}
+
+/// Spawn the background bridge task.
+pub fn start_connection(app: &App, cli: &Cli) {
+    let params = StartConnectionParams {
+        event_tx: app.event_tx.clone(),
+        cwd_raw: app.cwd_raw.clone(),
+        bridge_script: cli.bridge_script.clone(),
+        yolo: cli.yolo,
+        model_override: cli.model.clone(),
+        resume_id: cli.resume.clone(),
+        resume_requested: cli.resume.is_some(),
+    };
+    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let conn_slot_writer = Rc::clone(&conn_slot);
+
+    tokio::task::spawn_local(async move {
+        bridge_lifecycle::run_connection_task(params, conn_slot_writer).await;
+    });
+
+    CONN_SLOT.with(|slot| {
+        debug_assert!(
+            slot.borrow().is_none(),
+            "CONN_SLOT already populated -- start_connection() called twice?"
+        );
+        *slot.borrow_mut() = Some(conn_slot);
+    });
+}
+
+/// Shared slot for passing `Rc<AgentConnection>` from the background task to the event loop.
+pub struct ConnectionSlot {
+    pub conn: Rc<AgentConnection>,
+}
+
+thread_local! {
+    pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take the connection data from the thread-local slot.
+pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
+    CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::type_converters::map_session_update;
+    use crate::agent::model;
+    use crate::agent::types;
+
+    #[test]
+    fn map_session_update_preserves_config_option_update() {
+        let mapped = map_session_update(types::SessionUpdate::ConfigOptionUpdate {
+            option_id: "model".to_owned(),
+            value: serde_json::Value::String("sonnet".to_owned()),
+        });
+
+        let Some(model::SessionUpdate::ConfigOptionUpdate(cfg)) = mapped else {
+            panic!("expected ConfigOptionUpdate mapping");
+        };
+        assert_eq!(cfg.option_id, "model");
+        assert_eq!(cfg.value, serde_json::Value::String("sonnet".to_owned()));
+    }
+}

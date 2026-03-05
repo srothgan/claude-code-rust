@@ -44,19 +44,6 @@ pub struct AvailableAgent {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
-pub struct UsageUpdate {
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub cache_read_tokens: Option<u64>,
-    pub cache_write_tokens: Option<u64>,
-    pub total_cost_usd: Option<f64>,
-    pub turn_cost_usd: Option<f64>,
-    pub context_window: Option<u64>,
-    pub max_output_tokens: Option<u64>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
@@ -192,9 +179,6 @@ pub enum SessionUpdate {
     ConfigOptionUpdate {
         option_id: String,
         value: serde_json::Value,
-    },
-    UsageUpdate {
-        usage: UsageUpdate,
     },
     FastModeUpdate {
         fast_mode_state: FastModeState,

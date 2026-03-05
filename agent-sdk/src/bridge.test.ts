@@ -4,7 +4,6 @@ import {
   CACHE_SPLIT_POLICY,
   buildRateLimitUpdate,
   buildToolResultFields,
-  buildUsageUpdateFromResult,
   createToolCall,
   mapAvailableAgents,
   mapSessionMessagesToUpdates,
@@ -509,46 +508,6 @@ test("permissionResultFromOutcome does not apply session suggestions to allow_al
   assert.equal(allow.updatedPermissions, undefined);
 });
 
-test("buildUsageUpdateFromResult maps SDK camelCase usage keys", () => {
-  const update = buildUsageUpdateFromResult({
-    usage: {
-      inputTokens: 12,
-      outputTokens: 34,
-      cacheReadInputTokens: 5,
-      cacheCreationInputTokens: 6,
-    },
-  });
-  assert.deepEqual(update, {
-    type: "usage_update",
-    usage: {
-      input_tokens: 12,
-      output_tokens: 34,
-      cache_read_tokens: 5,
-      cache_write_tokens: 6,
-    },
-  });
-});
-
-test("buildUsageUpdateFromResult includes cost and context window fields", () => {
-  const update = buildUsageUpdateFromResult({
-    total_cost_usd: 1.25,
-    modelUsage: {
-      "claude-sonnet-4-5": {
-        contextWindow: 200000,
-        maxOutputTokens: 64000,
-      },
-    },
-  });
-  assert.deepEqual(update, {
-    type: "usage_update",
-    usage: {
-      total_cost_usd: 1.25,
-      context_window: 200000,
-      max_output_tokens: 64000,
-    },
-  });
-});
-
 test("looksLikeAuthRequired detects login hints", () => {
   assert.equal(looksLikeAuthRequired("Please run /login to continue"), true);
   assert.equal(looksLikeAuthRequired("normal tool output"), false);
@@ -619,16 +578,6 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(variantCounts.get("agent_message_chunk"), 1);
   assert.equal(variantCounts.get("tool_call"), 1);
   assert.equal(variantCounts.get("tool_call_update"), 1);
-  assert.equal(variantCounts.get("usage_update"), 1);
-
-  const usage = updates.find((update) => update.type === "usage_update");
-  assert.ok(usage && usage.type === "usage_update");
-  assert.deepEqual(usage.usage, {
-    input_tokens: 11,
-    output_tokens: 7,
-    cache_read_tokens: 5,
-    cache_write_tokens: 3,
-  });
 });
 
 test("mapSessionMessagesToUpdates ignores unsupported records", () => {

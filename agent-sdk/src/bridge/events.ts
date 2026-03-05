@@ -1,0 +1,92 @@
+import { listSessions } from "@anthropic-ai/claude-agent-sdk";
+import type { BridgeEvent, BridgeEventEnvelope, SessionUpdate } from "../types.js";
+import { buildModeState } from "./commands.js";
+import { mapSdkSessions } from "./history.js";
+import type { SessionState } from "./session_lifecycle.js";
+
+const SESSION_LIST_LIMIT = 50;
+
+export function writeEvent(event: BridgeEvent, requestId?: string): void {
+  const envelope: BridgeEventEnvelope = {
+    ...(requestId ? { request_id: requestId } : {}),
+    ...event,
+  };
+  process.stdout.write(`${JSON.stringify(envelope)}\n`);
+}
+
+export function failConnection(message: string, requestId?: string): void {
+  writeEvent({ event: "connection_failed", message }, requestId);
+}
+
+export function slashError(sessionId: string, message: string, requestId?: string): void {
+  writeEvent({ event: "slash_error", session_id: sessionId, message }, requestId);
+}
+
+export function emitSessionUpdate(sessionId: string, update: SessionUpdate): void {
+  writeEvent({ event: "session_update", session_id: sessionId, update });
+}
+
+export function emitConnectEvent(session: SessionState): void {
+  const historyUpdates = session.resumeUpdates;
+  const connectEvent: BridgeEvent =
+    session.connectEvent === "session_replaced"
+      ? {
+          event: "session_replaced",
+          session_id: session.sessionId,
+          cwd: session.cwd,
+          model_name: session.model,
+          mode: buildModeState(session.mode),
+          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+        }
+      : {
+          event: "connected",
+          session_id: session.sessionId,
+          cwd: session.cwd,
+          model_name: session.model,
+          mode: buildModeState(session.mode),
+          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+        };
+  writeEvent(connectEvent, session.connectRequestId);
+  session.connectRequestId = undefined;
+  session.connected = true;
+  session.authHintSent = false;
+  session.resumeUpdates = undefined;
+
+  const staleSessions = session.sessionsToCloseAfterConnect;
+  session.sessionsToCloseAfterConnect = undefined;
+  if (!staleSessions || staleSessions.length === 0) {
+    refreshSessionsList();
+    return;
+  }
+  void (async () => {
+    // Lazy import to break circular dependency at module-evaluation time.
+    const { sessions, closeSession } = await import("./session_lifecycle.js");
+    for (const stale of staleSessions) {
+      if (stale === session) {
+        continue;
+      }
+      if (sessions.get(stale.sessionId) === stale) {
+        sessions.delete(stale.sessionId);
+      }
+      await closeSession(stale);
+    }
+    refreshSessionsList();
+  })();
+}
+
+export async function emitSessionsList(requestId?: string): Promise<void> {
+  try {
+    const sdkSessions = await listSessions({ limit: SESSION_LIST_LIMIT });
+    writeEvent({ event: "sessions_listed", sessions: mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT) }, requestId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[sdk warn] listSessions failed: ${message}`);
+    writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
+  }
+}
+
+export function refreshSessionsList(): void {
+  void emitSessionsList().catch(() => {
+    // Defensive no-op.
+  });
+}

@@ -54,46 +54,84 @@ const SPINNER_FRAMES: &[char] = &[
 /// Used internally by `visual_line_count` and `render` so the layout
 /// calculation and rendering stay in sync.
 const LOGIN_HINT_LINES: u16 = 2;
+const CANCEL_HINT_LINES: u16 = 1;
 
 /// Whether a login hint banner is active.
 fn has_login_hint(app: &App) -> bool {
     app.login_hint.is_some()
 }
 
-#[allow(clippy::cast_possible_truncation)]
+fn has_cancel_hint(app: &App) -> bool {
+    app.pending_cancel_origin.is_some()
+}
+
+pub(crate) fn hint_line_count(app: &App) -> u16 {
+    let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
+    let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
+    login + cancel
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    // If there's a login hint, split off top rows for the hint banner
-    let (hint_area, input_main_area) = if has_login_hint(app) {
+    let hint_lines = hint_line_count(app);
+    let (hint_area, input_main_area) = if hint_lines > 0 {
         let [hint, main] =
-            Layout::vertical([Constraint::Length(LOGIN_HINT_LINES), Constraint::Min(1)])
-                .areas(area);
+            Layout::vertical([Constraint::Length(hint_lines), Constraint::Min(1)]).areas(area);
         (Some(hint), main)
     } else {
         (None, area)
     };
 
-    // Render login hint banner if present
-    if let (Some(hint_area), Some(hint)) = (hint_area, &app.login_hint) {
+    if let Some(hint_area) = hint_area {
         let hint_pad = Rect {
             x: hint_area.x.saturating_add(INPUT_PAD),
             y: hint_area.y,
             width: hint_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
             height: hint_area.height,
         };
-        let lines = vec![
-            Line::from(Span::styled(
-                format!(
-                    "Authentication required: {} -- {}",
-                    hint.method_name, hint.method_description
+        let mut next_hint_row = hint_pad.y;
+
+        if let Some(hint) = &app.login_hint {
+            let lines = vec![
+                Line::from(Span::styled(
+                    format!(
+                        "Authentication required: {} -- {}",
+                        hint.method_name, hint.method_description
+                    ),
+                    Style::default().fg(Color::Yellow),
+                )),
+                Line::from(Span::styled(
+                    "Type /login to authenticate, or run `claude auth login` in another terminal",
+                    Style::default().fg(theme::DIM),
+                )),
+            ];
+            let login_area = Rect {
+                x: hint_pad.x,
+                y: next_hint_row,
+                width: hint_pad.width,
+                height: LOGIN_HINT_LINES,
+            };
+            frame.render_widget(Paragraph::new(lines), login_area);
+            next_hint_row = next_hint_row.saturating_add(LOGIN_HINT_LINES);
+        }
+
+        if has_cancel_hint(app) {
+            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            let cancel_line = Line::from(vec![
+                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+                Span::styled(
+                    "Cancelling current turn... draft will auto-submit when ready.",
+                    Style::default().fg(theme::DIM),
                 ),
-                Style::default().fg(Color::Yellow),
-            )),
-            Line::from(Span::styled(
-                "Type /login to authenticate, or run `claude auth login` in another terminal",
-                Style::default().fg(theme::DIM),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(lines), hint_pad);
+            ]);
+            let cancel_area = Rect {
+                x: hint_pad.x,
+                y: next_hint_row,
+                width: hint_pad.width,
+                height: CANCEL_HINT_LINES,
+            };
+            frame.render_widget(Paragraph::new(cancel_line), cancel_area);
+        }
     }
 
     let padded = Rect {
@@ -286,10 +324,10 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
     lines
 }
 
-/// Total visual height for the input area: input lines + login hint banner.
+/// Total visual height for the input area: input lines + hint banners.
 /// Called by the layout to allocate the correct input area height.
 pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
-    let hint = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
+    let hint = hint_line_count(app);
     let content_width =
         area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
     let mut textarea = build_input_textarea(app);
@@ -302,9 +340,12 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, slash_command_range, visual_line_count};
+    use super::{
+        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, slash_command_range,
+        visual_line_count,
+    };
     use crate::app::subagent::find_subagent_spans;
-    use crate::app::{App, LoginHint};
+    use crate::app::{App, CancelOrigin, LoginHint};
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -348,5 +389,12 @@ mod tests {
             method_description: "Sign in".to_owned(),
         });
         assert_eq!(visual_line_count(&app, 80), LOGIN_HINT_LINES + 1);
+    }
+
+    #[test]
+    fn visual_line_count_includes_cancel_hint_row() {
+        let mut app = App::test_default();
+        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        assert_eq!(visual_line_count(&app, 80), CANCEL_HINT_LINES + 1);
     }
 }

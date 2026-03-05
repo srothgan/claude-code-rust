@@ -29,17 +29,6 @@ export interface AvailableAgent {
   model?: string;
 }
 
-export interface UsageUpdate {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_tokens?: number;
-  cache_write_tokens?: number;
-  total_cost_usd?: number;
-  turn_cost_usd?: number;
-  context_window?: number;
-  max_output_tokens?: number;
-}
-
 export type FastModeState = "off" | "cooldown" | "on";
 export type RateLimitStatus = "allowed" | "allowed_warning" | "rejected";
 
@@ -113,7 +102,6 @@ export type SessionUpdate =
   | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "config_option_update"; option_id: string; value: Json }
-  | { type: "usage_update"; usage: UsageUpdate }
   | { type: "fast_mode_update"; fast_mode_state: FastModeState }
   | ({ type: "rate_limit_update" } & RateLimitUpdate)
   | { type: "session_status_update"; status: "compacting" | "idle" }
