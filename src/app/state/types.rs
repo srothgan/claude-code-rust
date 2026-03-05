@@ -79,54 +79,17 @@ pub struct RecentSessionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[allow(clippy::struct_field_names)]
 pub struct MessageUsage {
     pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
-    pub turn_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    pub total_cache_read_tokens: u64,
-    pub total_cache_write_tokens: u64,
-    pub latest_input_tokens: Option<u64>,
-    pub latest_output_tokens: Option<u64>,
-    pub latest_cache_read_tokens: Option<u64>,
-    pub latest_cache_write_tokens: Option<u64>,
-    pub total_cost_usd: Option<f64>,
-    /// True when cost started accumulating only after a resume because
-    /// historical resume updates carried no cost baseline.
-    pub cost_is_since_resume: bool,
-    pub context_window: Option<u64>,
-    pub max_output_tokens: Option<u64>,
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
     pub last_compaction_pre_tokens: Option<u64>,
-}
-
-impl SessionUsageState {
-    #[must_use]
-    pub fn total_tokens(&self) -> u64 {
-        self.total_input_tokens + self.total_output_tokens
-    }
-
-    #[must_use]
-    pub fn context_used_tokens(&self) -> Option<u64> {
-        // Context used = total input tokens for this turn.
-        // The Anthropic API splits input into three non-overlapping buckets:
-        //   input_tokens          = non-cached input
-        //   cache_read_tokens     = tokens served from the prompt cache
-        //   cache_write_tokens    = tokens written into the prompt cache
-        // Output tokens are NOT part of the current-turn context; they become
-        // input on the *next* turn. Including them here would over-inflate the %.
-        let input = self.latest_input_tokens?;
-        let cache_read = self.latest_cache_read_tokens.unwrap_or(0);
-        let cache_write = self.latest_cache_write_tokens.unwrap_or(0);
-        Some(input.saturating_add(cache_read).saturating_add(cache_write))
-    }
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

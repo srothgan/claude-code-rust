@@ -14,10 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::super::{
-    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity,
-};
-use super::session_reset::{attach_usage_to_latest_assistant_message, update_session_usage};
+use super::super::{App, SystemSeverity};
 use crate::agent::model;
 
 fn format_rate_limit_type(raw: &str) -> &str {
@@ -127,27 +124,14 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     }
 }
 
-pub(super) fn handle_usage_update(app: &mut App, usage: &model::UsageUpdate) {
-    let message_usage = update_session_usage(app, usage);
-    attach_usage_to_latest_assistant_message(app, message_usage);
-    app.cached_footer_line = None;
-    tracing::debug!(
-        "UsageUpdate: in={:?} out={:?} cache_read={:?} cache_write={:?} total_cost={:?} turn_cost={:?} ctx_window={:?}",
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.cache_read_tokens,
-        usage.cache_write_tokens,
-        usage.total_cost_usd,
-        usage.turn_cost_usd,
-        usage.context_window
-    );
-}
-
 pub(super) fn handle_compaction_boundary_update(
     app: &mut App,
     boundary: model::CompactionBoundary,
 ) {
     app.is_compacting = true;
+    if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
+        app.pending_compact_clear = true;
+    }
     app.session_usage.last_compaction_trigger = Some(boundary.trigger);
     app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
     app.cached_footer_line = None;
@@ -156,17 +140,4 @@ pub(super) fn handle_compaction_boundary_update(
         boundary.trigger,
         boundary.pre_tokens
     );
-    if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
-        let text = "Auto-compacting context...";
-        app.messages.push(ChatMessage {
-            role: MessageRole::System(Some(SystemSeverity::Info)),
-            blocks: vec![MessageBlock::Text(
-                text.to_owned(),
-                BlockCache::default(),
-                IncrementalMarkdown::from_complete(text),
-            )],
-            usage: None,
-        });
-        app.viewport.engage_auto_scroll();
-    }
 }

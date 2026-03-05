@@ -50,8 +50,7 @@ pub(super) fn handle_connected_client_event(
     app.config_options
         .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
     app.login_hint = None;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    super::clear_compaction_state(app, false);
     app.session_usage = super::super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
     app.last_rate_limit_update = None;
@@ -98,8 +97,7 @@ pub(super) fn handle_auth_required_event(
     clear_pending_command(app);
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    super::clear_compaction_state(app, false);
     app.last_rate_limit_update = None;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
@@ -107,8 +105,7 @@ pub(super) fn handle_auth_required_event(
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    super::clear_compaction_state(app, false);
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
@@ -205,8 +202,7 @@ pub(super) fn handle_session_replaced_event(
     mode: Option<super::super::ModeState>,
     history_updates: &[model::SessionUpdate],
 ) {
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    super::clear_compaction_state(app, false);
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);

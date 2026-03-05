@@ -14,9 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::super::{
-    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, MessageUsage,
-};
+use super::super::{App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
 use crate::agent::model;
 
 pub(super) fn reset_for_new_session(
@@ -49,8 +47,7 @@ fn reset_session_identity_state(
     app.config_options
         .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
     app.login_hint = None;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    super::clear_compaction_state(app, false);
     app.session_usage = super::super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
     app.last_rate_limit_update = None;
@@ -118,75 +115,6 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     app.needs_redraw = true;
 }
 
-pub(super) fn update_session_usage(app: &mut App, usage: &model::UsageUpdate) -> MessageUsage {
-    let has_turn_usage_snapshot = usage.input_tokens.is_some()
-        || usage.output_tokens.is_some()
-        || usage.cache_read_tokens.is_some()
-        || usage.cache_write_tokens.is_some();
-    if has_turn_usage_snapshot {
-        app.session_usage.latest_input_tokens = usage.input_tokens;
-        app.session_usage.latest_output_tokens = usage.output_tokens;
-        app.session_usage.latest_cache_read_tokens = usage.cache_read_tokens;
-        app.session_usage.latest_cache_write_tokens = usage.cache_write_tokens;
-    }
-
-    if let Some(v) = usage.input_tokens {
-        app.session_usage.total_input_tokens =
-            app.session_usage.total_input_tokens.saturating_add(v);
-    }
-    if let Some(v) = usage.output_tokens {
-        app.session_usage.total_output_tokens =
-            app.session_usage.total_output_tokens.saturating_add(v);
-    }
-    if let Some(v) = usage.cache_read_tokens {
-        app.session_usage.total_cache_read_tokens =
-            app.session_usage.total_cache_read_tokens.saturating_add(v);
-    }
-    if let Some(v) = usage.cache_write_tokens {
-        app.session_usage.total_cache_write_tokens =
-            app.session_usage.total_cache_write_tokens.saturating_add(v);
-    }
-
-    if let Some(v) = usage.total_cost_usd {
-        // Prefer adapter-reported cumulative total when available.
-        app.session_usage.total_cost_usd = Some(v);
-        if app.session_usage.cost_is_since_resume {
-            let includes_historical_baseline = usage.turn_cost_usd.is_none_or(|turn| v > turn);
-            if includes_historical_baseline {
-                app.session_usage.cost_is_since_resume = false;
-            }
-        }
-    } else if let Some(v) = usage.turn_cost_usd {
-        app.session_usage.total_cost_usd =
-            Some(app.session_usage.total_cost_usd.unwrap_or(0.0) + v);
-    }
-
-    if let Some(v) = usage.context_window {
-        app.session_usage.context_window = Some(v);
-    }
-    if let Some(v) = usage.max_output_tokens {
-        app.session_usage.max_output_tokens = Some(v);
-    }
-
-    MessageUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_tokens,
-        cache_write_tokens: usage.cache_write_tokens,
-        turn_cost_usd: usage.turn_cost_usd,
-    }
-}
-
-pub(super) fn attach_usage_to_latest_assistant_message(app: &mut App, usage: MessageUsage) {
-    for (idx, msg) in app.messages.iter_mut().enumerate().rev() {
-        if matches!(msg.role, MessageRole::Assistant) {
-            msg.usage = Some(usage);
-            app.mark_message_layout_dirty(idx);
-            break;
-        }
-    }
-}
-
 fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
     let model::ContentBlock::Text(text) = &chunk.content else {
         return;
@@ -234,10 +162,6 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
             }
             _ => super::handle_session_update(app, update.clone()),
         }
-    }
-    let resumed_with_tokens = app.session_usage.total_tokens() > 0;
-    if resumed_with_tokens && app.session_usage.total_cost_usd.is_none() {
-        app.session_usage.cost_is_since_resume = true;
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
     app.enforce_history_retention();

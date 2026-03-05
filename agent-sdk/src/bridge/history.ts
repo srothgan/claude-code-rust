@@ -2,7 +2,6 @@ import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-
 import type { SessionListEntry, SessionUpdate, ToolCall } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { TOOL_RESULT_TYPES, buildToolResultFields, createToolCall, isToolUseBlockType } from "./tooling.js";
-import { buildUsageUpdateFromResult } from "./usage.js";
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -80,27 +79,6 @@ function pushResumeToolResult(
   }
 }
 
-function pushResumeUsageUpdate(
-  updates: SessionUpdate[],
-  message: Record<string, unknown>,
-  emittedUsageMessageIds: Set<string>,
-): void {
-  const messageId = typeof message.id === "string" ? message.id : "";
-  if (messageId && emittedUsageMessageIds.has(messageId)) {
-    return;
-  }
-
-  const usageUpdate = buildUsageUpdateFromResult(message);
-  if (!usageUpdate) {
-    return;
-  }
-
-  updates.push(usageUpdate);
-  if (messageId) {
-    emittedUsageMessageIds.add(messageId);
-  }
-}
-
 function summaryFromSession(info: SDKSessionInfo): string {
   return (
     nonEmptyTrimmed(info.summary) ??
@@ -143,7 +121,6 @@ export function mapSdkSessions(infos: SDKSessionInfo[], limit = 50): SessionList
 export function mapSessionMessagesToUpdates(messages: SessionMessage[]): SessionUpdate[] {
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
-  const emittedUsageMessageIds = new Set<string>();
 
   for (const entry of messages) {
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
@@ -177,7 +154,6 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
           pushResumeTextChunk(updates, role, "[image]");
         }
       }
-      pushResumeUsageUpdate(updates, message, emittedUsageMessageIds);
     }
   }
 

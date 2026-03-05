@@ -4,7 +4,6 @@ import { asRecordOrNull } from "./shared.js";
 import { toPermissionMode, buildModeState } from "./commands.js";
 import { writeEvent, emitSessionUpdate, emitConnectEvent, refreshSessionsList } from "./events.js";
 import { TOOL_RESULT_TYPES, unwrapToolUseResult } from "./tooling.js";
-import { buildUsageUpdateFromResultForSession } from "./usage.js";
 import {
   emitToolCall,
   emitPlanIfTodoWrite,
@@ -245,10 +244,6 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
 }
 
 export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
-  const usageUpdate = buildUsageUpdateFromResultForSession(session, message);
-  if (usageUpdate) {
-    emitSessionUpdate(session.sessionId, usageUpdate);
-  }
   emitFastModeUpdateIfChanged(session, message.fast_mode_state);
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";

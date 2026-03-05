@@ -36,7 +36,6 @@ export {
   normalizeToolResultText,
   unwrapToolUseResult,
 } from "./bridge/tooling.js";
-export { buildUsageUpdateFromResult } from "./bridge/usage.js";
 export { looksLikeAuthRequired } from "./bridge/auth.js";
 export { parseCommandEnvelope } from "./bridge/commands.js";
 export {

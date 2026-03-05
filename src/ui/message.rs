@@ -62,56 +62,11 @@ pub struct SpinnerState {
     pub is_compacting: bool,
 }
 
-fn format_scaled_count(value: u64, divisor: u64, suffix: char) -> String {
-    // Integer arithmetic avoids precision-loss casts and keeps stable output.
-    let scaled_tenths = (u128::from(value) * 10 + u128::from(divisor / 2)) / u128::from(divisor);
-    let whole = scaled_tenths / 10;
-    let frac = scaled_tenths % 10;
-    if frac == 0 { format!("{whole}{suffix}") } else { format!("{whole}.{frac}{suffix}") }
-}
-
-fn format_token_count(value: u64) -> String {
-    if value >= 1_000_000 {
-        format_scaled_count(value, 1_000_000, 'M')
-    } else if value >= 1_000 {
-        format_scaled_count(value, 1_000, 'k')
-    } else {
-        value.to_string()
-    }
-}
-
-fn format_turn_usage(usage: &crate::app::MessageUsage) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let turn_tokens =
-        usage.input_tokens.unwrap_or(0).saturating_add(usage.output_tokens.unwrap_or(0));
-    if turn_tokens > 0 {
-        parts.push(format!("{} tok", format_token_count(turn_tokens)));
-    }
-    if let Some(cost) = usage.turn_cost_usd {
-        parts.push(format!("${cost:.2}"));
-    }
-    if parts.is_empty() { None } else { Some(parts.join(" / ")) }
-}
-
-fn assistant_role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
-    let mut spans = vec![Span::styled(
+fn assistant_role_label_line() -> Line<'static> {
+    let spans = vec![Span::styled(
         "Claude",
         Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
     )];
-
-    if let Some(usage) = msg.usage.as_ref()
-        && let Some(text) = format_turn_usage(usage)
-    {
-        spans.push(Span::styled(
-            format!("  ({text})"),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-        ));
-    }
-
-    if spinner.is_compacting && spinner.is_last_message {
-        let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
-        spans.push(Span::styled(format!("  {ch} Compacting..."), Style::default().fg(theme::DIM)));
-    }
 
     Line::from(spans)
 }
@@ -168,15 +123,21 @@ fn render_assistant_message(
     width: u16,
     out: &mut Vec<Line<'static>>,
 ) -> bool {
-    out.push(assistant_role_label_line(msg, spinner));
+    out.push(assistant_role_label_line());
+    let show_compacting = spinner.is_compacting && spinner.is_last_message;
 
+    if msg.blocks.is_empty() && show_compacting {
+        out.push(compacting_line(spinner.frame));
+        out.push(Line::default());
+        return true;
+    }
     if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
         out.push(thinking_line(spinner.frame));
         out.push(Line::default());
         return true;
     }
 
-    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     for block in &mut msg.blocks {
         match block {
@@ -202,11 +163,14 @@ fn render_assistant_message(
         }
     }
 
-    if show_subagent_thinking {
+    if show_compacting {
+        out.push(Line::default());
+        out.push(compacting_line(spinner.frame));
+    } else if show_subagent_thinking {
         out.push(Line::default());
         out.push(subagent_thinking_line(spinner.frame));
     }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
         out.push(Line::default());
         out.push(thinking_line(spinner.frame));
     }
@@ -260,10 +224,10 @@ pub fn measure_message_height_cached(
 
     if matches!(msg.role, MessageRole::Assistant)
         && msg.blocks.is_empty()
-        && spinner.is_active
+        && (spinner.is_active || spinner.is_compacting)
         && spinner.is_last_message
     {
-        // role label + "Thinking..." line + trailing separator
+        // role label + indicator line + trailing separator
         return (3, 0);
     }
 
@@ -324,7 +288,8 @@ fn measure_assistant_blocks_height(
     width: u16,
     layout_generation: u64,
 ) -> (usize, usize) {
-    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let show_compacting = spinner.is_compacting && spinner.is_last_message;
+    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     let mut lines_after_label = 0usize;
     let mut height = 0usize;
@@ -367,10 +332,10 @@ fn measure_assistant_blocks_height(
         }
     }
 
-    if show_subagent_thinking {
+    if show_compacting || show_subagent_thinking {
         height += 2;
     }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
         height += 2;
     }
     (height, wrapped_lines)
@@ -394,7 +359,7 @@ pub fn render_message_from_offset(
     let mut can_consume_skip = true;
 
     let role_line = match msg.role {
-        MessageRole::Assistant => assistant_role_label_line(msg, spinner),
+        MessageRole::Assistant => assistant_role_label_line(),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
         _ => role_label_line(&msg.role),
     };
@@ -417,7 +382,10 @@ pub fn render_message_from_offset(
                 &mut remaining_skip,
                 &mut can_consume_skip,
             );
-            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
+            if msg.blocks.is_empty()
+                && (spinner.is_active || spinner.is_compacting)
+                && spinner.is_last_message
+            {
                 emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
                 return remaining_skip;
             }
@@ -477,12 +445,17 @@ fn render_assistant_from_offset(
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
+    let show_compacting = spinner.is_compacting && spinner.is_last_message;
+    if msg.blocks.is_empty() && show_compacting {
+        emit_line_with_skip(compacting_line(spinner.frame), out, remaining_skip, *can_consume_skip);
+        return;
+    }
     if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
         emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
         return;
     }
 
-    let show_subagent_thinking = spinner.is_subagent_thinking;
+    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     let mut lines_after_label = 0usize;
     for block in &mut msg.blocks {
@@ -524,7 +497,10 @@ fn render_assistant_from_offset(
         }
     }
 
-    if show_subagent_thinking {
+    if show_compacting {
+        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+        emit_line_with_skip(compacting_line(spinner.frame), out, remaining_skip, *can_consume_skip);
+    } else if show_subagent_thinking {
         emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
         emit_line_with_skip(
             subagent_thinking_line(spinner.frame),
@@ -533,7 +509,7 @@ fn render_assistant_from_offset(
             *can_consume_skip,
         );
     }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking {
+    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
         emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
         emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
     }
@@ -624,6 +600,14 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
 fn thinking_line(frame: usize) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
     Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+}
+
+fn compacting_line(frame: usize) -> Line<'static> {
+    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+    Line::from(Span::styled(
+        format!("{ch} Compacting context..."),
+        Style::default().fg(theme::RUST_ORANGE),
+    ))
 }
 
 fn subagent_thinking_line(frame: usize) -> Line<'static> {
@@ -1395,5 +1379,46 @@ mod tests {
             .expect("subagent thinking line");
 
         assert!(thinking_idx > bash_idx);
+    }
+
+    #[test]
+    fn assistant_message_suppresses_thinking_line_while_compacting() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: true,
+            is_thinking_mid_turn: true,
+            is_subagent_thinking: false,
+            is_compacting: true,
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
+        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
+    fn assistant_offset_render_suppresses_thinking_line_while_compacting() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: true,
+            is_thinking_mid_turn: true,
+            is_subagent_thinking: false,
+            is_compacting: true,
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+
+        let mut lines = Vec::new();
+        let remaining = render_message_from_offset(&mut msg, &spinner, 120, 1, 0, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert_eq!(remaining, 0);
+        assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
+        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
     }
 }

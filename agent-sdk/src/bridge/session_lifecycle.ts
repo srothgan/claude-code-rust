@@ -79,7 +79,6 @@ export type SessionState = {
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
   lastAssistantError?: string;
-  lastTotalCostUsd?: number;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 };

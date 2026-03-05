@@ -140,7 +140,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
 
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/cancel".into(), "Cancel active turn".into());
-    by_name.insert("/compact".into(), "Clear conversation history".into());
+    by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/login".into(), "Authenticate with Claude".into());
     by_name.insert("/logout".into(), "Sign out of Claude".into());
     by_name.insert("/mode".into(), "Set session mode".into());

@@ -26,8 +26,8 @@ mod executors;
 mod navigation;
 
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, MessageBlock,
-    MessageRole, dialog::DialogState,
+    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
+    dialog::DialogState,
 };
 use crate::agent::model;
 use std::rc::Rc;
@@ -160,52 +160,6 @@ fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCom
     app.status = AppStatus::CommandPending;
     app.pending_command_label = Some(label.to_owned());
     app.pending_command_ack = ack;
-}
-
-pub(crate) fn clear_conversation_history(app: &mut App) {
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-
-    app.status = AppStatus::Ready;
-    app.resuming_session_id = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
-    app.files_accessed = 0;
-    app.is_compacting = false;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
-
-    app.messages.clear();
-    app.messages.push(ChatMessage::welcome_with_recent(
-        &app.model_name,
-        &app.cwd,
-        &app.recent_sessions,
-    ));
-    app.history_retention_stats = super::state::HistoryRetentionStats::default();
-    app.enforce_history_retention();
-    app.viewport = ChatViewport::new();
-
-    app.tool_call_index.clear();
-    app.clear_tool_scope_tracking();
-    app.todos.clear();
-    app.show_todo_panel = false;
-    app.todo_scroll = 0;
-    app.todo_selected = 0;
-    app.cached_todo_compact = None;
-
-    app.selection = None;
-    app.rendered_chat_lines.clear();
-    app.rendered_input_lines.clear();
-    app.mention = None;
-    app.slash = None;
-    app.subagent = None;
-    app.pending_submit = false;
-    app.drain_key_count = 0;
-    app.pending_paste_text.clear();
-    app.pending_paste_session = None;
-    app.active_paste_session = None;
-    app.paste_burst_start = None;
-    app.normalize_focus_stack();
 }
 
 #[cfg(test)]
@@ -615,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_with_active_session_sets_pending_and_compacting() {
+    fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
@@ -623,7 +577,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);
-        assert!(app.pending_compact_clear);
+        assert!(!app.pending_compact_clear);
         assert!(app.is_compacting);
     }
 

@@ -50,7 +50,8 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             if !matches!(
                 app.status,
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
-            ) {
+            ) && !app.is_compacting
+            {
                 // Queue paste chunks for this drain cycle. Some terminals split a
                 // single clipboard paste into multiple `Event::Paste` payloads.
                 if app.pending_paste_text.is_empty() {
@@ -174,6 +175,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
     match update {
         model::SessionUpdate::AgentMessageChunk(chunk) => {
+            clear_compaction_state(app, true);
             streaming::handle_agent_message_chunk(app, chunk);
         }
         model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
@@ -243,7 +245,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 session::clear_pending_command(app);
             }
         }
-        model::SessionUpdate::UsageUpdate(usage) => rate_limit::handle_usage_update(app, &usage),
         model::SessionUpdate::FastModeUpdate(state) => {
             app.fast_mode_state = state;
             app.cached_footer_line = None;
@@ -254,8 +255,12 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
-            app.is_compacting = matches!(status, model::SessionStatus::Compacting);
-            app.cached_footer_line = None;
+            if matches!(status, model::SessionStatus::Compacting) {
+                app.is_compacting = true;
+                app.cached_footer_line = None;
+            } else {
+                clear_compaction_state(app, true);
+            }
             tracing::debug!("SessionStatusUpdate: compacting={}", app.is_compacting);
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
@@ -282,6 +287,23 @@ pub(crate) fn push_system_message_with_severity(
     app.viewport.engage_auto_scroll();
 }
 
+pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
+    if !app.is_compacting && !app.pending_compact_clear {
+        return;
+    }
+    let should_emit_success = emit_manual_success && app.pending_compact_clear;
+    app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.cached_footer_line = None;
+    if should_emit_success {
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Info),
+            "Session successfully compacted.",
+        );
+    }
+}
+
 /// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
 fn session_update_name(update: &model::SessionUpdate) -> &'static str {
     match update {
@@ -295,7 +317,6 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::AvailableAgentsUpdate(_) => "AvailableAgentsUpdate",
         model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
-        model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
         model::SessionUpdate::FastModeUpdate(_) => "FastModeUpdate",
         model::SessionUpdate::RateLimitUpdate(_) => "RateLimitUpdate",
         model::SessionUpdate::SessionStatusUpdate(_) => "SessionStatusUpdate",
@@ -1504,61 +1525,6 @@ mod tests {
     }
 
     #[test]
-    fn resume_history_marks_cost_as_since_resume_when_missing() {
-        let mut app = make_test_app();
-        let history_updates = vec![model::SessionUpdate::UsageUpdate(model::UsageUpdate {
-            input_tokens: Some(410),
-            output_tokens: Some(19),
-            cache_read_tokens: Some(52_000),
-            cache_write_tokens: Some(1_250),
-            total_cost_usd: None,
-            turn_cost_usd: None,
-            context_window: None,
-            max_output_tokens: None,
-        })];
-
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-901"),
-                cwd: "/replacement".into(),
-                model_name: "new-model".into(),
-                mode: None,
-                history_updates,
-            },
-        );
-
-        assert!(app.session_usage.cost_is_since_resume);
-        assert!(app.session_usage.total_cost_usd.is_none());
-    }
-
-    #[test]
-    fn total_cost_update_clears_since_resume_cost_marker() {
-        let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("active-902"));
-        app.session_usage.cost_is_since_resume = true;
-        app.session_usage.total_input_tokens = 500;
-
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
-                input_tokens: Some(2),
-                output_tokens: Some(6),
-                cache_read_tokens: Some(20_000),
-                cache_write_tokens: Some(800),
-                total_cost_usd: Some(4.20),
-                turn_cost_usd: Some(0.20),
-                context_window: Some(200_000),
-                max_output_tokens: None,
-            })),
-        );
-
-        let total_cost = app.session_usage.total_cost_usd.expect("total cost");
-        assert!((total_cost - 4.20).abs() < f64::EPSILON);
-        assert!(!app.session_usage.cost_is_since_resume);
-    }
-
-    #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
         handle_client_event(&mut app, ClientEvent::TurnComplete);
@@ -1566,27 +1532,86 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_clears_history_when_compact_pending() {
+    fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-x"));
-        app.pending_compact_clear = true;
         app.messages.push(user_msg("/compact"));
         app.messages.push(assistant_msg(vec![MessageBlock::Text(
             "compacted".into(),
             BlockCache::default(),
             IncrementalMarkdown::from_complete("compacted"),
         )]));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
+                model::CompactionBoundary {
+                    trigger: model::CompactionTrigger::Manual,
+                    pre_tokens: 123_456,
+                },
+            )),
+        );
+        assert!(app.pending_compact_clear);
 
         handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         assert!(!app.pending_compact_clear);
-        assert_eq!(app.messages.len(), 1);
-        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert_eq!(app.messages.len(), 3);
+        let Some(ChatMessage {
+            role: MessageRole::System(Some(SystemSeverity::Info)), blocks, ..
+        }) = app.messages.last()
+        else {
+            panic!("expected compaction success system message");
+        };
+        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Session successfully compacted.");
         assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("session-x"));
     }
 
     #[test]
-    fn turn_error_also_clears_history_when_compact_pending() {
+    fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
+        let mut app = make_test_app();
+        app.is_compacting = true;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                    "regular answer",
+                ))),
+            )),
+        );
+
+        assert!(!app.is_compacting);
+        assert!(!app.pending_compact_clear);
+        assert!(app.messages.iter().all(|message| {
+            !matches!(
+                message,
+                ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
+        let mut app = make_test_app();
+        app.is_compacting = true;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::SessionStatusUpdate(
+                model::SessionStatus::Idle,
+            )),
+        );
+
+        assert!(!app.is_compacting);
+        assert!(!app.pending_compact_clear);
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn turn_error_keeps_history_when_compact_pending() {
         let mut app = make_test_app();
         app.pending_compact_clear = true;
         app.messages.push(user_msg("/compact"));
@@ -1596,8 +1621,8 @@ mod tests {
         assert!(!app.pending_compact_clear);
         assert!(matches!(app.status, AppStatus::Error));
         assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.get(1)
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last()
         else {
             panic!("expected system error message");
         };
@@ -1701,11 +1726,33 @@ mod tests {
         );
 
         assert!(app.is_compacting);
+        assert!(app.pending_compact_clear);
         assert_eq!(
             app.session_usage.last_compaction_trigger,
             Some(model::CompactionTrigger::Manual)
         );
         assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
+    }
+
+    #[test]
+    fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
+        let mut app = make_test_app();
+        assert!(!app.is_compacting);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
+                model::CompactionBoundary {
+                    trigger: model::CompactionTrigger::Auto,
+                    pre_tokens: 234_567,
+                },
+            )),
+        );
+
+        assert!(app.is_compacting);
+        assert!(!app.pending_compact_clear);
+        assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Auto));
+        assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(234_567));
     }
 
     #[test]

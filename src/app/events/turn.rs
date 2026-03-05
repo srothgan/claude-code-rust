@@ -18,6 +18,7 @@ use super::super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
     InlinePermission, MessageBlock, MessageRole, SystemSeverity,
 };
+use super::clear_compaction_state;
 use super::rate_limit::format_rate_limit_summary;
 use super::session::set_ready_status_unless_startup_blocked;
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
@@ -97,8 +98,7 @@ fn reject_permission_request(
 }
 
 pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    clear_compaction_state(app, false);
     if app.pending_cancel_origin.is_none() {
         app.pending_cancel_origin = Some(CancelOrigin::Manual);
     }
@@ -111,9 +111,7 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     let tail_assistant_idx =
         app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
     let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    let should_compact_clear = app.pending_compact_clear;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    clear_compaction_state(app, true);
     let cancelled_requested = app.pending_cancel_origin.is_some();
     let show_interrupted_hint = matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
     app.pending_cancel_origin = None;
@@ -132,9 +130,7 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     if show_interrupted_hint {
         push_interrupted_hint(app);
     }
-    if should_compact_clear {
-        super::super::slash::clear_conversation_history(app);
-    } else if turn_was_active || cancelled_requested {
+    if turn_was_active || cancelled_requested {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
     if turn_was_active {
@@ -151,9 +147,7 @@ pub(super) fn handle_turn_error_event(
     let tail_assistant_idx =
         app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
     let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    let should_compact_clear = app.pending_compact_clear;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    clear_compaction_state(app, false);
     let cancelled_requested = app.pending_cancel_origin;
     let show_interrupted_hint = matches!(cancelled_requested, Some(CancelOrigin::Manual));
     app.pending_cancel_origin = None;
@@ -165,11 +159,7 @@ pub(super) fn handle_turn_error_event(
             error_preview = %summary,
             "Turn error suppressed after cancellation request"
         );
-        if should_compact_clear {
-            super::super::slash::clear_conversation_history(app);
-        } else {
-            mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
-        }
+        mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         app.pending_submit = false;
         app.status = AppStatus::Ready;
@@ -209,9 +199,6 @@ pub(super) fn handle_turn_error_event(
         }
         TurnErrorClass::Other => {}
     }
-    if should_compact_clear {
-        super::super::slash::clear_conversation_history(app);
-    }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
@@ -225,7 +212,7 @@ pub(super) fn handle_turn_error_event(
         None
     };
     push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
-    if !should_compact_clear && turn_was_active {
+    if turn_was_active {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
 }

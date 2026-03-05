@@ -69,6 +69,7 @@ pub(super) fn submit_input(app: &mut App) {
 fn is_turn_busy(app: &App) -> bool {
     matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         || app.pending_cancel_origin.is_some()
+        || app.is_compacting
 }
 
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
