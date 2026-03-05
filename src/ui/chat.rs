@@ -526,6 +526,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     render_scrollbar_overlay(frame, &mut app.viewport, area, content_height, viewport_height);
 
+    enforce_and_emit_cache_metrics(app);
+}
+
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn enforce_and_emit_cache_metrics(app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
     crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
     crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);

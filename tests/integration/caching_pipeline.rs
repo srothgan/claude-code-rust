@@ -19,6 +19,7 @@ use claude_code_rust::app::{
 };
 use claude_code_rust::ui::{SpinnerState, measure_message_height_cached};
 use ratatui::text::{Line, Span};
+use std::fmt::Write as _;
 
 use crate::helpers::{send_client_event, test_app};
 
@@ -126,7 +127,10 @@ async fn streaming_splits_at_soft_limit() {
 
     // Build text that exceeds soft limit (1536 bytes) with paragraph breaks.
     // "line N\n" is 7+ bytes per iteration; 250 iterations = ~1750 bytes.
-    let text: String = (0..250).map(|i| format!("line {i}\n")).collect();
+    let mut text = String::new();
+    for i in 0..250 {
+        writeln!(&mut text, "line {i}").expect("writing to String should never fail");
+    }
     assert!(
         text.len() > DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
         "test text {} bytes should exceed soft limit {}",
@@ -160,7 +164,10 @@ async fn streaming_splits_at_hard_limit() {
     // Build text that exceeds hard limit (4096 bytes) with sentence boundaries
     // but NO newlines — so the soft-limit paragraph split cannot fire.
     // Sentence boundaries (". ") give the hard-limit fallback something to pick.
-    let text: String = (0..250).map(|i| format!("Sentence number {i}. ")).collect();
+    let mut text = String::new();
+    for i in 0..250 {
+        write!(&mut text, "Sentence number {i}. ").expect("writing to String should never fail");
+    }
     assert!(
         text.len() > DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
         "test text {} bytes should exceed hard limit {}",
@@ -323,8 +330,12 @@ async fn full_pipeline_stream_split_measure_scroll() {
     let mut app = test_app();
 
     // Stream enough text with paragraph breaks to trigger splitting.
-    let text: String =
-        (0..8).map(|i| format!("Paragraph {i}. {}\n\n", "word ".repeat(80))).collect();
+    let paragraph_words = "word ".repeat(80);
+    let mut text = String::new();
+    for i in 0..8 {
+        write!(&mut text, "Paragraph {i}. {paragraph_words}\n\n")
+            .expect("writing to String should never fail");
+    }
     assert!(
         text.len() > DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
         "pipeline text {} bytes should trigger split",

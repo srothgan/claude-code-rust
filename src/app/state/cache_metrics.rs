@@ -531,7 +531,7 @@ mod tests {
             0,
             0,
         );
-        assert_eq!(snap.render_utilization_pct, 0.0);
-        assert_eq!(snap.history_utilization_pct, 0.0);
+        assert!(snap.render_utilization_pct.abs() < f32::EPSILON);
+        assert!(snap.history_utilization_pct.abs() < f32::EPSILON);
     }
 }
