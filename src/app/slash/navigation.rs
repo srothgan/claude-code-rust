@@ -95,10 +95,11 @@ pub fn confirm_selection(app: &mut App) {
         return;
     };
 
-    let Some(line) = app.input.lines.get_mut(slash.trigger_row) else {
+    let mut lines = app.input.lines().to_vec();
+    let Some(line) = lines.get(slash.trigger_row) else {
         tracing::debug!(
             trigger_row = slash.trigger_row,
-            line_count = app.input.lines.len(),
+            line_count = app.input.lines().len(),
             "Slash confirm aborted: trigger row out of bounds"
         );
         if app.mention.is_none() && app.subagent.is_none() {
@@ -173,10 +174,8 @@ pub fn confirm_selection(app: &mut App) {
             "Slash confirm produced cursor beyond line length; clamping"
         );
     }
-    *line = new_line;
-    app.input.cursor_col = new_cursor_col.min(new_line_len);
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    lines[slash.trigger_row] = new_line;
+    app.input.replace_lines_and_cursor(lines, slash.trigger_row, new_cursor_col.min(new_line_len));
 
     sync_with_cursor(app);
     if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {

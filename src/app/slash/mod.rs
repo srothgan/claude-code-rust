@@ -310,8 +310,7 @@ mod tests {
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
         app.input.set_text("/cancel now");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = "/cancel now".chars().count();
+        let _ = app.input.set_cursor(0, "/cancel now".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -328,8 +327,7 @@ mod tests {
             }],
         });
         app.input.set_text("/mode xyz");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = "/mode xyz".chars().count();
+        let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -338,8 +336,7 @@ mod tests {
     fn confirm_selection_replaces_only_active_argument_token() {
         let mut app = App::test_default();
         app.input.set_text("/resume old-id trailing");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = "/resume old-id".chars().count();
+        let _ = app.input.set_cursor(0, "/resume old-id".chars().count());
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,

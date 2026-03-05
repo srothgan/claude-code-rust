@@ -69,14 +69,32 @@ fn detect_subagent_at_cursor(
         return None;
     }
 
-    let next = chars.get(token_start + 1).copied()?;
-    if next == '&' || !next.is_ascii_alphabetic() {
+    // Reject shell-style logical and operators (`&&`).
+    if chars.get(token_start + 1).copied() == Some('&') {
         return None;
     }
 
     let token_end =
         (token_start + 1..chars.len()).find(|&i| chars[i].is_whitespace()).unwrap_or(chars.len());
-    if cursor_col <= token_start + 1 || cursor_col > token_end {
+    if cursor_col <= token_start || cursor_col > token_end {
+        return None;
+    }
+
+    // Eager activation: allow a bare `&` only when it is at token end (`... &` with no
+    // trailing chars). This avoids triggering on spacing/operator patterns like `& `.
+    if cursor_col == token_start + 1 {
+        if token_end == chars.len() {
+            return Some(SubagentDetection {
+                trigger_row: cursor_row,
+                trigger_col: token_start,
+                query: String::new(),
+            });
+        }
+        return None;
+    }
+
+    // First character after '&' must be alphabetic to start a valid subagent token.
+    if !chars[token_start + 1].is_ascii_alphabetic() {
         return None;
     }
 
@@ -84,9 +102,6 @@ fn detect_subagent_at_cursor(
         return None;
     }
     let query: String = chars[token_start + 1..cursor_col].iter().collect();
-    if query.is_empty() {
-        return None;
-    }
 
     Some(SubagentDetection { trigger_row: cursor_row, trigger_col: token_start, query })
 }
@@ -116,8 +131,11 @@ fn filter_candidates(
 }
 
 fn build_subagent_state(app: &App) -> Option<SubagentState> {
-    let detection =
-        detect_subagent_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col)?;
+    let detection = detect_subagent_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+    )?;
     let candidates = filter_candidates(&app.available_agents, &detection.query);
     if candidates.is_empty() {
         return None;
@@ -199,7 +217,8 @@ pub fn confirm_selection(app: &mut App) {
         return;
     };
 
-    let Some(line) = app.input.lines.get_mut(subagent.trigger_row) else {
+    let mut lines = app.input.lines().to_vec();
+    let Some(line) = lines.get(subagent.trigger_row) else {
         if app.mention.is_none() && app.slash.is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
@@ -227,10 +246,12 @@ pub fn confirm_selection(app: &mut App) {
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = subagent.trigger_col + replacement.chars().count();
     let new_line_len = new_line.chars().count();
-    *line = new_line;
-    app.input.cursor_col = new_cursor_col.min(new_line_len);
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    lines[subagent.trigger_row] = new_line;
+    app.input.replace_lines_and_cursor(
+        lines,
+        subagent.trigger_row,
+        new_cursor_col.min(new_line_len),
+    );
 
     sync_with_cursor(app);
     if app.mention.is_none() && app.slash.is_none() && app.subagent.is_none() {
@@ -312,12 +333,26 @@ mod tests {
             crate::agent::model::AvailableAgent::new("explore", "Explore codebase"),
         ];
         app.input.set_text("&re");
-        app.input.cursor_col = 3;
+        let _ = app.input.set_cursor_col(3);
 
         sync_with_cursor(&mut app);
 
         let state = app.subagent.as_ref().expect("subagent state should be active");
         assert_eq!(state.query, "re");
+        assert!(!state.candidates.is_empty());
+    }
+
+    #[test]
+    fn sync_with_cursor_activates_on_bare_ampersand_at_line_end() {
+        let mut app = App::test_default();
+        app.available_agents =
+            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+        app.input.set_text("&");
+
+        sync_with_cursor(&mut app);
+
+        let state = app.subagent.as_ref().expect("subagent state should be active");
+        assert_eq!(state.query, "");
         assert!(!state.candidates.is_empty());
     }
 

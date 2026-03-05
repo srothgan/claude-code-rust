@@ -159,7 +159,7 @@ pub fn detect_mention_at_cursor(
 /// Activate mention autocomplete after the user types `@`.
 pub fn activate(app: &mut App) {
     let detection =
-        detect_mention_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col);
+        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         return;
@@ -185,7 +185,7 @@ pub fn activate(app: &mut App) {
 /// Update the query and re-filter candidates while mention is active.
 pub fn update_query(app: &mut App) {
     let detection =
-        detect_mention_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col);
+        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         deactivate(app);
@@ -208,7 +208,7 @@ pub fn update_query(app: &mut App) {
 /// - Otherwise, deactivate mention autocomplete.
 pub fn sync_with_cursor(app: &mut App) {
     let in_mention =
-        detect_mention_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col)
+        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())
             .is_some();
     match (in_mention, app.mention.is_some()) {
         (true, true) => update_query(app),
@@ -236,7 +236,10 @@ pub fn confirm_selection(app: &mut App) {
     // Replace the full mention token (from `@` to the next whitespace),
     // so editing in the middle of an existing mention correctly rewrites
     // the entire path instead of only the prefix before the cursor.
-    let line = &mut app.input.lines[trigger_row];
+    let mut lines = app.input.lines().to_vec();
+    let Some(line) = lines.get(trigger_row) else {
+        return;
+    };
     let chars: Vec<char> = line.chars().collect();
     if trigger_col >= chars.len() || chars[trigger_col] != '@' {
         return;
@@ -255,10 +258,8 @@ pub fn confirm_selection(app: &mut App) {
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = trigger_col + replacement.chars().count();
 
-    app.input.lines[trigger_row] = new_line;
-    app.input.cursor_col = new_cursor_col;
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    lines[trigger_row] = new_line;
+    app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
 }
 
 /// Deactivate mention autocomplete.
@@ -339,8 +340,7 @@ mod tests {
     fn sync_with_cursor_activates_inside_existing_mention() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs", "tests/integration.rs"]);
         app.input.set_text("open @src/main.rs now");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = "open @src".chars().count();
+        let _ = app.input.set_cursor(0, "open @src".chars().count());
 
         sync_with_cursor(&mut app);
 
@@ -353,13 +353,12 @@ mod tests {
     fn confirm_selection_replaces_full_existing_token_without_double_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
         app.input.set_text("open @src/lib.txt now");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = "open @src/lib".chars().count();
+        let _ = app.input.set_cursor(0, "open @src/lib".chars().count());
 
         activate(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines[0], "open @src/lib.rs now");
+        assert_eq!(app.input.lines()[0], "open @src/lib.rs now");
         assert!(app.mention.is_none());
     }
 
@@ -367,21 +366,19 @@ mod tests {
     fn confirm_selection_at_end_keeps_trailing_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@src/mai");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = app.input.lines[0].chars().count();
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
 
         activate(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines[0], "@src/main.rs ");
+        assert_eq!(app.input.lines()[0], "@src/main.rs ");
     }
 
     #[test]
     fn activate_with_empty_query_shows_all_candidates() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = 1;
+        let _ = app.input.set_cursor(0, 1);
 
         activate(&mut app);
 
@@ -394,13 +391,12 @@ mod tests {
     fn update_query_keeps_active_when_query_becomes_empty() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@src");
-        app.input.cursor_row = 0;
-        app.input.cursor_col = app.input.lines[0].chars().count();
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
         activate(&mut app);
         assert!(app.mention.is_some());
 
         // Cursor directly after '@' means empty mention query.
-        app.input.cursor_col = 1;
+        let _ = app.input.set_cursor_col(1);
         update_query(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should stay active");

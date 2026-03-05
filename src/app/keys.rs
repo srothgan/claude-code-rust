@@ -248,7 +248,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
     let input_version_before = app.input.version;
     let cursor_before_key =
-        super::SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col };
+        super::SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
 
     if should_ignore_key_during_paste(app, key, cursor_before_key) {
         return;
@@ -275,7 +275,7 @@ fn should_ignore_key_during_paste(
     app.drain_key_count += 1;
     let was_paste = app.paste_burst.is_paste();
     let burst_was_active = app.paste_burst.is_active();
-    let in_paste = app.paste_burst.on_key_event(app.input.lines.len());
+    let in_paste = app.paste_burst.on_key_event(app.input.lines().len());
     if !burst_was_active {
         app.paste_burst_start = Some(cursor_before_key);
     }
@@ -285,9 +285,9 @@ fn should_ignore_key_during_paste(
 
     let on_placeholder_line = app
         .input
-        .lines
-        .get(app.input.cursor_row)
-        .and_then(|line| parse_paste_placeholder_before_cursor(line, app.input.cursor_col))
+        .lines()
+        .get(app.input.cursor_row())
+        .and_then(|line| parse_paste_placeholder_before_cursor(line, app.input.cursor_col()))
         .is_some();
     if in_paste && on_placeholder_line {
         if !was_paste {
@@ -549,20 +549,22 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         mention::activate(app);
     } else if c == '/' {
         slash::activate(app);
+    } else if c == '&' {
+        subagent::activate(app);
     }
     true
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
-    let before = (app.input.cursor_row, app.input.cursor_col);
+    let before = (app.input.cursor_row(), app.input.cursor_col());
     let _ = app.input.textarea_move_up();
-    (app.input.cursor_row, app.input.cursor_col) != before
+    (app.input.cursor_row(), app.input.cursor_col()) != before
 }
 
 fn try_move_input_cursor_down(app: &mut App) -> bool {
-    let before = (app.input.cursor_row, app.input.cursor_col);
+    let before = (app.input.cursor_row(), app.input.cursor_col());
     let _ = app.input.textarea_move_down();
-    (app.input.cursor_row, app.input.cursor_col) != before
+    (app.input.cursor_row(), app.input.cursor_col()) != before
 }
 
 fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
@@ -593,17 +595,16 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
 /// overlap. We only touch the narrow shape:
 /// line 0 = exactly one char, line 1 = placeholder (cursor on placeholder).
 pub(super) fn cleanup_leaked_char_before_placeholder(app: &mut App) {
-    if app.input.lines.len() != 2 || app.input.cursor_row != 1 {
+    if app.input.lines().len() != 2 || app.input.cursor_row() != 1 {
         return;
     }
-    if app.input.lines[0].chars().count() != 1 {
+    if app.input.lines()[0].chars().count() != 1 {
         return;
     }
-    app.input.lines.remove(0);
-    app.input.cursor_row = 0;
-    app.input.cursor_col = app.input.lines[0].chars().count();
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    let mut lines = app.input.lines().to_vec();
+    lines.remove(0);
+    let cursor_col = lines[0].chars().count();
+    app.input.replace_lines_and_cursor(lines, 0, cursor_col);
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {

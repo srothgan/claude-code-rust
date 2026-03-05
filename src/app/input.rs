@@ -14,13 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use tui_textarea::{CursorMove, TextArea};
+use tui_textarea::{CursorMove, TextArea, WrapMode};
 
 #[derive(Debug)]
 pub struct InputState {
-    pub lines: Vec<String>,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
     /// Monotonically increasing version counter. Bumped on every content or cursor change
     /// so that downstream caches (e.g. wrap result) can detect staleness cheaply.
     pub version: u64,
@@ -38,25 +35,107 @@ const PASTE_SUFFIX: &str = "]";
 pub const PASTE_PLACEHOLDER_CHAR_THRESHOLD: usize = 1000;
 
 impl InputState {
+    fn configure_editor(editor: &mut TextArea<'static>) {
+        editor.set_wrap_mode(WrapMode::WordOrGlyph);
+    }
+
+    fn clamp_cursor(lines: &[String], row: usize, col: usize) -> (usize, usize) {
+        let row = row.min(lines.len().saturating_sub(1));
+        let col = col.min(lines[row].chars().count());
+        (row, col)
+    }
+
+    fn build_editor(lines: Vec<String>, row: usize, col: usize) -> TextArea<'static> {
+        let mut textarea = TextArea::from(lines);
+        Self::configure_editor(&mut textarea);
+        textarea.move_cursor(CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        ));
+        textarea
+    }
+
     pub fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
-            version: 0,
-            paste_blocks: Vec::new(),
-            editor: TextArea::default(),
+        let mut editor = TextArea::default();
+        Self::configure_editor(&mut editor);
+        Self { version: 0, paste_blocks: Vec::new(), editor }
+    }
+
+    #[must_use]
+    pub fn editor(&self) -> &TextArea<'static> {
+        &self.editor
+    }
+
+    pub fn editor_mut(&mut self) -> &mut TextArea<'static> {
+        &mut self.editor
+    }
+
+    #[must_use]
+    pub fn lines(&self) -> &[String] {
+        self.editor.lines()
+    }
+
+    #[must_use]
+    pub fn cursor(&self) -> (usize, usize) {
+        self.editor.cursor()
+    }
+
+    #[must_use]
+    pub fn cursor_row(&self) -> usize {
+        self.cursor().0
+    }
+
+    #[must_use]
+    pub fn cursor_col(&self) -> usize {
+        self.cursor().1
+    }
+
+    pub fn set_cursor(&mut self, row: usize, col: usize) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Jump(
+                u16::try_from(row).unwrap_or(u16::MAX),
+                u16::try_from(col).unwrap_or(u16::MAX),
+            ));
+        })
+    }
+
+    pub fn set_cursor_col(&mut self, col: usize) -> bool {
+        self.set_cursor(self.cursor_row(), col)
+    }
+
+    pub fn replace_lines_and_cursor(
+        &mut self,
+        mut lines: Vec<String>,
+        cursor_row: usize,
+        cursor_col: usize,
+    ) {
+        if lines.is_empty() {
+            lines.push(String::new());
         }
+        let (row, col) = Self::clamp_cursor(&lines, cursor_row, cursor_col);
+        self.editor = Self::build_editor(lines, row, col);
+        self.version += 1;
+    }
+
+    pub fn clear_custom_highlights(&mut self) {
+        self.editor.clear_custom_highlight();
+    }
+
+    pub fn mutate_lines(&mut self, edit: impl FnOnce(&mut Vec<String>)) {
+        let mut lines = self.lines().to_vec();
+        edit(&mut lines);
+        let (row, col) = self.cursor();
+        self.replace_lines_and_cursor(lines, row, col);
     }
 
     #[must_use]
     pub fn text(&self) -> String {
         if self.paste_blocks.is_empty() {
-            return self.lines.join("\n");
+            return self.lines().join("\n");
         }
         // Expand paste placeholders back to their full content.
         let mut result = String::new();
-        for (i, line) in self.lines.iter().enumerate() {
+        for (i, line) in self.lines().iter().enumerate() {
             if i > 0 {
                 result.push('\n');
             }
@@ -67,81 +146,40 @@ impl InputState {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].is_empty()
+        self.lines().len() == 1 && self.lines()[0].is_empty()
     }
 
     pub fn clear(&mut self) {
-        self.lines = vec![String::new()];
-        self.cursor_row = 0;
-        self.cursor_col = 0;
         self.paste_blocks.clear();
-        self.version += 1;
-        self.rebuild_editor_from_snapshot();
+        self.replace_lines_and_cursor(vec![String::new()], 0, 0);
     }
 
     /// Replace the input with the given text, placing the cursor at the end.
     pub fn set_text(&mut self, text: &str) {
-        self.lines = text.split('\n').map(String::from).collect();
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
+        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        if lines.is_empty() {
+            lines.push(String::new());
         }
-        self.cursor_row = self.lines.len() - 1;
-        self.cursor_col = self.lines[self.cursor_row].chars().count();
+        let row = lines.len().saturating_sub(1);
+        let col = lines[row].chars().count();
         self.paste_blocks.clear();
-        self.version += 1;
-        self.rebuild_editor_from_snapshot();
+        self.replace_lines_and_cursor(lines, row, col);
     }
 
     pub fn insert_char(&mut self, c: char) {
-        let line = &mut self.lines[self.cursor_row];
-        let byte_idx = char_to_byte_index(line, self.cursor_col);
-        line.insert(byte_idx, c);
-        self.cursor_col += 1;
-        self.version += 1;
-    }
-
-    fn as_textarea(&self) -> TextArea<'static> {
-        let mut textarea = TextArea::from(self.lines.clone());
-        textarea.move_cursor(CursorMove::Jump(
-            u16::try_from(self.cursor_row).unwrap_or(u16::MAX),
-            u16::try_from(self.cursor_col).unwrap_or(u16::MAX),
-        ));
-        textarea
-    }
-
-    fn sync_snapshot_from_editor(&mut self) -> bool {
-        let (row, col) = self.editor.cursor();
-        let lines = self.editor.lines().to_vec();
-        if self.lines == lines && self.cursor_row == row && self.cursor_col == col {
-            return false;
-        }
-        self.lines = lines;
-        self.cursor_row = row;
-        self.cursor_col = col;
-        self.version += 1;
-        true
-    }
-
-    fn rebuild_editor_from_snapshot(&mut self) {
-        self.editor = self.as_textarea();
-    }
-
-    pub fn sync_textarea_engine(&mut self) {
-        self.rebuild_editor_from_snapshot();
-    }
-
-    fn ensure_editor_synced_from_snapshot(&mut self) {
-        if self.editor.cursor() != (self.cursor_row, self.cursor_col)
-            || self.editor.lines() != self.lines.as_slice()
-        {
-            self.rebuild_editor_from_snapshot();
-        }
+        let _ = self.textarea_insert_char(c);
     }
 
     fn apply_textarea_edit(&mut self, edit: impl FnOnce(&mut TextArea<'_>)) -> bool {
-        self.ensure_editor_synced_from_snapshot();
+        let before_cursor = self.editor.cursor();
+        let before_lines = self.editor.lines().to_vec();
         edit(&mut self.editor);
-        self.sync_snapshot_from_editor()
+        let changed =
+            before_cursor != self.editor.cursor() || before_lines.as_slice() != self.editor.lines();
+        if changed {
+            self.version += 1;
+        }
+        changed
     }
 
     pub fn textarea_insert_char(&mut self, c: char) -> bool {
@@ -241,14 +279,7 @@ impl InputState {
     }
 
     pub fn insert_newline(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        let byte_idx = char_to_byte_index(line, self.cursor_col);
-        let rest = line[byte_idx..].to_string();
-        line.truncate(byte_idx);
-        self.cursor_row += 1;
-        self.lines.insert(self.cursor_row, rest);
-        self.cursor_col = 0;
-        self.version += 1;
+        let _ = self.textarea_insert_newline();
     }
 
     pub fn insert_str(&mut self, s: &str) {
@@ -266,17 +297,21 @@ impl InputState {
     /// Returns the placeholder label for display purposes.
     pub fn insert_paste_block(&mut self, text: &str) -> String {
         let placeholder = self.allocate_paste_block_placeholder(text);
-        let current_line = &mut self.lines[self.cursor_row];
-        let byte_idx = char_to_byte_index(current_line, self.cursor_col);
+        let (cursor_row, cursor_col) = self.cursor();
+        let mut lines = self.lines().to_vec();
+        let Some(current_line) = lines.get_mut(cursor_row) else {
+            return placeholder;
+        };
+        let byte_idx = char_to_byte_index(current_line, cursor_col);
         current_line.insert_str(byte_idx, &placeholder);
-        self.cursor_col += placeholder.chars().count();
-        self.version += 1;
+        let new_cursor_col = cursor_col + placeholder.chars().count();
+        self.replace_lines_and_cursor(lines, cursor_row, new_cursor_col);
         placeholder
     }
 
     /// Store the full text as a paste block and return its placeholder label.
     pub fn allocate_paste_block_placeholder(&mut self, text: &str) -> String {
-        let idx = next_free_paste_block_index(&self.lines, &self.paste_blocks);
+        let idx = next_free_paste_block_index(self.lines(), &self.paste_blocks);
         if idx < self.paste_blocks.len() {
             text.clone_into(&mut self.paste_blocks[idx]);
         } else {
@@ -291,11 +326,11 @@ impl InputState {
     /// This handles terminals that deliver one clipboard paste as multiple
     /// `Event::Paste` chunks.
     pub fn append_to_active_paste_block(&mut self, text: &str) -> bool {
-        let Some(current_line) = self.lines.get(self.cursor_row).cloned() else {
+        let (cursor_row, cursor_col) = self.cursor();
+        let Some(current_line) = self.lines().get(cursor_row).cloned() else {
             return false;
         };
-        let Some((start, end, idx)) =
-            find_placeholder_ending_at_col(&current_line, self.cursor_col)
+        let Some((start, end, idx)) = find_placeholder_ending_at_col(&current_line, cursor_col)
         else {
             return false;
         };
@@ -308,96 +343,52 @@ impl InputState {
         let head = &current_line[..start];
         let tail = &current_line[end..];
         let placeholder = paste_placeholder_label(idx, count_text_chars(block));
-        self.lines[self.cursor_row] = format!("{head}{placeholder}{tail}");
-        self.cursor_col = head.chars().count() + placeholder.chars().count();
-        self.version += 1;
+        let mut lines = self.lines().to_vec();
+        lines[cursor_row] = format!("{head}{placeholder}{tail}");
+        let new_col = head.chars().count() + placeholder.chars().count();
+        self.replace_lines_and_cursor(lines, cursor_row, new_col);
         true
     }
 
     pub fn delete_char_before(&mut self) {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_row];
-            self.cursor_col -= 1;
-            let byte_idx = char_to_byte_index(line, self.cursor_col);
-            line.remove(byte_idx);
-            self.version += 1;
-        } else if self.cursor_row > 0 {
-            let removed = self.lines.remove(self.cursor_row);
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].chars().count();
-            self.lines[self.cursor_row].push_str(&removed);
-            self.version += 1;
-        }
+        let _ = self.textarea_delete_char_before();
     }
 
     pub fn delete_char_after(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            let line = &mut self.lines[self.cursor_row];
-            let byte_idx = char_to_byte_index(line, self.cursor_col);
-            line.remove(byte_idx);
-            self.version += 1;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            let next = self.lines.remove(self.cursor_row + 1);
-            self.lines[self.cursor_row].push_str(&next);
-            self.version += 1;
-        }
+        let _ = self.textarea_delete_char_after();
     }
 
     pub fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-            self.version += 1;
-        } else if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].chars().count();
-            self.version += 1;
-        }
+        let _ = self.textarea_move_left();
     }
 
     pub fn move_right(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-            self.version += 1;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.cursor_col = 0;
-            self.version += 1;
-        }
+        let _ = self.textarea_move_right();
     }
 
     pub fn move_up(&mut self) {
-        if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            let line_len = self.lines[self.cursor_row].chars().count();
-            self.cursor_col = self.cursor_col.min(line_len);
-            self.version += 1;
-        }
+        let _ = self.textarea_move_up();
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            let line_len = self.lines[self.cursor_row].chars().count();
-            self.cursor_col = self.cursor_col.min(line_len);
+        let _ = self.textarea_move_down();
+    }
+
+    pub fn move_home(&mut self) {
+        if !self.textarea_move_home() {
             self.version += 1;
         }
     }
 
-    pub fn move_home(&mut self) {
-        self.cursor_col = 0;
-        self.version += 1;
-    }
-
     pub fn move_end(&mut self) {
-        self.cursor_col = self.lines[self.cursor_row].chars().count();
-        self.version += 1;
+        if !self.textarea_move_end() {
+            self.version += 1;
+        }
     }
 
     #[must_use]
     pub fn line_count(&self) -> u16 {
-        u16::try_from(self.lines.len()).unwrap_or(u16::MAX)
+        u16::try_from(self.lines().len()).unwrap_or(u16::MAX)
     }
 }
 
@@ -603,9 +594,9 @@ mod tests {
     #[test]
     fn new_creates_empty_state() {
         let input = InputState::new();
-        assert_eq!(input.lines, vec![String::new()]);
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines(), vec![String::new()]);
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 0);
         assert_eq!(input.version, 0);
     }
 
@@ -613,9 +604,9 @@ mod tests {
     fn default_equals_new() {
         let a = InputState::new();
         let b = InputState::default();
-        assert_eq!(a.lines, b.lines);
-        assert_eq!(a.cursor_row, b.cursor_row);
-        assert_eq!(a.cursor_col, b.cursor_col);
+        assert_eq!(a.lines(), b.lines());
+        assert_eq!(a.cursor_row(), b.cursor_row());
+        assert_eq!(a.cursor_col(), b.cursor_col());
         assert_eq!(a.version, b.version);
     }
 
@@ -665,8 +656,8 @@ mod tests {
         let v_before = input.version;
         input.clear();
         assert!(input.is_empty());
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 0);
         assert!(input.version > v_before);
     }
 
@@ -677,16 +668,16 @@ mod tests {
         let mut input = InputState::new();
         input.insert_char('h');
         input.insert_char('i');
-        assert_eq!(input.lines[0], "hi");
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.lines()[0], "hi");
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
     fn insert_char_unicode_emoji() {
         let mut input = InputState::new();
         input.insert_char('\u{1F600}'); // grinning face
-        assert_eq!(input.cursor_col, 1);
-        assert_eq!(input.lines[0], "\u{1F600}");
+        assert_eq!(input.cursor_col(), 1);
+        assert_eq!(input.lines()[0], "\u{1F600}");
     }
 
     #[test]
@@ -694,8 +685,8 @@ mod tests {
         let mut input = InputState::new();
         input.insert_char('\u{4F60}'); // Chinese "ni"
         input.insert_char('\u{597D}'); // Chinese "hao"
-        assert_eq!(input.lines[0], "\u{4F60}\u{597D}");
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.lines()[0], "\u{4F60}\u{597D}");
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
@@ -704,8 +695,8 @@ mod tests {
         input.insert_str("ac");
         input.move_left(); // cursor at col 1
         input.insert_char('b');
-        assert_eq!(input.lines[0], "abc");
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.lines()[0], "abc");
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
@@ -723,9 +714,9 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("hello");
         input.insert_newline();
-        assert_eq!(input.lines, vec!["hello", ""]);
-        assert_eq!(input.cursor_row, 1);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines(), vec!["hello", ""]);
+        assert_eq!(input.cursor_row(), 1);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
@@ -733,11 +724,11 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("helloworld");
         // Move cursor to position 5
-        input.cursor_col = 5;
+        let _ = input.set_cursor_col(5);
         input.insert_newline();
-        assert_eq!(input.lines, vec!["hello", "world"]);
-        assert_eq!(input.cursor_row, 1);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines(), vec!["hello", "world"]);
+        assert_eq!(input.cursor_row(), 1);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
@@ -746,7 +737,7 @@ mod tests {
         input.insert_str("hello");
         input.move_home();
         input.insert_newline();
-        assert_eq!(input.lines, vec!["", "hello"]);
+        assert_eq!(input.lines(), vec!["", "hello"]);
     }
 
     // insert_str
@@ -755,9 +746,9 @@ mod tests {
     fn insert_str_multiline() {
         let mut input = InputState::new();
         input.insert_str("line1\nline2\nline3");
-        assert_eq!(input.lines, vec!["line1", "line2", "line3"]);
-        assert_eq!(input.cursor_row, 2);
-        assert_eq!(input.cursor_col, 5);
+        assert_eq!(input.lines(), vec!["line1", "line2", "line3"]);
+        assert_eq!(input.cursor_row(), 2);
+        assert_eq!(input.cursor_col(), 5);
     }
 
     #[test]
@@ -765,7 +756,7 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("a\rb\rc");
         // \r treated same as \n
-        assert_eq!(input.lines, vec!["a", "b", "c"]);
+        assert_eq!(input.lines(), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -783,8 +774,8 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("abc");
         input.delete_char_before();
-        assert_eq!(input.lines[0], "ab");
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.lines()[0], "ab");
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
@@ -794,9 +785,9 @@ mod tests {
         // cursor at row 1, col 5. Move to start of row 1.
         input.move_home();
         input.delete_char_before();
-        assert_eq!(input.lines, vec!["helloworld"]);
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 5); // at the join point
+        assert_eq!(input.lines(), vec!["helloworld"]);
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 5); // at the join point
     }
 
     #[test]
@@ -806,7 +797,7 @@ mod tests {
         input.move_home();
         let v = input.version;
         input.delete_char_before(); // should do nothing
-        assert_eq!(input.lines[0], "hi");
+        assert_eq!(input.lines()[0], "hi");
         assert_eq!(input.version, v); // no version bump
     }
 
@@ -816,7 +807,7 @@ mod tests {
         input.insert_char('\u{1F600}');
         input.insert_char('x');
         input.delete_char_before();
-        assert_eq!(input.lines[0], "\u{1F600}");
+        assert_eq!(input.lines()[0], "\u{1F600}");
     }
 
     // delete_char_after (delete key)
@@ -827,18 +818,17 @@ mod tests {
         input.insert_str("abc");
         input.move_home();
         input.delete_char_after();
-        assert_eq!(input.lines[0], "bc");
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines()[0], "bc");
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
     fn delete_end_of_line_joins_next() {
         let mut input = InputState::new();
         input.insert_str("hello\nworld");
-        input.cursor_row = 0;
-        input.cursor_col = 5; // end of "hello"
+        let _ = input.set_cursor(0, 5); // end of "hello"
         input.delete_char_after();
-        assert_eq!(input.lines, vec!["helloworld"]);
+        assert_eq!(input.lines(), vec!["helloworld"]);
     }
 
     #[test]
@@ -848,7 +838,7 @@ mod tests {
         // cursor at end of last line
         let v = input.version;
         input.delete_char_after();
-        assert_eq!(input.lines[0], "hi");
+        assert_eq!(input.lines()[0], "hi");
         assert_eq!(input.version, v);
     }
 
@@ -859,7 +849,7 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("abc");
         input.move_left();
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
@@ -868,8 +858,8 @@ mod tests {
         input.insert_str("ab\ncd");
         input.move_home(); // at col 0, row 1
         input.move_left();
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 2); // end of "ab"
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 2); // end of "ab"
     }
 
     #[test]
@@ -879,8 +869,8 @@ mod tests {
         input.move_home();
         let v = input.version;
         input.move_left();
-        assert_eq!(input.cursor_col, 0);
-        assert_eq!(input.cursor_row, 0);
+        assert_eq!(input.cursor_col(), 0);
+        assert_eq!(input.cursor_row(), 0);
         assert_eq!(input.version, v); // no change
     }
 
@@ -890,18 +880,17 @@ mod tests {
         input.insert_str("abc");
         input.move_home();
         input.move_right();
-        assert_eq!(input.cursor_col, 1);
+        assert_eq!(input.cursor_col(), 1);
     }
 
     #[test]
     fn move_right_wraps_to_next_line() {
         let mut input = InputState::new();
         input.insert_str("ab\ncd");
-        input.cursor_row = 0;
-        input.cursor_col = 2; // end of "ab"
+        let _ = input.set_cursor(0, 2); // end of "ab"
         input.move_right();
-        assert_eq!(input.cursor_row, 1);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.cursor_row(), 1);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
@@ -921,8 +910,8 @@ mod tests {
         input.insert_str("ab\nhello");
         // cursor at row 1, col 5 ("hello" end)
         input.move_up();
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 2); // clamped to "ab" length
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 2); // clamped to "ab" length
     }
 
     #[test]
@@ -931,7 +920,7 @@ mod tests {
         input.insert_str("hello");
         let v = input.version;
         input.move_up();
-        assert_eq!(input.cursor_row, 0);
+        assert_eq!(input.cursor_row(), 0);
         assert_eq!(input.version, v);
     }
 
@@ -939,11 +928,10 @@ mod tests {
     fn move_down_clamps_col() {
         let mut input = InputState::new();
         input.insert_str("hello\nab");
-        input.cursor_row = 0;
-        input.cursor_col = 5;
+        let _ = input.set_cursor(0, 5);
         input.move_down();
-        assert_eq!(input.cursor_row, 1);
-        assert_eq!(input.cursor_col, 2); // clamped to "ab" length
+        assert_eq!(input.cursor_row(), 1);
+        assert_eq!(input.cursor_col(), 2); // clamped to "ab" length
     }
 
     #[test]
@@ -962,7 +950,7 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("hello");
         input.move_home();
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
@@ -971,7 +959,7 @@ mod tests {
         input.insert_str("hello");
         input.move_home();
         input.move_end();
-        assert_eq!(input.cursor_col, 5);
+        assert_eq!(input.cursor_col(), 5);
     }
 
     #[test]
@@ -1031,7 +1019,7 @@ mod tests {
         for _ in 0..100 {
             input.insert_char('x');
         }
-        assert_eq!(input.lines[0].len(), 100);
+        assert_eq!(input.lines()[0].len(), 100);
         for _ in 0..100 {
             input.delete_char_before();
         }
@@ -1043,12 +1031,12 @@ mod tests {
         let mut input = InputState::new();
         // Insert mixed: ASCII, emoji, CJK
         input.insert_str("hi\u{1F600}\u{4F60}");
-        assert_eq!(input.cursor_col, 4); // h, i, emoji, CJK
+        assert_eq!(input.cursor_col(), 4); // h, i, emoji, CJK
         input.move_home();
         input.move_right(); // past 'h'
         input.move_right(); // past 'i'
         input.delete_char_after(); // delete emoji
-        assert_eq!(input.lines[0], "hi\u{4F60}");
+        assert_eq!(input.lines()[0], "hi\u{4F60}");
     }
 
     #[test]
@@ -1061,13 +1049,12 @@ mod tests {
                 input.insert_newline();
             }
         }
-        assert_eq!(input.lines.len(), 10);
+        assert_eq!(input.lines().len(), 10);
 
         // Navigate to middle and delete lines by joining
-        input.cursor_row = 5;
-        input.cursor_col = 0;
+        let _ = input.set_cursor(5, 0);
         input.delete_char_before(); // join line 5 with line 4
-        assert_eq!(input.lines.len(), 9);
+        assert_eq!(input.lines().len(), 9);
 
         // Text should be coherent
         let text = input.text();
@@ -1078,9 +1065,9 @@ mod tests {
     fn insert_str_with_only_newlines() {
         let mut input = InputState::new();
         input.insert_str("\n\n\n");
-        assert_eq!(input.lines, vec!["", "", "", ""]);
-        assert_eq!(input.cursor_row, 3);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines(), vec!["", "", "", ""]);
+        assert_eq!(input.cursor_row(), 3);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     #[test]
@@ -1089,12 +1076,12 @@ mod tests {
         input.insert_str("long line here\nab\nmedium line");
         // cursor at row 2, col 11 (end of "medium line")
         input.move_up(); // to row 1 "ab", col clamped to 2
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.cursor_col(), 2);
         input.move_up(); // to row 0 "long line here", col stays 2
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.cursor_col(), 2);
         input.move_end(); // col = 14
         input.move_down(); // to row 1 "ab", col clamped to 2
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.cursor_col(), 2);
     }
 
     // weird inputs
@@ -1103,16 +1090,16 @@ mod tests {
     fn insert_tab_character() {
         let mut input = InputState::new();
         input.insert_char('\t');
-        assert_eq!(input.lines[0], "\t");
-        assert_eq!(input.cursor_col, 1);
+        assert_eq!(input.lines()[0], "\t");
+        assert_eq!(input.cursor_col(), 1);
     }
 
     #[test]
     fn insert_null_byte() {
         let mut input = InputState::new();
         input.insert_char('\0');
-        assert_eq!(input.lines[0].len(), 1);
-        assert_eq!(input.cursor_col, 1);
+        assert_eq!(input.lines()[0].len(), 1);
+        assert_eq!(input.cursor_col(), 1);
     }
 
     #[test]
@@ -1122,8 +1109,8 @@ mod tests {
         input.insert_char('\x07');
         input.insert_char('\x08');
         input.insert_char('\x1B');
-        assert_eq!(input.cursor_col, 3);
-        assert_eq!(input.lines[0].chars().count(), 3);
+        assert_eq!(input.cursor_col(), 3);
+        assert_eq!(input.lines()[0].chars().count(), 3);
     }
 
     #[test]
@@ -1132,7 +1119,7 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("a\r\nb");
         // \r -> newline, \n -> another newline
-        assert_eq!(input.lines, vec!["a", "", "b"]);
+        assert_eq!(input.lines(), vec!["a", "", "b"]);
     }
 
     #[test]
@@ -1142,7 +1129,7 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str(family);
         // Each code point is a separate char as far as Rust is concerned
-        assert_eq!(input.cursor_col, family.chars().count());
+        assert_eq!(input.cursor_col(), family.chars().count());
         assert_eq!(input.text(), family);
     }
 
@@ -1152,7 +1139,7 @@ mod tests {
         let flag = "\u{1F1FA}\u{1F1F8}";
         let mut input = InputState::new();
         input.insert_str(flag);
-        assert_eq!(input.cursor_col, 2); // two chars
+        assert_eq!(input.cursor_col(), 2); // two chars
         assert_eq!(input.text(), flag);
     }
 
@@ -1163,11 +1150,11 @@ mod tests {
         input.insert_char('e');
         input.insert_char('\u{0301}'); // combining acute
         input.insert_char('\u{0327}'); // combining cedilla
-        assert_eq!(input.cursor_col, 3);
+        assert_eq!(input.cursor_col(), 3);
         // Delete the last combining mark
         input.delete_char_before();
-        assert_eq!(input.cursor_col, 2);
-        assert_eq!(input.lines[0], "e\u{0301}");
+        assert_eq!(input.cursor_col(), 2);
+        assert_eq!(input.lines()[0], "e\u{0301}");
     }
 
     #[test]
@@ -1176,13 +1163,13 @@ mod tests {
         let arabic = "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}";
         let mut input = InputState::new();
         input.insert_str(arabic);
-        assert_eq!(input.cursor_col, 5);
+        assert_eq!(input.cursor_col(), 5);
         assert_eq!(input.text(), arabic);
         // Navigate and delete should still work
         input.move_home();
         input.delete_char_after();
-        assert_eq!(input.cursor_col, 0);
-        assert_eq!(input.lines[0].chars().count(), 4);
+        assert_eq!(input.cursor_col(), 0);
+        assert_eq!(input.lines()[0].chars().count(), 4);
     }
 
     #[test]
@@ -1190,17 +1177,17 @@ mod tests {
         let mut input = InputState::new();
         let long_str: String = "x".repeat(10_000);
         input.insert_str(&long_str);
-        assert_eq!(input.cursor_col, 10_000);
-        assert_eq!(input.lines[0].len(), 10_000);
+        assert_eq!(input.cursor_col(), 10_000);
+        assert_eq!(input.lines()[0].len(), 10_000);
         // Navigate to middle
         input.move_home();
         for _ in 0..5000 {
             input.move_right();
         }
-        assert_eq!(input.cursor_col, 5000);
+        assert_eq!(input.cursor_col(), 5000);
         // Insert in the middle
         input.insert_char('Y');
-        assert_eq!(input.lines[0].len(), 10_001);
+        assert_eq!(input.lines()[0].len(), 10_001);
     }
 
     #[test]
@@ -1210,8 +1197,8 @@ mod tests {
             input.insert_str(&format!("{i}"));
             input.insert_newline();
         }
-        assert_eq!(input.lines.len(), 501); // 500 newlines + 1 trailing empty
-        assert_eq!(input.cursor_row, 500);
+        assert_eq!(input.lines().len(), 501); // 500 newlines + 1 trailing empty
+        assert_eq!(input.cursor_row(), 500);
     }
 
     // rapid key combinations
@@ -1225,7 +1212,7 @@ mod tests {
             input.delete_char_before();
         }
         assert!(input.is_empty());
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.cursor_col(), 0);
         // Type again
         input.insert_str("new text");
         assert_eq!(input.text(), "new text");
@@ -1240,8 +1227,8 @@ mod tests {
         input.insert_char('b');
         input.move_left();
         input.insert_char('c');
-        assert_eq!(input.lines[0], "cba");
-        assert_eq!(input.cursor_col, 1); // after 'c'
+        assert_eq!(input.lines()[0], "cba");
+        assert_eq!(input.cursor_col(), 1); // after 'c'
     }
 
     #[test]
@@ -1250,9 +1237,9 @@ mod tests {
         input.insert_str("hello");
         for _ in 0..50 {
             input.move_home();
-            assert_eq!(input.cursor_col, 0);
+            assert_eq!(input.cursor_col(), 0);
             input.move_end();
-            assert_eq!(input.cursor_col, 5);
+            assert_eq!(input.cursor_col(), 5);
         }
     }
 
@@ -1264,25 +1251,24 @@ mod tests {
         input.move_right();
         input.move_right();
         input.move_right(); // at col 3
-        let col = input.cursor_col;
+        let col = input.cursor_col();
         // Go left 2 then right 2 -- should be back at same spot
         input.move_left();
         input.move_left();
         input.move_right();
         input.move_right();
-        assert_eq!(input.cursor_col, col);
+        assert_eq!(input.cursor_col(), col);
     }
 
     #[test]
     fn up_down_round_trip_with_short_line() {
         let mut input = InputState::new();
         input.insert_str("longline\na\nlongline");
-        input.cursor_row = 0;
-        input.cursor_col = 7; // end-ish of first line
+        let _ = input.set_cursor(0, 7); // end-ish of first line
         input.move_down(); // to "a" -- col clamped to 1
-        assert_eq!(input.cursor_col, 1);
+        assert_eq!(input.cursor_col(), 1);
         input.move_down(); // to "longline" -- col stays at 1 (not restored to 7)
-        assert_eq!(input.cursor_col, 1);
+        assert_eq!(input.cursor_col(), 1);
     }
 
     #[test]
@@ -1290,47 +1276,46 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("hello");
         input.insert_newline();
-        assert_eq!(input.lines.len(), 2);
+        assert_eq!(input.lines().len(), 2);
         input.delete_char_before(); // should rejoin
-        assert_eq!(input.lines.len(), 1);
-        assert_eq!(input.lines[0], "hello");
-        assert_eq!(input.cursor_col, 5);
+        assert_eq!(input.lines().len(), 1);
+        assert_eq!(input.lines()[0], "hello");
+        assert_eq!(input.cursor_col(), 5);
     }
 
     #[test]
     fn delete_forward_through_multiple_line_joins() {
         let mut input = InputState::new();
         input.insert_str("a\nb\nc\nd");
-        assert_eq!(input.lines.len(), 4);
+        assert_eq!(input.lines().len(), 4);
         // Go to very start
-        input.cursor_row = 0;
-        input.cursor_col = 0;
+        let _ = input.set_cursor(0, 0);
         // Move to col 1 (after 'a'), then delete forward repeatedly
         input.move_right(); // past 'a'
         input.delete_char_after(); // join "a" + "b" -> "ab"
-        assert_eq!(input.lines[0], "ab");
+        assert_eq!(input.lines()[0], "ab");
         input.move_right(); // past 'b'
         input.delete_char_after(); // join "ab" + "c" -> "abc"
-        assert_eq!(input.lines[0], "abc");
+        assert_eq!(input.lines()[0], "abc");
         input.move_right(); // past 'c'
         input.delete_char_after(); // join "abc" + "d" -> "abcd"
-        assert_eq!(input.lines, vec!["abcd"]);
+        assert_eq!(input.lines(), vec!["abcd"]);
     }
 
     #[test]
     fn backspace_collapses_all_lines_to_one() {
         let mut input = InputState::new();
         input.insert_str("a\nb\nc\nd\ne");
-        assert_eq!(input.lines.len(), 5);
+        assert_eq!(input.lines().len(), 5);
         // Cursor is at end of last line. Backspace everything.
         let total_chars = input.text().len(); // includes \n chars
         for _ in 0..total_chars {
             input.delete_char_before();
         }
         assert!(input.is_empty());
-        assert_eq!(input.lines.len(), 1);
-        assert_eq!(input.cursor_row, 0);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.lines().len(), 1);
+        assert_eq!(input.cursor_row(), 0);
+        assert_eq!(input.cursor_col(), 0);
     }
 
     // interleaved actions
@@ -1342,10 +1327,10 @@ mod tests {
         input.move_up();
         input.move_home();
         input.insert_str("prefix_");
-        assert_eq!(input.lines[1], "prefix_line2");
+        assert_eq!(input.lines()[1], "prefix_line2");
         input.clear();
         assert!(input.is_empty());
-        assert_eq!(input.cursor_row, 0);
+        assert_eq!(input.cursor_row(), 0);
     }
 
     #[test]
@@ -1356,8 +1341,8 @@ mod tests {
         // cursor at col 2, after both emoji
         input.move_left(); // between the two emoji, col 1
         input.insert_char('X');
-        assert_eq!(input.lines[0], "\u{1F600}X\u{1F601}");
-        assert_eq!(input.cursor_col, 2);
+        assert_eq!(input.lines()[0], "\u{1F600}X\u{1F601}");
+        assert_eq!(input.cursor_col(), 2);
     }
 
     #[test]
@@ -1367,7 +1352,7 @@ mod tests {
         input.move_home();
         input.move_right(); // after first emoji
         input.delete_char_after(); // delete second emoji
-        assert_eq!(input.lines[0], "\u{1F600}\u{1F602}");
+        assert_eq!(input.lines()[0], "\u{1F600}\u{1F602}");
     }
 
     #[test]
@@ -1405,17 +1390,17 @@ mod tests {
         let mut input = InputState::new();
         input.insert_str("\n\n\n");
         // 4 empty lines, cursor at row 3
-        assert_eq!(input.cursor_row, 3);
+        assert_eq!(input.cursor_row(), 3);
         input.move_up();
-        assert_eq!(input.cursor_row, 2);
-        assert_eq!(input.cursor_col, 0);
+        assert_eq!(input.cursor_row(), 2);
+        assert_eq!(input.cursor_col(), 0);
         input.move_up();
         input.move_up();
-        assert_eq!(input.cursor_row, 0);
+        assert_eq!(input.cursor_row(), 0);
         // Insert on the first empty line
         input.insert_char('x');
-        assert_eq!(input.lines[0], "x");
-        assert_eq!(input.lines.len(), 4);
+        assert_eq!(input.lines()[0], "x");
+        assert_eq!(input.lines().len(), 4);
     }
 
     #[test]
@@ -1424,7 +1409,7 @@ mod tests {
         input.insert_str("hd");
         input.move_left(); // between h and d
         input.insert_str("ello worl");
-        assert_eq!(input.lines[0], "hello world");
+        assert_eq!(input.lines()[0], "hello world");
     }
 
     #[test]
@@ -1437,10 +1422,10 @@ mod tests {
             input.move_right();
         }
         input.insert_str("line1\nline2\nline3 ");
-        assert_eq!(input.lines[0], "start line1");
-        assert_eq!(input.lines[1], "line2");
-        assert_eq!(input.lines[2], "line3 end");
-        assert_eq!(input.cursor_row, 2);
+        assert_eq!(input.lines()[0], "start line1");
+        assert_eq!(input.lines()[1], "line2");
+        assert_eq!(input.lines()[2], "line3 end");
+        assert_eq!(input.cursor_row(), 2);
     }
 
     #[test]
@@ -1464,8 +1449,8 @@ mod tests {
         // \r -> newline (line "a" done, new line), b -> char, \n -> newline,
         // c -> char, \r -> newline, \n -> newline, d -> char
         // lines: ["a", "b", "c", "", "d"]
-        assert_eq!(input.lines[0], "a");
-        assert_eq!(input.lines.last().unwrap(), "d");
+        assert_eq!(input.lines()[0], "a");
+        assert_eq!(input.lines().last().unwrap(), "d");
         // The key point: it doesn't crash and 'd' ends up somewhere
         assert!(input.text().contains('d'));
     }
@@ -1489,8 +1474,10 @@ mod tests {
     fn text_expands_placeholder_even_with_trailing_text() {
         let mut input = InputState::new();
         input.insert_paste_block("line1\nline2");
-        input.lines[0].push_str(" + extra");
-        input.cursor_col = input.lines[0].chars().count();
+        input.mutate_lines(|lines| {
+            lines[0].push_str(" + extra");
+        });
+        let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert_eq!(input.text(), "line1\nline2 + extra");
     }
 
@@ -1498,10 +1485,10 @@ mod tests {
     fn insert_paste_block_inserts_inline_at_cursor() {
         let mut input = InputState::new();
         input.insert_str("beforeafter");
-        input.cursor_col = "before".chars().count();
+        let _ = input.set_cursor_col("before".chars().count());
         input.insert_paste_block(&"x".repeat(1001));
 
-        assert_eq!(input.lines, vec!["before[Pasted Text 1 - 1001 chars]after"]);
+        assert_eq!(input.lines(), vec!["before[Pasted Text 1 - 1001 chars]after"]);
         assert_eq!(input.text(), format!("before{}after", "x".repeat(1001)));
     }
 
@@ -1509,13 +1496,14 @@ mod tests {
     fn insert_paste_block_reuses_number_after_placeholder_removed() {
         let mut input = InputState::new();
         input.insert_paste_block(&"a".repeat(1001));
-        input.lines[0].clear();
-        input.cursor_col = 0;
-        input.version += 1;
+        input.mutate_lines(|lines| {
+            lines[0].clear();
+        });
+        let _ = input.set_cursor_col(0);
 
         input.insert_paste_block(&"b".repeat(1001));
 
-        assert_eq!(input.lines, vec!["[Pasted Text 1 - 1001 chars]"]);
+        assert_eq!(input.lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
         assert_eq!(input.text(), "b".repeat(1001));
     }
 
@@ -1525,7 +1513,7 @@ mod tests {
         let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk";
         input.insert_paste_block(original);
         assert!(input.append_to_active_paste_block("\nl\nm"));
-        assert_eq!(input.lines[0], "[Pasted Text 1 - 25 chars]");
+        assert_eq!(input.lines()[0], "[Pasted Text 1 - 25 chars]");
         assert_eq!(input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
     }
 
@@ -1533,11 +1521,11 @@ mod tests {
     fn append_to_active_paste_block_supports_inline_placeholder() {
         let mut input = InputState::new();
         input.insert_str("prefix-suffix");
-        input.cursor_col = "prefix-".chars().count();
+        let _ = input.set_cursor_col("prefix-".chars().count());
         input.insert_paste_block("abc");
-        assert_eq!(input.lines[0], "prefix-[Pasted Text 1 - 3 chars]suffix");
+        assert_eq!(input.lines()[0], "prefix-[Pasted Text 1 - 3 chars]suffix");
         assert!(input.append_to_active_paste_block("XYZ"));
-        assert_eq!(input.lines[0], "prefix-[Pasted Text 1 - 6 chars]suffix");
+        assert_eq!(input.lines()[0], "prefix-[Pasted Text 1 - 6 chars]suffix");
         assert_eq!(input.text(), "prefix-abcXYZsuffix");
     }
 
@@ -1545,8 +1533,10 @@ mod tests {
     fn append_to_active_paste_block_rejects_dirty_placeholder_line() {
         let mut input = InputState::new();
         input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-        input.lines[0].push_str("tail");
-        input.cursor_col = input.lines[0].chars().count();
+        input.mutate_lines(|lines| {
+            lines[0].push_str("tail");
+        });
+        let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert!(!input.append_to_active_paste_block("x"));
     }
 

@@ -298,22 +298,22 @@ fn finalize_pending_paste_event(app: &mut App) {
         app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
         state::PasteSessionState {
             id,
-            start: SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col },
+            start: SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() },
             placeholder_index: None,
         }
     });
 
     if session.placeholder_index.is_none() {
-        let end = SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col };
+        let end = SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
         strip_input_range(app, session.start, end);
     }
 
     let appended = session
         .placeholder_index
         .and_then(|session_idx| {
-            let current_line = app.input.lines.get(app.input.cursor_row)?;
+            let current_line = app.input.lines().get(app.input.cursor_row())?;
             let current_idx =
-                input::parse_paste_placeholder_before_cursor(current_line, app.input.cursor_col)?;
+                input::parse_paste_placeholder_before_cursor(current_line, app.input.cursor_col())?;
             (current_idx == session_idx).then_some(())
         })
         .is_some()
@@ -326,8 +326,8 @@ fn finalize_pending_paste_event(app: &mut App) {
     let char_count = input::count_text_chars(&pasted);
     if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
         app.input.insert_paste_block(&pasted);
-        let idx = app.input.lines.get(app.input.cursor_row).and_then(|line| {
-            input::parse_paste_placeholder_before_cursor(line, app.input.cursor_col)
+        let idx = app.input.lines().get(app.input.cursor_row()).and_then(|line| {
+            input::parse_paste_placeholder_before_cursor(line, app.input.cursor_col())
         });
         app.active_paste_session =
             Some(state::PasteSessionState { placeholder_index: idx, ..session });
@@ -343,22 +343,22 @@ fn finalize_paste_burst(app: &mut App) {
     let Some(start) = app.paste_burst_start else {
         return;
     };
-    let end = SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col };
+    let end = SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
     if cursor_gt(start, end) {
         return;
     }
 
-    let Some(start_offset) = cursor_to_byte_offset(&app.input.lines, start) else {
+    let Some(start_offset) = cursor_to_byte_offset(app.input.lines(), start) else {
         return;
     };
-    let Some(end_offset) = cursor_to_byte_offset(&app.input.lines, end) else {
+    let Some(end_offset) = cursor_to_byte_offset(app.input.lines(), end) else {
         return;
     };
     if start_offset > end_offset {
         return;
     }
 
-    let raw = app.input.lines.join("\n");
+    let raw = app.input.lines().join("\n");
     if end_offset > raw.len() {
         return;
     }
@@ -448,27 +448,23 @@ fn apply_merged_input_snapshot(app: &mut App, merged: &str, cursor_offset: usize
         cursor.col = cursor.col.min(lines[cursor.row].chars().count());
     }
 
-    app.input.lines = lines;
-    app.input.cursor_row = cursor.row;
-    app.input.cursor_col = cursor.col;
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    app.input.replace_lines_and_cursor(lines, cursor.row, cursor.col);
 }
 
 fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) {
     if cursor_gt(start, end) || start == end {
         return;
     }
-    let Some(start_offset) = cursor_to_byte_offset(&app.input.lines, start) else {
+    let Some(start_offset) = cursor_to_byte_offset(app.input.lines(), start) else {
         return;
     };
-    let Some(end_offset) = cursor_to_byte_offset(&app.input.lines, end) else {
+    let Some(end_offset) = cursor_to_byte_offset(app.input.lines(), end) else {
         return;
     };
     if start_offset >= end_offset {
         return;
     }
-    let raw = app.input.lines.join("\n");
+    let raw = app.input.lines().join("\n");
     if end_offset > raw.len() {
         return;
     }
@@ -482,14 +478,14 @@ fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) 
 /// inserted by the deferred-submit Enter handler, then submit the input.
 fn finalize_deferred_submit(app: &mut App) {
     // Remove trailing empty lines added by deferred Enter presses.
-    while app.input.lines.len() > 1 && app.input.lines.last().is_some_and(String::is_empty) {
-        app.input.lines.pop();
+    let mut lines = app.input.lines().to_vec();
+    while lines.len() > 1 && lines.last().is_some_and(String::is_empty) {
+        lines.pop();
     }
     // Place cursor at end of last line
-    app.input.cursor_row = app.input.lines.len().saturating_sub(1);
-    app.input.cursor_col = app.input.lines.last().map_or(0, |l| l.chars().count());
-    app.input.version += 1;
-    app.input.sync_textarea_engine();
+    let cursor_row = lines.len().saturating_sub(1);
+    let cursor_col = lines.last().map_or(0, |l| l.chars().count());
+    app.input.replace_lines_and_cursor(lines, cursor_row, cursor_col);
 
     input_submit::submit_input(app);
 }
@@ -518,7 +514,7 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 1101 chars]"]);
+        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1101 chars]"]);
         assert_eq!(app.input.text(), format!("{first}{second}"));
     }
 
@@ -536,7 +532,7 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 25 chars]"]);
+        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 25 chars]"]);
         assert_eq!(app.input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
     }
 
@@ -547,7 +543,7 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines, vec!["x".repeat(1000)]);
+        assert_eq!(app.input.lines(), vec!["x".repeat(1000)]);
     }
 
     #[test]
@@ -557,7 +553,7 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 1001 chars]"]);
+        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
         assert_eq!(app.input.text(), "x".repeat(1001));
     }
 
@@ -578,7 +574,7 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(
-            app.input.lines,
+            app.input.lines(),
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
         assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
@@ -588,20 +584,20 @@ mod tests {
     fn burst_finalization_is_limited_to_newly_pasted_range() {
         let mut app = App::test_default();
         app.input.set_text("beforeafter");
-        app.input.cursor_col = 6; // between "before" and "after"
+        let _ = app.input.set_cursor_col(6); // between "before" and "after"
         app.paste_burst_start = Some(SelectionPoint { row: 0, col: 6 });
         app.input.insert_str(&"x".repeat(1001));
 
         finalize_paste_burst(&mut app);
 
-        assert_eq!(app.input.lines, vec!["before[Pasted Text 1 - 1001 chars]after"]);
+        assert_eq!(app.input.lines(), vec!["before[Pasted Text 1 - 1001 chars]after"]);
         assert_eq!(app.input.text(), format!("before{}after", "x".repeat(1001)));
     }
 
     #[test]
     fn render_not_suppressed_for_active_non_paste_burst() {
         let mut app = App::test_default();
-        let _ = app.paste_burst.on_key_event(app.input.lines.len());
+        let _ = app.paste_burst.on_key_event(app.input.lines().len());
 
         assert!(!should_suppress_render_for_active_paste(&app));
         assert!(app.paste_burst.is_active());
@@ -612,7 +608,7 @@ mod tests {
     fn render_suppressed_for_active_confirmed_paste_burst() {
         let mut app = App::test_default();
         for _ in 0..4 {
-            let _ = app.paste_burst.on_key_event(app.input.lines.len());
+            let _ = app.paste_burst.on_key_event(app.input.lines().len());
         }
 
         assert!(should_suppress_render_for_active_paste(&app));

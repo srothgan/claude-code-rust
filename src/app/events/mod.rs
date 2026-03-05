@@ -56,10 +56,10 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
                 // single clipboard paste into multiple `Event::Paste` payloads.
                 if app.pending_paste_text.is_empty() {
                     let continued_session = app.active_paste_session.and_then(|session| {
-                        let current_line = app.input.lines.get(app.input.cursor_row)?;
+                        let current_line = app.input.lines().get(app.input.cursor_row())?;
                         let idx = parse_paste_placeholder_before_cursor(
                             current_line,
-                            app.input.cursor_col,
+                            app.input.cursor_col(),
                         )?;
                         (session.placeholder_index == Some(idx)).then_some(session)
                     });
@@ -67,8 +67,8 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
                         let id = app.next_paste_session_id;
                         app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
                         let start = app.paste_burst_start.unwrap_or(SelectionPoint {
-                            row: app.input.cursor_row,
-                            col: app.input.cursor_col,
+                            row: app.input.cursor_row(),
+                            col: app.input.cursor_col(),
                         });
                         super::state::PasteSessionState { id, start, placeholder_index: None }
                     }));
@@ -1994,15 +1994,15 @@ mod tests {
     #[test]
     fn cleanup_leaked_char_before_placeholder_removes_prefix_line() {
         let mut app = make_test_app();
-        app.input.lines = vec!["C".into(), "[Pasted Text 1 - 11 chars]".into()];
-        app.input.cursor_row = 1;
-        app.input.cursor_col = app.input.lines[1].chars().count();
+        let lines: Vec<String> = vec!["C".to_owned(), "[Pasted Text 1 - 11 chars]".to_owned()];
+        let cursor_col = lines[1].chars().count();
+        app.input.replace_lines_and_cursor(lines, 1, cursor_col);
 
         cleanup_leaked_char_before_placeholder(&mut app);
 
-        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 chars]"]);
-        assert_eq!(app.input.cursor_row, 0);
-        assert_eq!(app.input.cursor_col, "[Pasted Text 1 - 11 chars]".chars().count());
+        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 11 chars]"]);
+        assert_eq!(app.input.cursor_row(), 0);
+        assert_eq!(app.input.cursor_col(), "[Pasted Text 1 - 11 chars]".chars().count());
     }
 
     #[test]
@@ -2052,10 +2052,10 @@ mod tests {
         app.input.move_home();
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
-        assert!(app.input.cursor_col > 0);
+        assert!(app.input.cursor_col() > 0);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-        assert_eq!(app.input.cursor_col, 0);
+        assert_eq!(app.input.cursor_col(), 0);
     }
 
     #[test]
@@ -2118,12 +2118,12 @@ mod tests {
         app.claim_focus_target(FocusTarget::TodoList);
         app.todo_selected = 1;
 
-        let before_cursor_row = app.input.cursor_row;
-        let before_cursor_col = app.input.cursor_col;
+        let before_cursor_row = app.input.cursor_row();
+        let before_cursor_col = app.input.cursor_col();
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.todo_selected, 2);
-        assert_eq!(app.input.cursor_row, before_cursor_row);
-        assert_eq!(app.input.cursor_col, before_cursor_col);
+        assert_eq!(app.input.cursor_row(), before_cursor_row);
+        assert_eq!(app.input.cursor_col(), before_cursor_col);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.todo_selected, 1);
@@ -2830,16 +2830,15 @@ mod tests {
     fn up_down_moves_input_cursor_when_multiline() {
         let mut app = make_test_app();
         app.input.set_text("line1\nline2\nline3");
-        app.input.cursor_row = 1;
-        app.input.cursor_col = 3;
+        let _ = app.input.set_cursor(1, 3);
         app.viewport.scroll_target = 7;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.input.cursor_row, 0);
+        assert_eq!(app.input.cursor_row(), 0);
         assert_eq!(app.viewport.scroll_target, 7);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.input.cursor_row, 1);
+        assert_eq!(app.input.cursor_row(), 1);
         assert_eq!(app.viewport.scroll_target, 7);
     }
 
@@ -2847,13 +2846,12 @@ mod tests {
     fn down_at_input_bottom_falls_back_to_chat_scroll() {
         let mut app = make_test_app();
         app.input.set_text("line1\nline2");
-        app.input.cursor_row = 1;
-        app.input.cursor_col = 0;
+        let _ = app.input.set_cursor(1, 0);
         app.viewport.scroll_target = 2;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-        assert_eq!(app.input.cursor_row, 1);
+        assert_eq!(app.input.cursor_row(), 1);
         assert_eq!(app.viewport.scroll_target, 3);
     }
 

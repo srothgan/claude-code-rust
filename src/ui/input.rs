@@ -26,7 +26,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use tui_textarea::{CursorMove, TextArea, WrapMode};
+use tui_textarea::{TextArea, WrapMode};
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -193,12 +193,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let textarea = build_input_textarea(app);
+    configure_input_textarea(app);
     app.rendered_input_area = input_area;
     if app.selection.is_some() {
-        app.rendered_input_lines = render_lines_from_textarea(&textarea, input_area);
+        let rendered = render_lines_from_textarea(app.input.editor(), input_area);
+        app.rendered_input_lines = rendered;
     }
-    frame.render_widget(&textarea, input_area);
+    frame.render_widget(app.input.editor(), input_area);
 
     if let Some(sel) = app.selection
         && sel.kind == crate::app::SelectionKind::Input
@@ -207,21 +208,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn build_input_textarea(app: &App) -> TextArea<'static> {
-    let mut textarea = TextArea::from(app.input.lines.clone());
-    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
+fn configure_input_textarea(app: &mut App) {
+    let lines = app.input.lines().to_vec();
+    let textarea = app.input.editor_mut();
     textarea.set_placeholder_text("Type a message...");
     textarea.set_placeholder_style(Style::default().fg(theme::DIM));
     textarea.set_cursor_line_style(Style::default());
     textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-
-    textarea.move_cursor(CursorMove::Jump(
-        u16::try_from(app.input.cursor_row).unwrap_or(u16::MAX),
-        u16::try_from(app.input.cursor_col).unwrap_or(u16::MAX),
-    ));
-
-    apply_textarea_highlights(&mut textarea, &app.input.lines);
-    textarea
+    textarea.clear_custom_highlight();
+    apply_textarea_highlights(textarea, &lines);
 }
 
 fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
@@ -330,7 +325,8 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
     let content_width =
         area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
-    let mut textarea = build_input_textarea(app);
+    let mut textarea = TextArea::from(app.input.lines().to_vec());
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     textarea.set_min_rows(1);
     textarea.set_max_rows(MAX_INPUT_HEIGHT);
     let input_lines =

@@ -314,7 +314,7 @@ pub(super) fn argument_candidates(
 
 pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
     let detection =
-        detect_slash_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col)?;
+        detect_slash_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())?;
 
     let candidates = match &detection.context {
         SlashContext::CommandName => {
