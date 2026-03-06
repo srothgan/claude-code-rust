@@ -283,13 +283,48 @@ impl InputState {
     }
 
     pub fn insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            if c == '\n' || c == '\r' {
-                self.insert_newline();
-            } else {
-                self.insert_char(c);
-            }
+        if s.is_empty() {
+            return;
         }
+        let normalized = normalize_line_endings(s);
+        if normalized.is_empty() {
+            return;
+        }
+
+        let (cursor_row, cursor_col) = self.cursor();
+        let Some(current_line) = self.lines().get(cursor_row).cloned() else {
+            return;
+        };
+        let split_byte = char_to_byte_index(&current_line, cursor_col);
+        let head = &current_line[..split_byte];
+        let tail = &current_line[split_byte..];
+
+        let mut chunks = normalized.split('\n');
+        let Some(first_chunk) = chunks.next() else {
+            return;
+        };
+        let rest: Vec<&str> = chunks.collect();
+
+        let mut lines = self.lines().to_vec();
+        if rest.is_empty() {
+            lines[cursor_row] = format!("{head}{first_chunk}{tail}");
+            let new_col = head.chars().count() + first_chunk.chars().count();
+            self.replace_lines_and_cursor(lines, cursor_row, new_col);
+            return;
+        }
+
+        let mut inserted = Vec::with_capacity(rest.len() + 1);
+        inserted.push(format!("{head}{first_chunk}"));
+        for chunk in &rest[..rest.len().saturating_sub(1)] {
+            inserted.push((*chunk).to_owned());
+        }
+        let last = rest.last().copied().unwrap_or_default();
+        inserted.push(format!("{last}{tail}"));
+
+        lines.splice(cursor_row..=cursor_row, inserted);
+        let new_row = cursor_row + rest.len();
+        let new_col = last.chars().count();
+        self.replace_lines_and_cursor(lines, new_row, new_col);
     }
 
     /// Insert a large paste as a compact placeholder token at the cursor.
@@ -403,6 +438,23 @@ fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
     s.char_indices().nth(char_idx).map_or(s.len(), |(i, _)| i)
 }
 
+/// Normalize mixed line endings to `\n` while preserving trailing blank lines.
+fn normalize_line_endings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            if chars.peek().is_some_and(|next| *next == '\n') {
+                let _ = chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Count logical lines for text containing mixed `\n`, `\r`, and `\r\n` endings.
 #[cfg(test)]
 #[must_use]
@@ -431,15 +483,6 @@ fn count_text_lines(text: &str) -> usize {
 #[must_use]
 pub fn count_text_chars(text: &str) -> usize {
     text.chars().count()
-}
-
-/// Trim trailing line-break characters (`\n` and `\r`) from text.
-#[must_use]
-pub fn trim_trailing_line_breaks(mut text: &str) -> &str {
-    while let Some(stripped) = text.strip_suffix('\n').or_else(|| text.strip_suffix('\r')) {
-        text = stripped;
-    }
-    text
 }
 
 fn paste_placeholder_label(idx: usize, char_count: usize) -> String {
@@ -1115,11 +1158,10 @@ mod tests {
 
     #[test]
     fn windows_crlf_line_endings() {
-        // \r\n should produce TWO newlines (each triggers insert_newline)
+        // \r\n normalizes to a single newline.
         let mut input = InputState::new();
         input.insert_str("a\r\nb");
-        // \r -> newline, \n -> another newline
-        assert_eq!(input.lines(), vec!["a", "", "b"]);
+        assert_eq!(input.lines(), vec!["a", "b"]);
     }
 
     #[test]
@@ -1552,13 +1594,5 @@ mod tests {
         assert_eq!(count_text_chars("abc"), 3);
         assert_eq!(count_text_chars("\u{1F600}\u{4F60}"), 2);
         assert_eq!(count_text_chars("a\nb"), 3);
-    }
-
-    #[test]
-    fn trim_trailing_line_breaks_handles_crlf_and_lf() {
-        assert_eq!(trim_trailing_line_breaks("a\r\n\r\n"), "a");
-        assert_eq!(trim_trailing_line_breaks("a\n\n"), "a");
-        assert_eq!(trim_trailing_line_breaks("a\r\r"), "a");
-        assert_eq!(trim_trailing_line_breaks("a"), "a");
     }
 }

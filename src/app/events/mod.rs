@@ -23,10 +23,9 @@ mod tool_calls;
 mod tool_updates;
 mod turn;
 
-use super::input::parse_paste_placeholder_before_cursor;
 use super::{
     App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
-    PendingCommandAck, SelectionPoint, SystemSeverity,
+    PendingCommandAck, SystemSeverity,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -52,28 +51,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
             ) && !app.is_compacting
             {
-                // Queue paste chunks for this drain cycle. Some terminals split a
-                // single clipboard paste into multiple `Event::Paste` payloads.
-                if app.pending_paste_text.is_empty() {
-                    let continued_session = app.active_paste_session.and_then(|session| {
-                        let current_line = app.input.lines().get(app.input.cursor_row())?;
-                        let idx = parse_paste_placeholder_before_cursor(
-                            current_line,
-                            app.input.cursor_col(),
-                        )?;
-                        (session.placeholder_index == Some(idx)).then_some(session)
-                    });
-                    app.pending_paste_session = Some(continued_session.unwrap_or_else(|| {
-                        let id = app.next_paste_session_id;
-                        app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
-                        let start = app.paste_burst_start.unwrap_or(SelectionPoint {
-                            row: app.input.cursor_row(),
-                            col: app.input.cursor_col(),
-                        });
-                        super::state::PasteSessionState { id, start, placeholder_index: None }
-                    }));
-                }
-                app.pending_paste_text.push_str(&text);
+                app.queue_paste_text(&text);
             }
         }
         Event::FocusGained => {
@@ -327,11 +305,6 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
 #[cfg(test)]
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
     super::keys::handle_normal_key(app, key);
-}
-
-#[cfg(test)]
-fn cleanup_leaked_char_before_placeholder(app: &mut App) {
-    super::keys::cleanup_leaked_char_before_placeholder(app);
 }
 
 #[cfg(test)]
@@ -1989,20 +1962,6 @@ mod tests {
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
 
         assert_eq!(app.input.text(), "");
-    }
-
-    #[test]
-    fn cleanup_leaked_char_before_placeholder_removes_prefix_line() {
-        let mut app = make_test_app();
-        let lines: Vec<String> = vec!["C".to_owned(), "[Pasted Text 1 - 11 chars]".to_owned()];
-        let cursor_col = lines[1].chars().count();
-        app.input.replace_lines_and_cursor(lines, 1, cursor_col);
-
-        cleanup_leaked_char_before_placeholder(&mut app);
-
-        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 11 chars]"]);
-        assert_eq!(app.input.cursor_row(), 0);
-        assert_eq!(app.input.cursor_col(), "[Pasted Text 1 - 11 chars]".chars().count());
     }
 
     #[test]

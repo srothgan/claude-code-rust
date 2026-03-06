@@ -150,40 +150,34 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             }
         }
 
+        // Tick the burst detector: flush any held/buffered content that
+        // has timed out. EmitChar re-inserts a single held character;
+        // EmitPaste feeds the accumulated burst into the paste queue.
+        if let Some(action) = app.paste_burst.tick(Instant::now()) {
+            match action {
+                paste_burst::FlushAction::EmitChar(ch) => {
+                    let _ = app.input.textarea_insert_char(ch);
+                }
+                paste_burst::FlushAction::EmitPaste(text) => {
+                    app.queue_paste_text(&text);
+                }
+            }
+        }
+
         // Merge and process `Event::Paste` chunks as one paste action.
         if !app.pending_paste_text.is_empty() {
             finalize_pending_paste_event(app);
         }
 
-        // Post-drain paste handling:
-        // - while a detected paste burst is still active, defer rendering to avoid
-        //   showing raw pasted text before placeholder collapse.
-        // - once the burst settles, collapse large paste content to placeholder.
-        let suppress_render_for_active_paste = should_suppress_render_for_active_paste(app);
-        if app.paste_burst.is_paste() {
-            app.pending_submit = false;
-            if app.paste_burst.is_settled() {
-                finalize_paste_burst(app);
-                app.paste_burst.reset();
-                app.paste_burst_start = None;
-            }
-        } else if !app.paste_burst.is_active() {
-            app.paste_burst_start = None;
-        }
-
-        // Deferred submit: if Enter was pressed and no rapid keys followed
-        // (not a paste), strip the trailing newline and submit.
+        // Deferred submit: if Enter was pressed and no paste payload arrived
+        // in this drain cycle, strip the trailing newline and submit.
         if app.pending_submit {
             app.pending_submit = false;
             finalize_deferred_submit(app);
         }
-        app.drain_key_count = 0;
 
         if app.should_quit {
             break;
-        }
-        if suppress_render_for_active_paste {
-            continue;
         }
 
         // Phase 3: render once (only when something changed)
@@ -337,67 +331,6 @@ fn finalize_pending_paste_event(app: &mut App) {
     }
 }
 
-/// After a paste burst is detected (rapid key events), clean up the pasted
-/// content in the newly pasted range only.
-fn finalize_paste_burst(app: &mut App) {
-    let Some(start) = app.paste_burst_start else {
-        return;
-    };
-    let end = SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
-    if cursor_gt(start, end) {
-        return;
-    }
-
-    let Some(start_offset) = cursor_to_byte_offset(app.input.lines(), start) else {
-        return;
-    };
-    let Some(end_offset) = cursor_to_byte_offset(app.input.lines(), end) else {
-        return;
-    };
-    if start_offset > end_offset {
-        return;
-    }
-
-    let raw = app.input.lines().join("\n");
-    if end_offset > raw.len() {
-        return;
-    }
-
-    let pasted_range = &raw[start_offset..end_offset];
-    let normalized = input::trim_trailing_line_breaks(pasted_range);
-    if normalized.is_empty() {
-        let mut merged = String::with_capacity(
-            raw.len().saturating_sub(end_offset.saturating_sub(start_offset)),
-        );
-        merged.push_str(&raw[..start_offset]);
-        merged.push_str(&raw[end_offset..]);
-        apply_merged_input_snapshot(app, &merged, start_offset);
-        return;
-    }
-
-    if input::count_text_chars(normalized) > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
-        let normalized = normalized.to_owned();
-        let mut merged = String::with_capacity(
-            raw.len().saturating_sub(end_offset.saturating_sub(start_offset)),
-        );
-        merged.push_str(&raw[..start_offset]);
-        merged.push_str(&raw[end_offset..]);
-        apply_merged_input_snapshot(app, &merged, start_offset);
-        app.input.insert_paste_block(&normalized);
-        return;
-    }
-
-    let normalized = normalized.to_owned();
-    let mut merged = String::with_capacity(
-        raw.len().saturating_sub(end_offset.saturating_sub(start_offset)) + normalized.len(),
-    );
-    merged.push_str(&raw[..start_offset]);
-    merged.push_str(&normalized);
-    merged.push_str(&raw[end_offset..]);
-    let cursor_offset = start_offset + normalized.len();
-    apply_merged_input_snapshot(app, &merged, cursor_offset);
-}
-
 fn cursor_gt(a: SelectionPoint, b: SelectionPoint) -> bool {
     a.row > b.row || (a.row == b.row && a.col > b.col)
 }
@@ -490,11 +423,6 @@ fn finalize_deferred_submit(app: &mut App) {
     input_submit::submit_input(app);
 }
 
-#[inline]
-fn should_suppress_render_for_active_paste(app: &App) -> bool {
-    app.paste_burst.is_paste() && app.paste_burst.is_active()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,41 +506,5 @@ mod tests {
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
         assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
-    }
-
-    #[test]
-    fn burst_finalization_is_limited_to_newly_pasted_range() {
-        let mut app = App::test_default();
-        app.input.set_text("beforeafter");
-        let _ = app.input.set_cursor_col(6); // between "before" and "after"
-        app.paste_burst_start = Some(SelectionPoint { row: 0, col: 6 });
-        app.input.insert_str(&"x".repeat(1001));
-
-        finalize_paste_burst(&mut app);
-
-        assert_eq!(app.input.lines(), vec!["before[Pasted Text 1 - 1001 chars]after"]);
-        assert_eq!(app.input.text(), format!("before{}after", "x".repeat(1001)));
-    }
-
-    #[test]
-    fn render_not_suppressed_for_active_non_paste_burst() {
-        let mut app = App::test_default();
-        let _ = app.paste_burst.on_key_event(app.input.lines().len());
-
-        assert!(!should_suppress_render_for_active_paste(&app));
-        assert!(app.paste_burst.is_active());
-        assert!(!app.paste_burst.is_paste());
-    }
-
-    #[test]
-    fn render_suppressed_for_active_confirmed_paste_burst() {
-        let mut app = App::test_default();
-        for _ in 0..4 {
-            let _ = app.paste_burst.on_key_event(app.input.lines().len());
-        }
-
-        assert!(should_suppress_render_for_active_paste(&app));
-        assert!(app.paste_burst.is_active());
-        assert!(app.paste_burst.is_paste());
     }
 }

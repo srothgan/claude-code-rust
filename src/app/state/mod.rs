@@ -49,7 +49,7 @@ use tokio::sync::mpsc;
 
 use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
-use super::input::InputState;
+use super::input::{InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::slash;
 use super::subagent;
@@ -171,12 +171,9 @@ pub struct App {
     /// becomes a newline. After the drain, the main loop checks: if still `true`,
     /// strips the trailing newline and submits.
     pub pending_submit: bool,
-    /// Count of key events processed in the current drain cycle. Used to detect
-    /// paste: if >1 key events arrive in a single cycle, Enter is treated as a
-    /// newline rather than submit.
-    pub drain_key_count: usize,
-    /// Timing-based paste burst detector. Tracks rapid key events to distinguish
-    /// paste from typing when `Event::Paste` is not available (Windows).
+    /// Timing-based paste burst detector. Detects rapid character streams
+    /// (paste delivered as individual key events) and buffers them into a
+    /// single paste payload. Fallback for terminals without bracketed paste.
     pub paste_burst: super::paste_burst::PasteBurstDetector,
     /// Buffered `Event::Paste` payload for this drain cycle.
     /// Some terminals split one clipboard paste into multiple chunks; we merge
@@ -188,8 +185,6 @@ pub struct App {
     pub active_paste_session: Option<PasteSessionState>,
     /// Monotonic counter for paste session identifiers.
     pub next_paste_session_id: u64,
-    /// Start cursor of the current rapid-key burst.
-    pub paste_burst_start: Option<SelectionPoint>,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
     /// Cached todo compact line (invalidated on `set_todos()`).
@@ -239,6 +234,37 @@ pub struct App {
 }
 
 impl App {
+    /// Queue a paste payload for drain-cycle finalization.
+    ///
+    /// This is fed by paste payloads captured from terminal events.
+    pub fn queue_paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.pending_submit = false;
+        if self.pending_paste_text.is_empty() {
+            let continued_session = self.active_paste_session.and_then(|session| {
+                let current_line = self.input.lines().get(self.input.cursor_row())?;
+                let idx =
+                    parse_paste_placeholder_before_cursor(current_line, self.input.cursor_col())?;
+                (session.placeholder_index == Some(idx)).then_some(session)
+            });
+            self.pending_paste_session = Some(continued_session.unwrap_or_else(|| {
+                let id = self.next_paste_session_id;
+                self.next_paste_session_id = self.next_paste_session_id.saturating_add(1);
+                PasteSessionState {
+                    id,
+                    start: SelectionPoint {
+                        row: self.input.cursor_row(),
+                        col: self.input.cursor_col(),
+                    },
+                    placeholder_index: None,
+                }
+            }));
+        }
+        self.pending_paste_text.push_str(text);
+    }
+
     /// Mark one presented frame at `now`, updating smoothed FPS.
     pub fn mark_frame_presented(&mut self, now: Instant) {
         let Some(prev) = self.last_frame_at.replace(now) else {
@@ -535,13 +561,11 @@ impl App {
             slash: None,
             subagent: None,
             pending_submit: false,
-            drain_key_count: 0,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
             pending_paste_session: None,
             active_paste_session: None,
             next_paste_session_id: 1,
-            paste_burst_start: None,
             file_cache: None,
             cached_todo_compact: None,
             git_branch: None,

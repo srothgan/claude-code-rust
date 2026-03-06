@@ -15,16 +15,17 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::dialog::DialogState;
+use super::paste_burst::CharAction;
 use super::{
     App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel,
     MessageBlock, ModeInfo, ModeState,
 };
-use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::clear_selection;
 use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
+use std::time::Instant;
 
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
 const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
@@ -247,10 +248,8 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
     let input_version_before = app.input.version;
-    let cursor_before_key =
-        super::SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
 
-    if should_ignore_key_during_paste(app, key, cursor_before_key) {
+    if should_ignore_key_during_paste(app, key) {
         return;
     }
 
@@ -265,39 +264,10 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
 }
 
-fn should_ignore_key_during_paste(
-    app: &mut App,
-    key: KeyEvent,
-    cursor_before_key: super::SelectionPoint,
-) -> bool {
-    // Timing-based paste detection: if key events arrive faster than the
-    // burst interval, this is a paste (not typing). Cancel any pending submit.
-    app.drain_key_count += 1;
-    let was_paste = app.paste_burst.is_paste();
-    let burst_was_active = app.paste_burst.is_active();
-    let in_paste = app.paste_burst.on_key_event(app.input.lines().len());
-    if !burst_was_active {
-        app.paste_burst_start = Some(cursor_before_key);
-    }
-    if in_paste && app.pending_submit {
+fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
+    if app.pending_submit && is_editing_like_key(key) {
         app.pending_submit = false;
     }
-
-    let on_placeholder_line = app
-        .input
-        .lines()
-        .get(app.input.cursor_row())
-        .and_then(|line| parse_paste_placeholder_before_cursor(line, app.input.cursor_col()))
-        .is_some();
-    if in_paste && on_placeholder_line {
-        if !was_paste {
-            cleanup_leaked_char_before_placeholder(app);
-        }
-        if is_editing_like_key(key) {
-            return true;
-        }
-    }
-
     !app.pending_paste_text.is_empty() && is_editing_like_key(key)
 }
 
@@ -353,6 +323,15 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Enter) || app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
+
+    let now = Instant::now();
+
+    // During an active burst or the post-burst suppression window, Enter
+    // becomes a newline to keep multi-line pastes grouped.
+    if app.paste_burst.on_enter(now) {
+        return true;
+    }
+
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
@@ -536,6 +515,8 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
+        // Non-char key: reset burst state to prevent leakage.
+        app.paste_burst.on_non_char_key(Instant::now());
         return false;
     };
     if !is_printable_text_modifiers(m) {
@@ -544,7 +525,33 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         app.release_focus_target(FocusTarget::TodoList);
     }
-    let _ = app.input.textarea_insert_char(c);
+
+    let now = Instant::now();
+    match app.paste_burst.on_char(c, now) {
+        CharAction::Consumed => {
+            // Character absorbed into burst buffer. Don't insert.
+            return true;
+        }
+        CharAction::RetroCapture(delete_count) => {
+            // Burst confirmation retro-captured already-inserted leading chars.
+            for _ in 0..delete_count {
+                let _ = app.input.textarea_delete_char_before();
+            }
+            return true;
+        }
+        CharAction::Passthrough(ch) => {
+            // Normal typing or a previously-held char released.
+            // If `ch == c`, single normal insert. Otherwise the detector
+            // emitted a held char; insert it first, then the current char.
+            if ch == c {
+                let _ = app.input.textarea_insert_char(c);
+            } else {
+                let _ = app.input.textarea_insert_char(ch);
+                let _ = app.input.textarea_insert_char(c);
+            }
+        }
+    }
+
     if c == '@' {
         mention::activate(app);
     } else if c == '/' {
@@ -589,22 +596,6 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
-}
-
-/// Remove a leaked pre-placeholder character caused by key-burst + paste-event
-/// overlap. We only touch the narrow shape:
-/// line 0 = exactly one char, line 1 = placeholder (cursor on placeholder).
-pub(super) fn cleanup_leaked_char_before_placeholder(app: &mut App) {
-    if app.input.lines().len() != 2 || app.input.cursor_row() != 1 {
-        return;
-    }
-    if app.input.lines()[0].chars().count() != 1 {
-        return;
-    }
-    let mut lines = app.input.lines().to_vec();
-    lines.remove(0);
-    let cursor_col = lines[0].chars().count();
-    app.input.replace_lines_and_cursor(lines, 0, cursor_col);
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
@@ -815,4 +806,42 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
 /// Toggle the header visibility.
 pub(super) fn toggle_header(app: &mut App) {
     app.show_header = !app.show_header;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn queued_paste_still_blocks_overlapping_key_text() {
+        let mut app = App::test_default();
+        app.pending_paste_text = "clipboard".to_owned();
+
+        let blocked = should_ignore_key_during_paste(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert!(blocked);
+    }
+
+    #[test]
+    fn burst_active_does_not_block_followup_chars() {
+        let mut app = App::test_default();
+        let t0 = Instant::now();
+
+        assert_eq!(app.paste_burst.on_char('a', t0), CharAction::Passthrough('a'));
+        assert_eq!(
+            app.paste_burst.on_char('b', t0 + Duration::from_millis(1)),
+            CharAction::Consumed
+        );
+        assert!(app.paste_burst.is_buffering());
+
+        let blocked = should_ignore_key_during_paste(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+        assert!(!blocked);
+    }
 }
