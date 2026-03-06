@@ -124,7 +124,7 @@ export function permissionResultFromOutcome(
                   type: "addRules",
                   rules: [{ toolName }],
                   behavior: "allow",
-                  destination: "projectSettings",
+                  destination: "localSettings",
                 },
               ]
             : undefined;

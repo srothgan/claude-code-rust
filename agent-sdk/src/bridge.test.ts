@@ -409,7 +409,7 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
       {
         type: "addRules",
         behavior: "allow",
-        destination: "projectSettings",
+        destination: "localSettings",
         rules: [
           { toolName: "Bash", ruleContent: "npm install" },
           { toolName: "WebFetch", ruleContent: "https://example.com" },
@@ -428,7 +428,7 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
     {
       type: "addRules",
       behavior: "allow",
-      destination: "projectSettings",
+      destination: "localSettings",
       rules: [
         { toolName: "Bash", ruleContent: "npm install" },
         { toolName: "WebFetch", ruleContent: "https://example.com" },
@@ -485,7 +485,7 @@ test("permissionResultFromOutcome falls back to session tool rule for allow_sess
   ]);
 });
 
-test("permissionResultFromOutcome does not apply session suggestions to allow_always", () => {
+test("permissionResultFromOutcome falls back to localSettings rule for allow_always when only session suggestions exist", () => {
   const allow = permissionResultFromOutcome(
     { outcome: "selected", option_id: "allow_always" },
     "tool-4",
@@ -505,7 +505,14 @@ test("permissionResultFromOutcome does not apply session suggestions to allow_al
   if (allow.behavior !== "allow") {
     throw new Error("expected allow permission result");
   }
-  assert.equal(allow.updatedPermissions, undefined);
+  assert.deepEqual(allow.updatedPermissions, [
+    {
+      type: "addRules",
+      rules: [{ toolName: "Write" }],
+      behavior: "allow",
+      destination: "localSettings",
+    },
+  ]);
 });
 
 test("looksLikeAuthRequired detects login hints", () => {
