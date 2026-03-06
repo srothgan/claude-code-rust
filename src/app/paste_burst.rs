@@ -106,11 +106,7 @@ enum BurstState {
     /// A single fast character is being held. If a second arrives within
     /// `CHAR_INTERVAL`, both move into `Buffering`. Otherwise the held
     /// character is emitted as a normal keystroke on the next `tick()`.
-    Pending {
-        held_char: char,
-        received_at: Instant,
-        retro_prefix: Vec<char>,
-    },
+    Pending { held_char: char, received_at: Instant, retro_prefix: Vec<char> },
     /// Actively accumulating a rapid character stream.
     Buffering,
 }
@@ -391,7 +387,7 @@ mod tests {
         // After idle timeout.
         let t5 = after_idle(t3);
         let flush = d.tick(t5);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("abcd".to_string())));
+        assert_eq!(flush, Some(FlushAction::EmitPaste("abcd".to_owned())));
     }
 
     #[test]
@@ -416,9 +412,9 @@ mod tests {
         assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
         assert_eq!(d.on_char('b', fast(t0, 2)), CharAction::Consumed);
         assert_eq!(d.on_char('c', fast(t0, 4)), CharAction::RetroCapture(1));
-        for i in 3..=4 {
-            let t = fast(t0, i * 2);
-            assert_eq!(d.on_char((b'b' + i as u8 - 1) as char, t), CharAction::Consumed);
+        for i in 3_u8..=4 {
+            let t = fast(t0, u64::from(i) * 2);
+            assert_eq!(d.on_char(char::from(b'b' + i - 1), t), CharAction::Consumed);
         }
 
         // Flush the burst.
@@ -458,7 +454,7 @@ mod tests {
         // Flush.
         let t5 = after_idle(t4);
         let flush = d.tick(t5);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("abc\nd".to_string())));
+        assert_eq!(flush, Some(FlushAction::EmitPaste("abc\nd".to_owned())));
     }
 
     #[test]
@@ -481,9 +477,9 @@ mod tests {
         let mut d = PasteBurstDetector::new();
         let t0 = Instant::now();
 
-        for i in 0..10 {
-            let t = fast(t0, i * 200); // 200ms apart = human typing.
-            let ch = (b'a' + (i as u8 % 26)) as char;
+        for i in 0_u8..10 {
+            let t = fast(t0, u64::from(i) * 200); // 200ms apart = human typing.
+            let ch = char::from(b'a' + (i % 26));
             assert_eq!(d.on_char(ch, t), CharAction::Passthrough(ch));
         }
         assert!(!d.is_buffering());
@@ -522,7 +518,7 @@ mod tests {
         // Flush to verify buffer contents.
         let t3 = after_idle(t2);
         let flush = d.tick(t3);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("b\n".to_string())));
+        assert_eq!(flush, Some(FlushAction::EmitPaste("b\n".to_owned())));
     }
 
     #[test]
@@ -537,7 +533,7 @@ mod tests {
         assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
 
         let t3 = after_idle(t2);
-        assert_eq!(d.tick(t3), Some(FlushAction::EmitPaste("abc".to_string())));
+        assert_eq!(d.tick(t3), Some(FlushAction::EmitPaste("abc".to_owned())));
     }
 
     #[cfg(windows)]
@@ -555,7 +551,7 @@ mod tests {
         assert_eq!(d.on_char('d', t3), CharAction::Consumed);
 
         let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_string())));
+        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
     }
 
     #[cfg(windows)]
@@ -575,6 +571,6 @@ mod tests {
         assert_eq!(d.on_char('d', t3), CharAction::Consumed);
 
         let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_string())));
+        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
     }
 }
