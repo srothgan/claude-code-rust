@@ -14,10 +14,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::settings::{model_is_unavailable, model_status_label};
+use crate::app::settings::{
+    config_settings, resolved_setting, setting_detail_options, setting_display_value,
+    setting_invalid_hint,
+};
 use crate::app::{App, SettingsTab};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,14 +28,6 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::fmt::Write as _;
 
 use super::theme;
-
-struct SettingDetail<'a> {
-    title: &'a str,
-    description: &'a str,
-    supported: bool,
-    options: Vec<String>,
-    invalid: bool,
-}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
@@ -55,7 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ])
         .split(inner);
 
-    frame.render_widget(render_tab_header(app.settings.active_tab), chunks[0]);
+    render_tab_header(frame, chunks[0], app.settings.active_tab);
 
     match app.settings.active_tab {
         SettingsTab::Config => render_config(frame, chunks[1], app),
@@ -88,14 +83,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
 
-    let help = "Enter toggle/edit | Ctrl+S save | Esc save and close";
+    let help = "Enter edit | Ctrl+S save | Esc save and close";
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
         chunks[3],
     );
 }
 
-fn render_config(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+fn render_config(frame: &mut Frame, area: Rect, app: &App) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
@@ -124,7 +119,7 @@ fn render_config(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     );
 }
 
-fn render_placeholder(frame: &mut Frame, area: ratatui::layout::Rect, title: &str) {
+fn render_placeholder(frame: &mut Frame, area: Rect, title: &str) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(title, Style::default().fg(theme::DIM)))),
         padded_body_area(area),
@@ -141,124 +136,56 @@ fn panel_body(area: Rect) -> Rect {
 
 fn config_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    lines.push(config_line(
-        app.settings.selected_config_index == 0,
-        "Fast mode",
-        if app.settings.fast_mode_effective() { "On" } else { "Off" },
-        app.settings.fast_mode_invalid(),
-    ));
-    if app.settings.fast_mode_invalid() {
-        lines.push(Line::from(Span::styled(
-            "  invalid value, using default",
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
+    for (index, spec) in config_settings().iter().enumerate() {
+        let resolved = resolved_setting(app, &app.settings.draft_document, spec);
+        lines.push(config_line(
+            app.settings.selected_config_index == index,
+            spec.label,
+            &setting_display_value(app, spec, &resolved),
+            resolved.validation.is_invalid(),
+        ));
+        if let Some(hint) = setting_invalid_hint(spec, resolved.validation) {
+            lines.push(Line::from(Span::styled(
+                format!("  {hint}"),
+                Style::default().fg(theme::STATUS_ERROR),
+            )));
+        }
+        if index + 1 < config_settings().len() {
+            lines.push(Line::default());
+        }
     }
-
-    lines.push(Line::default());
-    lines.push(config_line(
-        app.settings.selected_config_index == 1,
-        "Default permission mode",
-        app.settings.default_permission_mode_effective().label(),
-        app.settings.default_permission_mode_invalid(),
-    ));
-    if app.settings.default_permission_mode_invalid() {
-        lines.push(Line::from(Span::styled(
-            "  invalid value, using default",
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
-    }
-
-    lines.push(Line::default());
-    let model_unavailable = model_is_unavailable(app, app.settings.model_effective().as_deref());
-    lines.push(config_line(
-        app.settings.selected_config_index == 2,
-        "Default model",
-        &model_status_label(app.settings.model_effective().as_deref(), app),
-        app.settings.model_invalid() || model_unavailable,
-    ));
-    if app.settings.model_invalid() {
-        lines.push(Line::from(Span::styled(
-            "  invalid value, using automatic",
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
-    } else if model_unavailable {
-        lines.push(Line::from(Span::styled(
-            "  model not advertised by current SDK session",
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
-    }
-
     lines
 }
 
 fn config_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(detail) = selected_setting_detail(app) else {
+    let Some(spec) = app.settings.selected_config_spec() else {
         return vec![detail_text("No setting selected.")];
     };
+    let resolved = resolved_setting(app, &app.settings.draft_document, spec);
 
-    let mut lines = vec![detail_title(detail.title), detail_text(detail.description)];
+    let mut lines = vec![detail_title(spec.label), detail_text(spec.description)];
 
-    if !detail.supported {
+    if !spec.supported {
         lines.push(Line::default());
         lines.push(unsupported_hint());
     }
 
-    if !detail.options.is_empty() {
+    let options = setting_detail_options(app, spec);
+    if !options.is_empty() {
         lines.push(Line::default());
         lines.push(detail_section_title("Options"));
-        lines.extend(detail.options.into_iter().map(detail_option));
+        lines.extend(options.into_iter().map(detail_option));
     }
 
-    if detail.invalid {
+    if let Some(hint) = setting_invalid_hint(spec, resolved.validation) {
         lines.push(Line::default());
-        lines.push(invalid_hint(true));
+        lines.push(Line::from(Span::styled(
+            format!("Invalid persisted value detected. Runtime uses the fallback until you save a valid selection. {hint}"),
+            Style::default().fg(theme::STATUS_ERROR),
+        )));
     }
 
     lines
-}
-
-fn selected_setting_detail(app: &App) -> Option<SettingDetail<'static>> {
-    match app.settings.selected_config_index {
-        0 => Some(SettingDetail {
-            title: "Fast mode",
-            description: "Controls the persisted fast-mode preference for future sessions.",
-            supported: false,
-            options: vec!["Off".to_owned(), "On".to_owned()],
-            invalid: app.settings.fast_mode_invalid(),
-        }),
-        1 => Some(SettingDetail {
-            title: "Default permission mode",
-            description: "Stored in settings.json and applied to new sessions through the bridge.",
-            supported: true,
-            options: crate::app::settings::DefaultPermissionMode::ALL
-                .iter()
-                .map(|mode| mode.label().to_owned())
-                .collect(),
-            invalid: app.settings.default_permission_mode_invalid(),
-        }),
-        2 => {
-            let current_model = app.settings.model_effective();
-            let invalid =
-                app.settings.model_invalid() || model_is_unavailable(app, current_model.as_deref());
-            let options = if app.available_models.is_empty() {
-                vec!["Automatic".to_owned(), "Connect to load available models".to_owned()]
-            } else {
-                let mut options = Vec::with_capacity(app.available_models.len() + 1);
-                options.push("Automatic".to_owned());
-                options.extend(app.available_models.iter().map(|model| model.display_name.clone()));
-                options
-            };
-
-            Some(SettingDetail {
-                title: "Default model",
-                description: "Stored in settings.json and applied to new sessions through the bridge.",
-                supported: true,
-                options,
-                invalid,
-            })
-        }
-        _ => None,
-    }
 }
 
 fn detail_title(text: &str) -> Line<'static> {
@@ -293,18 +220,6 @@ fn unsupported_hint() -> Line<'static> {
     ))
 }
 
-fn invalid_hint(invalid: bool) -> Line<'static> {
-    if invalid {
-        Line::from(Span::styled(
-            "Invalid persisted value detected. Runtime uses the fallback until you save a valid selection."
-                .to_owned(),
-            Style::default().fg(theme::STATUS_ERROR),
-        ))
-    } else {
-        Line::default()
-    }
-}
-
 fn config_line(selected: bool, label: &str, value: &str, invalid: bool) -> Line<'static> {
     let mut line = String::new();
     line.push(if selected { '>' } else { ' ' });
@@ -315,7 +230,7 @@ fn config_line(selected: bool, label: &str, value: &str, invalid: bool) -> Line<
     Line::from(Span::styled(line, Style::default().fg(Color::White)))
 }
 
-fn render_tab_header(active_tab: SettingsTab) -> Paragraph<'static> {
+fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: SettingsTab) {
     let mut spans = Vec::new();
     for (index, tab) in SettingsTab::ALL.iter().copied().enumerate() {
         if index > 0 {
@@ -330,5 +245,17 @@ fn render_tab_header(active_tab: SettingsTab) -> Paragraph<'static> {
         spans.push(Span::styled(tab.title().to_owned(), style));
     }
 
-    Paragraph::new(Line::from(spans)).alignment(Alignment::Center)
+    let line = Line::from(spans);
+    let content_width = u16::try_from(line.width()).unwrap_or(area.width).min(area.width);
+    let header_area = centered_line_area(area, content_width);
+    frame.render_widget(Paragraph::new(line), header_area);
+}
+
+fn centered_line_area(area: Rect, content_width: u16) -> Rect {
+    if content_width >= area.width {
+        return area;
+    }
+
+    let offset = area.width.saturating_sub(content_width) / 2;
+    Rect { x: area.x + offset, y: area.y, width: content_width, height: area.height }
 }

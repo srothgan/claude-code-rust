@@ -20,14 +20,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::DefaultPermissionMode;
+use super::{DefaultPermissionMode, SettingId, SettingKind, SettingSpec, config_setting};
 
 const SETTINGS_FILENAME: &str = "settings.json";
 const CLAUDE_DIR: &str = ".claude";
-const FAST_MODE_KEY: &str = "fastMode";
-const MODEL_KEY: &str = "model";
-const PERMISSIONS_KEY: &str = "permissions";
-const DEFAULT_MODE_KEY: &str = "defaultMode";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedSettingValue {
+    Missing,
+    Bool(bool),
+    String(String),
+}
 
 pub struct LoadedSettings {
     pub path: PathBuf,
@@ -69,53 +72,89 @@ pub fn save(path: &Path, document: &Value) -> Result<(), String> {
     Ok(())
 }
 
+pub fn read_persisted_setting(
+    document: &Value,
+    spec: &SettingSpec,
+) -> Result<PersistedSettingValue, ()> {
+    let Some(value) = read_json_path(document, spec.json_path) else {
+        return Ok(PersistedSettingValue::Missing);
+    };
+
+    match spec.kind {
+        SettingKind::Bool => match value {
+            Value::Bool(flag) => Ok(PersistedSettingValue::Bool(*flag)),
+            _ => Err(()),
+        },
+        SettingKind::Enum | SettingKind::DynamicEnum => match value {
+            Value::String(text) => Ok(PersistedSettingValue::String(text.clone())),
+            _ => Err(()),
+        },
+    }
+}
+
+pub fn write_persisted_setting(
+    document: &mut Value,
+    spec: &SettingSpec,
+    value: PersistedSettingValue,
+) {
+    match value {
+        PersistedSettingValue::Missing => remove_json_path(document, spec.json_path),
+        PersistedSettingValue::Bool(flag) => {
+            set_json_path(document, spec.json_path, Value::Bool(flag));
+        }
+        PersistedSettingValue::String(text) => {
+            set_json_path(document, spec.json_path, Value::String(text));
+        }
+    }
+}
+
 pub fn fast_mode(document: &Value) -> Result<bool, ()> {
-    match document.as_object().and_then(|object| object.get(FAST_MODE_KEY)) {
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(()),
-        None => Ok(false),
+    match read_persisted_setting(document, config_setting(SettingId::FastMode))? {
+        PersistedSettingValue::Missing => Ok(false),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
     }
 }
 
 pub fn set_fast_mode(document: &mut Value, enabled: bool) {
-    ensure_object_mut(document).insert(FAST_MODE_KEY.to_owned(), Value::Bool(enabled));
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::FastMode),
+        PersistedSettingValue::Bool(enabled),
+    );
 }
 
 pub fn model(document: &Value) -> Result<Option<String>, ()> {
-    match document.as_object().and_then(|object| object.get(MODEL_KEY)) {
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(()),
-        None => Ok(None),
+    match read_persisted_setting(document, config_setting(SettingId::Model))? {
+        PersistedSettingValue::Missing => Ok(None),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => Ok(Some(value)),
     }
 }
 
 pub fn set_model(document: &mut Value, model: Option<&str>) {
-    let object = ensure_object_mut(document);
-    if let Some(model) = model {
-        object.insert(MODEL_KEY.to_owned(), Value::String(model.to_owned()));
-    } else {
-        object.remove(MODEL_KEY);
-    }
+    let value = model.map_or(PersistedSettingValue::Missing, |model| {
+        PersistedSettingValue::String(model.to_owned())
+    });
+    write_persisted_setting(document, config_setting(SettingId::Model), value);
 }
 
 pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
-    let Some(root) = document.as_object() else {
-        return Ok(DefaultPermissionMode::Default);
-    };
-    match root.get(PERMISSIONS_KEY) {
-        None => Ok(DefaultPermissionMode::Default),
-        Some(Value::Object(permissions)) => match permissions.get(DEFAULT_MODE_KEY) {
-            Some(Value::String(value)) => DefaultPermissionMode::from_stored(value).ok_or(()),
-            Some(_) => Err(()),
-            None => Ok(DefaultPermissionMode::Default),
-        },
-        Some(_) => Err(()),
+    match read_persisted_setting(document, config_setting(SettingId::DefaultPermissionMode))? {
+        PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Default),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => {
+            DefaultPermissionMode::from_stored(&value).ok_or(())
+        }
     }
 }
 
 pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
-    ensure_child_object_mut(document, PERMISSIONS_KEY)
-        .insert(DEFAULT_MODE_KEY.to_owned(), Value::String(mode.as_stored().to_owned()));
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::DefaultPermissionMode),
+        PersistedSettingValue::String(mode.as_stored().to_owned()),
+    );
 }
 
 fn resolve_path(path_override: Option<&Path>) -> Result<PathBuf, String> {
@@ -159,6 +198,66 @@ fn unique_temp_path(parent: &Path) -> PathBuf {
     parent.join(format!(".{SETTINGS_FILENAME}.{stamp}.tmp"))
 }
 
+fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = document;
+    for key in path {
+        current = current.as_object()?.get(*key)?;
+    }
+    Some(current)
+}
+
+fn set_json_path(document: &mut Value, path: &[&str], value: Value) {
+    let Some((last_key, parents)) = path.split_last() else {
+        return;
+    };
+
+    let mut current = ensure_object_mut(document);
+    for key in parents {
+        let child = current.entry((*key).to_owned()).or_insert_with(|| Value::Object(Map::new()));
+        if !child.is_object() {
+            *child = Value::Object(Map::new());
+        }
+        current = match child {
+            Value::Object(object) => object,
+            _ => unreachable!("child must be an object after normalization"),
+        };
+    }
+
+    current.insert((*last_key).to_owned(), value);
+}
+
+fn remove_json_path(document: &mut Value, path: &[&str]) {
+    if let Value::Object(object) = document {
+        remove_from_object_path(object, path);
+    }
+}
+
+fn remove_from_object_path(object: &mut Map<String, Value>, path: &[&str]) -> bool {
+    let Some((head, tail)) = path.split_first() else {
+        return object.is_empty();
+    };
+
+    if tail.is_empty() {
+        object.remove(*head);
+        return object.is_empty();
+    }
+
+    let should_remove_child = if let Some(child) = object.get_mut(*head) {
+        match child {
+            Value::Object(child_object) => remove_from_object_path(child_object, tail),
+            _ => true,
+        }
+    } else {
+        false
+    };
+
+    if should_remove_child {
+        object.remove(*head);
+    }
+
+    object.is_empty()
+}
+
 fn normalized_root(document: &Value) -> Value {
     match document {
         Value::Object(object) => Value::Object(object.clone()),
@@ -177,22 +276,10 @@ fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
     }
 }
 
-fn ensure_child_object_mut<'a>(document: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
-    let object = ensure_object_mut(document);
-    let child = object.entry(key.to_owned()).or_insert_with(|| Value::Object(Map::new()));
-    if !child.is_object() {
-        *child = Value::Object(Map::new());
-    }
-
-    match child {
-        Value::Object(object) => object,
-        _ => unreachable!("child must be an object after normalization"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::settings::config_setting;
 
     #[test]
     fn load_missing_file_returns_empty_object() {
@@ -319,5 +406,42 @@ mod tests {
 
         assert_eq!(model(&reloaded.document), Ok(Some("sonnet".to_owned())));
         assert_eq!(reloaded.document["unknown"]["keep"], Value::Bool(true));
+    }
+
+    #[test]
+    fn write_persisted_setting_removes_nested_path_and_prunes_empty_parent() {
+        let mut document = serde_json::json!({
+            "permissions": {
+                "defaultMode": "plan"
+            },
+            "keep": true
+        });
+
+        write_persisted_setting(
+            &mut document,
+            config_setting(SettingId::DefaultPermissionMode),
+            PersistedSettingValue::Missing,
+        );
+
+        assert_eq!(
+            document,
+            serde_json::json!({
+                "keep": true
+            })
+        );
+    }
+
+    #[test]
+    fn read_persisted_setting_uses_json_path_metadata() {
+        let document = serde_json::json!({
+            "permissions": {
+                "defaultMode": "plan"
+            }
+        });
+
+        let value =
+            read_persisted_setting(&document, config_setting(SettingId::DefaultPermissionMode));
+
+        assert_eq!(value, Ok(PersistedSettingValue::String("plan".to_owned())));
     }
 }

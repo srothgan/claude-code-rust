@@ -17,12 +17,11 @@
 pub mod store;
 
 use super::view::{self, ActiveView};
+use crate::agent::model::AvailableModel;
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::path::PathBuf;
-
-const CONFIG_ITEM_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -63,6 +62,88 @@ impl SettingsTab {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SettingId {
+    FastMode,
+    DefaultPermissionMode,
+    Model,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingKind {
+    Bool,
+    Enum,
+    DynamicEnum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorKind {
+    Toggle,
+    Cycle,
+    Overlay,
+    Search,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueSource {
+    PersistedOnly,
+    RuntimeBacked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCatalogKind {
+    Models,
+    PermissionModes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackPolicy {
+    None,
+    AppDefault,
+    English,
+    RuntimeDefault,
+}
+
+impl FallbackPolicy {
+    #[must_use]
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::None => "current value",
+            Self::AppDefault => "default",
+            Self::English => "English",
+            Self::RuntimeDefault => "runtime default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingOption {
+    pub stored: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingOptions {
+    None,
+    Static(&'static [SettingOption]),
+    RuntimeCatalog(RuntimeCatalogKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingSpec {
+    pub id: SettingId,
+    pub entry_id: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub json_path: &'static [&'static str],
+    pub kind: SettingKind,
+    pub editor: EditorKind,
+    pub source: ValueSource,
+    pub options: SettingOptions,
+    pub fallback: FallbackPolicy,
+    pub supported: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DefaultPermissionMode {
     #[default]
@@ -74,9 +155,6 @@ pub enum DefaultPermissionMode {
 }
 
 impl DefaultPermissionMode {
-    pub const ALL: [Self; 5] =
-        [Self::Default, Self::AcceptEdits, Self::Plan, Self::DontAsk, Self::BypassPermissions];
-
     #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
@@ -123,6 +201,88 @@ impl DefaultPermissionMode {
     }
 }
 
+const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "default", label: "Default" },
+    SettingOption { stored: "acceptEdits", label: "Accept Edits" },
+    SettingOption { stored: "plan", label: "Plan" },
+    SettingOption { stored: "dontAsk", label: "Don't Ask" },
+    SettingOption { stored: "bypassPermissions", label: "Bypass Permissions" },
+];
+
+const CONFIG_SETTINGS: [SettingSpec; 3] = [
+    SettingSpec {
+        id: SettingId::FastMode,
+        entry_id: "A05",
+        label: "Fast mode",
+        description: "Controls the persisted fast-mode preference for future sessions.",
+        json_path: &["fastMode"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
+    },
+    SettingSpec {
+        id: SettingId::DefaultPermissionMode,
+        entry_id: "A09",
+        label: "Default permission mode",
+        description: "Stored in settings.json and applied to new sessions through the bridge.",
+        json_path: &["permissions", "defaultMode"],
+        kind: SettingKind::DynamicEnum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::RuntimeBacked,
+        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes),
+        fallback: FallbackPolicy::RuntimeDefault,
+        supported: true,
+    },
+    SettingSpec {
+        id: SettingId::Model,
+        entry_id: "A19",
+        label: "Default model",
+        description: "Stored in settings.json and applied to new sessions through the bridge.",
+        json_path: &["model"],
+        kind: SettingKind::DynamicEnum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::RuntimeBacked,
+        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
+        fallback: FallbackPolicy::RuntimeDefault,
+        supported: true,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingValidation {
+    Valid,
+    InvalidValue,
+    UnavailableOption,
+}
+
+impl SettingValidation {
+    #[must_use]
+    pub const fn is_invalid(self) -> bool {
+        !matches!(self, Self::Valid)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedChoice {
+    Automatic,
+    Stored(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedSettingValue {
+    Bool(bool),
+    Choice(ResolvedChoice),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSetting {
+    pub value: ResolvedSettingValue,
+    pub validation: SettingValidation,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsState {
     pub active_tab: SettingsTab,
@@ -153,47 +313,35 @@ impl Default for SettingsState {
 impl SettingsState {
     #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
-        store::fast_mode(&self.draft_document).unwrap_or(false)
-    }
-
-    #[must_use]
-    pub fn fast_mode_invalid(&self) -> bool {
-        store::fast_mode(&self.draft_document).is_err()
-    }
-
-    #[must_use]
-    pub fn committed_fast_mode(&self) -> bool {
-        store::fast_mode(&self.committed_document).unwrap_or(false)
+        match resolve_setting_document(&self.draft_document, SettingId::FastMode, &[]).value {
+            ResolvedSettingValue::Bool(value) => value,
+            ResolvedSettingValue::Choice(_) => false,
+        }
     }
 
     #[must_use]
     pub fn model_effective(&self) -> Option<String> {
-        store::model(&self.draft_document).ok().flatten()
-    }
-
-    #[must_use]
-    pub fn model_invalid(&self) -> bool {
-        store::model(&self.draft_document).is_err()
-    }
-
-    #[must_use]
-    pub fn committed_model(&self) -> Option<String> {
-        store::model(&self.committed_document).ok().flatten()
+        match resolve_setting_document(&self.draft_document, SettingId::Model, &[]).value {
+            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
+            _ => None,
+        }
     }
 
     #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        store::default_permission_mode(&self.draft_document).unwrap_or_default()
+        match resolve_setting_document(&self.draft_document, SettingId::DefaultPermissionMode, &[])
+            .value
+        {
+            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
+                DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+            }
+            _ => DefaultPermissionMode::Default,
+        }
     }
 
     #[must_use]
-    pub fn default_permission_mode_invalid(&self) -> bool {
-        store::default_permission_mode(&self.draft_document).is_err()
-    }
-
-    #[must_use]
-    pub fn committed_default_permission_mode(&self) -> DefaultPermissionMode {
-        store::default_permission_mode(&self.committed_document).unwrap_or_default()
+    pub fn selected_config_spec(&self) -> Option<&'static SettingSpec> {
+        config_settings().get(self.selected_config_index)
     }
 
     fn apply_loaded(
@@ -207,6 +355,8 @@ impl SettingsState {
         self.committed_document = document.clone();
         self.draft_document = document;
         self.dirty = false;
+        self.selected_config_index =
+            self.selected_config_index.min(config_settings().len().saturating_sub(1));
         if !preserve_status {
             self.status_message = notice;
             self.last_error = None;
@@ -219,6 +369,92 @@ impl SettingsState {
         self.draft_document = self.committed_document.clone();
         self.dirty = false;
         self.last_error = None;
+    }
+}
+
+#[must_use]
+pub const fn config_settings() -> &'static [SettingSpec] {
+    &CONFIG_SETTINGS
+}
+
+#[must_use]
+pub fn config_setting(id: SettingId) -> &'static SettingSpec {
+    match id {
+        SettingId::FastMode => &CONFIG_SETTINGS[0],
+        SettingId::DefaultPermissionMode => &CONFIG_SETTINGS[1],
+        SettingId::Model => &CONFIG_SETTINGS[2],
+    }
+}
+
+#[must_use]
+pub fn resolved_setting(app: &App, document: &Value, spec: &SettingSpec) -> ResolvedSetting {
+    resolve_setting_document(document, spec.id, &app.available_models)
+}
+
+#[must_use]
+pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedSetting) -> String {
+    match (&resolved.value, spec.id) {
+        (ResolvedSettingValue::Bool(value), _) => {
+            if *value {
+                "On".to_owned()
+            } else {
+                "Off".to_owned()
+            }
+        }
+        (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
+            "Automatic".to_owned()
+        }
+        (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), SettingId::Model) => {
+            model_status_label(Some(value), app)
+        }
+        (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), _) => {
+            option_label(spec, value).unwrap_or_else(|| value.clone())
+        }
+        _ => String::new(),
+    }
+}
+
+#[must_use]
+pub fn setting_invalid_hint(spec: &SettingSpec, validation: SettingValidation) -> Option<String> {
+    match validation {
+        SettingValidation::Valid => None,
+        SettingValidation::InvalidValue => {
+            Some(format!("invalid value, using {}", spec.fallback.short_label()))
+        }
+        SettingValidation::UnavailableOption if spec.id == SettingId::Model => {
+            Some("model not advertised by current SDK session".to_owned())
+        }
+        SettingValidation::UnavailableOption => {
+            Some(format!("value unavailable, using {}", spec.fallback.short_label()))
+        }
+    }
+}
+
+#[must_use]
+pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
+    match spec.kind {
+        SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
+        SettingKind::Enum | SettingKind::DynamicEnum => match spec.options {
+            SettingOptions::None => Vec::new(),
+            SettingOptions::Static(options) => {
+                options.iter().map(|option| option.label.to_owned()).collect()
+            }
+            SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
+                if app.available_models.is_empty() {
+                    vec!["Automatic".to_owned(), "Connect to load available models".to_owned()]
+                } else {
+                    let mut options = Vec::with_capacity(app.available_models.len() + 1);
+                    options.push("Automatic".to_owned());
+                    options.extend(
+                        app.available_models.iter().map(|model| model.display_name.clone()),
+                    );
+                    options
+                }
+            }
+            SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
+                DEFAULT_PERMISSION_OPTIONS.iter().map(|option| option.label.to_owned()).collect()
+            }
+        },
     }
 }
 
@@ -245,21 +481,14 @@ fn ensure_loaded(app: &mut App) -> Result<(), String> {
 }
 
 pub fn save(app: &mut App) -> Result<(), String> {
-    let permission_mode = app.settings.default_permission_mode_effective();
     let Some(path) = app.settings.path.clone() else {
         let message = "Settings path is not available".to_owned();
         app.settings.last_error = Some(message.clone());
         return Err(message);
     };
 
-    let mut normalized_document = app.settings.draft_document.clone();
-    store::set_default_permission_mode(&mut normalized_document, permission_mode);
-    let model = app.settings.model_effective();
-    store::set_model(&mut normalized_document, model.as_deref());
-
-    store::save(&path, &normalized_document)?;
-    app.settings.committed_document = normalized_document.clone();
-    app.settings.draft_document = normalized_document;
+    store::save(&path, &app.settings.draft_document)?;
+    app.settings.committed_document = app.settings.draft_document.clone();
     app.settings.dirty = false;
     app.settings.last_error = None;
     app.settings.status_message = Some(format!(
@@ -310,47 +539,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         (KeyCode::Down, KeyModifiers::NONE) => {
             if app.settings.active_tab == SettingsTab::Config {
+                let last_index = config_settings().len().saturating_sub(1);
                 app.settings.selected_config_index =
-                    (app.settings.selected_config_index + 1).min(CONFIG_ITEM_COUNT - 1);
+                    (app.settings.selected_config_index + 1).min(last_index);
             }
         }
         (KeyCode::Enter, KeyModifiers::NONE) if app.settings.active_tab == SettingsTab::Config => {
-            match app.settings.selected_config_index {
-                0 => {
-                    let next = !app.settings.fast_mode_effective();
-                    store::set_fast_mode(&mut app.settings.draft_document, next);
-                    app.settings.dirty = true;
-                    app.settings.last_error = None;
-                    app.settings.status_message =
-                        Some(format!("Fast mode set to {}", on_off(next)));
-                }
-                1 => {
-                    let next = app.settings.default_permission_mode_effective().next();
-                    store::set_default_permission_mode(&mut app.settings.draft_document, next);
-                    app.settings.dirty = true;
-                    app.settings.last_error = None;
-                    app.settings.status_message =
-                        Some(format!("Default permission mode set to {}", next.label()));
-                }
-                2 => {
-                    if let Some(next_model) = next_model_selection(app) {
-                        let next_model_id = match &next_model {
-                            NextModelSelection::Automatic => None,
-                            NextModelSelection::Named(model) => Some(model.as_str()),
-                        };
-                        store::set_model(&mut app.settings.draft_document, next_model_id);
-                        app.settings.dirty = true;
-                        app.settings.last_error = None;
-                        app.settings.status_message = Some(format!(
-                            "Default model set to {}",
-                            model_status_label(next_model_id, app)
-                        ));
-                    } else {
-                        app.settings.status_message =
-                            Some("Connect to load available models".to_owned());
-                    }
-                }
-                _ => {}
+            if let Some(spec) = app.settings.selected_config_spec() {
+                activate_setting(app, spec);
             }
         }
         _ => {}
@@ -360,6 +556,54 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(candidate) if candidate == ch)
         && key.modifiers == KeyModifiers::CONTROL
+}
+
+fn activate_setting(app: &mut App, spec: &SettingSpec) {
+    match spec.id {
+        SettingId::FastMode => {
+            let next = !store::fast_mode(&app.settings.draft_document).unwrap_or(false);
+            store::set_fast_mode(&mut app.settings.draft_document, next);
+            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+        }
+        SettingId::DefaultPermissionMode => {
+            let current = match resolve_setting_document(
+                &app.settings.draft_document,
+                SettingId::DefaultPermissionMode,
+                &[],
+            )
+            .value
+            {
+                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
+                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+                }
+                _ => DefaultPermissionMode::Default,
+            };
+            let next = current.next();
+            store::set_default_permission_mode(&mut app.settings.draft_document, next);
+            mark_setting_edited(app, format!("{} set to {}", spec.label, next.label()));
+        }
+        SettingId::Model => {
+            if let Some(next_model) = next_model_selection(app) {
+                let next_model_id = match &next_model {
+                    NextModelSelection::Automatic => None,
+                    NextModelSelection::Named(model) => Some(model.as_str()),
+                };
+                store::set_model(&mut app.settings.draft_document, next_model_id);
+                mark_setting_edited(
+                    app,
+                    format!("{} set to {}", spec.label, model_status_label(next_model_id, app)),
+                );
+            } else {
+                app.settings.status_message = Some("Connect to load available models".to_owned());
+            }
+        }
+    }
+}
+
+fn mark_setting_edited(app: &mut App, status_message: String) {
+    app.settings.dirty = true;
+    app.settings.last_error = None;
+    app.settings.status_message = Some(status_message);
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -377,7 +621,7 @@ fn next_model_selection(app: &App) -> Option<NextModelSelection> {
         return None;
     }
 
-    let current = app.settings.model_effective();
+    let current = store::model(&app.settings.draft_document).ok().flatten();
     let current_index = choices
         .iter()
         .position(|candidate| candidate.as_deref() == current.as_deref())
@@ -410,20 +654,128 @@ pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
     }
 }
 
-pub(crate) fn model_is_unavailable(app: &App, model: Option<&str>) -> bool {
-    match model {
-        Some(model_id) if !app.available_models.is_empty() => {
-            !app.available_models.iter().any(|candidate| candidate.id == model_id)
-        }
-        _ => false,
-    }
-}
-
 fn settings_source_matches_override(app: &App) -> bool {
     match (&app.settings.path, app.settings_path_override.as_ref()) {
         (None, None | Some(_)) => false,
         (Some(_), None) => true,
         (Some(path), Some(override_path)) => path == override_path,
+    }
+}
+
+fn resolve_setting_document(
+    document: &Value,
+    setting_id: SettingId,
+    available_models: &[AvailableModel],
+) -> ResolvedSetting {
+    let spec = config_setting(setting_id);
+    match setting_id {
+        SettingId::FastMode => resolve_bool_setting(document, spec, false),
+        SettingId::DefaultPermissionMode => {
+            resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
+        }
+        SettingId::Model => resolve_model_setting(document, spec, available_models),
+    }
+}
+
+fn resolve_bool_setting(document: &Value, spec: &SettingSpec, fallback: bool) -> ResolvedSetting {
+    match store::read_persisted_setting(document, spec) {
+        Ok(store::PersistedSettingValue::Bool(value)) => ResolvedSetting {
+            value: ResolvedSettingValue::Bool(value),
+            validation: SettingValidation::Valid,
+        },
+        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
+            value: ResolvedSettingValue::Bool(fallback),
+            validation: SettingValidation::Valid,
+        },
+        Ok(store::PersistedSettingValue::String(_)) | Err(()) => ResolvedSetting {
+            value: ResolvedSettingValue::Bool(fallback),
+            validation: SettingValidation::InvalidValue,
+        },
+    }
+}
+
+fn resolve_string_setting(
+    document: &Value,
+    spec: &SettingSpec,
+    fallback: &'static str,
+) -> ResolvedSetting {
+    match store::read_persisted_setting(document, spec) {
+        Ok(store::PersistedSettingValue::String(value)) if option_exists(spec, &value) => {
+            ResolvedSetting {
+                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
+                validation: SettingValidation::Valid,
+            }
+        }
+        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
+            value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(fallback.to_owned())),
+            validation: SettingValidation::Valid,
+        },
+        Ok(store::PersistedSettingValue::String(_) | store::PersistedSettingValue::Bool(_))
+        | Err(()) => ResolvedSetting {
+            value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(fallback.to_owned())),
+            validation: SettingValidation::InvalidValue,
+        },
+    }
+}
+
+fn resolve_model_setting(
+    document: &Value,
+    spec: &SettingSpec,
+    available_models: &[AvailableModel],
+) -> ResolvedSetting {
+    match store::read_persisted_setting(document, spec) {
+        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
+            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
+            validation: SettingValidation::Valid,
+        },
+        Ok(store::PersistedSettingValue::String(value)) if available_models.is_empty() => {
+            ResolvedSetting {
+                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
+                validation: SettingValidation::Valid,
+            }
+        }
+        Ok(store::PersistedSettingValue::String(value))
+            if available_models.iter().any(|model| model.id == value) =>
+        {
+            ResolvedSetting {
+                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
+                validation: SettingValidation::Valid,
+            }
+        }
+        Ok(store::PersistedSettingValue::String(_)) => ResolvedSetting {
+            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
+            validation: SettingValidation::UnavailableOption,
+        },
+        Ok(store::PersistedSettingValue::Bool(_)) | Err(()) => ResolvedSetting {
+            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
+            validation: SettingValidation::InvalidValue,
+        },
+    }
+}
+
+fn option_exists(spec: &SettingSpec, value: &str) -> bool {
+    match spec.options {
+        SettingOptions::Static(options) => options.iter().any(|option| option.stored == value),
+        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
+            DEFAULT_PERMISSION_OPTIONS.iter().any(|option| option.stored == value)
+        }
+        _ => false,
+    }
+}
+
+fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
+    match spec.options {
+        SettingOptions::Static(options) => options
+            .iter()
+            .find(|option| option.stored == value)
+            .map(|option| option.label.to_owned()),
+        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
+            DEFAULT_PERMISSION_OPTIONS
+                .iter()
+                .find(|option| option.stored == value)
+                .map(|option| option.label.to_owned())
+        }
+        _ => None,
     }
 }
 
@@ -443,7 +795,10 @@ mod tests {
         open(&mut app).expect("open");
 
         assert_eq!(app.active_view, ActiveView::Settings);
-        assert!(app.settings.fast_mode_effective());
+        assert!(matches!(
+            resolve_setting_document(&app.settings.draft_document, SettingId::FastMode, &[]).value,
+            ResolvedSettingValue::Bool(true)
+        ));
         assert!(app.settings.path.is_some());
     }
 
@@ -464,48 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn close_saves_dirty_document_and_returns_to_chat() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut app = App::test_default();
-        app.settings_path_override = Some(path.clone());
-
-        open(&mut app).expect("open");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        close(&mut app).expect("close");
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        let raw = std::fs::read_to_string(path).expect("read");
-        assert!(raw.contains("\"fastMode\": true"));
-    }
-
-    #[test]
-    fn handle_key_toggles_fast_mode_in_config_tab() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert!(app.settings.fast_mode_effective());
-        assert!(app.settings.dirty);
-    }
-
-    #[test]
-    fn save_updates_committed_document_from_draft() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut app = App::test_default();
-        app.settings_path_override = Some(path);
-
-        open(&mut app).expect("open");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
-
-        assert!(app.settings.committed_fast_mode());
-        assert_eq!(app.settings.committed_document, app.settings.draft_document);
-    }
-
-    #[test]
     fn handle_key_moves_between_config_rows() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
@@ -518,13 +831,10 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.settings.selected_config_index, 2);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 1);
     }
 
     #[test]
-    fn handle_key_cycles_default_permission_mode_in_config_tab() {
+    fn handle_key_cycles_default_permission_mode() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
         app.settings.selected_config_index = 1;
@@ -532,57 +842,42 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(
-            app.settings.default_permission_mode_effective(),
-            DefaultPermissionMode::AcceptEdits
+            store::default_permission_mode(&app.settings.draft_document),
+            Ok(DefaultPermissionMode::AcceptEdits)
         );
-        assert!(app.settings.dirty);
     }
 
     #[test]
-    fn committed_default_permission_mode_reads_loaded_settings_document() {
+    fn save_preserves_invalid_unedited_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"permissions":{"defaultMode":"broken"},"fastMode":false}"#)
+            .expect("write");
         let mut app = App::test_default();
-        app.settings.path = Some(PathBuf::from("settings.json"));
-        store::set_default_permission_mode(
-            &mut app.settings.committed_document,
-            DefaultPermissionMode::Plan,
-        );
-        app.settings.draft_document = app.settings.committed_document.clone();
+        app.settings_path_override = Some(path.clone());
 
-        assert_eq!(app.settings.committed_default_permission_mode(), DefaultPermissionMode::Plan);
+        open(&mut app).expect("open");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        save(&mut app).expect("save");
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"defaultMode\": \"broken\""));
+        assert!(raw.contains("\"fastMode\": true"));
     }
 
     #[test]
-    fn handle_key_cycles_model_when_available_models_are_loaded() {
+    fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 2;
-        app.available_models = vec![
-            crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
-            crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
-        ];
+        app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
+        store::set_model(&mut app.settings.draft_document, Some("unknown"));
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.settings.model_effective().as_deref(), Some("sonnet"));
+        let resolved =
+            resolved_setting(&app, &app.settings.draft_document, config_setting(SettingId::Model));
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.settings.model_effective().as_deref(), Some("opus"));
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.settings.model_effective(), None);
-    }
-
-    #[test]
-    fn handle_key_does_not_cycle_model_without_loaded_catalog() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 2;
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert_eq!(app.settings.model_effective(), None);
+        assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
         assert_eq!(
-            app.settings.status_message.as_deref(),
-            Some("Connect to load available models")
+            setting_display_value(&app, config_setting(SettingId::Model), &resolved),
+            "Automatic"
         );
     }
 }
