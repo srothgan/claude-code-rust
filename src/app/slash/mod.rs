@@ -208,8 +208,38 @@ mod tests {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
+        assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
         assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
+    }
+
+    #[test]
+    fn config_without_args_opens_settings_view() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let mut app = App::test_default();
+        app.settings_path_override = Some(path);
+
+        let consumed = try_handle_submit(&mut app, "/config");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Settings);
+    }
+
+    #[test]
+    fn config_with_extra_args_returns_usage_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/config extra");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, "Usage: /config");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -291,19 +321,18 @@ mod tests {
     }
 
     #[test]
-    fn model_argument_candidates_include_aliases() {
-        let app = App::test_default();
+    fn model_argument_candidates_are_dynamic() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
+                .description("Balanced coding model"),
+            crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
+        ];
         let candidates = argument_candidates(&app, "/model", 0);
-        for alias in ["default", "sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"] {
-            assert!(candidates.iter().any(|c| c.insert_value == alias), "missing alias {alias}");
-        }
-    }
-
-    #[test]
-    fn model_argument_candidates_do_not_include_retired_37_alias() {
-        let app = App::test_default();
-        let candidates = argument_candidates(&app, "/model", 0);
-        assert!(!candidates.iter().any(|c| c.insert_value.contains("3-7")));
+        assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
+        assert!(candidates.iter().any(|c| c.primary == "Claude Sonnet"));
+        assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Balanced coding model")));
+        assert!(candidates.iter().any(|c| c.insert_value == "opus"));
     }
 
     #[test]

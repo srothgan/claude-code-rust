@@ -23,17 +23,21 @@
 
 mod bridge_lifecycle;
 mod event_dispatch;
+mod session_start;
 mod type_converters;
 
 use super::dialog::DialogState;
+use super::settings::SettingsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
 };
+use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::Cli;
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -66,13 +70,14 @@ struct StartConnectionParams {
     event_tx: mpsc::UnboundedSender<ClientEvent>,
     cwd_raw: String,
     bridge_script: Option<std::path::PathBuf>,
-    yolo: bool,
-    model_override: Option<String>,
     resume_id: Option<String>,
     resume_requested: bool,
+    session_launch_settings: SessionLaunchSettings,
 }
 
-/// Create the `App` struct in `Connecting` state. No I/O - returns immediately.
+pub(crate) use session_start::{SessionStartReason, resume_session, start_new_session};
+
+/// Create the `App` struct in `Connecting` state and load shared settings state.
 #[allow(clippy::too_many_lines)]
 pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
@@ -85,6 +90,9 @@ pub fn create_app(cli: &Cli) -> App {
     let initial_model_name = "Connecting...".to_owned();
 
     let mut app = App {
+        active_view: ActiveView::Chat,
+        settings: SettingsState::default(),
+        settings_path_override: None,
         messages: vec![super::ChatMessage::welcome_with_recent(
             &initial_model_name,
             &cwd_display,
@@ -134,6 +142,7 @@ pub fn create_app(cli: &Cli) -> App {
         focus: FocusManager::default(),
         available_commands: Vec::new(),
         available_agents: Vec::new(),
+        available_models: Vec::new(),
         recent_sessions: Vec::new(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
@@ -177,6 +186,11 @@ pub fn create_app(cli: &Cli) -> App {
         last_frame_at: None,
     };
 
+    if let Err(err) = super::settings::initialize_shared_state(&mut app) {
+        tracing::warn!("failed to initialize shared settings state: {err}");
+        app.settings.last_error = Some(err);
+    }
+
     app.refresh_git_branch();
     app
 }
@@ -187,10 +201,12 @@ pub fn start_connection(app: &App, cli: &Cli) {
         event_tx: app.event_tx.clone(),
         cwd_raw: app.cwd_raw.clone(),
         bridge_script: cli.bridge_script.clone(),
-        yolo: cli.yolo,
-        model_override: cli.model.clone(),
         resume_id: cli.resume.clone(),
         resume_requested: cli.resume.is_some(),
+        session_launch_settings: session_start::session_launch_settings_for_reason(
+            app,
+            session_start::SessionStartReason::Startup,
+        ),
     };
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));

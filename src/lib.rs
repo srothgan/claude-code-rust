@@ -26,17 +26,9 @@ use clap::Parser;
 #[command(name = "claude-rs", about = "Native Rust terminal for Claude Code")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
-    /// Override the model (sonnet, opus, haiku)
-    #[arg(long, short)]
-    pub model: Option<String>,
-
     /// Resume a previous session by ID
     #[arg(long)]
     pub resume: Option<String>,
-
-    /// Auto-approve all tool calls (dangerous)
-    #[arg(long)]
-    pub yolo: bool,
 
     /// Disable startup update checks.
     #[arg(long)]

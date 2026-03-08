@@ -290,6 +290,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       const previousSessionId = session.sessionId;
       const incomingSessionId = typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
+      const previousModelName = session.model;
       const modelName = typeof msg.model === "string" ? msg.model : session.model;
       session.model = modelName;
 
@@ -308,13 +309,28 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: buildModeState(session.mode),
+          available_models: session.availableModels,
+          mode: session.mode ? buildModeState(session.mode) : null,
           ...(historyUpdates && historyUpdates.length > 0
             ? { history_updates: historyUpdates }
             : {}),
         });
         session.resumeUpdates = undefined;
         refreshSessionsList();
+      } else {
+        if (session.model !== previousModelName) {
+          emitSessionUpdate(session.sessionId, {
+            type: "config_option_update",
+            option_id: "model",
+            value: session.model,
+          });
+        }
+        if (incomingMode) {
+          emitSessionUpdate(session.sessionId, {
+            type: "mode_state_update",
+            mode: buildModeState(incomingMode),
+          });
+        }
       }
 
       if (Array.isArray(msg.slash_commands)) {

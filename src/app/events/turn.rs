@@ -136,7 +136,9 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     if turn_was_active {
         app.notifications.notify(super::super::notify::NotifyEvent::TurnComplete);
     }
-    super::super::input_submit::maybe_auto_submit_after_cancel(app);
+    if app.active_view == super::super::ActiveView::Chat {
+        super::super::input_submit::maybe_auto_submit_after_cancel(app);
+    }
 }
 
 pub(super) fn handle_turn_error_event(
@@ -169,7 +171,9 @@ pub(super) fn handle_turn_error_event(
         if show_interrupted_hint {
             push_interrupted_hint(app);
         }
-        super::super::input_submit::maybe_auto_submit_after_cancel(app);
+        if app.active_view == super::super::ActiveView::Chat {
+            super::super::input_submit::maybe_auto_submit_after_cancel(app);
+        }
         return;
     }
 

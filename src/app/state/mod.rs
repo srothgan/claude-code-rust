@@ -43,6 +43,7 @@ pub use viewport::{ChatViewport, InvalidationLevel};
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -51,11 +52,16 @@ use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::{InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
+use super::settings::SettingsState;
 use super::slash;
 use super::subagent;
+use super::view::ActiveView;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
+    pub active_view: ActiveView,
+    pub settings: SettingsState,
+    pub settings_path_override: Option<PathBuf>,
     pub messages: Vec<ChatMessage>,
     /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
     pub viewport: ChatViewport,
@@ -144,6 +150,8 @@ pub struct App {
     pub available_commands: Vec<model::AvailableCommand>,
     /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
     pub available_agents: Vec<model::AvailableAgent>,
+    /// Models advertised by the agent SDK for the active session.
+    pub available_models: Vec<model::AvailableModel>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Last known frame area (for mouse selection mapping).
@@ -504,6 +512,9 @@ impl App {
     pub fn test_default() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
+            active_view: ActiveView::Chat,
+            settings: SettingsState::default(),
+            settings_path_override: None,
             messages: Vec::new(),
             viewport: ChatViewport::new(),
             input: InputState::new(),
@@ -549,6 +560,7 @@ impl App {
             focus: FocusManager::default(),
             available_commands: Vec::new(),
             available_agents: Vec::new(),
+            available_models: Vec::new(),
             recent_sessions: Vec::new(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,

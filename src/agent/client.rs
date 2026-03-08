@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::agent::bridge::BridgeLauncher;
-use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
+use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope, SessionLaunchSettings};
 use crate::error::AppError;
 use anyhow::Context as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
@@ -156,20 +156,24 @@ impl AgentConnection {
     pub fn new_session(
         &self,
         cwd: String,
-        yolo: bool,
-        model: Option<String>,
+        launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::NewSession { cwd, yolo, model },
+            command: BridgeCommand::NewSession { cwd, launch_settings },
         })
     }
 
-    pub fn resume_session(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn resume_session(
+        &self,
+        session_id: String,
+        launch_settings: SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::ResumeSession {
                 session_id,
+                launch_settings,
                 metadata: std::collections::BTreeMap::new(),
             },
         })

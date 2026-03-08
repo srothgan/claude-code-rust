@@ -29,6 +29,12 @@ export interface AvailableAgent {
   model?: string;
 }
 
+export interface AvailableModel {
+  id: string;
+  display_name: string;
+  description?: string;
+}
+
 export type FastModeState = "off" | "cooldown" | "on";
 export type RateLimitStatus = "allowed" | "allowed_warning" | "rejected";
 
@@ -100,6 +106,7 @@ export type SessionUpdate =
   | { type: "plan"; entries: PlanEntry[] }
   | { type: "available_commands_update"; commands: AvailableCommand[] }
   | { type: "available_agents_update"; agents: AvailableAgent[] }
+  | { type: "mode_state_update"; mode: ModeState }
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "config_option_update"; option_id: string; value: Json }
   | { type: "fast_mode_update"; fast_mode_state: FastModeState }
@@ -148,6 +155,11 @@ export interface SessionListEntry {
   first_prompt?: string;
 }
 
+export interface SessionLaunchSettings {
+  model?: string;
+  permission_mode?: string;
+}
+
 export interface BridgeCommandEnvelope {
   request_id?: string;
   command: string;
@@ -163,14 +175,14 @@ export type BridgeCommand =
   | {
       command: "create_session";
       cwd: string;
-      yolo: boolean;
-      model?: string;
       resume?: string;
+      launch_settings: SessionLaunchSettings;
       metadata?: Record<string, Json>;
     }
   | {
       command: "resume_session";
       session_id: string;
+      launch_settings: SessionLaunchSettings;
       metadata?: Record<string, Json>;
     }
   | {
@@ -195,8 +207,7 @@ export type BridgeCommand =
   | {
       command: "new_session";
       cwd: string;
-      yolo: boolean;
-      model?: string;
+      launch_settings: SessionLaunchSettings;
     }
   | {
       command: "permission_response";
@@ -241,6 +252,7 @@ export type BridgeEvent =
       session_id: string;
       cwd: string;
       model_name: string;
+      available_models: AvailableModel[];
       mode: ModeState | null;
       history_updates?: SessionUpdate[];
     }
@@ -264,6 +276,7 @@ export type BridgeEvent =
       session_id: string;
       cwd: string;
       model_name: string;
+      available_models: AvailableModel[];
       mode: ModeState | null;
       history_updates?: SessionUpdate[];
     }

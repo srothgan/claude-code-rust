@@ -80,6 +80,23 @@ pub(super) fn map_available_agents_update(
     )
 }
 
+pub(super) fn map_available_models(
+    models: Vec<types::AvailableModel>,
+) -> Vec<model::AvailableModel> {
+    models
+        .into_iter()
+        .map(|model_info| {
+            let mut mapped = model::AvailableModel::new(model_info.id, model_info.display_name);
+            if let Some(description) = model_info.description
+                && !description.trim().is_empty()
+            {
+                mapped = mapped.description(description);
+            }
+            mapped
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
@@ -109,6 +126,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         ),
         types::SessionUpdate::AvailableAgentsUpdate { agents } => {
             Some(model::SessionUpdate::AvailableAgentsUpdate(map_available_agents_update(agents)))
+        }
+        types::SessionUpdate::ModeStateUpdate { mode } => {
+            Some(model::SessionUpdate::ModeStateUpdate(convert_mode_state(mode)))
         }
         types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
             Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(

@@ -29,12 +29,14 @@ pub(crate) mod paste_burst;
 mod permissions;
 mod selection;
 mod service_status_check;
+pub(crate) mod settings;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
 mod terminal;
 mod todos;
 mod update_check;
+mod view;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use cache_policy::{
@@ -47,6 +49,7 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
+pub use settings::{SettingsState, SettingsTab};
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, HelpView,
@@ -57,6 +60,7 @@ pub use state::{
     is_execute_tool_name,
 };
 pub use update_check::start_update_check;
+pub use view::ActiveView;
 
 use crate::agent::model;
 use crossterm::event::{
@@ -153,7 +157,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
-        if let Some(action) = app.paste_burst.tick(Instant::now()) {
+        if app.active_view == ActiveView::Chat
+            && let Some(action) = app.paste_burst.tick(Instant::now())
+        {
             match action {
                 paste_burst::FlushAction::EmitChar(ch) => {
                     let _ = app.input.textarea_insert_char(ch);
@@ -165,13 +171,13 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if !app.pending_paste_text.is_empty() {
+        if app.active_view == ActiveView::Chat && !app.pending_paste_text.is_empty() {
             finalize_pending_paste_event(app);
         }
 
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, strip the trailing newline and submit.
-        if app.pending_submit {
+        if app.active_view == ActiveView::Chat && app.pending_submit {
             app.pending_submit = false;
             finalize_deferred_submit(app);
         }

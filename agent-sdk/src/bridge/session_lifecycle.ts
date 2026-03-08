@@ -6,23 +6,26 @@ import {
   listSessions,
   query,
   type CanUseTool,
+  type ModelInfo,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
   type Query,
   type SDKUserMessage,
+  type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AvailableCommand,
+  AvailableModel,
   BridgeCommand,
   FastModeState,
   PermissionOutcome,
   PermissionRequest,
+  SessionLaunchSettings,
   SessionUpdate,
   ToolCall,
 } from "../types.js";
 import { AsyncQueue, logPermissionDebug } from "./shared.js";
-import { toPermissionMode, buildModeState } from "./commands.js";
 import {
   formatPermissionUpdates,
   permissionOptionsFromSuggestions,
@@ -65,9 +68,9 @@ export type SessionState = {
   sessionId: string;
   cwd: string;
   model: string;
-  mode: PermissionMode;
+  availableModels: AvailableModel[];
+  mode: PermissionMode | null;
   fastModeState: FastModeState;
-  yolo: boolean;
   query: Query;
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
@@ -84,6 +87,9 @@ export type SessionState = {
 };
 
 export const sessions = new Map<string, SessionState>();
+const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
+const DEFAULT_MODEL_NAME = "default";
+const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 export function sessionById(sessionId: string): SessionState | null {
   return sessions.get(sessionId) ?? null;
@@ -116,17 +122,17 @@ export async function closeAllSessions(): Promise<void> {
 
 export async function createSession(params: {
   cwd: string;
-  yolo: boolean;
-  model?: string;
   resume?: string;
+  launchSettings: SessionLaunchSettings;
   connectEvent: ConnectEventKind;
   requestId?: string;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 }): Promise<void> {
   const input = new AsyncQueue<SDKUserMessage>();
-  const startMode: PermissionMode = params.yolo ? "bypassPermissions" : "default";
   const provisionalSessionId = params.resume ?? randomUUID();
+  const initialModel = initialSessionModel(params.launchSettings);
+  const initialMode = initialSessionMode(params.launchSettings);
 
   let session!: SessionState;
   const canUseTool: CanUseTool = async (toolName, inputData, options) => {
@@ -179,81 +185,25 @@ export async function createSession(params: {
   try {
     queryHandle = query({
       prompt: input,
-      options: {
+      options: buildQueryOptions({
         cwd: params.cwd,
-        includePartialMessages: true,
-        executable: "node",
-        ...(params.resume ? {} : { sessionId: provisionalSessionId }),
-        ...(claudeCodeExecutable
-          ? { pathToClaudeCodeExecutable: claudeCodeExecutable }
-          : {}),
-        ...(enableSdkDebug ? { debug: true } : {}),
-        ...(sdkDebugFile ? { debugFile: sdkDebugFile } : {}),
-        stderr: (line: string) => {
-          if (line.trim().length > 0) {
-            console.error(`[sdk stderr] ${line}`);
-          }
-        },
-        ...(enableSpawnDebug
-          ? {
-              spawnClaudeCodeProcess: (options: {
-                command: string;
-                args: string[];
-                cwd?: string;
-                env: Record<string, string | undefined>;
-                signal: AbortSignal;
-              }) => {
-                console.error(
-                  `[sdk spawn] command=${options.command} args=${JSON.stringify(options.args)} cwd=${options.cwd ?? "<none>"}`,
-                );
-                const child = spawnChild(options.command, options.args, {
-                  cwd: options.cwd,
-                  env: options.env,
-                  signal: options.signal,
-                  stdio: ["pipe", "pipe", "pipe"],
-                  windowsHide: true,
-                });
-                child.on("error", (error) => {
-                  console.error(
-                    `[sdk spawn error] code=${(error as NodeJS.ErrnoException).code ?? "<none>"} message=${error.message}`,
-                  );
-                });
-                return child;
-              },
-            }
-          : {}),
-        // Match claude-agent-acp defaults to avoid emitting an empty
-        // --setting-sources argument.
-        settingSources: ["user", "project", "local"],
-        permissionMode: startMode,
-        allowDangerouslySkipPermissions: params.yolo,
         resume: params.resume,
-        model: params.model,
+        launchSettings: params.launchSettings,
+        provisionalSessionId,
+        input,
         canUseTool,
-        onElicitation: async (request) => {
-          const requestMode = typeof request.mode === "string" ? request.mode : "unknown";
-          const requestServer =
-            typeof request.serverName === "string" && request.serverName.trim().length > 0
-              ? request.serverName
-              : "unknown";
-          const requestMessage =
-            typeof request.message === "string" && request.message.trim().length > 0
-              ? request.message
-              : "<no message>";
-          console.error(
-            `[sdk warn] elicitation unsupported without MCP settings UI; ` +
-              `auto-canceling session_id=${session.sessionId} server=${requestServer} ` +
-              `mode=${requestMode} message=${JSON.stringify(requestMessage)}`,
-          );
-          return { action: "cancel" as const };
-        },
-      },
+        claudeCodeExecutable,
+        sdkDebugFile,
+        enableSdkDebug,
+        enableSpawnDebug,
+        sessionIdForLogs: () => session.sessionId,
+      }),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `query() failed: node_executable=${process.execPath}; cwd=${params.cwd}; ` +
-        `resume=${params.resume ?? "<none>"}; model=${params.model ?? "<none>"}; ` +
+        `resume=${params.resume ?? "<none>"}; ` +
         `CLAUDE_CODE_EXECUTABLE=${claudeCodeExecutable ?? "<unset>"}; error=${message}`,
     );
   }
@@ -261,10 +211,10 @@ export async function createSession(params: {
   session = {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
-    model: params.model ?? "default",
-    mode: startMode,
+    model: initialModel,
+    availableModels: [],
+    mode: initialMode,
     fastModeState: "off",
-    yolo: params.yolo,
     query: queryHandle,
     input,
     connected: false,
@@ -289,6 +239,7 @@ export async function createSession(params: {
   void session.query
     .initializationResult()
     .then((result) => {
+      session.availableModels = mapAvailableModels(result.models);
       if (!session.connected) {
         emitConnectEvent(session);
       }
@@ -340,6 +291,145 @@ export async function createSession(params: {
       failConnection(`agent stream failed: ${message}`, params.requestId);
     }
   })();
+}
+
+type QueryOptionsBuilderParams = {
+  cwd: string;
+  resume?: string;
+  launchSettings: SessionLaunchSettings;
+  provisionalSessionId: string;
+  input: AsyncQueue<SDKUserMessage>;
+  canUseTool: CanUseTool;
+  claudeCodeExecutable?: string;
+  sdkDebugFile?: string;
+  enableSdkDebug: boolean;
+  enableSpawnDebug: boolean;
+  sessionIdForLogs: () => string;
+};
+
+function permissionModeFromLaunchSettings(rawMode: string | undefined): PermissionMode | undefined {
+  if (rawMode === undefined) {
+    return undefined;
+  }
+  switch (rawMode) {
+    case "default":
+    case "acceptEdits":
+    case "bypassPermissions":
+    case "plan":
+    case "dontAsk":
+      return rawMode;
+    default:
+      throw new Error(`unsupported launch_settings.permission_mode: ${rawMode}`);
+  }
+}
+
+function initialSessionModel(launchSettings: SessionLaunchSettings): string {
+  return launchSettings.model?.trim() || DEFAULT_MODEL_NAME;
+}
+
+function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMode {
+  return permissionModeFromLaunchSettings(launchSettings.permission_mode) ?? DEFAULT_PERMISSION_MODE;
+}
+
+export function buildQueryOptions(params: QueryOptionsBuilderParams) {
+  const permissionMode = permissionModeFromLaunchSettings(
+    params.launchSettings.permission_mode,
+  );
+  return {
+    cwd: params.cwd,
+    includePartialMessages: true,
+    executable: "node" as const,
+    ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
+    ...(params.launchSettings.model ? { model: params.launchSettings.model } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(params.claudeCodeExecutable
+      ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
+      : {}),
+    ...(params.enableSdkDebug ? { debug: true } : {}),
+    ...(params.sdkDebugFile ? { debugFile: params.sdkDebugFile } : {}),
+    stderr: (line: string) => {
+      if (line.trim().length > 0) {
+        console.error(`[sdk stderr] ${line}`);
+      }
+    },
+    ...(params.enableSpawnDebug
+      ? {
+          spawnClaudeCodeProcess: (options: {
+            command: string;
+            args: string[];
+            cwd?: string;
+            env: Record<string, string | undefined>;
+            signal: AbortSignal;
+          }) => {
+            console.error(
+              `[sdk spawn] command=${options.command} args=${JSON.stringify(options.args)} cwd=${options.cwd ?? "<none>"}`,
+            );
+            const child = spawnChild(options.command, options.args, {
+              cwd: options.cwd,
+              env: options.env,
+              signal: options.signal,
+              stdio: ["pipe", "pipe", "pipe"],
+              windowsHide: true,
+            });
+            child.on("error", (error) => {
+              console.error(
+                `[sdk spawn error] code=${(error as NodeJS.ErrnoException).code ?? "<none>"} message=${error.message}`,
+              );
+            });
+            return child;
+          },
+        }
+      : {}),
+    // Match claude-agent-acp defaults to avoid emitting an empty
+    // --setting-sources argument.
+    settingSources: DEFAULT_SETTING_SOURCES,
+    resume: params.resume,
+    canUseTool: params.canUseTool,
+    onElicitation: async (request: {
+      mode?: string;
+      serverName?: string;
+      message?: string;
+    }) => {
+      const requestMode = typeof request.mode === "string" ? request.mode : "unknown";
+      const requestServer =
+        typeof request.serverName === "string" && request.serverName.trim().length > 0
+          ? request.serverName
+          : "unknown";
+      const requestMessage =
+        typeof request.message === "string" && request.message.trim().length > 0
+          ? request.message
+          : "<no message>";
+      console.error(
+        `[sdk warn] elicitation unsupported without MCP settings UI; ` +
+          `auto-canceling session_id=${params.sessionIdForLogs()} server=${requestServer} ` +
+          `mode=${requestMode} message=${JSON.stringify(requestMessage)}`,
+      );
+      return { action: "cancel" as const };
+    },
+  };
+}
+
+function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
+  if (!Array.isArray(models)) {
+    return [];
+  }
+
+  return models
+    .filter((entry): entry is ModelInfo & { value: string; displayName: string } => {
+      return (
+        typeof entry?.value === "string" &&
+        entry.value.trim().length > 0 &&
+        typeof entry.displayName === "string" &&
+        entry.displayName.trim().length > 0
+      );
+    })
+    .map((entry) => ({
+      id: entry.value,
+      display_name: entry.displayName,
+      ...(typeof entry.description === "string" && entry.description.trim().length > 0
+        ? { description: entry.description }
+        : {}),
+    }));
 }
 
 export function handlePermissionResponse(command: Extract<BridgeCommand, { command: "permission_response" }>): void {

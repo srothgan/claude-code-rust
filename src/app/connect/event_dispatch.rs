@@ -26,7 +26,18 @@ use crate::error::AppError;
 use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
-use super::type_converters::{convert_mode_state, map_permission_request, map_session_update};
+use super::type_converters::{
+    convert_mode_state, map_available_models, map_permission_request, map_session_update,
+};
+
+struct ConnectedEventData {
+    session_id: String,
+    cwd: String,
+    model_name: String,
+    available_models: Vec<types::AvailableModel>,
+    mode: Option<types::ModeState>,
+    history_updates: Option<Vec<types::SessionUpdate>>,
+}
 
 pub(super) fn handle_bridge_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
@@ -40,17 +51,21 @@ pub(super) fn handle_bridge_event(
             session_id,
             cwd,
             model_name,
+            available_models,
             mode,
             history_updates,
         } => {
             handle_connected_event(
                 event_tx,
                 connected_once,
-                session_id,
-                cwd,
-                model_name,
-                mode,
-                history_updates,
+                ConnectedEventData {
+                    session_id,
+                    cwd,
+                    model_name,
+                    available_models,
+                    mode,
+                    history_updates,
+                },
             );
         }
         crate::agent::wire::BridgeEvent::AuthRequired { method_name, method_description } => {
@@ -99,6 +114,7 @@ pub(super) fn handle_bridge_event(
             session_id,
             cwd,
             model_name,
+            available_models,
             mode,
             history_updates,
         } => {
@@ -111,6 +127,7 @@ pub(super) fn handle_bridge_event(
                 session_id: model::SessionId::new(session_id),
                 cwd,
                 model_name,
+                available_models: map_available_models(available_models),
                 mode: mode.map(convert_mode_state),
                 history_updates,
             });
@@ -125,30 +142,37 @@ pub(super) fn handle_bridge_event(
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     connected_once: &mut bool,
-    session_id: String,
-    cwd: String,
-    model_name: String,
-    mode: Option<types::ModeState>,
-    history_updates: Option<Vec<types::SessionUpdate>>,
+    event: ConnectedEventData,
 ) {
-    tracing::info!("bridge connected: session_id={} cwd={} model={}", session_id, cwd, model_name);
-    let mode = mode.map(convert_mode_state);
-    let history_updates =
-        history_updates.unwrap_or_default().into_iter().filter_map(map_session_update).collect();
+    tracing::info!(
+        "bridge connected: session_id={} cwd={} model={}",
+        event.session_id,
+        event.cwd,
+        event.model_name
+    );
+    let mode = event.mode.map(convert_mode_state);
+    let history_updates = event
+        .history_updates
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(map_session_update)
+        .collect();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(session_id),
-            cwd,
-            model_name,
+            session_id: model::SessionId::new(event.session_id),
+            cwd: event.cwd,
+            model_name: event.model_name,
+            available_models: map_available_models(event.available_models),
             mode,
             history_updates,
         });
     } else {
         *connected_once = true;
         let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(session_id),
-            cwd,
-            model_name,
+            session_id: model::SessionId::new(event.session_id),
+            cwd: event.cwd,
+            model_name: event.model_name,
+            available_models: map_available_models(event.available_models),
             mode,
             history_updates,
         });

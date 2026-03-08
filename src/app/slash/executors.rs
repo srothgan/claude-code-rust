@@ -21,6 +21,7 @@ use super::{
     set_command_pending,
 };
 use crate::agent::events::ClientEvent;
+use crate::app::connect::{SessionStartReason, resume_session, start_new_session};
 use crate::app::events::push_system_message_with_severity;
 use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
 
@@ -36,6 +37,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     match parsed.name {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
+        "/config" => handle_config_submit(app, &parsed.args),
         "/login" => handle_login_submit(app, &parsed.args),
         "/logout" => handle_logout_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
@@ -75,6 +77,18 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     false
 }
 
+fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /config");
+        return true;
+    }
+
+    if let Err(err) = crate::app::settings::open(app) {
+        push_system_message(app, format!("Failed to open settings: {err}"));
+    }
+    true
+}
+
 fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     if !args.is_empty() {
         push_system_message(app, "Usage: /login");
@@ -101,8 +115,6 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
 
     let tx = app.event_tx.clone();
     let conn = app.conn.clone();
-    let cwd = app.cwd_raw.clone();
-    let model = app.model_name.clone();
     tokio::task::spawn_local(async move {
         tracing::debug!("Suspending TUI for claude auth login");
         crate::app::suspend_terminal();
@@ -134,7 +146,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                         return;
                     }
                     if let Some(conn) = conn {
-                        let _ = tx.send(ClientEvent::AuthCompleted { conn, cwd, model });
+                        let _ = tx.send(ClientEvent::AuthCompleted { conn });
                     } else {
                         let _ = tx.send(ClientEvent::SlashCommandError(
                             "Login succeeded but no connection available to start a session."
@@ -309,6 +321,13 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
+    if !app.available_models.is_empty()
+        && !app.available_models.iter().any(|candidate| candidate.id == model_name)
+    {
+        push_system_message(app, format!("Unknown model: {model_name}"));
+        return true;
+    }
+
     set_command_pending(
         app,
         "Switching model...",
@@ -343,16 +362,11 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
 
     set_command_pending(app, "Starting new session...", None);
 
-    let tx = app.event_tx.clone();
-    let cwd = app.cwd_raw.clone();
-    let model_override = Some(app.model_name.clone());
-    let yolo = false;
-    tokio::task::spawn_local(async move {
-        if let Err(e) = conn.new_session(cwd, yolo, model_override) {
-            let _ =
-                tx.send(ClientEvent::SlashCommandError(format!("Failed to run /new-session: {e}")));
-        }
-    });
+    if let Err(e) = start_new_session(app, &conn, SessionStartReason::NewSession) {
+        let _ = app
+            .event_tx
+            .send(ClientEvent::SlashCommandError(format!("Failed to run /new-session: {e}")));
+    }
     true
 }
 
@@ -374,13 +388,12 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
 
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     app.resuming_session_id = Some(session_id.to_owned());
-    let tx = app.event_tx.clone();
     let session_id = session_id.to_owned();
-    tokio::task::spawn_local(async move {
-        if let Err(e) = conn.resume_session(session_id) {
-            let _ = tx.send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
-        }
-    });
+    if let Err(e) = resume_session(app, &conn, session_id) {
+        let _ = app
+            .event_tx
+            .send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
+    }
     true
 }
 

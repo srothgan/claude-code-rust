@@ -35,7 +35,8 @@ export function emitConnectEvent(session: SessionState): void {
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: buildModeState(session.mode),
+          available_models: session.availableModels,
+          mode: session.mode ? buildModeState(session.mode) : null,
           ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         }
       : {
@@ -43,7 +44,8 @@ export function emitConnectEvent(session: SessionState): void {
           session_id: session.sessionId,
           cwd: session.cwd,
           model_name: session.model,
-          mode: buildModeState(session.mode),
+          available_models: session.availableModels,
+          mode: session.mode ? buildModeState(session.mode) : null,
           ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         };
   writeEvent(connectEvent, session.connectRequestId);

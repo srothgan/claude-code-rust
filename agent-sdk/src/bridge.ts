@@ -47,6 +47,7 @@ export {
   mapSdkSessions,
 } from "./bridge/history.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
+export { buildQueryOptions } from "./bridge/session_lifecycle.js";
 export {
   parseFastModeState,
   parseRateLimitStatus,
@@ -125,9 +126,8 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
     case "create_session":
       await createSession({
         cwd: command.cwd,
-        yolo: command.yolo,
-        model: command.model,
         resume: command.resume,
+        launchSettings: command.launch_settings,
         connectEvent: "connected",
         requestId,
       });
@@ -150,8 +150,8 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         const hadActiveSession = staleSessions.length > 0;
         await createSession({
           cwd: matched.cwd ?? process.cwd(),
-          yolo: false,
           resume: command.session_id,
+          launchSettings: command.launch_settings,
           ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
           connectEvent: hadActiveSession ? "session_replaced" : "connected",
           requestId,
@@ -168,8 +168,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       await closeAllSessions();
       await createSession({
         cwd: command.cwd,
-        yolo: command.yolo,
-        model: command.model,
+        launchSettings: command.launch_settings,
         connectEvent: "session_replaced",
         requestId,
       });

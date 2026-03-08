@@ -24,8 +24,8 @@ mod tool_updates;
 mod turn;
 
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
-    PendingCommandAck, SystemSeverity,
+    ActiveView, App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock,
+    MessageRole, PendingCommandAck, SystemSeverity,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -38,22 +38,12 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            app.active_paste_session = None;
-            super::keys::dispatch_key_by_focus(app, key);
+            dispatch_key_by_view(app, key);
         }
         Event::Mouse(mouse) => {
-            app.active_paste_session = None;
-            mouse::handle_mouse_event(app, mouse);
+            dispatch_mouse_by_view(app, mouse);
         }
-        Event::Paste(text) => {
-            if !matches!(
-                app.status,
-                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
-            ) && !app.is_compacting
-            {
-                app.queue_paste_text(&text);
-            }
-        }
+        Event::Paste(text) => dispatch_paste_by_view(app, &text),
         Event::FocusGained => {
             app.notifications.on_focus_gained();
             app.refresh_git_branch();
@@ -74,6 +64,35 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
     }
 }
 
+fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) {
+    match app.active_view {
+        ActiveView::Chat => {
+            app.active_paste_session = None;
+            super::keys::dispatch_key_by_focus(app, key);
+        }
+        ActiveView::Settings => super::settings::handle_key(app, key),
+    }
+}
+
+fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    if app.active_view == ActiveView::Chat {
+        app.active_paste_session = None;
+        mouse::handle_mouse_event(app, mouse);
+    }
+}
+
+fn dispatch_paste_by_view(app: &mut App, text: &str) {
+    if app.active_view != ActiveView::Chat {
+        return;
+    }
+
+    if !matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
+        && !app.is_compacting
+    {
+        app.queue_paste_text(text);
+    }
+}
+
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
@@ -87,12 +106,20 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnErrorClassified { message, class } => {
             turn::handle_turn_error_event(app, &message, Some(class));
         }
-        ClientEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
+        ClientEvent::Connected {
+            session_id,
+            cwd,
+            model_name,
+            available_models,
+            mode,
+            history_updates,
+        } => {
             session::handle_connected_client_event(
                 app,
                 session_id,
                 cwd,
                 model_name,
+                available_models,
                 mode,
                 &history_updates,
             );
@@ -109,12 +136,20 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SlashCommandError(msg) => {
             session::handle_slash_command_error_event(app, &msg);
         }
-        ClientEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
+        ClientEvent::SessionReplaced {
+            session_id,
+            cwd,
+            model_name,
+            available_models,
+            mode,
+            history_updates,
+        } => {
             session::handle_session_replaced_event(
                 app,
                 session_id,
                 cwd,
                 model_name,
+                available_models,
                 mode,
                 &history_updates,
             );
@@ -125,8 +160,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::ServiceStatus { severity, message } => {
             session::handle_service_status_event(app, severity, &message);
         }
-        ClientEvent::AuthCompleted { conn, cwd, model } => {
-            session::handle_auth_completed_event(app, conn, cwd, model);
+        ClientEvent::AuthCompleted { conn } => {
+            session::handle_auth_completed_event(app, &conn);
         }
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
@@ -183,9 +218,16 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 super::subagent::update_query(app);
             }
         }
+        model::SessionUpdate::ModeStateUpdate(mode) => {
+            app.mode = Some(mode);
+            app.cached_footer_line = None;
+            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
+                session::clear_pending_command(app);
+            }
+        }
         model::SessionUpdate::CurrentModeUpdate(update) => {
+            let mode_id = update.current_mode_id.to_string();
             if let Some(ref mut mode) = app.mode {
-                let mode_id = update.current_mode_id.to_string();
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
                     mode.current_mode_name.clone_from(&info.name);
                     mode.current_mode_id = mode_id;
@@ -293,6 +335,7 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::Plan(_) => "Plan",
         model::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
         model::SessionUpdate::AvailableAgentsUpdate(_) => "AvailableAgentsUpdate",
+        model::SessionUpdate::ModeStateUpdate(_) => "ModeStateUpdate",
         model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         model::SessionUpdate::FastModeUpdate(_) => "FastModeUpdate",
@@ -327,8 +370,9 @@ mod tests {
     use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::app::{
-        CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission, TodoItem, TodoStatus,
-        ToolCallInfo, ToolCallScope, mention,
+        ActiveView, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
+        SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
+        ToolCallScope, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
@@ -692,6 +736,7 @@ mod tests {
             session_id: model::SessionId::new("test-session"),
             cwd: "/test".into(),
             model_name: model_name.to_owned(),
+            available_models: Vec::new(),
             mode: None,
             history_updates: Vec::new(),
         }
@@ -1137,6 +1182,7 @@ mod tests {
                 session_id: model::SessionId::new("session-cwd"),
                 cwd: "/changed".into(),
                 model_name: "claude-updated".into(),
+                available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
             },
@@ -1289,6 +1335,7 @@ mod tests {
                 session_id: model::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
                 model_name: "new-model".into(),
+                available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
             },
@@ -1424,6 +1471,7 @@ mod tests {
                 session_id: model::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 model_name: "new-model".into(),
+                available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
             },
@@ -1453,6 +1501,7 @@ mod tests {
                 session_id: model::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
                 model_name: "new-model".into(),
+                available_models: Vec::new(),
                 mode: None,
                 history_updates,
             },
@@ -1482,6 +1531,7 @@ mod tests {
                 session_id: model::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
                 model_name: "new-model".into(),
+                available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             },
@@ -2812,6 +2862,60 @@ mod tests {
 
         assert_eq!(app.input.cursor_row(), 1);
         assert_eq!(app.viewport.scroll_target, 3);
+    }
+
+    #[test]
+    fn settings_view_routes_enter_to_settings_handler_not_chat_submit() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Settings;
+        app.input.set_text("seed");
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "seed");
+        assert!(!app.pending_submit);
+        assert!(app.settings.fast_mode_effective());
+        assert!(app.settings.dirty);
+    }
+
+    #[test]
+    fn settings_view_ignores_paste_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Settings;
+
+        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn settings_view_ignores_mouse_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Settings;
+        app.viewport.scroll_target = 4;
+        app.selection = Some(SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert_eq!(app.viewport.scroll_target, 4);
+        assert!(app.selection.is_some());
     }
 
     #[test]

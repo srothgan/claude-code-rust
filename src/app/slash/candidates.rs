@@ -141,6 +141,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/cancel".into(), "Cancel active turn".into());
     by_name.insert("/compact".into(), "Compact session context".into());
+    by_name.insert("/config".into(), "Open settings".into());
     by_name.insert("/login".into(), "Authenticate with Claude".into());
     by_name.insert("/logout".into(), "Sign out of Claude".into());
     by_name.insert("/mode".into(), "Set session mode".into());
@@ -251,17 +252,6 @@ fn session_age_label(last_modified_ms: Option<u64>) -> String {
     format_relative_age(epoch)
 }
 
-/// Source: <https://code.claude.com/docs/en/model-config>
-/// Section: Model aliases
-const CLAUDE_CODE_MODEL_CANDIDATES: &[(&str, &str)] = &[
-    ("default", "Recommended model setting based on account"),
-    ("sonnet", "Latest Sonnet model for daily coding tasks"),
-    ("opus", "Latest Opus model for complex reasoning tasks"),
-    ("haiku", "Fast and efficient model for simple tasks"),
-    ("sonnet[1m]", "Sonnet with 1 million token context window"),
-    ("opusplan", "Opus during plan mode, Sonnet during execution"),
-];
-
 pub(super) fn argument_candidates(
     app: &App,
     command_name: &str,
@@ -300,12 +290,16 @@ pub(super) fn argument_candidates(
                     .collect()
             })
             .unwrap_or_default(),
-        "/model" => CLAUDE_CODE_MODEL_CANDIDATES
+        "/model" => app
+            .available_models
             .iter()
-            .map(|(name, label)| SlashCandidate {
-                insert_value: (*name).to_owned(),
-                primary: (*name).to_owned(),
-                secondary: Some((*label).to_owned()),
+            .map(|model| SlashCandidate {
+                insert_value: model.id.clone(),
+                primary: model.display_name.clone(),
+                secondary: model
+                    .description
+                    .clone()
+                    .or_else(|| (model.display_name != model.id).then(|| model.id.clone())),
             })
             .collect(),
         _ => Vec::new(),
@@ -345,6 +339,8 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
 }
 
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
-    matches!(command_name, "/cancel" | "/compact" | "/mode" | "/model" | "/new-session" | "/resume")
-        || advertised_commands(app).iter().any(|c| c == command_name)
+    matches!(
+        command_name,
+        "/cancel" | "/compact" | "/config" | "/mode" | "/model" | "/new-session" | "/resume"
+    ) || advertised_commands(app).iter().any(|c| c == command_name)
 }

@@ -6,6 +6,7 @@ import type {
   ModeInfo,
   ModeState,
   PermissionOutcome,
+  SessionLaunchSettings,
 } from "../types.js";
 
 const MODE_NAMES: Record<PermissionMode, string> = {
@@ -39,14 +40,6 @@ function expectString(record: Record<string, unknown>, key: string, context: str
   return value;
 }
 
-function expectBoolean(record: Record<string, unknown>, key: string, context: string): boolean {
-  const value = record[key];
-  if (typeof value !== "boolean") {
-    throw new Error(`${context}.${key} must be a boolean`);
-  }
-  return value;
-}
-
 function optionalString(
   record: Record<string, unknown>,
   key: string,
@@ -68,6 +61,24 @@ function optionalMetadata(record: Record<string, unknown>, key: string): Record<
     return {};
   }
   return asRecord(value, `${key} metadata`) as Record<string, Json>;
+}
+
+function optionalLaunchSettings(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): SessionLaunchSettings {
+  const value = record[key];
+  if (value === undefined || value === null) {
+    return {};
+  }
+  const parsed = asRecord(value, `${context}.${key}`);
+  const model = optionalString(parsed, "model", `${context}.${key}`);
+  const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
+  return {
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permission_mode: permissionMode } : {}),
+  };
 }
 
 function parsePromptChunks(
@@ -102,23 +113,22 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "create_session",
           cwd: expectString(raw, "cwd", "create_session"),
-          yolo: expectBoolean(raw, "yolo", "create_session"),
-          model: optionalString(raw, "model", "create_session"),
           resume: optionalString(raw, "resume", "create_session"),
+          launch_settings: optionalLaunchSettings(raw, "launch_settings", "create_session"),
           metadata: optionalMetadata(raw, "metadata"),
         };
       case "resume_session":
         return {
           command: "resume_session",
           session_id: expectString(raw, "session_id", "resume_session"),
+          launch_settings: optionalLaunchSettings(raw, "launch_settings", "resume_session"),
           metadata: optionalMetadata(raw, "metadata"),
         };
       case "new_session":
         return {
           command: "new_session",
           cwd: expectString(raw, "cwd", "new_session"),
-          yolo: expectBoolean(raw, "yolo", "new_session"),
-          model: optionalString(raw, "model", "new_session"),
+          launch_settings: optionalLaunchSettings(raw, "launch_settings", "new_session"),
         };
       case "prompt":
         return {

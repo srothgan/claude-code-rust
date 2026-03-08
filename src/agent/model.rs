@@ -478,6 +478,26 @@ impl AvailableAgent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailableModel {
+    pub id: String,
+    pub display_name: String,
+    pub description: Option<String>,
+}
+
+impl AvailableModel {
+    #[must_use]
+    pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self { id: id.into(), display_name: display_name.into(), description: None }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgentsUpdate {
     pub available_agents: Vec<AvailableAgent>,
 }
@@ -566,6 +586,7 @@ pub enum SessionUpdate {
     Plan(Plan),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
+    ModeStateUpdate(crate::app::ModeState),
     CurrentModeUpdate(CurrentModeUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     FastModeUpdate(FastModeState),

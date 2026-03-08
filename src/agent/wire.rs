@@ -18,6 +18,21 @@ use crate::agent::types;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLaunchSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+}
+
+impl SessionLaunchSettings {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.permission_mode.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,14 +51,16 @@ pub enum BridgeCommand {
     },
     CreateSession {
         cwd: String,
-        yolo: bool,
-        model: Option<String>,
         resume: Option<String>,
+        #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
+        launch_settings: SessionLaunchSettings,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
     },
     ResumeSession {
         session_id: String,
+        #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
+        launch_settings: SessionLaunchSettings,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
     },
@@ -64,8 +81,8 @@ pub enum BridgeCommand {
     },
     NewSession {
         cwd: String,
-        yolo: bool,
-        model: Option<String>,
+        #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
+        launch_settings: SessionLaunchSettings,
     },
     PermissionResponse {
         session_id: String,
@@ -90,6 +107,8 @@ pub enum BridgeEvent {
         session_id: String,
         cwd: String,
         model_name: String,
+        #[serde(default)]
+        available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },
@@ -126,6 +145,8 @@ pub enum BridgeEvent {
         session_id: String,
         cwd: String,
         model_name: String,
+        #[serde(default)]
+        available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },

@@ -147,6 +147,7 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
             request_id: None,
             command: BridgeCommand::ResumeSession {
                 session_id: resume.clone(),
+                launch_settings: params.session_launch_settings.clone(),
                 metadata: std::collections::BTreeMap::new(),
             },
         }
@@ -155,9 +156,8 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
             request_id: None,
             command: BridgeCommand::CreateSession {
                 cwd: params.cwd_raw.clone(),
-                yolo: params.yolo,
-                model: params.model_override.clone(),
                 resume: None,
+                launch_settings: params.session_launch_settings.clone(),
                 metadata: std::collections::BTreeMap::new(),
             },
         }
