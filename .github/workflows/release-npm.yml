@@ -150,8 +150,8 @@ jobs:
       - name: Install agent-sdk dependencies
         run: pnpm -C agent-sdk install
 
-      - name: Sync npm version from Cargo.toml
-        run: npm version "${{ needs.verify.outputs.version }}" --no-git-tag-version --allow-same-version
+      - name: Sync package version from Cargo.toml
+        run: pnpm version "${{ needs.verify.outputs.version }}" --no-git-tag-version --allow-same-version
 
-      - name: Publish to npm
-        run: npm publish --access public --provenance
+      - name: Publish package to npm
+        run: pnpm publish --access public --provenance

@@ -25,6 +25,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.63"
   },
+  "packageManager": "pnpm@10.16.1",
   "scripts": {
     "postinstall": "node ./scripts/postinstall.js",
     "prepack": "pnpm -C agent-sdk run build"

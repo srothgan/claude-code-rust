@@ -24,7 +24,7 @@ function resolveInstall() {
     return {
       error:
         `Missing binary at ${binaryPath}\n` +
-        "Reinstall with `npm install -g claude-code-rust` to fetch release artifacts."
+        "Reinstall with `pnpm add -g claude-code-rust` to fetch release artifacts."
     };
   }
 

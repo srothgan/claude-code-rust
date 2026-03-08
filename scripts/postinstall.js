@@ -27,7 +27,7 @@ async function downloadFile(url, outPath, redirects = 0) {
   await new Promise((resolve, reject) => {
     const req = https.get(
       url,
-      { headers: { "User-Agent": "claude-code-rust-npm-installer" } },
+      { headers: { "User-Agent": "claude-code-rust-pnpm-installer" } },
       (res) => {
         const status = res.statusCode ?? 0;
 
@@ -60,7 +60,7 @@ async function main() {
   const info = getTargetInfo();
   if (!info) {
     const key = `${process.platform}:${process.arch}`;
-    throw new Error(`Unsupported platform/arch for claude-code-rust npm install: ${key}`);
+    throw new Error(`Unsupported platform/arch for claude-code-rust package install: ${key}`);
   }
 
   const pkgJsonPath = path.join(__dirname, "..", "package.json");

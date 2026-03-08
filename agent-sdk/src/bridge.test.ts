@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  AsyncQueue,
   CACHE_SPLIT_POLICY,
   buildRateLimitUpdate,
+  buildQueryOptions,
   buildToolResultFields,
   createToolCall,
   mapAvailableAgents,
@@ -44,6 +46,10 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
       request_id: "req-2",
       command: "resume_session",
       session_id: "session-123",
+      launch_settings: {
+        model: "haiku",
+        permission_mode: "plan",
+      },
     }),
   );
   assert.equal(parsed.requestId, "req-2");
@@ -52,6 +58,47 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
     throw new Error("unexpected command variant");
   }
   assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.launch_settings.model, "haiku");
+  assert.equal(parsed.command.launch_settings.permission_mode, "plan");
+});
+
+test("buildQueryOptions maps launch settings into sdk query options", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      model: "haiku",
+      permission_mode: "plan",
+    },
+    provisionalSessionId: "session-1",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-1",
+  });
+
+  assert.equal(options.model, "haiku");
+  assert.equal(options.permissionMode, "plan");
+  assert.equal(options.sessionId, "session-1");
+  assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+});
+
+test("buildQueryOptions omits startup overrides for default logout path", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {},
+    provisionalSessionId: "session-2",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-2",
+  });
+
+  assert.equal("model" in options, false);
+  assert.equal("permissionMode" in options, false);
 });
 
 test("parseCommandEnvelope rejects missing required fields", () => {
@@ -390,7 +437,7 @@ test("permissionOptionsFromSuggestions uses persistent label when settings scope
       type: "addRules",
       behavior: "allow",
       destination: "localSettings",
-      rules: [{ toolName: "Bash", ruleContent: "npm install" }],
+      rules: [{ toolName: "Bash", ruleContent: "pnpm install" }],
     },
   ]);
   assert.deepEqual(options, [
@@ -404,14 +451,14 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
   const allow = permissionResultFromOutcome(
     { outcome: "selected", option_id: "allow_always" },
     "tool-1",
-    { command: "npm install" },
+    { command: "pnpm install" },
     [
       {
         type: "addRules",
         behavior: "allow",
         destination: "localSettings",
         rules: [
-          { toolName: "Bash", ruleContent: "npm install" },
+          { toolName: "Bash", ruleContent: "pnpm install" },
           { toolName: "WebFetch", ruleContent: "https://example.com" },
           { toolName: "Bash", ruleContent: "dir /B" },
         ],
@@ -430,7 +477,7 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
       behavior: "allow",
       destination: "localSettings",
       rules: [
-        { toolName: "Bash", ruleContent: "npm install" },
+        { toolName: "Bash", ruleContent: "pnpm install" },
         { toolName: "WebFetch", ruleContent: "https://example.com" },
         { toolName: "Bash", ruleContent: "dir /B" },
       ],
