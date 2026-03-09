@@ -1173,7 +1173,6 @@ mod tests {
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
-        app.file_cache = Some(Vec::new());
         app.resuming_session_id = Some("resume-123".into());
 
         handle_client_event(
@@ -1190,7 +1189,6 @@ mod tests {
 
         assert_eq!(app.cwd_raw, "/changed");
         assert_eq!(app.cwd, "/changed");
-        assert!(app.file_cache.is_none());
         assert!(app.resuming_session_id.is_none());
         let Some(first) = app.messages.first() else {
             panic!("missing welcome message");
@@ -1321,13 +1319,7 @@ mod tests {
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.mention = Some(mention::MentionState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            candidates: Vec::new(),
-            dialog: super::super::dialog::DialogState::default(),
-        });
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
 
         handle_client_event(
             &mut app,
@@ -2393,13 +2385,7 @@ mod tests {
             true,
         );
 
-        app.mention = Some(mention::MentionState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            candidates: Vec::new(),
-            dialog: super::super::dialog::DialogState::default(),
-        });
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
@@ -2803,13 +2789,7 @@ mod tests {
         });
         app.show_todo_panel = true;
         app.claim_focus_target(FocusTarget::TodoList);
-        app.mention = Some(mention::MentionState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            candidates: Vec::new(),
-            dialog: super::super::dialog::DialogState::default(),
-        });
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.claim_focus_target(FocusTarget::Mention);
 
         handle_terminal_event(

@@ -66,6 +66,7 @@ impl SettingsTab {
 pub enum SettingId {
     FastMode,
     DefaultPermissionMode,
+    RespectGitignore,
     Model,
     Theme,
     Notifications,
@@ -285,7 +286,7 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "vim", label: "Vim" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 6] = [
+const CONFIG_SETTINGS: [SettingSpec; 7] = [
     SettingSpec {
         id: SettingId::FastMode,
         entry_id: "A05",
@@ -312,6 +313,20 @@ const CONFIG_SETTINGS: [SettingSpec; 6] = [
         source: ValueSource::RuntimeBacked,
         options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes),
         fallback: FallbackPolicy::RuntimeDefault,
+        supported: true,
+    },
+    SettingSpec {
+        id: SettingId::RespectGitignore,
+        entry_id: "A10",
+        label: "Respect .gitignore",
+        description: "Controls whether @ file mentions hide entries ignored by git ignore rules.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["respectGitignore"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
         supported: true,
     },
     SettingSpec {
@@ -473,6 +488,11 @@ impl SettingsState {
     }
 
     #[must_use]
+    pub fn respect_gitignore_effective(&self) -> bool {
+        store::respect_gitignore(&self.committed_preferences_document).unwrap_or(true)
+    }
+
+    #[must_use]
     pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
         store::preferred_notification_channel(&self.committed_preferences_document)
             .unwrap_or_default()
@@ -547,10 +567,11 @@ pub fn config_setting(id: SettingId) -> &'static SettingSpec {
     match id {
         SettingId::FastMode => &CONFIG_SETTINGS[0],
         SettingId::DefaultPermissionMode => &CONFIG_SETTINGS[1],
-        SettingId::Model => &CONFIG_SETTINGS[2],
-        SettingId::Theme => &CONFIG_SETTINGS[3],
-        SettingId::Notifications => &CONFIG_SETTINGS[4],
-        SettingId::EditorMode => &CONFIG_SETTINGS[5],
+        SettingId::RespectGitignore => &CONFIG_SETTINGS[2],
+        SettingId::Model => &CONFIG_SETTINGS[3],
+        SettingId::Theme => &CONFIG_SETTINGS[4],
+        SettingId::Notifications => &CONFIG_SETTINGS[5],
+        SettingId::EditorMode => &CONFIG_SETTINGS[6],
     }
 }
 
@@ -663,6 +684,7 @@ pub fn save(app: &mut App) -> Result<(), String> {
         return Err(message);
     };
 
+    let previous_respect_gitignore = app.settings.respect_gitignore_effective();
     let mut saved_any = false;
     if app.settings.draft_settings_document != app.settings.committed_settings_document {
         store::save(&settings_path, &app.settings.draft_settings_document)?;
@@ -674,6 +696,10 @@ pub fn save(app: &mut App) -> Result<(), String> {
         app.settings.committed_preferences_document =
             app.settings.draft_preferences_document.clone();
         saved_any = true;
+    }
+    let current_respect_gitignore = app.settings.respect_gitignore_effective();
+    if previous_respect_gitignore != current_respect_gitignore {
+        crate::app::mention::invalidate_session_cache(app);
     }
     app.settings.dirty = false;
     app.settings.last_error = None;
@@ -750,6 +776,12 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
         SettingId::FastMode => {
             let next = !store::fast_mode(&app.settings.draft_settings_document).unwrap_or(false);
             store::set_fast_mode(&mut app.settings.draft_settings_document, next);
+            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+        }
+        SettingId::RespectGitignore => {
+            let next =
+                !store::respect_gitignore(&app.settings.draft_preferences_document).unwrap_or(true);
+            store::set_respect_gitignore(&mut app.settings.draft_preferences_document, next);
             mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
         }
         SettingId::DefaultPermissionMode => {
@@ -845,7 +877,10 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
         SettingId::Theme => "dark",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
-        SettingId::FastMode | SettingId::DefaultPermissionMode | SettingId::Model => "",
+        SettingId::FastMode
+        | SettingId::DefaultPermissionMode
+        | SettingId::RespectGitignore
+        | SettingId::Model => "",
     }
 }
 
@@ -921,6 +956,7 @@ fn resolve_setting_document(
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
+        SettingId::RespectGitignore => resolve_bool_setting(document, spec, true),
         SettingId::Model => resolve_model_setting(document, spec, available_models),
         SettingId::Theme => resolve_string_setting(document, spec, "dark"),
         SettingId::Notifications => {
@@ -1099,7 +1135,10 @@ mod tests {
         assert_eq!(app.settings.selected_config_index, 5);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 5);
+        assert_eq!(app.settings.selected_config_index, 6);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 6);
     }
 
     #[test]
@@ -1114,6 +1153,35 @@ mod tests {
             store::default_permission_mode(&app.settings.draft_settings_document),
             Ok(DefaultPermissionMode::AcceptEdits)
         );
+    }
+
+    #[test]
+    fn respect_gitignore_toggles_in_preferences_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 2;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(store::respect_gitignore(&app.settings.draft_preferences_document), Ok(false));
+    }
+
+    #[test]
+    fn save_respect_gitignore_invalidates_active_mention_session_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        open(&mut app).expect("open");
+        app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
+        app.settings.selected_config_index = 2;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        save(&mut app).expect("save");
+
+        let mention = app.mention.as_ref().expect("mention should stay active");
+        assert!(mention.candidates.is_empty());
+        assert_eq!(mention.placeholder_message().as_deref(), Some("Searching files..."));
+        assert!(!app.settings.respect_gitignore_effective());
     }
 
     #[test]
@@ -1154,7 +1222,7 @@ mod tests {
     fn notifications_cycle_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 4;
+        app.settings.selected_config_index = 5;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1168,7 +1236,7 @@ mod tests {
     fn theme_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 3;
+        app.settings.selected_config_index = 4;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1183,7 +1251,7 @@ mod tests {
     fn editor_mode_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 5;
+        app.settings.selected_config_index = 6;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

@@ -160,7 +160,6 @@ pub fn create_app(cli: &Cli) -> App {
         pending_paste_session: None,
         active_paste_session: None,
         next_paste_session_id: 1,
-        file_cache: None,
         cached_todo_compact: None,
         git_branch: None,
         cached_header_line: None,

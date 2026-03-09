@@ -52,7 +52,7 @@ struct DropdownMeta {
 }
 
 pub fn is_active(app: &App) -> bool {
-    app.mention.as_ref().is_some_and(|m| !m.candidates.is_empty())
+    app.mention.is_some()
         || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
@@ -60,7 +60,7 @@ pub fn is_active(app: &App) -> bool {
 #[allow(clippy::cast_possible_truncation)]
 pub fn compute_height(app: &App) -> u16 {
     let count = if let Some(m) = &app.mention {
-        m.candidates.len()
+        m.candidates.len().max(1)
     } else if let Some(s) = &app.slash {
         s.candidates.len()
     } else if let Some(s) = &app.subagent {
@@ -123,9 +123,7 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
 }
 
 fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
-    if let Some(m) = &app.mention
-        && !m.candidates.is_empty()
-    {
+    if let Some(m) = &app.mention {
         return Some(Dropdown::Mention(m));
     }
     if let Some(s) = &app.slash
@@ -152,14 +150,13 @@ fn dropdown_trigger(dropdown: &Dropdown<'_>) -> (usize, usize) {
 fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
     match dropdown {
         Dropdown::Mention(m) => {
-            let visible_count = m.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE);
-            DropdownMeta {
-                visible_count,
-                start,
-                end,
-                title: format!(" Files & Folders ({}) ", m.candidates.len()),
-            }
+            let visible_count = m.candidates.len().clamp(1, MAX_VISIBLE);
+            let (start, end) = if m.candidates.is_empty() {
+                (0, 0)
+            } else {
+                m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE)
+            };
+            DropdownMeta { visible_count, start, end, title: " Files & Folders ".to_owned() }
         }
         Dropdown::Slash(s) => {
             let visible_count = s.candidates.len().min(MAX_VISIBLE);
@@ -189,8 +186,12 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(meta.visible_count);
     match dropdown {
         Dropdown::Mention(m) => {
-            for (i, candidate) in m.candidates[meta.start..meta.end].iter().enumerate() {
-                lines.push(mention_candidate_line(m, candidate, meta.start + i));
+            if m.candidates.is_empty() {
+                lines.push(mention_placeholder_line(m));
+            } else {
+                for (i, candidate) in m.candidates[meta.start..meta.end].iter().enumerate() {
+                    lines.push(mention_candidate_line(m, candidate, meta.start + i));
+                }
             }
         }
         Dropdown::Slash(s) => {
@@ -205,6 +206,11 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
         }
     }
     lines
+}
+
+fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
+    let message = mention.placeholder_message().unwrap_or_default();
+    Line::from(Span::styled(format!("   {message}"), Style::default().fg(theme::DIM)))
 }
 
 fn mention_candidate_line(
@@ -521,7 +527,11 @@ fn choose_dropdown_y(anchor_y: u16, height: u16, frame_top: u16, frame_bottom: u
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_dropdown_x, choose_dropdown_y, find_case_insensitive_range};
+    use super::{
+        choose_dropdown_x, choose_dropdown_y, compute_height, find_case_insensitive_range,
+        is_active,
+    };
+    use crate::app::{App, mention};
 
     #[test]
     fn dropdown_keeps_preferred_width_and_shifts_left_near_right_edge() {
@@ -569,5 +579,16 @@ mod tests {
         assert!(haystack.is_char_boundary(start));
         assert!(haystack.is_char_boundary(end));
         assert_eq!(&haystack[start..end], "İ");
+    }
+
+    #[test]
+    fn empty_mention_still_renders_placeholder_dropdown() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        mention::activate(&mut app);
+
+        assert!(is_active(&app));
+        assert_eq!(compute_height(&app), 3);
     }
 }

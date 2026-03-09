@@ -100,7 +100,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.mention = None;
     app.slash = None;
     app.subagent = None;
-    app.file_cache = None;
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {

@@ -193,8 +193,6 @@ pub struct App {
     pub active_paste_session: Option<PasteSessionState>,
     /// Monotonic counter for paste session identifiers.
     pub next_paste_session_id: u64,
-    /// Cached file list from cwd (scanned on first `@` trigger).
-    pub file_cache: Option<Vec<mention::FileCandidate>>,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Current git branch (refreshed on focus gain + turn complete).
@@ -578,7 +576,6 @@ impl App {
             pending_paste_session: None,
             active_paste_session: None,
             next_paste_session_id: 1,
-            file_cache: None,
             cached_todo_compact: None,
             git_branch: None,
             cached_header_line: None,
@@ -1845,13 +1842,7 @@ mod tests {
         app.claim_focus_target(FocusTarget::TodoList);
         app.pending_permission_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
-        app.mention = Some(mention::MentionState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            candidates: Vec::new(),
-            dialog: super::dialog::DialogState::default(),
-        });
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
     }
@@ -1887,13 +1878,7 @@ mod tests {
             active_form: String::new(),
         });
         app.show_todo_panel = true;
-        app.mention = Some(mention::MentionState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            candidates: Vec::new(),
-            dialog: super::dialog::DialogState::default(),
-        });
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.pending_permission_ids.push("perm-1".into());
 
         app.claim_focus_target(FocusTarget::TodoList);

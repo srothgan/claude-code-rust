@@ -168,6 +168,22 @@ pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermission
     );
 }
 
+pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::RespectGitignore))? {
+        PersistedSettingValue::Missing => Ok(true),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
+    }
+}
+
+pub fn set_respect_gitignore(document: &mut Value, enabled: bool) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::RespectGitignore),
+        PersistedSettingValue::Bool(enabled),
+    );
+}
+
 pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotifChannel, ()> {
     match read_persisted_setting(document, config_setting(SettingId::Notifications))? {
         PersistedSettingValue::Missing => Ok(PreferredNotifChannel::default()),
@@ -385,6 +401,13 @@ mod tests {
     }
 
     #[test]
+    fn respect_gitignore_defaults_to_true() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(respect_gitignore(&document), Ok(true));
+    }
+
+    #[test]
     fn model_defaults_to_none() {
         let document = Value::Object(Map::new());
 
@@ -405,6 +428,15 @@ mod tests {
         });
 
         assert_eq!(preferred_notification_channel(&document), Err(()));
+    }
+
+    #[test]
+    fn respect_gitignore_rejects_invalid_stored_value() {
+        let document = serde_json::json!({
+            "respectGitignore": "yes"
+        });
+
+        assert_eq!(respect_gitignore(&document), Err(()));
     }
 
     #[test]
@@ -483,6 +515,23 @@ mod tests {
 
         assert!(raw.contains("\"preferredNotifChannel\": \"terminal_bell\""));
         assert!(raw.contains("\"theme\": \"dark\""));
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys_and_updates_respect_gitignore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        let mut document = serde_json::json!({
+            "respectGitignore": true,
+            "preferredNotifChannel": "iterm2"
+        });
+        set_respect_gitignore(&mut document, false);
+
+        save(&path, &document).expect("save");
+        let raw = std::fs::read_to_string(path).expect("read");
+
+        assert!(raw.contains("\"respectGitignore\": false"));
+        assert!(raw.contains("\"preferredNotifChannel\": \"iterm2\""));
     }
 
     #[test]

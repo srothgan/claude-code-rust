@@ -302,7 +302,6 @@ fn sync_welcome_cwd(app: &mut App) {
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cwd_raw = cwd_raw;
     app.cwd = shorten_cwd_display(&app.cwd_raw);
-    app.file_cache = None;
     app.cached_header_line = None;
     app.cached_footer_line = None;
     app.refresh_git_branch();
