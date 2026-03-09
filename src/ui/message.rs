@@ -16,7 +16,7 @@
 
 use crate::app::{
     BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity,
-    WelcomeBlock,
+    TextBlock, WelcomeBlock,
 };
 use crate::ui::tables;
 use crate::ui::theme;
@@ -111,8 +111,9 @@ pub fn render_message(
 
 fn render_user_blocks(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'static>>) {
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(text, cache, incr) = block {
-            render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
+        if let MessageBlock::Text(block) = block {
+            render_text_block_cached(block, width, Some(theme::USER_MSG_BG), true, out);
+            emit_blank_lines(out, block.trailing_blank_lines());
         }
     }
 }
@@ -141,11 +142,12 @@ fn render_assistant_message(
     let mut prev_was_tool = false;
     for block in &mut msg.blocks {
         match block {
-            MessageBlock::Text(text, cache, incr) => {
+            MessageBlock::Text(block) => {
                 if prev_was_tool {
                     out.push(Line::default());
                 }
-                render_text_cached(text, cache, incr, width, None, false, out);
+                render_text_block_cached(block, width, None, false, out);
+                emit_blank_lines(out, block.trailing_blank_lines());
                 prev_was_tool = false;
             }
             MessageBlock::ToolCall(tc) => {
@@ -184,9 +186,10 @@ fn render_system_blocks(
     out: &mut Vec<Line<'static>>,
 ) {
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(text, cache, incr) = block {
+        if let MessageBlock::Text(block) = block {
             let mut lines = Vec::new();
-            render_text_cached(text, cache, incr, width, None, false, &mut lines);
+            render_text_block_cached(block, width, None, false, &mut lines);
+            emit_blank_lines(&mut lines, block.trailing_blank_lines());
             tint_lines(&mut lines, color);
             out.extend(lines);
         }
@@ -272,10 +275,9 @@ fn measure_text_blocks_height(
     let mut height = 0usize;
     let mut wrapped_lines = 0usize;
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(text, cache, incr) = block {
-            let (h, lines) =
-                text_block_height_cached(text, cache, incr, width, bg, overlay_background);
-            height += h;
+        if let MessageBlock::Text(block) = block {
+            let (h, lines) = text_block_height_cached(block, width, bg, overlay_background);
+            height += h + block.trailing_blank_lines();
             wrapped_lines += lines;
         }
     }
@@ -297,14 +299,15 @@ fn measure_assistant_blocks_height(
 
     for block in &mut msg.blocks {
         match block {
-            MessageBlock::Text(text, cache, incr) => {
+            MessageBlock::Text(block) => {
                 if prev_was_tool {
                     height += 1;
                     lines_after_label += 1;
                 }
-                let (h, lines) = text_block_height_cached(text, cache, incr, width, None, false);
-                height += h;
-                lines_after_label += h;
+                let trailing_gap = block.trailing_blank_lines();
+                let (h, lines) = text_block_height_cached(block, width, None, false);
+                height += h + trailing_gap;
+                lines_after_label += h + trailing_gap;
                 wrapped_lines += lines;
                 prev_was_tool = false;
             }
@@ -425,13 +428,24 @@ fn render_user_from_offset(
     can_consume_skip: &mut bool,
 ) {
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(text, cache, incr) = block {
-            let (h, _) =
-                text_block_height_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true);
+        if let MessageBlock::Text(block) = block {
+            let trailing_gap = block.trailing_blank_lines();
+            let (h, _) = text_block_height_cached(block, width, Some(theme::USER_MSG_BG), true);
+            let total_h = h + trailing_gap;
+            if *can_consume_skip && *remaining_skip >= total_h {
+                *remaining_skip -= total_h;
+                continue;
+            }
+            if *can_consume_skip && *remaining_skip >= h {
+                *remaining_skip -= h;
+                emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
+                continue;
+            }
             if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
                 continue;
             }
-            render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
+            render_text_block_cached(block, width, Some(theme::USER_MSG_BG), true, out);
+            emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, *can_consume_skip);
         }
     }
 }
@@ -460,16 +474,31 @@ fn render_assistant_from_offset(
     let mut lines_after_label = 0usize;
     for block in &mut msg.blocks {
         match block {
-            MessageBlock::Text(text, cache, incr) => {
+            MessageBlock::Text(block) => {
                 if prev_was_tool {
                     emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
                     lines_after_label += 1;
                 }
-                let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
-                if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                    render_text_cached(text, cache, incr, width, None, false, out);
+                let trailing_gap = block.trailing_blank_lines();
+                let (h, _) = text_block_height_cached(block, width, None, false);
+                let total_h = h + trailing_gap;
+                if *can_consume_skip && *remaining_skip >= total_h {
+                    *remaining_skip -= total_h;
+                } else if *can_consume_skip && *remaining_skip >= h {
+                    *remaining_skip -= h;
+                    emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
+                } else {
+                    if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
+                        render_text_block_cached(block, width, None, false, out);
+                    }
+                    emit_blank_lines_with_skip(
+                        trailing_gap,
+                        out,
+                        remaining_skip,
+                        *can_consume_skip,
+                    );
                 }
-                lines_after_label += h;
+                lines_after_label += h + trailing_gap;
                 prev_was_tool = false;
             }
             MessageBlock::ToolCall(tc) => {
@@ -524,13 +553,25 @@ fn render_system_from_offset(
 ) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(text, cache, incr) = block {
-            let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
+        if let MessageBlock::Text(block) = block {
+            let trailing_gap = block.trailing_blank_lines();
+            let (h, _) = text_block_height_cached(block, width, None, false);
+            let total_h = h + trailing_gap;
+            if *can_consume_skip && *remaining_skip >= total_h {
+                *remaining_skip -= total_h;
+                continue;
+            }
+            if *can_consume_skip && *remaining_skip >= h {
+                *remaining_skip -= h;
+                emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
+                continue;
+            }
             if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
                 continue;
             }
             let mut lines = Vec::new();
-            render_text_cached(text, cache, incr, width, None, false, &mut lines);
+            render_text_block_cached(block, width, None, false, &mut lines);
+            emit_blank_lines(&mut lines, trailing_gap);
             tint_lines(&mut lines, color);
             out.extend(lines);
         }
@@ -547,6 +588,23 @@ fn emit_line_with_skip(
         *remaining_skip -= 1;
     } else {
         out.push(line);
+    }
+}
+
+fn emit_blank_lines(out: &mut Vec<Line<'static>>, count: usize) {
+    for _ in 0..count {
+        out.push(Line::default());
+    }
+}
+
+fn emit_blank_lines_with_skip(
+    count: usize,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: bool,
+) {
+    for _ in 0..count {
+        emit_line_with_skip(Line::default(), out, remaining_skip, can_consume_skip);
     }
 }
 
@@ -691,31 +749,29 @@ fn welcome_block_height_cached(block: &mut WelcomeBlock, width: u16) -> (usize, 
 }
 
 fn text_block_height_cached(
-    text: &str,
-    cache: &mut BlockCache,
-    incr: &mut IncrementalMarkdown,
+    block: &mut TextBlock,
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
 ) -> (usize, usize) {
-    if let Some(h) = cache.height_at(width) {
+    if let Some(h) = block.cache.height_at(width) {
         return (h, 0);
     }
 
-    if let Some(h) = cache.measure_and_set_height(width) {
-        return (h, cache.get().map_or(0, Vec::len));
+    if let Some(h) = block.cache.measure_and_set_height(width) {
+        return (h, block.cache.get().map_or(0, Vec::len));
     }
 
     let mut scratch = Vec::new();
-    render_text_cached(text, cache, incr, width, bg, preserve_newlines, &mut scratch);
+    render_text_block_cached(block, width, bg, preserve_newlines, &mut scratch);
 
-    if let Some(h) = cache.height_at(width) {
+    if let Some(h) = block.cache.height_at(width) {
         return (h, scratch.len());
     }
 
     let h =
         Paragraph::new(Text::from(scratch.clone())).wrap(Wrap { trim: false }).line_count(width);
-    cache.set_height(h, width);
+    block.cache.set_height(h, width);
     (h, scratch.len())
 }
 
@@ -767,7 +823,7 @@ fn preprocess_markdown(text: &str) -> String {
 /// 1. `BlockCache` (full block) -- hit for completed messages (no changes).
 /// 2. `IncrementalMarkdown` (per-paragraph) -- only tail paragraph re-parsed during streaming.
 pub(super) fn render_text_cached(
-    _text: &str,
+    text: &str,
     cache: &mut BlockCache,
     incr: &mut IncrementalMarkdown,
     width: u16,
@@ -795,6 +851,7 @@ pub(super) fn render_text_cached(
     };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
+    let _ = text;
     incr.ensure_rendered(&render_fn);
 
     // Render: cached paragraphs + fresh tail
@@ -812,6 +869,24 @@ pub(super) fn render_text_cached(
     if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }
+}
+
+fn render_text_block_cached(
+    block: &mut TextBlock,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+    out: &mut Vec<Line<'static>>,
+) {
+    render_text_cached(
+        &block.text,
+        &mut block.cache,
+        &mut block.markdown,
+        width,
+        bg,
+        preserve_newlines,
+        out,
+    );
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -836,7 +911,7 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ChatMessage, IncrementalMarkdown, MessageBlock};
+    use crate::app::{ChatMessage, MessageBlock, TextBlock, TextBlockSpacing};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
@@ -1103,11 +1178,21 @@ mod tests {
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
         ChatMessage {
             role,
-            blocks: vec![MessageBlock::Text(
-                text.to_owned(),
-                BlockCache::default(),
-                IncrementalMarkdown::from_complete(text),
-            )],
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            usage: None,
+        }
+    }
+
+    fn make_assistant_split_message(first: &str, second: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![
+                MessageBlock::Text(
+                    TextBlock::from_complete(first)
+                        .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
+                ),
+                MessageBlock::Text(TextBlock::from_complete(second)),
+            ],
             usage: None,
         }
     }
@@ -1184,6 +1269,73 @@ mod tests {
         let truth = ground_truth_height(&mut truth_msg, &spinner, 32);
 
         assert_eq!(h, truth);
+    }
+
+    #[test]
+    fn assistant_split_paragraph_renders_visible_blank_line() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 80, &mut lines);
+
+        assert_eq!(
+            render_lines_to_strings(&lines),
+            vec![
+                "Claude".to_owned(),
+                "First paragraph".to_owned(),
+                String::new(),
+                "Second paragraph".to_owned(),
+                String::new(),
+            ]
+        );
+    }
+
+    #[test]
+    fn assistant_split_paragraph_height_matches_rendered_gap() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut measured = make_assistant_split_message("First paragraph", "Second paragraph");
+        let mut truth = make_assistant_split_message("First paragraph", "Second paragraph");
+
+        let (h, _) = measure_message_height_cached(&mut measured, &spinner, 80, 1);
+        let truth_h = ground_truth_height(&mut truth, &spinner, 80);
+        assert_eq!(h, truth_h);
+        assert_eq!(h, 5);
+    }
+
+    #[test]
+    fn render_from_offset_handles_paragraph_gap_as_structural_rows() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
+        let mut out = Vec::new();
+
+        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 2, &mut out);
+
+        assert_eq!(remaining, 0);
+        assert_eq!(
+            render_lines_to_strings(&out),
+            vec![String::new(), "Second paragraph".to_owned(), String::new()]
+        );
     }
 
     #[test]

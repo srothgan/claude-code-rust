@@ -18,8 +18,8 @@ use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InvalidationLevel, LoginHint,
-    MessageBlock, MessageRole, SystemSeverity,
+    App, AppStatus, ChatMessage, InvalidationLevel, LoginHint, MessageBlock, MessageRole,
+    SystemSeverity, TextBlock,
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
@@ -125,11 +125,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     app.messages.push(ChatMessage {
         role: MessageRole::System(None),
-        blocks: vec![MessageBlock::Text(
-            msg.to_owned(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(msg),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(msg))],
         usage: None,
     });
     app.enforce_history_retention_tracked();

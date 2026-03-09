@@ -47,7 +47,20 @@ pub fn default_cache_split_policy() -> &'static CacheSplitPolicy {
 }
 
 #[must_use]
-pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextSplitKind {
+    Generic,
+    ParagraphBoundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextSplitDecision {
+    pub split_at: usize,
+    pub kind: TextSplitKind,
+}
+
+#[must_use]
+pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplitDecision> {
     let bytes = text.as_bytes();
     let mut in_fence = false;
     let mut i = 0usize;
@@ -68,7 +81,10 @@ pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usi
             if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
                 let split_at = i + 2;
                 if split_at < bytes.len() {
-                    return Some(split_at);
+                    return Some(TextSplitDecision {
+                        split_at,
+                        kind: TextSplitKind::ParagraphBoundary,
+                    });
                 }
                 return None;
             }
@@ -100,7 +116,7 @@ pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usi
         && let Some(split_at) = pick_text_split_candidate(soft_newline, soft_sentence)
         && split_at < bytes.len()
     {
-        return Some(split_at);
+        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
     }
 
     if bytes.len() >= policy.hard_limit_bytes
@@ -108,10 +124,15 @@ pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usi
             hard_newline.or(post_hard_newline).or(hard_sentence).or(post_hard_sentence)
         && split_at < bytes.len()
     {
-        return Some(split_at);
+        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
     }
 
     None
+}
+
+#[must_use]
+pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usize> {
+    find_text_split(text, policy).map(|decision| decision.split_at)
 }
 
 fn track_text_split_candidate(

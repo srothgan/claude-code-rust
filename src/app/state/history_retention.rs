@@ -18,8 +18,9 @@ use crate::agent::model;
 use std::collections::HashSet;
 use std::mem::size_of;
 
-use super::block_cache::BlockCache;
-use super::messages::{ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, WelcomeBlock};
+use super::messages::{
+    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock, WelcomeBlock,
+};
 use super::tool_call_info::{InlinePermission, ToolCallInfo};
 use super::types::{HistoryRetentionStats, MessageUsage, RecentSessionInfo};
 use super::viewport::InvalidationLevel;
@@ -39,10 +40,10 @@ impl super::App {
         if !matches!(msg.role, MessageRole::System(_)) {
             return false;
         }
-        let Some(MessageBlock::Text(text, _, _)) = msg.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = msg.blocks.first() else {
             return false;
         };
-        text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
+        block.text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
     }
 
     #[must_use]
@@ -134,9 +135,10 @@ impl super::App {
 
         for block in &msg.blocks {
             match block {
-                MessageBlock::Text(text, _, md) => {
-                    total =
-                        total.saturating_add(text.capacity()).saturating_add(md.text_capacity());
+                MessageBlock::Text(block) => {
+                    total = total
+                        .saturating_add(block.text.capacity())
+                        .saturating_add(block.markdown.text_capacity());
                 }
                 MessageBlock::ToolCall(tc) => {
                     total = total.saturating_add(Self::measure_tool_call_bytes(tc));
@@ -257,13 +259,13 @@ impl super::App {
         );
 
         if let Some(idx) = marker_idx {
-            if let Some(MessageBlock::Text(text, cache, incr)) =
+            if let Some(MessageBlock::Text(block)) =
                 self.messages.get_mut(idx).and_then(|m| m.blocks.get_mut(0))
-                && *text != marker_text
+                && block.text != marker_text
             {
-                text.clone_from(&marker_text);
-                *incr = IncrementalMarkdown::from_complete(&marker_text);
-                cache.invalidate();
+                block.text.clone_from(&marker_text);
+                block.markdown = IncrementalMarkdown::from_complete(&marker_text);
+                block.cache.invalidate();
                 self.invalidate_layout(InvalidationLevel::From(idx));
             }
             return;
@@ -276,11 +278,7 @@ impl super::App {
             insert_idx,
             ChatMessage {
                 role: MessageRole::System(None),
-                blocks: vec![MessageBlock::Text(
-                    marker_text.clone(),
-                    BlockCache::default(),
-                    IncrementalMarkdown::from_complete(&marker_text),
-                )],
+                blocks: vec![MessageBlock::Text(TextBlock::from_complete(&marker_text))],
                 usage: None,
             },
         );

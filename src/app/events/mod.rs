@@ -24,8 +24,8 @@ mod tool_updates;
 mod turn;
 
 use super::{
-    ActiveView, App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock,
-    MessageRole, PendingCommandAck, SystemSeverity,
+    ActiveView, App, AppStatus, ChatMessage, MessageBlock, MessageRole, PendingCommandAck,
+    SystemSeverity, TextBlock,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -296,11 +296,7 @@ pub(crate) fn push_system_message_with_severity(
 ) {
     app.messages.push(ChatMessage {
         role: MessageRole::System(severity),
-        blocks: vec![MessageBlock::Text(
-            message.to_owned(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(message),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(message))],
         usage: None,
     });
     app.enforce_history_retention_tracked();
@@ -370,9 +366,9 @@ mod tests {
     use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::app::{
-        ActiveView, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
-        SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
-        ToolCallScope, mention,
+        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
+        SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem, TodoStatus,
+        ToolCallInfo, ToolCallScope, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
@@ -415,11 +411,7 @@ mod tests {
     fn user_msg(text: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(
-                text.into(),
-                BlockCache::default(),
-                IncrementalMarkdown::default(),
-            )],
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
             usage: None,
         }
     }
@@ -711,18 +703,21 @@ mod tests {
         };
         assert!(matches!(last.role, MessageRole::Assistant));
         assert_eq!(last.blocks.len(), 3);
-        let Some(MessageBlock::Text(b1, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(b1)) = last.blocks.first() else {
             panic!("expected first text block");
         };
-        let Some(MessageBlock::Text(b2, _, _)) = last.blocks.get(1) else {
+        let Some(MessageBlock::Text(b2)) = last.blocks.get(1) else {
             panic!("expected second text block");
         };
-        let Some(MessageBlock::Text(b3, _, _)) = last.blocks.get(2) else {
+        let Some(MessageBlock::Text(b3)) = last.blocks.get(2) else {
             panic!("expected third text block");
         };
-        assert_eq!(b1, "p1\n\n");
-        assert_eq!(b2, "p2\n\n");
-        assert_eq!(b3, "p3");
+        assert_eq!(b1.text, "p1\n\n");
+        assert_eq!(b2.text, "p2\n\n");
+        assert_eq!(b3.text, "p3");
+        assert_eq!(b1.trailing_spacing, TextBlockSpacing::ParagraphBreak);
+        assert_eq!(b2.trailing_spacing, TextBlockSpacing::ParagraphBreak);
+        assert_eq!(b3.trailing_spacing, TextBlockSpacing::None);
     }
 
     // has_in_progress_tool_calls
@@ -893,11 +888,8 @@ mod tests {
     #[test]
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "hello".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::default(),
-        )]));
+        app.messages
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -995,17 +987,9 @@ mod tests {
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::Text(
-                "thinking...".into(),
-                BlockCache::default(),
-                IncrementalMarkdown::default(),
-            ),
+            MessageBlock::Text(TextBlock::from_complete("thinking...")),
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-            MessageBlock::Text(
-                "done".into(),
-                BlockCache::default(),
-                IncrementalMarkdown::default(),
-            ),
+            MessageBlock::Text(TextBlock::from_complete("done")),
         ]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1103,10 +1087,10 @@ mod tests {
         assert!(!app.cancelled_turn_pending_hint);
         let last = app.messages.last().expect("expected interruption hint message");
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Conversation interrupted. Tell the model how to proceed.");
+        assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
     }
 
     #[test]
@@ -1114,11 +1098,9 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
         app.messages.push(user_msg("build app"));
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "partial output".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete("partial output"),
-        )]));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "partial output",
+        ))]));
         app.pending_cancel_origin = Some(CancelOrigin::Manual);
 
         handle_client_event(&mut app, ClientEvent::TurnComplete);
@@ -1136,11 +1118,9 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.messages.push(user_msg("build app"));
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "partial output".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete("partial output"),
-        )]));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "partial output",
+        ))]));
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
 
         handle_client_event(&mut app, ClientEvent::TurnComplete);
@@ -1304,11 +1284,8 @@ mod tests {
     fn session_replaced_resets_chat_and_transient_state() {
         let mut app = make_test_app();
         app.messages.push(user_msg("hello"));
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "world".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete("world"),
-        )]));
+        app.messages
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.files_accessed = 9;
         app.pending_permission_ids.push("perm-1".into());
@@ -1504,10 +1481,10 @@ mod tests {
         assert!(matches!(app.messages[1].role, MessageRole::User));
         assert!(matches!(app.messages[2].role, MessageRole::Assistant));
 
-        let Some(MessageBlock::Text(user_text, _, _)) = app.messages[1].blocks.first() else {
+        let Some(MessageBlock::Text(user_text)) = app.messages[1].blocks.first() else {
             panic!("expected user text block");
         };
-        assert_eq!(user_text, "first user line");
+        assert_eq!(user_text.text, "first user line");
     }
 
     #[test]
@@ -1551,11 +1528,8 @@ mod tests {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-x"));
         app.messages.push(user_msg("/compact"));
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "compacted".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete("compacted"),
-        )]));
+        app.messages
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
         handle_client_event(
             &mut app,
             ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
@@ -1577,10 +1551,10 @@ mod tests {
         else {
             panic!("expected compaction success system message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Session successfully compacted.");
+        assert_eq!(block.text, "Session successfully compacted.");
         assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("session-x"));
     }
 
@@ -1641,11 +1615,11 @@ mod tests {
         else {
             panic!("expected system error message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
             panic!("expected text block");
         };
-        assert!(text.contains("Turn failed: adapter failed"));
-        assert!(text.contains("Press Ctrl+Q to quit and try again"));
+        assert!(block.text.contains("Turn failed: adapter failed"));
+        assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
     }
 
     #[test]
@@ -1662,12 +1636,12 @@ mod tests {
         else {
             panic!("expected system error message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
             panic!("expected text block");
         };
-        assert!(text.contains("Turn blocked by account or plan limits"));
-        assert!(text.contains("Next steps:"));
-        assert!(text.contains("Check quota/billing"));
+        assert!(block.text.contains("Turn blocked by account or plan limits"));
+        assert!(block.text.contains("Next steps:"));
+        assert!(block.text.contains("Check quota/billing"));
     }
 
     #[test]
@@ -1687,11 +1661,11 @@ mod tests {
         else {
             panic!("expected system error message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
             panic!("expected text block");
         };
-        assert!(text.contains("Turn blocked by account or plan limits"));
-        assert!(text.contains("Next steps:"));
+        assert!(block.text.contains("Turn blocked by account or plan limits"));
+        assert!(block.text.contains("Next steps:"));
     }
 
     #[test]
@@ -1864,11 +1838,11 @@ mod tests {
             panic!("expected combined system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert!(text.contains("Approaching rate limit"));
-        assert!(text.contains("Turn blocked by account or plan limits"));
+        assert!(block.text.contains("Approaching rate limit"));
+        assert!(block.text.contains("Turn blocked by account or plan limits"));
     }
 
     #[test]
@@ -1891,10 +1865,10 @@ mod tests {
             panic!("expected interruption hint message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Conversation interrupted. Tell the model how to proceed.");
+        assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
     }
 
     #[test]
@@ -1902,11 +1876,9 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.messages.push(user_msg("build app"));
-        app.messages.push(assistant_msg(vec![MessageBlock::Text(
-            "partial output".into(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete("partial output"),
-        )]));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "partial output",
+        ))]));
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
 
         handle_client_event(

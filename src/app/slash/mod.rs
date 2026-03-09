@@ -26,8 +26,7 @@ mod executors;
 mod navigation;
 
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
-    dialog::DialogState,
+    App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, dialog::DialogState,
 };
 use crate::agent::model;
 use std::rc::Rc;
@@ -105,11 +104,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.messages.push(ChatMessage {
         role: MessageRole::System(None),
-        blocks: vec![MessageBlock::Text(
-            text.clone(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(&text),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,
     });
     app.enforce_history_retention_tracked();
@@ -120,11 +115,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.messages.push(ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(
-            text.clone(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(&text),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,
     });
     app.enforce_history_retention_tracked();
@@ -235,10 +226,10 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected usage message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Usage: /config");
+        assert_eq!(block.text, "Usage: /config");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -412,10 +403,10 @@ mod tests {
             panic!("expected first message");
         };
         assert!(matches!(first.role, MessageRole::User));
-        let Some(MessageBlock::Text(text, _, _)) = first.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = first.blocks.first() else {
             panic!("expected user text block");
         };
-        assert_eq!(text, "/new-session");
+        assert_eq!(block.text, "/new-session");
     }
 
     #[test]
@@ -426,10 +417,10 @@ mod tests {
         let Some(last) = app.messages.last() else {
             panic!("expected usage message");
         };
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Usage: /resume <session_id>");
+        assert_eq!(block.text, "Usage: /resume <session_id>");
     }
 
     #[test]
@@ -444,10 +435,10 @@ mod tests {
             panic!("expected user message");
         };
         assert!(matches!(first.role, MessageRole::User));
-        let Some(MessageBlock::Text(text, _, _)) = first.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = first.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "/resume abc-123");
+        assert_eq!(block.text, "/resume abc-123");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -587,10 +578,10 @@ mod tests {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Cannot compact: not connected yet.");
+        assert_eq!(block.text, "Cannot compact: not connected yet.");
     }
 
     #[test]
@@ -611,11 +602,7 @@ mod tests {
         let mut app = App::test_default();
         app.messages.push(ChatMessage {
             role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(
-                "keep".into(),
-                BlockCache::default(),
-                IncrementalMarkdown::from_complete("keep"),
-            )],
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
             usage: None,
         });
 
@@ -626,10 +613,10 @@ mod tests {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Usage: /compact");
+        assert_eq!(block.text, "Usage: /compact");
     }
 
     #[test]
@@ -642,10 +629,10 @@ mod tests {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
-        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(text, "Usage: /mode <id>");
+        assert_eq!(block.text, "Usage: /mode <id>");
     }
 
     #[test]

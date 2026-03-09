@@ -37,7 +37,7 @@ impl super::App {
             let protect_message_tail = is_streaming && (msg_idx + 1 == msg_count);
             for (block_idx, block) in msg.blocks.iter().enumerate() {
                 let (cache, protect_block) = match block {
-                    MessageBlock::Text(_, cache, _) => (cache, false),
+                    MessageBlock::Text(block) => (&block.cache, false),
                     MessageBlock::Welcome(welcome) => (&welcome.cache, false),
                     MessageBlock::ToolCall(tc) => (
                         &tc.cache,
@@ -111,7 +111,7 @@ impl super::App {
             return 0;
         };
         match block {
-            MessageBlock::Text(_, cache, _) => cache.evict_cached_render(),
+            MessageBlock::Text(block) => block.cache.evict_cached_render(),
             MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
             MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
         }

@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::super::{
-    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
-    InlinePermission, InvalidationLevel, MessageBlock, MessageRole, SystemSeverity,
+    App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InvalidationLevel,
+    MessageBlock, MessageRole, SystemSeverity, TextBlock,
 };
 use super::clear_compaction_state;
 use super::rate_limit::format_rate_limit_summary;
@@ -230,11 +230,7 @@ pub(super) fn handle_turn_error_event(
 fn push_interrupted_hint(app: &mut App) {
     app.messages.push(ChatMessage {
         role: MessageRole::System(Some(SystemSeverity::Info)),
-        blocks: vec![MessageBlock::Text(
-            CONVERSATION_INTERRUPTED_HINT.to_owned(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(CONVERSATION_INTERRUPTED_HINT),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(CONVERSATION_INTERRUPTED_HINT))],
         usage: None,
     });
     app.enforce_history_retention_tracked();

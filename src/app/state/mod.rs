@@ -27,7 +27,8 @@ pub mod viewport;
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
 pub use messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity, WelcomeBlock,
+    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    TextBlockSpacing, WelcomeBlock,
 };
 pub use tool_call_info::{
     InlinePermission, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
@@ -973,11 +974,7 @@ mod tests {
     }
 
     fn assistant_text_block(text: &str) -> MessageBlock {
-        MessageBlock::Text(
-            text.to_owned(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(text),
-        )
+        MessageBlock::Text(TextBlock::from_complete(text))
     }
 
     fn user_text_message(text: &str) -> ChatMessage {
@@ -1076,16 +1073,16 @@ mod tests {
             },
         ];
 
-        let bytes_a = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
-            cache.store(vec![Line::from("x".repeat(2200))]);
-            cache.cached_bytes()
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("x".repeat(2200))]);
+            block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
-            cache.store(vec![Line::from("y".repeat(2200))]);
-            let _ = cache.get();
-            cache.cached_bytes()
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+            block.cache.store(vec![Line::from("y".repeat(2200))]);
+            let _ = block.cache.get();
+            block.cache.cached_bytes()
         } else {
             0
         };
@@ -1097,13 +1094,13 @@ mod tests {
         assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
         assert_eq!(stats.protected_bytes, 0);
 
-        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
-            assert_eq!(cache.cached_bytes(), 0);
+        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+            assert_eq!(block.cache.cached_bytes(), 0);
         } else {
             panic!("expected text block");
         }
-        if let MessageBlock::Text(_, cache, _) = &app.messages[1].blocks[0] {
-            assert_eq!(cache.cached_bytes(), bytes_b);
+        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+            assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
         }
@@ -1119,9 +1116,9 @@ mod tests {
             usage: None,
         }];
 
-        let before = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
-            cache.store(vec![Line::from("z".repeat(4096))]);
-            cache.cached_bytes()
+        let before = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("z".repeat(4096))]);
+            block.cache.cached_bytes()
         } else {
             0
         };
@@ -1131,8 +1128,8 @@ mod tests {
         assert_eq!(stats.evicted_bytes, 0);
         assert_eq!(stats.protected_bytes, before);
 
-        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
-            assert_eq!(cache.cached_bytes(), before);
+        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+            assert_eq!(block.cache.cached_bytes(), before);
         } else {
             panic!("expected text block");
         }
@@ -1155,15 +1152,15 @@ mod tests {
             },
         ];
 
-        let bytes_a = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
-            cache.store(vec![Line::from("x".repeat(2200))]);
-            cache.cached_bytes()
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("x".repeat(2200))]);
+            block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
-            cache.store(vec![Line::from("y".repeat(5000))]);
-            cache.cached_bytes()
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+            block.cache.store(vec![Line::from("y".repeat(5000))]);
+            block.cache.cached_bytes()
         } else {
             0
         };
@@ -1180,8 +1177,8 @@ mod tests {
         assert_eq!(stats.evicted_blocks, 0);
         assert_eq!(stats.evicted_bytes, 0);
         // Old message cache intact.
-        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
-            assert_eq!(cache.cached_bytes(), bytes_a);
+        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+            assert_eq!(block.cache.cached_bytes(), bytes_a);
         } else {
             panic!("expected text block");
         }
@@ -1210,19 +1207,19 @@ mod tests {
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
-        if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
-            cache.store(vec![Line::from("x".repeat(3000))]);
+        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("x".repeat(3000))]);
         }
-        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
-            cache.store(vec![Line::from("y".repeat(3000))]);
-            let _ = cache.get(); // touch to make more recently accessed
-            cache.cached_bytes()
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+            block.cache.store(vec![Line::from("y".repeat(3000))]);
+            let _ = block.cache.get(); // touch to make more recently accessed
+            block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_c = if let MessageBlock::Text(_, cache, _) = &mut app.messages[2].blocks[0] {
-            cache.store(vec![Line::from("z".repeat(5000))]);
-            cache.cached_bytes()
+        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+            block.cache.store(vec![Line::from("z".repeat(5000))]);
+            block.cache.cached_bytes()
         } else {
             0
         };
@@ -1235,8 +1232,8 @@ mod tests {
         assert_eq!(stats.protected_bytes, bytes_c);
         assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
         // Message B should survive (more recent access).
-        if let MessageBlock::Text(_, cache, _) = &app.messages[1].blocks[0] {
-            assert_eq!(cache.cached_bytes(), bytes_b);
+        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+            assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
         }
@@ -1252,8 +1249,8 @@ mod tests {
             usage: None,
         }];
 
-        if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
-            cache.store(vec![Line::from("x".repeat(2000))]);
+        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
 

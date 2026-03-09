@@ -14,10 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{
-    App, AppStatus, BlockCache, CancelOrigin, ChatMessage, IncrementalMarkdown, MessageBlock,
-    MessageRole,
-};
+use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::slash;
@@ -135,11 +132,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(
-            text.clone(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(&text),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator

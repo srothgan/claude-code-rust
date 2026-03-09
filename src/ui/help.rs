@@ -338,7 +338,17 @@ fn pending_command_help_label(app: &App) -> String {
     app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
+fn builtin_slash_help_commands() -> [(&'static str, &'static str); 3] {
+    [
+        ("/config", "Open settings"),
+        ("/login", "Authenticate with Claude"),
+        ("/logout", "Sign out of Claude"),
+    ]
+}
+
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
+    use std::collections::BTreeMap;
+
     let mut rows = Vec::new();
     if app.status == AppStatus::Connecting {
         rows.push(("Loading commands...".to_owned(), String::new()));
@@ -349,18 +359,24 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
         return rows;
     }
 
-    let mut commands: Vec<(String, String)> = app
-        .available_commands
-        .iter()
-        .map(|cmd| {
-            let name =
-                if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
-            (name, cmd.description.clone())
-        })
+    let mut commands: BTreeMap<String, String> = builtin_slash_help_commands()
+        .into_iter()
+        .map(|(name, description)| (name.to_owned(), description.to_owned()))
         .collect();
 
-    commands.sort_by(|a, b| a.0.cmp(&b.0));
-    commands.dedup_by(|a, b| a.0 == b.0);
+    for cmd in &app.available_commands {
+        let name =
+            if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
+        match commands.get_mut(&name) {
+            Some(existing) if !cmd.description.trim().is_empty() => {
+                existing.clone_from(&cmd.description);
+            }
+            Some(_) => {}
+            None => {
+                commands.insert(name, cmd.description.clone());
+            }
+        }
+    }
 
     if commands.is_empty() {
         rows.push((
@@ -733,6 +749,22 @@ mod tests {
     }
 
     #[test]
+    fn slash_tab_shows_local_auth_and_config_commands_without_advertisement() {
+        let mut app = App::test_default();
+        app.help_view = HelpView::SlashCommands;
+
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "/config", "Open settings"));
+        assert!(has_item(&items, "/login", "Authenticate with Claude"));
+        assert!(has_item(&items, "/logout", "Sign out of Claude"));
+        assert!(!has_item(
+            &items,
+            "No slash commands advertised",
+            "Not advertised in this session"
+        ));
+    }
+
+    #[test]
     fn slash_tab_shows_login_logout_when_advertised() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
@@ -742,6 +774,7 @@ mod tests {
         ];
 
         let items = build_help_items(&app);
+        assert!(has_item(&items, "/config", "Open settings"));
         assert!(has_item(&items, "/login", "Login"));
         assert!(has_item(&items, "/logout", "Logout"));
     }

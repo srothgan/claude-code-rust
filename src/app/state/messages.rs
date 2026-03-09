@@ -106,9 +106,67 @@ impl IncrementalMarkdown {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextBlockSpacing {
+    #[default]
+    None,
+    ParagraphBreak,
+}
+
+impl TextBlockSpacing {
+    #[must_use]
+    pub fn blank_lines(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::ParagraphBreak => 1,
+        }
+    }
+}
+
+pub struct TextBlock {
+    pub text: String,
+    pub cache: BlockCache,
+    pub markdown: IncrementalMarkdown,
+    /// Explicit visual spacing after this block.
+    ///
+    /// This is used when streaming splits one logical assistant message into
+    /// multiple cached blocks at paragraph boundaries. Rendering consumes this
+    /// metadata directly so spacing, height measurement, and scroll skipping all
+    /// agree without mutating source text.
+    pub trailing_spacing: TextBlockSpacing,
+}
+
+impl TextBlock {
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self {
+            markdown: IncrementalMarkdown::from_complete(&text),
+            text,
+            cache: BlockCache::default(),
+            trailing_spacing: TextBlockSpacing::None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_complete(text: &str) -> Self {
+        Self::new(text.to_owned())
+    }
+
+    #[must_use]
+    pub fn with_trailing_spacing(mut self, trailing_spacing: TextBlockSpacing) -> Self {
+        self.trailing_spacing = trailing_spacing;
+        self
+    }
+
+    #[must_use]
+    pub fn trailing_blank_lines(&self) -> usize {
+        self.trailing_spacing.blank_lines()
+    }
+}
+
 /// Ordered content block - text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
-    Text(String, BlockCache, IncrementalMarkdown),
+    Text(TextBlock),
     ToolCall(Box<ToolCallInfo>),
     Welcome(WelcomeBlock),
 }

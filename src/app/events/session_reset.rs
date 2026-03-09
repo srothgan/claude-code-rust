@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::super::{App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
+use super::super::{
+    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock,
+    TextBlockSpacing,
+};
 use crate::agent::model;
 
 pub(super) fn reset_for_new_session(
@@ -122,14 +125,19 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     if let Some(last) = app.messages.last_mut()
         && matches!(last.role, MessageRole::User)
     {
-        if let Some(MessageBlock::Text(existing, cache, incr)) = last.blocks.last_mut() {
-            existing.push_str(&text.text);
-            incr.append(&text.text);
-            cache.invalidate();
+        if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
+            block.text.push_str(&text.text);
+            block.markdown.append(&text.text);
+            block.cache.invalidate();
         } else {
             let mut incr = IncrementalMarkdown::default();
             incr.append(&text.text);
-            last.blocks.push(MessageBlock::Text(text.text.clone(), BlockCache::default(), incr));
+            last.blocks.push(MessageBlock::Text(TextBlock {
+                text: text.text.clone(),
+                cache: BlockCache::default(),
+                markdown: incr,
+                trailing_spacing: TextBlockSpacing::default(),
+            }));
         }
         return;
     }
@@ -138,7 +146,12 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     incr.append(&text.text);
     app.messages.push(ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default(), incr)],
+        blocks: vec![MessageBlock::Text(TextBlock {
+            text: text.text.clone(),
+            cache: BlockCache::default(),
+            markdown: incr,
+            trailing_spacing: TextBlockSpacing::default(),
+        })],
         usage: None,
     });
 }

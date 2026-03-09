@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
-    default_cache_split_policy, find_text_split_index,
+    App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
+    TextSplitDecision, TextSplitKind, default_cache_split_policy, find_text_split,
 };
 use crate::agent::model;
 
@@ -45,10 +45,10 @@ pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &s
     if chunk.is_empty() {
         return;
     }
-    if let Some(MessageBlock::Text(text, cache, incr)) = blocks.last_mut() {
-        text.push_str(chunk);
-        incr.append(chunk);
-        cache.invalidate();
+    if let Some(MessageBlock::Text(block)) = blocks.last_mut() {
+        block.text.push_str(chunk);
+        block.markdown.append(chunk);
+        block.cache.invalidate();
     } else {
         blocks.push(new_text_block(chunk.to_owned()));
     }
@@ -58,16 +58,15 @@ pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &s
         crate::perf::mark_with("text_block_split_count", "count", split_count);
     }
 
-    if let Some(MessageBlock::Text(text, _, _)) = blocks.last() {
-        crate::perf::mark_with("text_block_active_tail_bytes", "bytes", text.len());
+    if let Some(MessageBlock::Text(block)) = blocks.last() {
+        crate::perf::mark_with("text_block_active_tail_bytes", "bytes", block.text.len());
     }
     let text_block_count = blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
     crate::perf::mark_with("text_block_frozen_count", "count", text_block_count.saturating_sub(1));
 }
 
 fn new_text_block(text: String) -> MessageBlock {
-    let incr = IncrementalMarkdown::from_complete(&text);
-    MessageBlock::Text(text, BlockCache::default(), incr)
+    MessageBlock::Text(TextBlock::new(text))
 }
 
 fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
@@ -76,9 +75,9 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
         let Some(tail_idx) = blocks.len().checked_sub(1) else {
             break;
         };
-        let Some(split_at) = blocks.get(tail_idx).and_then(|block| {
-            if let MessageBlock::Text(text, _, _) = block {
-                find_text_block_split_index(text)
+        let Some(split) = blocks.get(tail_idx).and_then(|block| {
+            if let MessageBlock::Text(block) = block {
+                find_text_block_split(block.text.as_str())
             } else {
                 None
             }
@@ -87,8 +86,8 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
         };
 
         let (completed, remainder) = match blocks.get(tail_idx) {
-            Some(MessageBlock::Text(text, _, _)) => {
-                (text[..split_at].to_owned(), text[split_at..].to_owned())
+            Some(MessageBlock::Text(block)) => {
+                (block.text[..split.split_at].to_owned(), block.text[split.split_at..].to_owned())
             }
             _ => break,
         };
@@ -98,12 +97,25 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
         }
 
         blocks[tail_idx] = new_text_block(remainder);
-        blocks.insert(tail_idx, new_text_block(completed));
+        blocks.insert(tail_idx, completed_text_block(completed, split));
         split_count += 1;
     }
     split_count
 }
 
+fn completed_text_block(text: String, split: TextSplitDecision) -> MessageBlock {
+    let trailing_spacing = match split.kind {
+        TextSplitKind::Generic => TextBlockSpacing::None,
+        TextSplitKind::ParagraphBoundary => TextBlockSpacing::ParagraphBreak,
+    };
+    MessageBlock::Text(TextBlock::new(text).with_trailing_spacing(trailing_spacing))
+}
+
+pub(super) fn find_text_block_split(text: &str) -> Option<TextSplitDecision> {
+    find_text_split(text, *default_cache_split_policy())
+}
+
+#[cfg(test)]
 pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
-    find_text_split_index(text, *default_cache_split_policy())
+    find_text_block_split(text).map(|decision| decision.split_at)
 }

@@ -598,7 +598,7 @@ fn count_populated_cache_slots(messages: &[crate::app::ChatMessage]) -> usize {
         .iter()
         .flat_map(|m| m.blocks.iter())
         .filter(|block| match block {
-            MessageBlock::Text(_, cache, _) => cache.cached_bytes() > 0,
+            MessageBlock::Text(block) => block.cache.cached_bytes() > 0,
             MessageBlock::Welcome(w) => w.cache.cached_bytes() > 0,
             MessageBlock::ToolCall(tc) => tc.cache.cached_bytes() > 0,
         })
@@ -663,19 +663,15 @@ mod tests {
         compute_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown,
-        InvalidationLevel, MessageBlock, MessageRole,
+        App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
+        TextBlock,
     };
     use crate::ui::message::SpinnerState;
 
     fn assistant_text_message(text: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::Text(
-                text.to_owned(),
-                BlockCache::default(),
-                IncrementalMarkdown::from_complete(text),
-            )],
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
             usage: None,
         }
     }
@@ -743,13 +739,13 @@ mod tests {
         let base_h = app.viewport.message_height(0);
         assert!(base_h > 0);
 
-        if let Some(MessageBlock::Text(text, cache, incr)) =
+        if let Some(MessageBlock::Text(block)) =
             app.messages.get_mut(0).and_then(|m| m.blocks.get_mut(0))
         {
             let extra = " this now wraps across multiple lines";
-            text.push_str(extra);
-            incr.append(extra);
-            cache.invalidate();
+            block.text.push_str(extra);
+            block.markdown.append(extra);
+            block.cache.invalidate();
         }
         app.invalidate_layout(InvalidationLevel::From(0));
 

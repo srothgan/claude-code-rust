@@ -15,7 +15,7 @@ use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
 use claude_code_rust::app::{
     App, AppStatus, BlockCache, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
-    DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, IncrementalMarkdown, MessageBlock, MessageRole,
+    DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
 };
 use claude_code_rust::ui::{SpinnerState, measure_message_height_cached};
 use ratatui::text::{Line, Span};
@@ -54,11 +54,7 @@ fn complete_turn(app: &mut App) {
 fn user_text_message(text: &str) -> ChatMessage {
     ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(
-            text.to_owned(),
-            BlockCache::default(),
-            IncrementalMarkdown::from_complete(text),
-        )],
+        blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
         usage: None,
     }
 }
@@ -72,11 +68,12 @@ fn assistant_message_with_cache(text: &str) -> ChatMessage {
     cache.store(lines);
     ChatMessage {
         role: MessageRole::Assistant,
-        blocks: vec![MessageBlock::Text(
-            text.to_owned(),
+        blocks: vec![MessageBlock::Text(TextBlock {
+            text: text.to_owned(),
             cache,
-            IncrementalMarkdown::from_complete(text),
-        )],
+            markdown: claude_code_rust::app::IncrementalMarkdown::from_complete(text),
+            trailing_spacing: TextBlockSpacing::None,
+        })],
         usage: None,
     }
 }
@@ -86,7 +83,7 @@ fn collect_block_texts(msg: &ChatMessage) -> Vec<&str> {
     msg.blocks
         .iter()
         .filter_map(|b| match b {
-            MessageBlock::Text(text, _, _) => Some(text.as_str()),
+            MessageBlock::Text(block) => Some(block.text.as_str()),
             _ => None,
         })
         .collect()
@@ -147,13 +144,14 @@ async fn streaming_splits_at_soft_limit() {
     assert!(block_count >= 2, "expected split, got {block_count} text blocks");
 
     // First block should not exceed the hard limit.
-    if let MessageBlock::Text(first_text, _, _) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(first_block) = &app.messages[0].blocks[0] {
         assert!(
-            first_text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
+            first_block.text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
             "first block {} bytes exceeds hard limit {}",
-            first_text.len(),
+            first_block.text.len(),
             DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
         );
+        assert_eq!(first_block.trailing_spacing, TextBlockSpacing::None);
     }
 }
 
@@ -184,13 +182,14 @@ async fn streaming_splits_at_hard_limit() {
         app.messages[0].blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
     assert!(block_count >= 2, "expected hard split, got {block_count} text blocks");
 
-    if let MessageBlock::Text(first_text, _, _) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(first_block) = &app.messages[0].blocks[0] {
         assert!(
-            first_text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
+            first_block.text.len() <= DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
             "first block {} bytes exceeds hard limit {}",
-            first_text.len(),
+            first_block.text.len(),
             DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
         );
+        assert_eq!(first_block.trailing_spacing, TextBlockSpacing::None);
     }
 }
 
@@ -251,7 +250,7 @@ async fn budget_enforcement_protects_streaming_tail() {
         .blocks
         .iter()
         .map(|b| match b {
-            MessageBlock::Text(_, cache, _) => cache.cached_bytes(),
+            MessageBlock::Text(block) => block.cache.cached_bytes(),
             _ => 0,
         })
         .sum();
@@ -301,7 +300,7 @@ async fn history_retention_inserts_hidden_marker() {
     let has_marker = app.messages.iter().any(|msg| {
         matches!(msg.role, MessageRole::System(_))
             && msg.blocks.iter().any(|b| match b {
-                MessageBlock::Text(text, _, _) => text.starts_with("Older messages hidden"),
+                MessageBlock::Text(block) => block.text.starts_with("Older messages hidden"),
                 _ => false,
             })
     });
@@ -350,6 +349,9 @@ async fn full_pipeline_stream_split_measure_scroll() {
     let block_count =
         app.messages[0].blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
     assert!(block_count >= 2, "expected split, got {block_count} blocks");
+    if let MessageBlock::Text(first_block) = &app.messages[0].blocks[0] {
+        assert_eq!(first_block.trailing_spacing, TextBlockSpacing::ParagraphBreak);
+    }
 
     // Set viewport width.
     app.viewport.on_frame(80);

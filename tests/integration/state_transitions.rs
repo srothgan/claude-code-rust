@@ -183,11 +183,11 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
 
     // Still one message - consecutive assistant chunks always merge
     assert_eq!(app.messages.len(), 1);
-    if let MessageBlock::Text(t, ..) =
+    if let MessageBlock::Text(block) =
         &app.messages.last().expect("message").blocks.last().expect("block")
     {
-        assert!(t.contains("Turn 1"), "first turn text present");
-        assert!(t.contains("Turn 2"), "second turn text appended");
+        assert!(block.text.contains("Turn 1"), "first turn text present");
+        assert!(block.text.contains("Turn 2"), "second turn text appended");
     }
 }
 
@@ -528,10 +528,10 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
     assert!(matches!(app.messages[1].role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(text, ..)) = app.messages[1].blocks.first() else {
+    let Some(MessageBlock::Text(block)) = app.messages[1].blocks.first() else {
         panic!("expected system error text block");
     };
-    assert!(text.contains("Turn failed: crashed"));
+    assert!(block.text.contains("Turn failed: crashed"));
 }
 
 #[tokio::test]
