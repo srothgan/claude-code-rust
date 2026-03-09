@@ -66,10 +66,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .map(str::to_owned)
         .or_else(|| app.settings.status_message.clone())
         .unwrap_or_else(|| {
-            app.settings.path.as_ref().map_or_else(
-                || "File: unavailable".to_owned(),
-                |path| format!("File: {}", path.display()),
-            )
+            app.settings
+                .selected_config_spec()
+                .and_then(|spec| app.settings.path_for(spec.file))
+                .or(app.settings.settings_path.as_ref())
+                .map_or_else(
+                    || "File: unavailable".to_owned(),
+                    |path| format!("File: {}", path.display()),
+                )
         });
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -137,7 +141,7 @@ fn panel_body(area: Rect) -> Rect {
 fn config_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, spec) in config_settings().iter().enumerate() {
-        let resolved = resolved_setting(app, &app.settings.draft_document, spec);
+        let resolved = resolved_setting(app, spec);
         lines.push(config_line(
             app.settings.selected_config_index == index,
             spec.label,
@@ -161,7 +165,7 @@ fn config_detail_lines(app: &App) -> Vec<Line<'static>> {
     let Some(spec) = app.settings.selected_config_spec() else {
         return vec![detail_text("No setting selected.")];
     };
-    let resolved = resolved_setting(app, &app.settings.draft_document, spec);
+    let resolved = resolved_setting(app, spec);
 
     let mut lines = vec![detail_title(spec.label), detail_text(spec.description)];
 

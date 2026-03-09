@@ -216,9 +216,8 @@ mod tests {
     #[test]
     fn config_without_args_opens_settings_view() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
         let mut app = App::test_default();
-        app.settings_path_override = Some(path);
+        app.settings_home_override = Some(dir.path().to_path_buf());
 
         let consumed = try_handle_submit(&mut app, "/config");
 

@@ -92,7 +92,7 @@ pub fn create_app(cli: &Cli) -> App {
     let mut app = App {
         active_view: ActiveView::Chat,
         settings: SettingsState::default(),
-        settings_path_override: None,
+        settings_home_override: None,
         messages: vec![super::ChatMessage::welcome_with_recent(
             &initial_model_name,
             &cwd_display,

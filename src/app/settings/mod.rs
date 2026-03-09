@@ -67,6 +67,9 @@ pub enum SettingId {
     FastMode,
     DefaultPermissionMode,
     Model,
+    Theme,
+    Notifications,
+    EditorMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +91,12 @@ pub enum EditorKind {
 pub enum ValueSource {
     PersistedOnly,
     RuntimeBacked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingFile {
+    SettingsJson,
+    PreferencesJson,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +144,7 @@ pub struct SettingSpec {
     pub entry_id: &'static str,
     pub label: &'static str,
     pub description: &'static str,
+    pub file: SettingFile,
     pub json_path: &'static [&'static str],
     pub kind: SettingKind,
     pub editor: EditorKind,
@@ -201,6 +211,52 @@ impl DefaultPermissionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreferredNotifChannel {
+    #[default]
+    Iterm2,
+    Iterm2WithBell,
+    TerminalBell,
+    NotificationsDisabled,
+    Ghostty,
+}
+
+impl PreferredNotifChannel {
+    #[must_use]
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Iterm2 => "iterm2",
+            Self::Iterm2WithBell => "iterm2_with_bell",
+            Self::TerminalBell => "terminal_bell",
+            Self::NotificationsDisabled => "notifications_disabled",
+            Self::Ghostty => "ghostty",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Iterm2 => "Auto / iTerm2",
+            Self::Iterm2WithBell => "iTerm2 with Bell",
+            Self::TerminalBell => "Terminal Bell",
+            Self::NotificationsDisabled => "Disabled",
+            Self::Ghostty => "Ghostty",
+        }
+    }
+
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "iterm2" => Some(Self::Iterm2),
+            "iterm2_with_bell" => Some(Self::Iterm2WithBell),
+            "terminal_bell" => Some(Self::TerminalBell),
+            "notifications_disabled" => Some(Self::NotificationsDisabled),
+            "ghostty" => Some(Self::Ghostty),
+            _ => None,
+        }
+    }
+}
+
 const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "acceptEdits", label: "Accept Edits" },
@@ -209,12 +265,33 @@ const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "bypassPermissions", label: "Bypass Permissions" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 3] = [
+const NOTIFICATION_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "iterm2", label: "Auto / iTerm2" },
+    SettingOption { stored: "iterm2_with_bell", label: "iTerm2 with Bell" },
+    SettingOption { stored: "terminal_bell", label: "Terminal Bell" },
+    SettingOption { stored: "ghostty", label: "Ghostty" },
+    SettingOption { stored: "notifications_disabled", label: "Disabled" },
+];
+
+const THEME_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "dark", label: "Dark" },
+    SettingOption { stored: "light", label: "Light" },
+    SettingOption { stored: "light-daltonized", label: "Light (Daltonized)" },
+    SettingOption { stored: "dark-daltonized", label: "Dark (Daltonized)" },
+];
+
+const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "default", label: "Default" },
+    SettingOption { stored: "vim", label: "Vim" },
+];
+
+const CONFIG_SETTINGS: [SettingSpec; 6] = [
     SettingSpec {
         id: SettingId::FastMode,
         entry_id: "A05",
         label: "Fast mode",
         description: "Controls the persisted fast-mode preference for future sessions.",
+        file: SettingFile::SettingsJson,
         json_path: &["fastMode"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -227,7 +304,8 @@ const CONFIG_SETTINGS: [SettingSpec; 3] = [
         id: SettingId::DefaultPermissionMode,
         entry_id: "A09",
         label: "Default permission mode",
-        description: "Stored in settings.json and applied to new sessions through the bridge.",
+        description: "Sets the default approval behavior for future sessions.",
+        file: SettingFile::SettingsJson,
         json_path: &["permissions", "defaultMode"],
         kind: SettingKind::DynamicEnum,
         editor: EditorKind::Cycle,
@@ -240,7 +318,8 @@ const CONFIG_SETTINGS: [SettingSpec; 3] = [
         id: SettingId::Model,
         entry_id: "A19",
         label: "Default model",
-        description: "Stored in settings.json and applied to new sessions through the bridge.",
+        description: "Sets the model used when starting new sessions.",
+        file: SettingFile::SettingsJson,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,
         editor: EditorKind::Cycle,
@@ -248,6 +327,48 @@ const CONFIG_SETTINGS: [SettingSpec; 3] = [
         options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
         fallback: FallbackPolicy::RuntimeDefault,
         supported: true,
+    },
+    SettingSpec {
+        id: SettingId::Theme,
+        entry_id: "A13",
+        label: "Theme",
+        description: "Controls the app color theme.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["theme"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(THEME_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
+    },
+    SettingSpec {
+        id: SettingId::Notifications,
+        entry_id: "A14",
+        label: "Notifications",
+        description: "Controls how the app notifies you when attention is needed.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["preferredNotifChannel"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(NOTIFICATION_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: true,
+    },
+    SettingSpec {
+        id: SettingId::EditorMode,
+        entry_id: "A17",
+        label: "Editor mode",
+        description: "Controls how text editing keys behave.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["editorMode"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(EDITOR_MODE_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
     },
 ];
 
@@ -287,10 +408,13 @@ pub struct ResolvedSetting {
 pub struct SettingsState {
     pub active_tab: SettingsTab,
     pub selected_config_index: usize,
-    pub committed_document: Value,
-    pub draft_document: Value,
+    pub committed_settings_document: Value,
+    pub draft_settings_document: Value,
+    pub committed_preferences_document: Value,
+    pub draft_preferences_document: Value,
     pub dirty: bool,
-    pub path: Option<PathBuf>,
+    pub settings_path: Option<PathBuf>,
+    pub preferences_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
 }
@@ -300,10 +424,13 @@ impl Default for SettingsState {
         Self {
             active_tab: SettingsTab::Config,
             selected_config_index: 0,
-            committed_document: Value::Object(serde_json::Map::new()),
-            draft_document: Value::Object(serde_json::Map::new()),
+            committed_settings_document: Value::Object(serde_json::Map::new()),
+            draft_settings_document: Value::Object(serde_json::Map::new()),
+            committed_preferences_document: Value::Object(serde_json::Map::new()),
+            draft_preferences_document: Value::Object(serde_json::Map::new()),
             dirty: false,
-            path: None,
+            settings_path: None,
+            preferences_path: None,
             status_message: None,
             last_error: None,
         }
@@ -313,7 +440,9 @@ impl Default for SettingsState {
 impl SettingsState {
     #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
-        match resolve_setting_document(&self.draft_document, SettingId::FastMode, &[]).value {
+        match resolve_setting_document(&self.draft_settings_document, SettingId::FastMode, &[])
+            .value
+        {
             ResolvedSettingValue::Bool(value) => value,
             ResolvedSettingValue::Choice(_) => false,
         }
@@ -321,7 +450,7 @@ impl SettingsState {
 
     #[must_use]
     pub fn model_effective(&self) -> Option<String> {
-        match resolve_setting_document(&self.draft_document, SettingId::Model, &[]).value {
+        match resolve_setting_document(&self.draft_settings_document, SettingId::Model, &[]).value {
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             _ => None,
         }
@@ -329,8 +458,12 @@ impl SettingsState {
 
     #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        match resolve_setting_document(&self.draft_document, SettingId::DefaultPermissionMode, &[])
-            .value
+        match resolve_setting_document(
+            &self.draft_settings_document,
+            SettingId::DefaultPermissionMode,
+            &[],
+        )
+        .value
         {
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
                 DefaultPermissionMode::from_stored(&value).unwrap_or_default()
@@ -340,20 +473,51 @@ impl SettingsState {
     }
 
     #[must_use]
+    pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
+        store::preferred_notification_channel(&self.committed_preferences_document)
+            .unwrap_or_default()
+    }
+
+    #[must_use]
     pub fn selected_config_spec(&self) -> Option<&'static SettingSpec> {
         config_settings().get(self.selected_config_index)
     }
 
+    #[must_use]
+    pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
+        match file {
+            SettingFile::SettingsJson => self.settings_path.as_ref(),
+            SettingFile::PreferencesJson => self.preferences_path.as_ref(),
+        }
+    }
+
+    #[must_use]
+    pub fn draft_document_for(&self, file: SettingFile) -> &Value {
+        match file {
+            SettingFile::SettingsJson => &self.draft_settings_document,
+            SettingFile::PreferencesJson => &self.draft_preferences_document,
+        }
+    }
+
+    pub fn draft_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
+        match file {
+            SettingFile::SettingsJson => &mut self.draft_settings_document,
+            SettingFile::PreferencesJson => &mut self.draft_preferences_document,
+        }
+    }
+
     fn apply_loaded(
         &mut self,
-        path: PathBuf,
-        document: Value,
+        loaded: store::LoadedSettingsDocuments,
         notice: Option<String>,
         preserve_status: bool,
     ) {
-        self.path = Some(path);
-        self.committed_document = document.clone();
-        self.draft_document = document;
+        self.settings_path = Some(loaded.paths.settings_path);
+        self.preferences_path = Some(loaded.paths.preferences_path);
+        self.committed_settings_document = loaded.settings_document.clone();
+        self.draft_settings_document = loaded.settings_document;
+        self.committed_preferences_document = loaded.preferences_document.clone();
+        self.draft_preferences_document = loaded.preferences_document;
         self.dirty = false;
         self.selected_config_index =
             self.selected_config_index.min(config_settings().len().saturating_sub(1));
@@ -366,7 +530,8 @@ impl SettingsState {
     }
 
     fn reset_editor(&mut self) {
-        self.draft_document = self.committed_document.clone();
+        self.draft_settings_document = self.committed_settings_document.clone();
+        self.draft_preferences_document = self.committed_preferences_document.clone();
         self.dirty = false;
         self.last_error = None;
     }
@@ -383,11 +548,15 @@ pub fn config_setting(id: SettingId) -> &'static SettingSpec {
         SettingId::FastMode => &CONFIG_SETTINGS[0],
         SettingId::DefaultPermissionMode => &CONFIG_SETTINGS[1],
         SettingId::Model => &CONFIG_SETTINGS[2],
+        SettingId::Theme => &CONFIG_SETTINGS[3],
+        SettingId::Notifications => &CONFIG_SETTINGS[4],
+        SettingId::EditorMode => &CONFIG_SETTINGS[5],
     }
 }
 
 #[must_use]
-pub fn resolved_setting(app: &App, document: &Value, spec: &SettingSpec) -> ResolvedSetting {
+pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
+    let document = app.settings.draft_document_for(spec.file);
     resolve_setting_document(document, spec.id, &app.available_models)
 }
 
@@ -459,8 +628,9 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
 }
 
 pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
-    let loaded = store::load(app.settings_path_override.as_deref())?;
-    app.settings.apply_loaded(loaded.path, loaded.document, loaded.notice, false);
+    let loaded = store::load(app.settings_home_override.as_deref())?;
+    let notice = loaded.notice.clone();
+    app.settings.apply_loaded(loaded, notice, false);
     Ok(())
 }
 
@@ -472,29 +642,46 @@ pub fn open(app: &mut App) -> Result<(), String> {
 }
 
 fn ensure_loaded(app: &mut App) -> Result<(), String> {
-    if settings_source_matches_override(app) && app.settings.path.is_some() {
+    if settings_source_matches_override(app)
+        && app.settings.settings_path.is_some()
+        && app.settings.preferences_path.is_some()
+    {
         return Ok(());
     }
-    let loaded = store::load(app.settings_path_override.as_deref())?;
-    app.settings.apply_loaded(loaded.path, loaded.document, loaded.notice, true);
+    let loaded = store::load(app.settings_home_override.as_deref())?;
+    let notice = loaded.notice.clone();
+    app.settings.apply_loaded(loaded, notice, true);
     Ok(())
 }
 
 pub fn save(app: &mut App) -> Result<(), String> {
-    let Some(path) = app.settings.path.clone() else {
-        let message = "Settings path is not available".to_owned();
+    let (Some(settings_path), Some(preferences_path)) =
+        (app.settings.settings_path.clone(), app.settings.preferences_path.clone())
+    else {
+        let message = "Settings paths are not available".to_owned();
         app.settings.last_error = Some(message.clone());
         return Err(message);
     };
 
-    store::save(&path, &app.settings.draft_document)?;
-    app.settings.committed_document = app.settings.draft_document.clone();
+    let mut saved_any = false;
+    if app.settings.draft_settings_document != app.settings.committed_settings_document {
+        store::save(&settings_path, &app.settings.draft_settings_document)?;
+        app.settings.committed_settings_document = app.settings.draft_settings_document.clone();
+        saved_any = true;
+    }
+    if app.settings.draft_preferences_document != app.settings.committed_preferences_document {
+        store::save(&preferences_path, &app.settings.draft_preferences_document)?;
+        app.settings.committed_preferences_document =
+            app.settings.draft_preferences_document.clone();
+        saved_any = true;
+    }
     app.settings.dirty = false;
     app.settings.last_error = None;
-    app.settings.status_message = Some(format!(
-        "Saved settings to {}. New sessions will use the updated config",
-        path.display()
-    ));
+    app.settings.status_message = Some(if saved_any {
+        "Saved settings changes. New sessions will use the updated config.".to_owned()
+    } else {
+        "No settings changes to save.".to_owned()
+    });
     Ok(())
 }
 
@@ -561,13 +748,13 @@ fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
 fn activate_setting(app: &mut App, spec: &SettingSpec) {
     match spec.id {
         SettingId::FastMode => {
-            let next = !store::fast_mode(&app.settings.draft_document).unwrap_or(false);
-            store::set_fast_mode(&mut app.settings.draft_document, next);
+            let next = !store::fast_mode(&app.settings.draft_settings_document).unwrap_or(false);
+            store::set_fast_mode(&mut app.settings.draft_settings_document, next);
             mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
         }
         SettingId::DefaultPermissionMode => {
             let current = match resolve_setting_document(
-                &app.settings.draft_document,
+                &app.settings.draft_settings_document,
                 SettingId::DefaultPermissionMode,
                 &[],
             )
@@ -579,7 +766,7 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                 _ => DefaultPermissionMode::Default,
             };
             let next = current.next();
-            store::set_default_permission_mode(&mut app.settings.draft_document, next);
+            store::set_default_permission_mode(&mut app.settings.draft_settings_document, next);
             mark_setting_edited(app, format!("{} set to {}", spec.label, next.label()));
         }
         SettingId::Model => {
@@ -588,7 +775,7 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                     NextModelSelection::Automatic => None,
                     NextModelSelection::Named(model) => Some(model.as_str()),
                 };
-                store::set_model(&mut app.settings.draft_document, next_model_id);
+                store::set_model(&mut app.settings.draft_settings_document, next_model_id);
                 mark_setting_edited(
                     app,
                     format!("{} set to {}", spec.label, model_status_label(next_model_id, app)),
@@ -596,6 +783,9 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
             } else {
                 app.settings.status_message = Some("Connect to load available models".to_owned());
             }
+        }
+        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
+            cycle_static_enum(app, spec);
         }
     }
 }
@@ -610,6 +800,55 @@ fn on_off(value: bool) -> &'static str {
     if value { "On" } else { "Off" }
 }
 
+fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
+    let current = {
+        let document = app.settings.draft_document_for(spec.file);
+        match store::read_persisted_setting(document, spec) {
+            Ok(store::PersistedSettingValue::String(value)) => value,
+            _ => default_static_value(spec.id).to_owned(),
+        }
+    };
+
+    let SettingOptions::Static(options) = spec.options else {
+        return;
+    };
+    let current_index =
+        options.iter().position(|option| option.stored == current).unwrap_or_default();
+    let next = options[(current_index + 1) % options.len()].stored;
+
+    {
+        let document = app.settings.draft_document_for_mut(spec.file);
+        if spec.id == SettingId::Notifications {
+            if let Some(channel) = PreferredNotifChannel::from_stored(next) {
+                store::set_preferred_notification_channel(document, channel);
+            }
+        } else {
+            store::write_persisted_setting(
+                document,
+                spec,
+                store::PersistedSettingValue::String(next.to_owned()),
+            );
+        }
+    }
+    mark_setting_edited(
+        app,
+        format!(
+            "{} set to {}",
+            spec.label,
+            option_label(spec, next).unwrap_or_else(|| next.to_owned())
+        ),
+    );
+}
+
+const fn default_static_value(setting_id: SettingId) -> &'static str {
+    match setting_id {
+        SettingId::Theme => "dark",
+        SettingId::Notifications => "iterm2",
+        SettingId::EditorMode => "default",
+        SettingId::FastMode | SettingId::DefaultPermissionMode | SettingId::Model => "",
+    }
+}
+
 enum NextModelSelection {
     Automatic,
     Named(String),
@@ -621,7 +860,7 @@ fn next_model_selection(app: &App) -> Option<NextModelSelection> {
         return None;
     }
 
-    let current = store::model(&app.settings.draft_document).ok().flatten();
+    let current = store::model(&app.settings.draft_settings_document).ok().flatten();
     let current_index = choices
         .iter()
         .position(|candidate| candidate.as_deref() == current.as_deref())
@@ -655,10 +894,19 @@ pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
 }
 
 fn settings_source_matches_override(app: &App) -> bool {
-    match (&app.settings.path, app.settings_path_override.as_ref()) {
-        (None, None | Some(_)) => false,
-        (Some(_), None) => true,
-        (Some(path), Some(override_path)) => path == override_path,
+    let (Some(settings_path), Some(preferences_path)) =
+        (&app.settings.settings_path, &app.settings.preferences_path)
+    else {
+        return false;
+    };
+
+    match app.settings_home_override.as_ref() {
+        None => true,
+        Some(home_override) => {
+            let expected_settings = home_override.join(".claude").join("settings.json");
+            let expected_preferences = home_override.join(".claude.json");
+            settings_path == &expected_settings && preferences_path == &expected_preferences
+        }
     }
 }
 
@@ -674,6 +922,11 @@ fn resolve_setting_document(
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
         SettingId::Model => resolve_model_setting(document, spec, available_models),
+        SettingId::Theme => resolve_string_setting(document, spec, "dark"),
+        SettingId::Notifications => {
+            resolve_string_setting(document, spec, PreferredNotifChannel::default().as_stored())
+        }
+        SettingId::EditorMode => resolve_string_setting(document, spec, "default"),
     }
 }
 
@@ -787,27 +1040,34 @@ mod tests {
     #[test]
     fn open_loads_document_and_switches_view() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
+        let path = dir.path().join(".claude").join("settings.json");
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
         std::fs::write(&path, r#"{"fastMode":true}"#).expect("write");
         let mut app = App::test_default();
-        app.settings_path_override = Some(path);
+        app.settings_home_override = Some(dir.path().to_path_buf());
 
         open(&mut app).expect("open");
 
         assert_eq!(app.active_view, ActiveView::Settings);
         assert!(matches!(
-            resolve_setting_document(&app.settings.draft_document, SettingId::FastMode, &[]).value,
+            resolve_setting_document(
+                &app.settings.draft_settings_document,
+                SettingId::FastMode,
+                &[]
+            )
+            .value,
             ResolvedSettingValue::Bool(true)
         ));
-        assert!(app.settings.path.is_some());
+        assert!(app.settings.settings_path.is_some());
+        assert!(app.settings.preferences_path.is_some());
     }
 
     #[test]
     fn save_persists_toggled_fast_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
+        let path = dir.path().join(".claude").join("settings.json");
         let mut app = App::test_default();
-        app.settings_path_override = Some(path.clone());
+        app.settings_home_override = Some(dir.path().to_path_buf());
 
         open(&mut app).expect("open");
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -830,7 +1090,16 @@ mod tests {
         assert_eq!(app.settings.selected_config_index, 2);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 2);
+        assert_eq!(app.settings.selected_config_index, 3);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 4);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 5);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 5);
     }
 
     #[test]
@@ -842,7 +1111,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(
-            store::default_permission_mode(&app.settings.draft_document),
+            store::default_permission_mode(&app.settings.draft_settings_document),
             Ok(DefaultPermissionMode::AcceptEdits)
         );
     }
@@ -850,11 +1119,12 @@ mod tests {
     #[test]
     fn save_preserves_invalid_unedited_values() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
+        let path = dir.path().join(".claude").join("settings.json");
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
         std::fs::write(&path, r#"{"permissions":{"defaultMode":"broken"},"fastMode":false}"#)
             .expect("write");
         let mut app = App::test_default();
-        app.settings_path_override = Some(path.clone());
+        app.settings_home_override = Some(dir.path().to_path_buf());
 
         open(&mut app).expect("open");
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -869,15 +1139,58 @@ mod tests {
     fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
         let mut app = App::test_default();
         app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
-        store::set_model(&mut app.settings.draft_document, Some("unknown"));
+        store::set_model(&mut app.settings.draft_settings_document, Some("unknown"));
 
-        let resolved =
-            resolved_setting(&app, &app.settings.draft_document, config_setting(SettingId::Model));
+        let resolved = resolved_setting(&app, config_setting(SettingId::Model));
 
         assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
         assert_eq!(
             setting_display_value(&app, config_setting(SettingId::Model), &resolved),
             "Automatic"
         );
+    }
+
+    #[test]
+    fn notifications_cycle_in_preferences_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 4;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            store::preferred_notification_channel(&app.settings.draft_preferences_document),
+            Ok(PreferredNotifChannel::Iterm2WithBell)
+        );
+    }
+
+    #[test]
+    fn theme_cycles_in_preferences_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 3;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let stored = store::read_persisted_setting(
+            &app.settings.draft_preferences_document,
+            config_setting(SettingId::Theme),
+        );
+        assert_eq!(stored, Ok(store::PersistedSettingValue::String("light".to_owned())));
+    }
+
+    #[test]
+    fn editor_mode_cycles_in_preferences_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 5;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let stored = store::read_persisted_setting(
+            &app.settings.draft_preferences_document,
+            config_setting(SettingId::EditorMode),
+        );
+        assert_eq!(stored, Ok(store::PersistedSettingValue::String("vim".to_owned())));
     }
 }

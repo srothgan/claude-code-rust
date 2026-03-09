@@ -20,9 +20,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{DefaultPermissionMode, SettingId, SettingKind, SettingSpec, config_setting};
+use super::{
+    DefaultPermissionMode, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
+    config_setting,
+};
 
 const SETTINGS_FILENAME: &str = "settings.json";
+const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,21 +36,28 @@ pub enum PersistedSettingValue {
     String(String),
 }
 
-pub struct LoadedSettings {
-    pub path: PathBuf,
-    pub document: Value,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsPaths {
+    pub settings_path: PathBuf,
+    pub preferences_path: PathBuf,
+}
+
+pub struct LoadedSettingsDocuments {
+    pub paths: SettingsPaths,
+    pub settings_document: Value,
+    pub preferences_document: Value,
     pub notice: Option<String>,
 }
 
-pub fn load(path_override: Option<&Path>) -> Result<LoadedSettings, String> {
-    let path = resolve_path(path_override)?;
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => parse_document(&path, &raw),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Ok(LoadedSettings { path, document: Value::Object(Map::new()), notice: None })
-        }
-        Err(err) => Err(format!("Failed to read settings file: {err}")),
-    }
+pub fn load(home_override: Option<&Path>) -> Result<LoadedSettingsDocuments, String> {
+    let paths = resolve_paths(home_override)?;
+    let (settings_document, settings_notice) = load_document(&paths.settings_path)?;
+    let (preferences_document, preferences_notice) = load_document(&paths.preferences_path)?;
+
+    let notices = [settings_notice, preferences_notice].into_iter().flatten().collect::<Vec<_>>();
+    let notice = (!notices.is_empty()).then(|| notices.join(" "));
+
+    Ok(LoadedSettingsDocuments { paths, settings_document, preferences_document, notice })
 }
 
 pub fn save(path: &Path, document: &Value) -> Result<(), String> {
@@ -55,7 +66,7 @@ pub fn save(path: &Path, document: &Value) -> Result<(), String> {
         .map_err(|err| format!("Failed to create settings directory: {err}"))?;
 
     let normalized = normalized_root(document);
-    let temp_path = unique_temp_path(parent);
+    let temp_path = unique_temp_path(parent, path.file_name().and_then(std::ffi::OsStr::to_str));
     let mut temp = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -157,29 +168,56 @@ pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermission
     );
 }
 
-fn resolve_path(path_override: Option<&Path>) -> Result<PathBuf, String> {
-    if let Some(path) = path_override {
-        return Ok(path.to_path_buf());
+pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotifChannel, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::Notifications))? {
+        PersistedSettingValue::Missing => Ok(PreferredNotifChannel::default()),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => {
+            PreferredNotifChannel::from_stored(&value).ok_or(())
+        }
     }
-
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?;
-    Ok(home.join(CLAUDE_DIR).join(SETTINGS_FILENAME))
 }
 
-fn parse_document(path: &Path, raw: &str) -> Result<LoadedSettings, String> {
+pub fn set_preferred_notification_channel(document: &mut Value, channel: PreferredNotifChannel) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::Notifications),
+        PersistedSettingValue::String(channel.as_stored().to_owned()),
+    );
+}
+
+fn resolve_paths(home_override: Option<&Path>) -> Result<SettingsPaths, String> {
+    let home = if let Some(path) = home_override {
+        path.to_path_buf()
+    } else {
+        dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
+    };
+
+    Ok(SettingsPaths {
+        settings_path: home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+        preferences_path: home.join(PREFERENCES_FILENAME),
+    })
+}
+
+fn load_document(path: &Path) -> Result<(Value, Option<String>), String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => parse_document(path, &raw),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Ok((Value::Object(Map::new()), None))
+        }
+        Err(err) => Err(format!("Failed to read settings file: {err}")),
+    }
+}
+
+fn parse_document(path: &Path, raw: &str) -> Result<(Value, Option<String>), String> {
     if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(raw) {
-        Ok(LoadedSettings {
-            path: path.to_path_buf(),
-            document: Value::Object(object),
-            notice: None,
-        })
+        Ok((Value::Object(object), None))
     } else {
         let backup = backup_malformed_file(path)?;
-        Ok(LoadedSettings {
-            path: path.to_path_buf(),
-            document: Value::Object(Map::new()),
-            notice: Some(format!("Malformed settings file backed up to {}", backup.display())),
-        })
+        Ok((
+            Value::Object(Map::new()),
+            Some(format!("Malformed settings file backed up to {}", backup.display())),
+        ))
     }
 }
 
@@ -192,10 +230,11 @@ fn backup_malformed_file(path: &Path) -> Result<PathBuf, String> {
     Ok(backup)
 }
 
-fn unique_temp_path(parent: &Path) -> PathBuf {
+fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
     let stamp =
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    parent.join(format!(".{SETTINGS_FILENAME}.{stamp}.tmp"))
+    let filename = filename_hint.unwrap_or(SETTINGS_FILENAME);
+    parent.join(format!(".{filename}.{stamp}.tmp"))
 }
 
 fn read_json_path<'a>(document: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -282,33 +321,40 @@ mod tests {
     use crate::app::settings::config_setting;
 
     #[test]
-    fn load_missing_file_returns_empty_object() {
+    fn load_missing_files_returns_empty_objects() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
 
-        let loaded = load(Some(&path)).expect("load");
+        let loaded = load(Some(dir.path())).expect("load");
 
-        assert_eq!(loaded.path, path);
-        assert_eq!(loaded.document, Value::Object(Map::new()));
+        assert_eq!(loaded.settings_document, Value::Object(Map::new()));
+        assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
         assert!(loaded.notice.is_none());
+        assert_eq!(loaded.paths.settings_path, dir.path().join(".claude").join("settings.json"));
+        assert_eq!(loaded.paths.preferences_path, dir.path().join(".claude.json"));
     }
 
     #[test]
-    fn load_malformed_file_creates_backup_and_resets_document() {
+    fn load_malformed_preferences_file_creates_backup_and_preserves_settings() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, "{ not-json").expect("write malformed");
+        let settings_path = dir.path().join(".claude").join("settings.json");
+        let preferences_path = dir.path().join(".claude.json");
+        std::fs::create_dir_all(settings_path.parent().expect("settings parent"))
+            .expect("create settings dir");
+        std::fs::write(&settings_path, r#"{"fastMode":true}"#).expect("write settings");
+        std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
 
-        let loaded = load(Some(&path)).expect("load");
+        let loaded = load(Some(dir.path())).expect("load");
 
-        assert_eq!(loaded.document, Value::Object(Map::new()));
+        assert_eq!(fast_mode(&loaded.settings_document), Ok(true));
+        assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
         let notice = loaded.notice.expect("backup notice");
         assert!(notice.contains("Malformed settings file backed up"));
         let backups = std::fs::read_dir(dir.path())
             .expect("read dir")
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|candidate| candidate != &path)
+            .filter(|candidate| candidate != &preferences_path)
+            .filter(|candidate| candidate.file_name().is_some_and(|name| name != ".claude"))
             .collect::<Vec<_>>();
         assert_eq!(backups.len(), 1);
     }
@@ -326,10 +372,9 @@ mod tests {
         set_fast_mode(&mut document, true);
 
         save(&path, &document).expect("save");
-        let reloaded = load(Some(&path)).expect("reload");
-
-        assert_eq!(fast_mode(&reloaded.document), Ok(true));
-        assert_eq!(reloaded.document["unknown"]["keep"], Value::Bool(true));
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"fastMode\": true"));
+        assert!(raw.contains("\"keep\": true"));
     }
 
     #[test]
@@ -344,6 +389,22 @@ mod tests {
         let document = Value::Object(Map::new());
 
         assert_eq!(model(&document), Ok(None));
+    }
+
+    #[test]
+    fn preferred_notification_channel_defaults_to_iterm2() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(preferred_notification_channel(&document), Ok(PreferredNotifChannel::Iterm2));
+    }
+
+    #[test]
+    fn preferred_notification_channel_rejects_invalid_stored_value() {
+        let document = serde_json::json!({
+            "preferredNotifChannel": "not-a-channel"
+        });
+
+        assert_eq!(preferred_notification_channel(&document), Err(()));
     }
 
     #[test]
@@ -382,11 +443,10 @@ mod tests {
         set_default_permission_mode(&mut document, DefaultPermissionMode::Plan);
 
         save(&path, &document).expect("save");
-        let reloaded = load(Some(&path)).expect("reload");
+        let raw = std::fs::read_to_string(path).expect("read");
 
-        assert_eq!(default_permission_mode(&reloaded.document), Ok(DefaultPermissionMode::Plan));
-        assert_eq!(reloaded.document["permissions"]["keep"], Value::Bool(true));
-        assert_eq!(reloaded.document["unknown"]["keep"], Value::Bool(true));
+        assert!(raw.contains("\"defaultMode\": \"plan\""));
+        assert!(raw.contains("\"keep\": true"));
     }
 
     #[test]
@@ -402,10 +462,27 @@ mod tests {
         set_model(&mut document, Some("sonnet"));
 
         save(&path, &document).expect("save");
-        let reloaded = load(Some(&path)).expect("reload");
+        let raw = std::fs::read_to_string(path).expect("read");
 
-        assert_eq!(model(&reloaded.document), Ok(Some("sonnet".to_owned())));
-        assert_eq!(reloaded.document["unknown"]["keep"], Value::Bool(true));
+        assert!(raw.contains("\"model\": \"sonnet\""));
+        assert!(raw.contains("\"keep\": true"));
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys_and_updates_notifications() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        let mut document = serde_json::json!({
+            "preferredNotifChannel": "iterm2",
+            "theme": "dark"
+        });
+        set_preferred_notification_channel(&mut document, PreferredNotifChannel::TerminalBell);
+
+        save(&path, &document).expect("save");
+        let raw = std::fs::read_to_string(path).expect("read");
+
+        assert!(raw.contains("\"preferredNotifChannel\": \"terminal_bell\""));
+        assert!(raw.contains("\"theme\": \"dark\""));
     }
 
     #[test]

@@ -61,7 +61,7 @@ use super::view::ActiveView;
 pub struct App {
     pub active_view: ActiveView,
     pub settings: SettingsState,
-    pub settings_path_override: Option<PathBuf>,
+    pub settings_home_override: Option<PathBuf>,
     pub messages: Vec<ChatMessage>,
     /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
     pub viewport: ChatViewport,
@@ -514,7 +514,7 @@ impl App {
         Self {
             active_view: ActiveView::Chat,
             settings: SettingsState::default(),
-            settings_path_override: None,
+            settings_home_override: None,
             messages: Vec::new(),
             viewport: ChatViewport::new(),
             input: InputState::new(),

@@ -73,7 +73,10 @@ pub(super) fn handle_permission_request_event(
         app.pending_permission_ids.push(tool_id);
         app.claim_focus_target(FocusTarget::Permission);
         app.viewport.engage_auto_scroll();
-        app.notifications.notify(super::super::notify::NotifyEvent::PermissionRequired);
+        app.notifications.notify(
+            app.settings.preferred_notification_channel_effective(),
+            super::super::notify::NotifyEvent::PermissionRequired,
+        );
     } else {
         tracing::warn!("Permission request for non-tool block index: {tool_id}; auto-rejecting");
         reject_permission_request(response_tx, &options);
@@ -134,7 +137,10 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
     if turn_was_active {
-        app.notifications.notify(super::super::notify::NotifyEvent::TurnComplete);
+        app.notifications.notify(
+            app.settings.preferred_notification_channel_effective(),
+            super::super::notify::NotifyEvent::TurnComplete,
+        );
     }
     if app.active_view == super::super::ActiveView::Chat {
         super::super::input_submit::maybe_auto_submit_after_cancel(app);

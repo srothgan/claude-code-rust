@@ -38,9 +38,9 @@ pub(crate) fn session_launch_settings_for_reason(
         | SessionStartReason::NewSession
         | SessionStartReason::Resume
         | SessionStartReason::Login => SessionLaunchSettings {
-            model: store::model(&app.settings.committed_document).ok().flatten(),
+            model: store::model(&app.settings.committed_settings_document).ok().flatten(),
             permission_mode: Some(
-                store::default_permission_mode(&app.settings.committed_document)
+                store::default_permission_mode(&app.settings.committed_settings_document)
                     .unwrap_or_default()
                     .as_stored()
                     .to_owned(),
@@ -77,9 +77,9 @@ mod tests {
     #[test]
     fn persisted_launch_settings_include_model_and_permission_mode() {
         let mut app = App::test_default();
-        store::set_model(&mut app.settings.committed_document, Some("haiku"));
+        store::set_model(&mut app.settings.committed_settings_document, Some("haiku"));
         store::set_default_permission_mode(
-            &mut app.settings.committed_document,
+            &mut app.settings.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
 
@@ -103,9 +103,9 @@ mod tests {
     #[test]
     fn logout_launch_settings_omit_all_overrides() {
         let mut app = App::test_default();
-        store::set_model(&mut app.settings.committed_document, Some("haiku"));
+        store::set_model(&mut app.settings.committed_settings_document, Some("haiku"));
         store::set_default_permission_mode(
-            &mut app.settings.committed_document,
+            &mut app.settings.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
 
