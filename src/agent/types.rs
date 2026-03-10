@@ -44,11 +44,22 @@ pub struct AvailableAgent {
     pub model: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Low,
+    Medium,
+    High,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
     pub display_name: String,
     pub description: Option<String>,
+    pub supports_effort: bool,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<EffortLevel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

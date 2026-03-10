@@ -17,6 +17,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AvailableCommand,
+  EffortLevel,
   AvailableModel,
   BridgeCommand,
   FastModeState,
@@ -349,11 +350,21 @@ function thinkingConfigFromLaunchSettings(
   }
 }
 
+function effortFromLaunchSettings(
+  launchSettings: SessionLaunchSettings,
+): EffortLevel | undefined {
+  if (launchSettings.thinking_mode !== "adaptive") {
+    return undefined;
+  }
+  return launchSettings.effort_level;
+}
+
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const permissionMode = permissionModeFromLaunchSettings(
     params.launchSettings.permission_mode,
   );
   const thinking = thinkingConfigFromLaunchSettings(params.launchSettings);
+  const effort = effortFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
@@ -362,6 +373,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.launchSettings.model ? { model: params.launchSettings.model } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     ...(thinking ? { thinking } : {}),
+    ...(effort ? { effort } : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
       : {}),
@@ -446,6 +458,13 @@ function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
     .map((entry) => ({
       id: entry.value,
       display_name: entry.displayName,
+      supports_effort: entry.supportsEffort === true,
+      supported_effort_levels: Array.isArray(entry.supportedEffortLevels)
+        ? entry.supportedEffortLevels.filter(
+            (level): level is "low" | "medium" | "high" =>
+              level === "low" || level === "medium" || level === "high",
+          )
+        : [],
       ...(typeof entry.description === "string" && entry.description.trim().length > 0
         ? { description: entry.description }
         : {}),

@@ -17,7 +17,7 @@
 pub mod store;
 
 use super::view::{self, ActiveView};
-use crate::agent::model::AvailableModel;
+use crate::agent::model::{AvailableModel, EffortLevel};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -75,6 +75,7 @@ pub enum SettingId {
     RespectGitignore,
     ShowTips,
     Theme,
+    ThinkingEffort,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,8 +291,18 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "vim", label: "Vim" },
 ];
+const DEFAULT_MODEL_ID: &str = "default";
+const DEFAULT_MODEL_LABEL: &str = "Default";
+const DEFAULT_EFFORT_LEVELS: [EffortLevel; 3] =
+    [EffortLevel::Low, EffortLevel::Medium, EffortLevel::High];
 
-const CONFIG_SETTINGS: [SettingSpec; 10] = [
+const EFFORT_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "low", label: "Low" },
+    SettingOption { stored: "medium", label: "Medium" },
+    SettingOption { stored: "high", label: "High" },
+];
+
+const CONFIG_SETTINGS: [SettingSpec; 11] = [
     SettingSpec {
         id: SettingId::AlwaysThinking,
         entry_id: "A04",
@@ -310,11 +321,11 @@ const CONFIG_SETTINGS: [SettingSpec; 10] = [
         id: SettingId::Model,
         entry_id: "A19",
         label: "Default model",
-        description: "Sets the model used when starting new sessions.",
+        description: "Sets the default model for new sessions and opens the combined model and thinking effort picker.",
         file: SettingFile::SettingsJson,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,
-        editor: EditorKind::Cycle,
+        editor: EditorKind::Overlay,
         source: ValueSource::RuntimeBacked,
         options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
         fallback: FallbackPolicy::RuntimeDefault,
@@ -432,6 +443,20 @@ const CONFIG_SETTINGS: [SettingSpec; 10] = [
         fallback: FallbackPolicy::AppDefault,
         supported: false,
     },
+    SettingSpec {
+        id: SettingId::ThinkingEffort,
+        entry_id: "A20",
+        label: "Thinking effort",
+        description: "Controls how much effort Claude uses when thinking for new sessions. Only applies when Always Thinking is on and the selected model supports effort.",
+        file: SettingFile::SettingsJson,
+        json_path: &["effortLevel"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Overlay,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(EFFORT_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: true,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,10 +491,29 @@ pub struct ResolvedSetting {
     pub validation: SettingValidation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayFocus {
+    Model,
+    Effort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelAndEffortOverlayState {
+    pub focus: OverlayFocus,
+    pub selected_model: String,
+    pub selected_effort: EffortLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsOverlayState {
+    ModelAndEffort(ModelAndEffortOverlayState),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsState {
     pub active_tab: SettingsTab,
     pub selected_config_index: usize,
+    pub overlay: Option<SettingsOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
     pub committed_preferences_document: Value,
@@ -485,6 +529,7 @@ impl Default for SettingsState {
         Self {
             active_tab: SettingsTab::Config,
             selected_config_index: 0,
+            overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
             committed_preferences_document: Value::Object(serde_json::Map::new()),
@@ -527,9 +572,18 @@ impl SettingsState {
         match resolve_setting_document(&self.committed_settings_document, SettingId::Model, &[])
             .value
         {
+            ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
+                Some(DEFAULT_MODEL_ID.to_owned())
+            }
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub fn thinking_effort_effective(&self) -> EffortLevel {
+        store::thinking_effort_level(&self.committed_settings_document)
+            .unwrap_or(EffortLevel::Medium)
     }
 
     #[must_use]
@@ -570,6 +624,21 @@ impl SettingsState {
     }
 
     #[must_use]
+    pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
+        match &self.overlay {
+            Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
+            None => None,
+        }
+    }
+
+    pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
+        match &mut self.overlay {
+            Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
+            None => None,
+        }
+    }
+
+    #[must_use]
     pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
         match file {
             SettingFile::SettingsJson => self.settings_path.as_ref(),
@@ -607,6 +676,7 @@ impl SettingsState {
         self.committed_settings_document = loaded.settings_document;
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
+        self.overlay = None;
         self.selected_config_index =
             self.selected_config_index.min(config_settings().len().saturating_sub(1));
         if !preserve_status {
@@ -645,11 +715,15 @@ pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedS
             }
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
-            "Automatic".to_owned()
+            DEFAULT_MODEL_LABEL.to_owned()
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), SettingId::Model) => {
             model_status_label(Some(value), app)
         }
+        (
+            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
+            SettingId::ThinkingEffort,
+        ) => effort_level_label(value).unwrap_or_else(|| value.clone()),
         (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), _) => {
             option_label(spec, value).unwrap_or_else(|| value.clone())
         }
@@ -684,14 +758,15 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
             }
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
                 if app.available_models.is_empty() {
-                    vec!["Automatic".to_owned(), "Connect to load available models".to_owned()]
+                    vec![
+                        DEFAULT_MODEL_LABEL.to_owned(),
+                        "Connect to load available models".to_owned(),
+                    ]
                 } else {
-                    let mut options = Vec::with_capacity(app.available_models.len() + 1);
-                    options.push("Automatic".to_owned());
-                    options.extend(
-                        app.available_models.iter().map(|model| model.display_name.clone()),
-                    );
-                    options
+                    model_overlay_options(app)
+                        .into_iter()
+                        .map(|option| option.display_name)
+                        .collect()
                 }
             }
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
@@ -723,6 +798,11 @@ pub fn close(app: &mut App) {
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
         app.should_quit = true;
+        return;
+    }
+
+    if app.settings.overlay.is_some() {
+        handle_overlay_key(app, key);
         return;
     }
 
@@ -824,22 +904,27 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                 store::set_default_permission_mode(document, next);
             });
         }
-        SettingId::Model => {
-            if let Some(next_model) = next_model_selection(app) {
-                let next_model_id = match &next_model {
-                    NextModelSelection::Automatic => None,
-                    NextModelSelection::Named(model) => Some(model.as_str()),
-                };
-                persist_setting_change(app, spec, |document| {
-                    store::set_model(document, next_model_id);
-                });
-            } else {
-                app.settings.status_message = Some("Connect to load available models".to_owned());
-            }
+        SettingId::Model => open_model_and_effort_overlay(app, OverlayFocus::Model),
+        SettingId::ThinkingEffort => {
+            open_model_and_effort_overlay(app, OverlayFocus::Effort);
         }
         SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
             cycle_static_enum(app, spec);
         }
+    }
+}
+
+fn handle_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
+        (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
+        (KeyCode::Tab, KeyModifiers::NONE)
+        | (KeyCode::Right, KeyModifiers::NONE)
+        | (KeyCode::Left, KeyModifiers::NONE)
+        | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
+        (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
+        (KeyCode::Down, KeyModifiers::NONE) => move_overlay_selection(app, 1),
+        _ => {}
     }
 }
 
@@ -916,6 +1001,7 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
     match setting_id {
         SettingId::AlwaysThinking => "",
         SettingId::Theme => "dark",
+        SettingId::ThinkingEffort => "medium",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
         SettingId::ReduceMotion => "",
@@ -927,47 +1013,214 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
     }
 }
 
-enum NextModelSelection {
-    Automatic,
-    Named(String),
-}
-
-fn next_model_selection(app: &App) -> Option<NextModelSelection> {
-    let choices = model_cycle_values(app);
-    if choices.is_empty() {
-        return None;
-    }
-
-    let current = store::model(&app.settings.committed_settings_document).ok().flatten();
-    let current_index = choices
-        .iter()
-        .position(|candidate| candidate.as_deref() == current.as_deref())
-        .unwrap_or(0);
-    match &choices[(current_index + 1) % choices.len()] {
-        Some(model) => Some(NextModelSelection::Named(model.clone())),
-        None => Some(NextModelSelection::Automatic),
-    }
-}
-
-fn model_cycle_values(app: &App) -> Vec<Option<String>> {
-    if app.available_models.is_empty() {
-        return Vec::new();
-    }
-
-    let mut values = Vec::with_capacity(app.available_models.len() + 1);
-    values.push(None);
-    values.extend(app.available_models.iter().map(|model| Some(model.id.clone())));
-    values
-}
-
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
     match model {
-        None => "Automatic".to_owned(),
-        Some(model_id) => app
-            .available_models
-            .iter()
+        None => DEFAULT_MODEL_LABEL.to_owned(),
+        Some(model_id) => model_overlay_options(app)
+            .into_iter()
             .find(|candidate| candidate.id == model_id)
-            .map_or_else(|| model_id.to_owned(), |candidate| candidate.display_name.clone()),
+            .map_or_else(
+                || {
+                    if model_id == DEFAULT_MODEL_ID {
+                        DEFAULT_MODEL_LABEL.to_owned()
+                    } else {
+                        model_id.to_owned()
+                    }
+                },
+                |candidate| candidate.display_name,
+            ),
+    }
+}
+
+fn effort_level_label(value: &str) -> Option<String> {
+    EffortLevel::from_stored(value).map(|level| level.label().to_owned())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OverlayModelOption {
+    pub id: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub supports_effort: bool,
+    pub supported_effort_levels: Vec<EffortLevel>,
+}
+
+pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
+    let mut options = app
+        .available_models
+        .iter()
+        .map(|model| OverlayModelOption {
+            id: model.id.clone(),
+            display_name: model.display_name.clone(),
+            description: model.description.clone(),
+            supports_effort: model.supports_effort,
+            supported_effort_levels: if model.supported_effort_levels.is_empty()
+                && model.supports_effort
+            {
+                DEFAULT_EFFORT_LEVELS.to_vec()
+            } else {
+                model.supported_effort_levels.clone()
+            },
+        })
+        .collect::<Vec<_>>();
+    if !options.iter().any(|option| option.id == DEFAULT_MODEL_ID) {
+        options.push(OverlayModelOption {
+            id: DEFAULT_MODEL_ID.to_owned(),
+            display_name: DEFAULT_MODEL_LABEL.to_owned(),
+            description: Some("Uses Claude's default model selection.".to_owned()),
+            supports_effort: true,
+            supported_effort_levels: DEFAULT_EFFORT_LEVELS.to_vec(),
+        });
+    }
+    options.sort_by(|left, right| {
+        let left_key = left.display_name.to_ascii_lowercase();
+        let right_key = right.display_name.to_ascii_lowercase();
+        left_key.cmp(&right_key).then_with(|| left.id.cmp(&right.id))
+    });
+    options
+}
+
+fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
+    let options = model_overlay_options(app);
+    let current_model = app
+        .settings
+        .model_effective()
+        .filter(|value| options.iter().any(|option| option.id == *value))
+        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_owned());
+    let current_effort = app.settings.thinking_effort_effective();
+    let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
+    app.settings.overlay = Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+        focus,
+        selected_model: current_model,
+        selected_effort,
+    }));
+    app.settings.last_error = None;
+}
+
+fn toggle_model_and_effort_focus(app: &mut App) {
+    let Some(overlay) = app.settings.model_and_effort_overlay_mut() else {
+        return;
+    };
+    overlay.focus = match overlay.focus {
+        OverlayFocus::Model => OverlayFocus::Effort,
+        OverlayFocus::Effort => OverlayFocus::Model,
+    };
+}
+
+fn move_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.settings.model_and_effort_overlay().cloned() else {
+        return;
+    };
+    match overlay.focus {
+        OverlayFocus::Model => move_overlay_model_selection(app, &overlay, delta),
+        OverlayFocus::Effort => move_overlay_effort_selection(app, &overlay, delta),
+    }
+}
+
+fn move_overlay_model_selection(app: &mut App, overlay: &ModelAndEffortOverlayState, delta: isize) {
+    let options = model_overlay_options(app);
+    if options.is_empty() {
+        return;
+    }
+    let current_index =
+        options.iter().position(|option| option.id == overlay.selected_model).unwrap_or(0);
+    let next_index = step_index_clamped(current_index, delta, options.len());
+    let next_model = &options[next_index];
+    let next_effort = overlay_effort_for_model(app, &next_model.id, overlay.selected_effort);
+    if let Some(state) = app.settings.model_and_effort_overlay_mut() {
+        state.selected_model = next_model.id.clone();
+        state.selected_effort = next_effort;
+    }
+}
+
+fn move_overlay_effort_selection(
+    app: &mut App,
+    overlay: &ModelAndEffortOverlayState,
+    delta: isize,
+) {
+    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
+    if levels.is_empty() {
+        return;
+    }
+    let current_index =
+        levels.iter().position(|level| *level == overlay.selected_effort).unwrap_or(0);
+    let next_index = step_index_clamped(current_index, delta, levels.len());
+    if let Some(state) = app.settings.model_and_effort_overlay_mut() {
+        state.selected_effort = levels[next_index];
+    }
+}
+
+fn confirm_model_and_effort_overlay(app: &mut App) {
+    let Some(overlay) = app.settings.model_and_effort_overlay().cloned() else {
+        return;
+    };
+    if persist_model_and_effort_change(app, &overlay.selected_model, overlay.selected_effort) {
+        app.settings.overlay = None;
+    }
+}
+
+fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
+    let Some(path) = app.settings.path_for(SettingFile::SettingsJson).cloned() else {
+        app.settings.last_error = Some("Settings paths are not available".to_owned());
+        app.settings.status_message = None;
+        return false;
+    };
+    let mut next_document = app.settings.committed_settings_document.clone();
+    store::set_model(&mut next_document, Some(model));
+    if model_supports_effort(app, model) {
+        store::set_thinking_effort_level(&mut next_document, effort);
+    }
+    match store::save(&path, &next_document) {
+        Ok(()) => {
+            app.settings.committed_settings_document = next_document;
+            app.settings.last_error = None;
+            app.settings.status_message = None;
+            true
+        }
+        Err(err) => {
+            app.settings.last_error = Some(err);
+            app.settings.status_message = None;
+            false
+        }
+    }
+}
+
+fn overlay_effort_for_model(app: &App, model_id: &str, current: EffortLevel) -> EffortLevel {
+    let supported = supported_effort_levels_for_model(app, model_id);
+    if supported.is_empty() || supported.contains(&current) {
+        return current;
+    }
+    supported.iter().copied().find(|level| *level == EffortLevel::Medium).unwrap_or(supported[0])
+}
+
+pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
+    if model_id == DEFAULT_MODEL_ID {
+        return true;
+    }
+
+    model_overlay_options(app)
+        .into_iter()
+        .find(|option| option.id == model_id)
+        .map_or(true, |option| option.supports_effort)
+}
+
+pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
+    model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
+        Vec::new,
+        |option| {
+            if option.supports_effort { option.supported_effort_levels } else { Vec::new() }
+        },
+    )
+}
+
+fn step_index_clamped(current: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs()).min(len.saturating_sub(1))
+    } else {
+        (current + delta as usize).min(len.saturating_sub(1))
     }
 }
 
@@ -992,6 +1245,7 @@ fn resolve_setting_document(
             resolve_bool_setting(document, spec, true)
         }
         SettingId::Model => resolve_model_setting(document, spec, available_models),
+        SettingId::ThinkingEffort => resolve_string_setting(document, spec, "medium"),
         SettingId::Theme => resolve_string_setting(document, spec, "dark"),
         SettingId::Notifications => {
             resolve_string_setting(document, spec, PreferredNotifChannel::default().as_stored())
@@ -1051,14 +1305,10 @@ fn resolve_model_setting(
             value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
             validation: SettingValidation::Valid,
         },
-        Ok(store::PersistedSettingValue::String(value)) if available_models.is_empty() => {
-            ResolvedSetting {
-                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
-                validation: SettingValidation::Valid,
-            }
-        }
         Ok(store::PersistedSettingValue::String(value))
-            if available_models.iter().any(|model| model.id == value) =>
+            if available_models.is_empty()
+                || value == DEFAULT_MODEL_ID
+                || available_models.iter().any(|model| model.id == value) =>
         {
             ResolvedSetting {
                 value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
@@ -1082,6 +1332,7 @@ fn option_exists(spec: &SettingSpec, value: &str) -> bool {
         SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
             DEFAULT_PERMISSION_OPTIONS.iter().any(|option| option.stored == value)
         }
+        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => value == DEFAULT_MODEL_ID,
         _ => false,
     }
 }
@@ -1199,6 +1450,7 @@ mod tests {
     fn handle_key_moves_between_config_rows() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
+        let last_index = config_settings().len().saturating_sub(1);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.settings.selected_config_index, 1);
@@ -1228,7 +1480,10 @@ mod tests {
         assert_eq!(app.settings.selected_config_index, 9);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 9);
+        assert_eq!(app.settings.selected_config_index, 10);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, last_index);
     }
 
     #[test]
@@ -1345,8 +1600,25 @@ mod tests {
         assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
         assert_eq!(
             setting_display_value(&app, config_setting(SettingId::Model), &resolved),
-            "Automatic"
+            "Default"
         );
+    }
+
+    #[test]
+    fn model_overlay_options_are_sorted_alphabetically() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            AvailableModel::new("sonnet", "Sonnet"),
+            AvailableModel::new("haiku", "Haiku"),
+            AvailableModel::new("opus", "Opus"),
+        ];
+
+        let labels = model_overlay_options(&app)
+            .into_iter()
+            .map(|option| option.display_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["Default", "Haiku", "Opus", "Sonnet"]);
     }
 
     #[test]

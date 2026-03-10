@@ -24,6 +24,7 @@ use super::{
     DefaultPermissionMode, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
     config_setting,
 };
+use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
@@ -165,6 +166,22 @@ pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
         document,
         config_setting(SettingId::AlwaysThinking),
         PersistedSettingValue::Bool(enabled),
+    );
+}
+
+pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::ThinkingEffort))? {
+        PersistedSettingValue::Missing => Ok(EffortLevel::Medium),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
+    }
+}
+
+pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::ThinkingEffort),
+        PersistedSettingValue::String(level.as_stored().to_owned()),
     );
 }
 

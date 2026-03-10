@@ -50,6 +50,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
         model: "haiku",
         permission_mode: "plan",
         thinking_mode: "adaptive",
+        effort_level: "high",
       },
     }),
   );
@@ -62,6 +63,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
   assert.equal(parsed.command.launch_settings.model, "haiku");
   assert.equal(parsed.command.launch_settings.permission_mode, "plan");
   assert.equal(parsed.command.launch_settings.thinking_mode, "adaptive");
+  assert.equal(parsed.command.launch_settings.effort_level, "high");
 });
 
 test("buildQueryOptions maps launch settings into sdk query options", () => {
@@ -72,6 +74,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
       model: "haiku",
       permission_mode: "plan",
       thinking_mode: "adaptive",
+      effort_level: "medium",
     },
     provisionalSessionId: "session-1",
     input,
@@ -84,6 +87,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
   assert.deepEqual(options.thinking, { type: "adaptive" });
+  assert.equal(options.effort, "medium");
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
 });
@@ -94,6 +98,7 @@ test("buildQueryOptions maps disabled thinking mode into sdk query options", () 
     cwd: "C:/work",
     launchSettings: {
       thinking_mode: "disabled",
+      effort_level: "high",
     },
     provisionalSessionId: "session-3",
     input,
@@ -104,6 +109,7 @@ test("buildQueryOptions maps disabled thinking mode into sdk query options", () 
   });
 
   assert.deepEqual(options.thinking, { type: "disabled" });
+  assert.equal("effort" in options, false);
 });
 
 test("buildQueryOptions omits startup overrides for default logout path", () => {

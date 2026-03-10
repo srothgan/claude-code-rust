@@ -92,6 +92,20 @@ pub(super) fn map_available_models(
             {
                 mapped = mapped.description(description);
             }
+            mapped = mapped.supports_effort(model_info.supports_effort);
+            if !model_info.supported_effort_levels.is_empty() {
+                mapped = mapped.supported_effort_levels(
+                    model_info
+                        .supported_effort_levels
+                        .into_iter()
+                        .map(|level| match level {
+                            types::EffortLevel::Low => model::EffortLevel::Low,
+                            types::EffortLevel::Medium => model::EffortLevel::Medium,
+                            types::EffortLevel::High => model::EffortLevel::High,
+                        })
+                        .collect(),
+                );
+            }
             mapped
         })
         .collect()

@@ -29,10 +29,14 @@ export interface AvailableAgent {
   model?: string;
 }
 
+export type EffortLevel = "low" | "medium" | "high";
+
 export interface AvailableModel {
   id: string;
   display_name: string;
   description?: string;
+  supports_effort: boolean;
+  supported_effort_levels: EffortLevel[];
 }
 
 export type FastModeState = "off" | "cooldown" | "on";
@@ -156,11 +160,13 @@ export interface SessionListEntry {
 }
 
 export type SessionThinkingMode = "adaptive" | "disabled";
+export type SessionEffortLevel = EffortLevel;
 
 export interface SessionLaunchSettings {
   model?: string;
   permission_mode?: string;
   thinking_mode?: SessionThinkingMode;
+  effort_level?: SessionEffortLevel;
 }
 
 export interface BridgeCommandEnvelope {

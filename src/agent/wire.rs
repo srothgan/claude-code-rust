@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::model::EffortLevel;
 use crate::agent::types;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,12 +27,17 @@ pub struct SessionLaunchSettings {
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_level: Option<EffortLevel>,
 }
 
 impl SessionLaunchSettings {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.permission_mode.is_none() && self.thinking_mode.is_none()
+        self.model.is_none()
+            && self.permission_mode.is_none()
+            && self.thinking_mode.is_none()
+            && self.effort_level.is_none()
     }
 }
 

@@ -477,22 +477,89 @@ impl AvailableAgent {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl EffortLevel {
+    #[must_use]
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Low => "Fastest responses",
+            Self::Medium => "Balanced speed and depth",
+            Self::High => "Deeper reasoning",
+        }
+    }
+
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
     pub display_name: String,
     pub description: Option<String>,
+    pub supports_effort: bool,
+    pub supported_effort_levels: Vec<EffortLevel>,
 }
 
 impl AvailableModel {
     #[must_use]
     pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self { id: id.into(), display_name: display_name.into(), description: None }
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+        }
     }
 
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    #[must_use]
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
         self
     }
 }
