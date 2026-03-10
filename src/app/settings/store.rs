@@ -135,6 +135,22 @@ pub fn set_fast_mode(document: &mut Value, enabled: bool) {
     );
 }
 
+pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::ShowTips))? {
+        PersistedSettingValue::Missing => Ok(true),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
+    }
+}
+
+pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::ShowTips),
+        PersistedSettingValue::Bool(enabled),
+    );
+}
+
 pub fn model(document: &Value) -> Result<Option<String>, ()> {
     match read_persisted_setting(document, config_setting(SettingId::Model))? {
         PersistedSettingValue::Missing => Ok(None),

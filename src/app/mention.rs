@@ -122,9 +122,7 @@ impl MentionState {
         }
 
         match self.search_status {
-            MentionSearchStatus::Hint => {
-                Some("Type to search files".to_owned())
-            }
+            MentionSearchStatus::Hint => Some("Type to search files".to_owned()),
             MentionSearchStatus::Searching => Some("Searching files...".to_owned()),
             MentionSearchStatus::NoMatches => Some("No matching files or folders".to_owned()),
             MentionSearchStatus::Ready => None,
@@ -747,10 +745,7 @@ mod tests {
         let mention = app.mention.as_ref().expect("mention should be active");
         assert_eq!(mention.query, "");
         assert!(mention.candidates.is_empty());
-        assert_eq!(
-            mention.placeholder_message().as_deref(),
-            Some("Type to search files")
-        );
+        assert_eq!(mention.placeholder_message().as_deref(), Some("Type to search files"));
     }
 
     #[test]

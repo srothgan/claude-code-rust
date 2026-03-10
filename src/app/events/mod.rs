@@ -2820,6 +2820,7 @@ mod tests {
     fn settings_view_routes_enter_to_settings_handler_not_chat_submit() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 3;
         app.input.set_text("seed");
 
         handle_terminal_event(

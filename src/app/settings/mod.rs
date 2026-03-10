@@ -62,15 +62,17 @@ impl SettingsTab {
     }
 }
 
+#[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
-    FastMode,
-    DefaultPermissionMode,
-    RespectGitignore,
     Model,
-    Theme,
-    Notifications,
+    DefaultPermissionMode,
     EditorMode,
+    FastMode,
+    Notifications,
+    RespectGitignore,
+    ShowTips,
+    Theme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,20 +288,20 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "vim", label: "Vim" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 7] = [
+const CONFIG_SETTINGS: [SettingSpec; 8] = [
     SettingSpec {
-        id: SettingId::FastMode,
-        entry_id: "A05",
-        label: "Fast mode",
-        description: "Controls the persisted fast-mode preference for future sessions.",
+        id: SettingId::Model,
+        entry_id: "A19",
+        label: "Default model",
+        description: "Sets the model used when starting new sessions.",
         file: SettingFile::SettingsJson,
-        json_path: &["fastMode"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: false,
+        json_path: &["model"],
+        kind: SettingKind::DynamicEnum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::RuntimeBacked,
+        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
+        fallback: FallbackPolicy::RuntimeDefault,
+        supported: true,
     },
     SettingSpec {
         id: SettingId::DefaultPermissionMode,
@@ -316,44 +318,30 @@ const CONFIG_SETTINGS: [SettingSpec; 7] = [
         supported: true,
     },
     SettingSpec {
-        id: SettingId::RespectGitignore,
-        entry_id: "A10",
-        label: "Respect .gitignore",
-        description: "Controls whether @ file mentions hide entries ignored by git ignore rules.",
+        id: SettingId::EditorMode,
+        entry_id: "A17",
+        label: "Editor mode",
+        description: "Controls how text editing keys behave.",
         file: SettingFile::PreferencesJson,
-        json_path: &["respectGitignore"],
+        json_path: &["editorMode"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(EDITOR_MODE_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
+    },
+    SettingSpec {
+        id: SettingId::FastMode,
+        entry_id: "A05",
+        label: "Fast mode",
+        description: "Controls the persisted fast-mode preference for future sessions.",
+        file: SettingFile::SettingsJson,
+        json_path: &["fastMode"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
         source: ValueSource::PersistedOnly,
         options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::Model,
-        entry_id: "A19",
-        label: "Default model",
-        description: "Sets the model used when starting new sessions.",
-        file: SettingFile::SettingsJson,
-        json_path: &["model"],
-        kind: SettingKind::DynamicEnum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::RuntimeBacked,
-        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
-        fallback: FallbackPolicy::RuntimeDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::Theme,
-        entry_id: "A13",
-        label: "Theme",
-        description: "Controls the app color theme.",
-        file: SettingFile::PreferencesJson,
-        json_path: &["theme"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(THEME_OPTIONS),
         fallback: FallbackPolicy::AppDefault,
         supported: false,
     },
@@ -372,16 +360,44 @@ const CONFIG_SETTINGS: [SettingSpec; 7] = [
         supported: true,
     },
     SettingSpec {
-        id: SettingId::EditorMode,
-        entry_id: "A17",
-        label: "Editor mode",
-        description: "Controls how text editing keys behave.",
+        id: SettingId::RespectGitignore,
+        entry_id: "A10",
+        label: "Respect .gitignore",
+        description: "Controls whether @ file mentions hide entries ignored by git ignore rules.",
         file: SettingFile::PreferencesJson,
-        json_path: &["editorMode"],
+        json_path: &["respectGitignore"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: true,
+    },
+    SettingSpec {
+        id: SettingId::ShowTips,
+        entry_id: "A02",
+        label: "Show Tips",
+        description: "Controls whether Claude should show spinner tips in supported clients.",
+        file: SettingFile::SettingsJson,
+        json_path: &["spinnerTipsEnabled"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
+    },
+    SettingSpec {
+        id: SettingId::Theme,
+        entry_id: "A13",
+        label: "Theme",
+        description: "Controls the app color theme.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["theme"],
         kind: SettingKind::Enum,
         editor: EditorKind::Cycle,
         source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(EDITOR_MODE_OPTIONS),
+        options: SettingOptions::Static(THEME_OPTIONS),
         fallback: FallbackPolicy::AppDefault,
         supported: false,
     },
@@ -564,15 +580,7 @@ pub const fn config_settings() -> &'static [SettingSpec] {
 
 #[must_use]
 pub fn config_setting(id: SettingId) -> &'static SettingSpec {
-    match id {
-        SettingId::FastMode => &CONFIG_SETTINGS[0],
-        SettingId::DefaultPermissionMode => &CONFIG_SETTINGS[1],
-        SettingId::RespectGitignore => &CONFIG_SETTINGS[2],
-        SettingId::Model => &CONFIG_SETTINGS[3],
-        SettingId::Theme => &CONFIG_SETTINGS[4],
-        SettingId::Notifications => &CONFIG_SETTINGS[5],
-        SettingId::EditorMode => &CONFIG_SETTINGS[6],
-    }
+    &CONFIG_SETTINGS[id as usize]
 }
 
 #[must_use]
@@ -773,6 +781,12 @@ fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
 
 fn activate_setting(app: &mut App, spec: &SettingSpec) {
     match spec.id {
+        SettingId::ShowTips => {
+            let next =
+                !store::spinner_tips_enabled(&app.settings.draft_settings_document).unwrap_or(true);
+            store::set_spinner_tips_enabled(&mut app.settings.draft_settings_document, next);
+            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+        }
         SettingId::FastMode => {
             let next = !store::fast_mode(&app.settings.draft_settings_document).unwrap_or(false);
             store::set_fast_mode(&mut app.settings.draft_settings_document, next);
@@ -877,7 +891,8 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
         SettingId::Theme => "dark",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
-        SettingId::FastMode
+        SettingId::ShowTips
+        | SettingId::FastMode
         | SettingId::DefaultPermissionMode
         | SettingId::RespectGitignore
         | SettingId::Model => "",
@@ -956,7 +971,9 @@ fn resolve_setting_document(
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
-        SettingId::RespectGitignore => resolve_bool_setting(document, spec, true),
+        SettingId::ShowTips | SettingId::RespectGitignore => {
+            resolve_bool_setting(document, spec, true)
+        }
         SettingId::Model => resolve_model_setting(document, spec, available_models),
         SettingId::Theme => resolve_string_setting(document, spec, "dark"),
         SettingId::Notifications => {
@@ -1106,6 +1123,7 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
 
         open(&mut app).expect("open");
+        app.settings.selected_config_index = 3;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1138,7 +1156,21 @@ mod tests {
         assert_eq!(app.settings.selected_config_index, 6);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 6);
+        assert_eq!(app.settings.selected_config_index, 7);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 7);
+    }
+
+    #[test]
+    fn show_tips_toggles_in_settings_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 6;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(store::spinner_tips_enabled(&app.settings.draft_settings_document), Ok(false));
     }
 
     #[test]
@@ -1159,7 +1191,7 @@ mod tests {
     fn respect_gitignore_toggles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 2;
+        app.settings.selected_config_index = 5;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1174,7 +1206,7 @@ mod tests {
 
         open(&mut app).expect("open");
         app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-        app.settings.selected_config_index = 2;
+        app.settings.selected_config_index = 5;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1195,6 +1227,7 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
 
         open(&mut app).expect("open");
+        app.settings.selected_config_index = 3;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1222,7 +1255,7 @@ mod tests {
     fn notifications_cycle_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 5;
+        app.settings.selected_config_index = 4;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1236,7 +1269,7 @@ mod tests {
     fn theme_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 4;
+        app.settings.selected_config_index = 7;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1251,7 +1284,7 @@ mod tests {
     fn editor_mode_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 6;
+        app.settings.selected_config_index = 2;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
