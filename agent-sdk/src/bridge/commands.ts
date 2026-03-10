@@ -6,6 +6,7 @@ import type {
   ModeInfo,
   ModeState,
   PermissionOutcome,
+  SessionThinkingMode,
   SessionLaunchSettings,
 } from "../types.js";
 
@@ -75,10 +76,27 @@ function optionalLaunchSettings(
   const parsed = asRecord(value, `${context}.${key}`);
   const model = optionalString(parsed, "model", `${context}.${key}`);
   const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
+  const thinkingMode = optionalThinkingMode(parsed, "thinking_mode", `${context}.${key}`);
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permission_mode: permissionMode } : {}),
+    ...(thinkingMode ? { thinking_mode: thinkingMode } : {}),
   };
+}
+
+function optionalThinkingMode(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): SessionThinkingMode | undefined {
+  const value = optionalString(record, key, context);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "adaptive" || value === "disabled") {
+    return value;
+  }
+  throw new Error(`${context}.${key} must be "adaptive" or "disabled" when provided`);
 }
 
 function parsePromptChunks(

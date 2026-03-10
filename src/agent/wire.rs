@@ -24,12 +24,14 @@ pub struct SessionLaunchSettings {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
 }
 
 impl SessionLaunchSettings {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.permission_mode.is_none()
+        self.model.is_none() && self.permission_mode.is_none() && self.thinking_mode.is_none()
     }
 }
 

@@ -13,6 +13,7 @@ import {
   type Query,
   type SDKUserMessage,
   type SettingSource,
+  type ThinkingConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AvailableCommand,
@@ -331,10 +332,28 @@ function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMo
   return permissionModeFromLaunchSettings(launchSettings.permission_mode) ?? DEFAULT_PERMISSION_MODE;
 }
 
+function thinkingConfigFromLaunchSettings(
+  launchSettings: SessionLaunchSettings,
+): ThinkingConfig | undefined {
+  switch (launchSettings.thinking_mode) {
+    case undefined:
+      return undefined;
+    case "adaptive":
+      return { type: "adaptive" };
+    case "disabled":
+      return { type: "disabled" };
+    default:
+      throw new Error(
+        `unsupported launch_settings.thinking_mode: ${String(launchSettings.thinking_mode)}`,
+      );
+  }
+}
+
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const permissionMode = permissionModeFromLaunchSettings(
     params.launchSettings.permission_mode,
   );
+  const thinking = thinkingConfigFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
@@ -342,6 +361,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(params.launchSettings.model ? { model: params.launchSettings.model } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(thinking ? { thinking } : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
       : {}),

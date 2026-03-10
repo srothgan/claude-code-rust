@@ -65,6 +65,7 @@ impl SettingsTab {
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
+    AlwaysThinking,
     Model,
     DefaultPermissionMode,
     EditorMode,
@@ -290,7 +291,21 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "vim", label: "Vim" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 9] = [
+const CONFIG_SETTINGS: [SettingSpec; 10] = [
+    SettingSpec {
+        id: SettingId::AlwaysThinking,
+        entry_id: "A04",
+        label: "Always Thinking",
+        description: "Enable adaptive thinking for new sessions. When off, new sessions start with thinking disabled.",
+        file: SettingFile::SettingsJson,
+        json_path: &["alwaysThinkingEnabled"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: true,
+    },
     SettingSpec {
         id: SettingId::Model,
         entry_id: "A19",
@@ -495,6 +510,20 @@ impl SettingsState {
     pub fn fast_mode_effective(&self) -> bool {
         match resolve_setting_document(&self.draft_settings_document, SettingId::FastMode, &[])
             .value
+        {
+            ResolvedSettingValue::Bool(value) => value,
+            ResolvedSettingValue::Choice(_) => false,
+        }
+    }
+
+    #[must_use]
+    pub fn always_thinking_effective(&self) -> bool {
+        match resolve_setting_document(
+            &self.draft_settings_document,
+            SettingId::AlwaysThinking,
+            &[],
+        )
+        .value
         {
             ResolvedSettingValue::Bool(value) => value,
             ResolvedSettingValue::Choice(_) => false,
@@ -825,6 +854,12 @@ fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
 
 fn activate_setting(app: &mut App, spec: &SettingSpec) {
     match spec.id {
+        SettingId::AlwaysThinking => {
+            let next = !store::always_thinking_enabled(&app.settings.draft_settings_document)
+                .unwrap_or(false);
+            store::set_always_thinking_enabled(&mut app.settings.draft_settings_document, next);
+            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+        }
         SettingId::ShowTips => {
             let next = !store::spinner_tips_enabled(&app.settings.draft_local_settings_document)
                 .unwrap_or(true);
@@ -941,6 +976,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
 
 const fn default_static_value(setting_id: SettingId) -> &'static str {
     match setting_id {
+        SettingId::AlwaysThinking => "",
         SettingId::Theme => "dark",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
@@ -1030,6 +1066,7 @@ fn resolve_setting_document(
 ) -> ResolvedSetting {
     let spec = config_setting(setting_id);
     match setting_id {
+        SettingId::AlwaysThinking => resolve_bool_setting(document, spec, false),
         SettingId::FastMode => resolve_bool_setting(document, spec, false),
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
@@ -1190,7 +1227,7 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 3;
+        app.settings.selected_config_index = 4;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1229,14 +1266,28 @@ mod tests {
         assert_eq!(app.settings.selected_config_index, 8);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 8);
+        assert_eq!(app.settings.selected_config_index, 9);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.settings.selected_config_index, 9);
+    }
+
+    #[test]
+    fn always_thinking_toggles_in_settings_document() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Settings;
+        app.settings.selected_config_index = 0;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(store::always_thinking_enabled(&app.settings.draft_settings_document), Ok(true));
     }
 
     #[test]
     fn reduce_motion_toggles_in_local_settings_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 5;
+        app.settings.selected_config_index = 6;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1250,7 +1301,7 @@ mod tests {
     fn show_tips_toggles_in_local_settings_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 7;
+        app.settings.selected_config_index = 8;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1264,7 +1315,7 @@ mod tests {
     fn handle_key_cycles_default_permission_mode() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 1;
+        app.settings.selected_config_index = 2;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1278,7 +1329,7 @@ mod tests {
     fn respect_gitignore_toggles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 6;
+        app.settings.selected_config_index = 7;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1294,7 +1345,7 @@ mod tests {
 
         open(&mut app).expect("open");
         app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-        app.settings.selected_config_index = 6;
+        app.settings.selected_config_index = 7;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1316,7 +1367,7 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 3;
+        app.settings.selected_config_index = 4;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
@@ -1344,7 +1395,7 @@ mod tests {
     fn notifications_cycle_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 4;
+        app.settings.selected_config_index = 5;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1358,7 +1409,7 @@ mod tests {
     fn theme_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 8;
+        app.settings.selected_config_index = 9;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1373,7 +1424,7 @@ mod tests {
     fn editor_mode_cycles_in_preferences_document() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = 2;
+        app.settings.selected_config_index = 3;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1393,14 +1444,31 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 5;
+        app.settings.selected_config_index = 6;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.settings.selected_config_index = 7;
+        app.settings.selected_config_index = 8;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         save(&mut app).expect("save");
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"prefersReducedMotion\": true"));
         assert!(raw.contains("\"spinnerTipsEnabled\": false"));
+    }
+
+    #[test]
+    fn save_persists_always_thinking_in_user_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        app.settings.selected_config_index = 0;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        save(&mut app).expect("save");
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"alwaysThinkingEnabled\": true"));
     }
 }

@@ -45,6 +45,16 @@ pub(crate) fn session_launch_settings_for_reason(
                     .as_stored()
                     .to_owned(),
             ),
+            thinking_mode: Some(
+                if store::always_thinking_enabled(&app.settings.committed_settings_document)
+                    .unwrap_or(false)
+                {
+                    "adaptive"
+                } else {
+                    "disabled"
+                }
+                .to_owned(),
+            ),
         },
     }
 }
@@ -82,11 +92,13 @@ mod tests {
             &mut app.settings.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
+        store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
         assert_eq!(launch_settings.permission_mode.as_deref(), Some("plan"));
+        assert_eq!(launch_settings.thinking_mode.as_deref(), Some("adaptive"));
     }
 
     #[test]
@@ -98,6 +110,7 @@ mod tests {
 
         assert_eq!(launch_settings.model, None);
         assert_eq!(launch_settings.permission_mode.as_deref(), Some("default"));
+        assert_eq!(launch_settings.thinking_mode.as_deref(), Some("disabled"));
     }
 
     #[test]
@@ -108,6 +121,7 @@ mod tests {
             &mut app.settings.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
+        store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Logout);
 

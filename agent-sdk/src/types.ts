@@ -155,9 +155,12 @@ export interface SessionListEntry {
   first_prompt?: string;
 }
 
+export type SessionThinkingMode = "adaptive" | "disabled";
+
 export interface SessionLaunchSettings {
   model?: string;
   permission_mode?: string;
+  thinking_mode?: SessionThinkingMode;
 }
 
 export interface BridgeCommandEnvelope {

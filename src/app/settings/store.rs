@@ -152,6 +152,22 @@ pub fn set_fast_mode(document: &mut Value, enabled: bool) {
     );
 }
 
+pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::AlwaysThinking))? {
+        PersistedSettingValue::Missing => Ok(false),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
+    }
+}
+
+pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::AlwaysThinking),
+        PersistedSettingValue::Bool(enabled),
+    );
+}
+
 pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
     match read_persisted_setting(document, config_setting(SettingId::ShowTips))? {
         PersistedSettingValue::Missing => Ok(true),

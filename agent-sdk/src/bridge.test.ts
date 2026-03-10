@@ -49,6 +49,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
       launch_settings: {
         model: "haiku",
         permission_mode: "plan",
+        thinking_mode: "adaptive",
       },
     }),
   );
@@ -60,6 +61,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
   assert.equal(parsed.command.session_id, "session-123");
   assert.equal(parsed.command.launch_settings.model, "haiku");
   assert.equal(parsed.command.launch_settings.permission_mode, "plan");
+  assert.equal(parsed.command.launch_settings.thinking_mode, "adaptive");
 });
 
 test("buildQueryOptions maps launch settings into sdk query options", () => {
@@ -69,6 +71,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     launchSettings: {
       model: "haiku",
       permission_mode: "plan",
+      thinking_mode: "adaptive",
     },
     provisionalSessionId: "session-1",
     input,
@@ -80,8 +83,27 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
 
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
+  assert.deepEqual(options.thinking, { type: "adaptive" });
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+});
+
+test("buildQueryOptions maps disabled thinking mode into sdk query options", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      thinking_mode: "disabled",
+    },
+    provisionalSessionId: "session-3",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-3",
+  });
+
+  assert.deepEqual(options.thinking, { type: "disabled" });
 });
 
 test("buildQueryOptions omits startup overrides for default logout path", () => {
