@@ -28,7 +28,7 @@ pub const MAX_VISIBLE: usize = 8;
 /// Maximum total candidates kept after filtering.
 const MAX_CANDIDATES: usize = 50;
 /// Minimum query length before scanning the filesystem for matches.
-pub const MIN_QUERY_CHARS: usize = 2;
+pub const MIN_QUERY_CHARS: usize = 1;
 /// Maximum filesystem entries scanned within one tick.
 const SEARCH_ENTRY_BUDGET: usize = 400;
 
@@ -123,7 +123,7 @@ impl MentionState {
 
         match self.search_status {
             MentionSearchStatus::Hint => {
-                Some(format!("Type at least {MIN_QUERY_CHARS} characters to search files"))
+                Some("Type to search files".to_owned())
             }
             MentionSearchStatus::Searching => Some("Searching files...".to_owned()),
             MentionSearchStatus::NoMatches => Some("No matching files or folders".to_owned()),
@@ -749,7 +749,7 @@ mod tests {
         assert!(mention.candidates.is_empty());
         assert_eq!(
             mention.placeholder_message().as_deref(),
-            Some("Type at least 2 characters to search files")
+            Some("Type to search files")
         );
     }
 
