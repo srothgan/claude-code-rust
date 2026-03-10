@@ -59,22 +59,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         SettingsTab::Mcp => render_placeholder(frame, chunks[1], "MCP will land here."),
     }
 
-    let message = app
-        .settings
-        .last_error
-        .as_deref()
-        .map(str::to_owned)
-        .or_else(|| app.settings.status_message.clone())
-        .unwrap_or_else(|| {
-            app.settings
-                .selected_config_spec()
-                .and_then(|spec| app.settings.path_for(spec.file))
-                .or(app.settings.settings_path.as_ref())
-                .map_or_else(
-                    || "File: unavailable".to_owned(),
-                    |path| format!("File: {}", path.display()),
-                )
-        });
+    let message = app.settings.last_error.clone().unwrap_or_default();
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             message,
@@ -87,7 +72,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
 
-    let help = "Enter edit | Ctrl+S save | Esc save and close";
+    let help = "Space edit | Enter close | Esc close";
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
         chunks[3],

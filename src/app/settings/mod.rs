@@ -471,12 +471,8 @@ pub struct SettingsState {
     pub active_tab: SettingsTab,
     pub selected_config_index: usize,
     pub committed_settings_document: Value,
-    pub draft_settings_document: Value,
     pub committed_local_settings_document: Value,
-    pub draft_local_settings_document: Value,
     pub committed_preferences_document: Value,
-    pub draft_preferences_document: Value,
-    pub dirty: bool,
     pub settings_path: Option<PathBuf>,
     pub local_settings_path: Option<PathBuf>,
     pub preferences_path: Option<PathBuf>,
@@ -490,12 +486,8 @@ impl Default for SettingsState {
             active_tab: SettingsTab::Config,
             selected_config_index: 0,
             committed_settings_document: Value::Object(serde_json::Map::new()),
-            draft_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
-            draft_local_settings_document: Value::Object(serde_json::Map::new()),
             committed_preferences_document: Value::Object(serde_json::Map::new()),
-            draft_preferences_document: Value::Object(serde_json::Map::new()),
-            dirty: false,
             settings_path: None,
             local_settings_path: None,
             preferences_path: None,
@@ -508,7 +500,7 @@ impl Default for SettingsState {
 impl SettingsState {
     #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
-        match resolve_setting_document(&self.draft_settings_document, SettingId::FastMode, &[])
+        match resolve_setting_document(&self.committed_settings_document, SettingId::FastMode, &[])
             .value
         {
             ResolvedSettingValue::Bool(value) => value,
@@ -519,7 +511,7 @@ impl SettingsState {
     #[must_use]
     pub fn always_thinking_effective(&self) -> bool {
         match resolve_setting_document(
-            &self.draft_settings_document,
+            &self.committed_settings_document,
             SettingId::AlwaysThinking,
             &[],
         )
@@ -532,7 +524,9 @@ impl SettingsState {
 
     #[must_use]
     pub fn model_effective(&self) -> Option<String> {
-        match resolve_setting_document(&self.draft_settings_document, SettingId::Model, &[]).value {
+        match resolve_setting_document(&self.committed_settings_document, SettingId::Model, &[])
+            .value
+        {
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             _ => None,
         }
@@ -541,7 +535,7 @@ impl SettingsState {
     #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
         match resolve_setting_document(
-            &self.draft_settings_document,
+            &self.committed_settings_document,
             SettingId::DefaultPermissionMode,
             &[],
         )
@@ -585,19 +579,19 @@ impl SettingsState {
     }
 
     #[must_use]
-    pub fn draft_document_for(&self, file: SettingFile) -> &Value {
+    pub fn document_for(&self, file: SettingFile) -> &Value {
         match file {
-            SettingFile::SettingsJson => &self.draft_settings_document,
-            SettingFile::LocalSettingsJson => &self.draft_local_settings_document,
-            SettingFile::PreferencesJson => &self.draft_preferences_document,
+            SettingFile::SettingsJson => &self.committed_settings_document,
+            SettingFile::LocalSettingsJson => &self.committed_local_settings_document,
+            SettingFile::PreferencesJson => &self.committed_preferences_document,
         }
     }
 
-    pub fn draft_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
+    pub fn committed_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
         match file {
-            SettingFile::SettingsJson => &mut self.draft_settings_document,
-            SettingFile::LocalSettingsJson => &mut self.draft_local_settings_document,
-            SettingFile::PreferencesJson => &mut self.draft_preferences_document,
+            SettingFile::SettingsJson => &mut self.committed_settings_document,
+            SettingFile::LocalSettingsJson => &mut self.committed_local_settings_document,
+            SettingFile::PreferencesJson => &mut self.committed_preferences_document,
         }
     }
 
@@ -610,13 +604,9 @@ impl SettingsState {
         self.settings_path = Some(loaded.paths.settings_path);
         self.local_settings_path = Some(loaded.paths.local_settings_path);
         self.preferences_path = Some(loaded.paths.preferences_path);
-        self.committed_settings_document = loaded.settings_document.clone();
-        self.draft_settings_document = loaded.settings_document;
-        self.committed_local_settings_document = loaded.local_settings_document.clone();
-        self.draft_local_settings_document = loaded.local_settings_document;
-        self.committed_preferences_document = loaded.preferences_document.clone();
-        self.draft_preferences_document = loaded.preferences_document;
-        self.dirty = false;
+        self.committed_settings_document = loaded.settings_document;
+        self.committed_local_settings_document = loaded.local_settings_document;
+        self.committed_preferences_document = loaded.preferences_document;
         self.selected_config_index =
             self.selected_config_index.min(config_settings().len().saturating_sub(1));
         if !preserve_status {
@@ -625,14 +615,6 @@ impl SettingsState {
         } else if let Some(notice) = notice {
             self.status_message = Some(notice);
         }
-    }
-
-    fn reset_editor(&mut self) {
-        self.draft_settings_document = self.committed_settings_document.clone();
-        self.draft_local_settings_document = self.committed_local_settings_document.clone();
-        self.draft_preferences_document = self.committed_preferences_document.clone();
-        self.dirty = false;
-        self.last_error = None;
     }
 }
 
@@ -648,7 +630,7 @@ pub fn config_setting(id: SettingId) -> &'static SettingSpec {
 
 #[must_use]
 pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
-    let document = app.settings.draft_document_for(spec.file);
+    let document = app.settings.document_for(spec.file);
     resolve_setting_document(document, spec.id, &app.available_models)
 }
 
@@ -727,77 +709,15 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
 }
 
 pub fn open(app: &mut App) -> Result<(), String> {
-    ensure_loaded(app)?;
-    app.settings.reset_editor();
+    let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
+    let notice = loaded.notice.clone();
+    app.settings.apply_loaded(loaded, notice, false);
     view::set_active_view(app, ActiveView::Settings);
     Ok(())
 }
 
-fn ensure_loaded(app: &mut App) -> Result<(), String> {
-    if settings_source_matches_override(app)
-        && app.settings.settings_path.is_some()
-        && app.settings.local_settings_path.is_some()
-        && app.settings.preferences_path.is_some()
-    {
-        return Ok(());
-    }
-    let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
-    let notice = loaded.notice.clone();
-    app.settings.apply_loaded(loaded, notice, true);
-    Ok(())
-}
-
-pub fn save(app: &mut App) -> Result<(), String> {
-    let (Some(settings_path), Some(local_settings_path), Some(preferences_path)) = (
-        app.settings.settings_path.clone(),
-        app.settings.local_settings_path.clone(),
-        app.settings.preferences_path.clone(),
-    ) else {
-        let message = "Settings paths are not available".to_owned();
-        app.settings.last_error = Some(message.clone());
-        return Err(message);
-    };
-
-    let previous_respect_gitignore = app.settings.respect_gitignore_effective();
-    let mut saved_any = false;
-    if app.settings.draft_settings_document != app.settings.committed_settings_document {
-        store::save(&settings_path, &app.settings.draft_settings_document)?;
-        app.settings.committed_settings_document = app.settings.draft_settings_document.clone();
-        saved_any = true;
-    }
-    if app.settings.draft_local_settings_document != app.settings.committed_local_settings_document
-    {
-        store::save(&local_settings_path, &app.settings.draft_local_settings_document)?;
-        app.settings.committed_local_settings_document =
-            app.settings.draft_local_settings_document.clone();
-        saved_any = true;
-    }
-    if app.settings.draft_preferences_document != app.settings.committed_preferences_document {
-        store::save(&preferences_path, &app.settings.draft_preferences_document)?;
-        app.settings.committed_preferences_document =
-            app.settings.draft_preferences_document.clone();
-        saved_any = true;
-    }
-    let current_respect_gitignore = app.settings.respect_gitignore_effective();
-    if previous_respect_gitignore != current_respect_gitignore {
-        crate::app::mention::invalidate_session_cache(app);
-    }
-    app.settings.dirty = false;
-    app.settings.last_error = None;
-    app.settings.status_message = Some(if saved_any {
-        "Saved settings changes. New sessions will use the updated config.".to_owned()
-    } else {
-        "No settings changes to save.".to_owned()
-    });
-    Ok(())
-}
-
-pub fn close(app: &mut App) -> Result<(), String> {
-    if app.settings.dirty {
-        save(app)?;
-    }
+pub fn close(app: &mut App) {
     view::set_active_view(app, ActiveView::Chat);
-    Ok(())
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -807,15 +727,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('s'), m) if m == KeyModifiers::CONTROL => {
-            if let Err(err) = save(app) {
-                app.settings.last_error = Some(err);
+        (KeyCode::Char(' '), KeyModifiers::NONE)
+            if app.settings.active_tab == SettingsTab::Config =>
+        {
+            if let Some(spec) = app.settings.selected_config_spec() {
+                activate_setting(app, spec);
             }
         }
-        (KeyCode::Esc, KeyModifiers::NONE) => {
-            if let Err(err) = close(app) {
-                app.settings.last_error = Some(err);
-            }
+        (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
+            close(app);
         }
         (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::BackTab, _) => {
             app.settings.active_tab = app.settings.active_tab.prev();
@@ -838,11 +758,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     (app.settings.selected_config_index + 1).min(last_index);
             }
         }
-        (KeyCode::Enter, KeyModifiers::NONE) if app.settings.active_tab == SettingsTab::Config => {
-            if let Some(spec) = app.settings.selected_config_spec() {
-                activate_setting(app, spec);
-            }
-        }
         _ => {}
     }
 }
@@ -855,40 +770,45 @@ fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
 fn activate_setting(app: &mut App, spec: &SettingSpec) {
     match spec.id {
         SettingId::AlwaysThinking => {
-            let next = !store::always_thinking_enabled(&app.settings.draft_settings_document)
+            let next = !store::always_thinking_enabled(&app.settings.committed_settings_document)
                 .unwrap_or(false);
-            store::set_always_thinking_enabled(&mut app.settings.draft_settings_document, next);
-            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+            persist_setting_change(app, spec, |document| {
+                store::set_always_thinking_enabled(document, next);
+            });
         }
         SettingId::ShowTips => {
-            let next = !store::spinner_tips_enabled(&app.settings.draft_local_settings_document)
-                .unwrap_or(true);
-            store::set_spinner_tips_enabled(&mut app.settings.draft_local_settings_document, next);
-            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+            let next =
+                !store::spinner_tips_enabled(&app.settings.committed_local_settings_document)
+                    .unwrap_or(true);
+            persist_setting_change(app, spec, |document| {
+                store::set_spinner_tips_enabled(document, next);
+            });
         }
         SettingId::ReduceMotion => {
-            let next = !store::prefers_reduced_motion(&app.settings.draft_local_settings_document)
-                .unwrap_or(false);
-            store::set_prefers_reduced_motion(
-                &mut app.settings.draft_local_settings_document,
-                next,
-            );
-            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+            let next =
+                !store::prefers_reduced_motion(&app.settings.committed_local_settings_document)
+                    .unwrap_or(false);
+            persist_setting_change(app, spec, |document| {
+                store::set_prefers_reduced_motion(document, next);
+            });
         }
         SettingId::FastMode => {
-            let next = !store::fast_mode(&app.settings.draft_settings_document).unwrap_or(false);
-            store::set_fast_mode(&mut app.settings.draft_settings_document, next);
-            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+            let next =
+                !store::fast_mode(&app.settings.committed_settings_document).unwrap_or(false);
+            persist_setting_change(app, spec, |document| {
+                store::set_fast_mode(document, next);
+            });
         }
         SettingId::RespectGitignore => {
-            let next =
-                !store::respect_gitignore(&app.settings.draft_preferences_document).unwrap_or(true);
-            store::set_respect_gitignore(&mut app.settings.draft_preferences_document, next);
-            mark_setting_edited(app, format!("{} set to {}", spec.label, on_off(next)));
+            let next = !store::respect_gitignore(&app.settings.committed_preferences_document)
+                .unwrap_or(true);
+            persist_setting_change(app, spec, |document| {
+                store::set_respect_gitignore(document, next);
+            });
         }
         SettingId::DefaultPermissionMode => {
             let current = match resolve_setting_document(
-                &app.settings.draft_settings_document,
+                &app.settings.committed_settings_document,
                 SettingId::DefaultPermissionMode,
                 &[],
             )
@@ -900,8 +820,9 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                 _ => DefaultPermissionMode::Default,
             };
             let next = current.next();
-            store::set_default_permission_mode(&mut app.settings.draft_settings_document, next);
-            mark_setting_edited(app, format!("{} set to {}", spec.label, next.label()));
+            persist_setting_change(app, spec, |document| {
+                store::set_default_permission_mode(document, next);
+            });
         }
         SettingId::Model => {
             if let Some(next_model) = next_model_selection(app) {
@@ -909,11 +830,9 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                     NextModelSelection::Automatic => None,
                     NextModelSelection::Named(model) => Some(model.as_str()),
                 };
-                store::set_model(&mut app.settings.draft_settings_document, next_model_id);
-                mark_setting_edited(
-                    app,
-                    format!("{} set to {}", spec.label, model_status_label(next_model_id, app)),
-                );
+                persist_setting_change(app, spec, |document| {
+                    store::set_model(document, next_model_id);
+                });
             } else {
                 app.settings.status_message = Some("Connect to load available models".to_owned());
             }
@@ -924,19 +843,47 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
     }
 }
 
-fn mark_setting_edited(app: &mut App, status_message: String) {
-    app.settings.dirty = true;
-    app.settings.last_error = None;
-    app.settings.status_message = Some(status_message);
-}
+fn persist_setting_change<F>(app: &mut App, spec: &SettingSpec, edit: F)
+where
+    F: FnOnce(&mut Value),
+{
+    let Some(path) = app.settings.path_for(spec.file).cloned() else {
+        let message = "Settings paths are not available".to_owned();
+        app.settings.last_error = Some(message.clone());
+        app.settings.status_message = None;
+        return;
+    };
 
-fn on_off(value: bool) -> &'static str {
-    if value { "On" } else { "Off" }
+    let previous_respect_gitignore = matches!(spec.id, SettingId::RespectGitignore)
+        .then(|| app.settings.respect_gitignore_effective());
+    let mut next_document = app.settings.document_for(spec.file).clone();
+    edit(&mut next_document);
+
+    match store::save(&path, &next_document) {
+        Ok(()) => {
+            *app.settings.committed_document_for_mut(spec.file) = next_document;
+            if previous_respect_gitignore
+                .is_some_and(|previous| previous != app.settings.respect_gitignore_effective())
+            {
+                crate::app::mention::invalidate_session_cache(app);
+            }
+            app.settings.last_error = None;
+            app.settings.status_message = Some(format!(
+                "Saved {}: {}",
+                spec.label,
+                setting_display_value(app, spec, &resolved_setting(app, spec))
+            ));
+        }
+        Err(err) => {
+            app.settings.last_error = Some(err);
+            app.settings.status_message = None;
+        }
+    }
 }
 
 fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
     let current = {
-        let document = app.settings.draft_document_for(spec.file);
+        let document = app.settings.document_for(spec.file);
         match store::read_persisted_setting(document, spec) {
             Ok(store::PersistedSettingValue::String(value)) => value,
             _ => default_static_value(spec.id).to_owned(),
@@ -950,8 +897,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
         options.iter().position(|option| option.stored == current).unwrap_or_default();
     let next = options[(current_index + 1) % options.len()].stored;
 
-    {
-        let document = app.settings.draft_document_for_mut(spec.file);
+    persist_setting_change(app, spec, |document| {
         if spec.id == SettingId::Notifications {
             if let Some(channel) = PreferredNotifChannel::from_stored(next) {
                 store::set_preferred_notification_channel(document, channel);
@@ -963,15 +909,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
                 store::PersistedSettingValue::String(next.to_owned()),
             );
         }
-    }
-    mark_setting_edited(
-        app,
-        format!(
-            "{} set to {}",
-            spec.label,
-            option_label(spec, next).unwrap_or_else(|| next.to_owned())
-        ),
-    );
+    });
 }
 
 const fn default_static_value(setting_id: SettingId) -> &'static str {
@@ -1000,7 +938,7 @@ fn next_model_selection(app: &App) -> Option<NextModelSelection> {
         return None;
     }
 
-    let current = store::model(&app.settings.draft_settings_document).ok().flatten();
+    let current = store::model(&app.settings.committed_settings_document).ok().flatten();
     let current_index = choices
         .iter()
         .position(|candidate| candidate.as_deref() == current.as_deref())
@@ -1030,28 +968,6 @@ pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
             .iter()
             .find(|candidate| candidate.id == model_id)
             .map_or_else(|| model_id.to_owned(), |candidate| candidate.display_name.clone()),
-    }
-}
-
-fn settings_source_matches_override(app: &App) -> bool {
-    let (Some(settings_path), Some(local_settings_path), Some(preferences_path)) = (
-        &app.settings.settings_path,
-        &app.settings.local_settings_path,
-        &app.settings.preferences_path,
-    ) else {
-        return false;
-    };
-    let expected_local_settings = project_root(app).join(".claude").join("settings.local.json");
-
-    match app.settings_home_override.as_ref() {
-        None => local_settings_path == &expected_local_settings,
-        Some(home_override) => {
-            let expected_settings = home_override.join(".claude").join("settings.json");
-            let expected_preferences = home_override.join(".claude.json");
-            settings_path == &expected_settings
-                && local_settings_path == &expected_local_settings
-                && preferences_path == &expected_preferences
-        }
     }
 }
 
@@ -1190,6 +1106,16 @@ fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tempfile::TempDir;
+
+    fn open_settings_test_app() -> (TempDir, App) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        open(&mut app).expect("open");
+        (dir, app)
+    }
 
     #[test]
     fn open_loads_document_and_switches_view() {
@@ -1206,7 +1132,7 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Settings);
         assert!(matches!(
             resolve_setting_document(
-                &app.settings.draft_settings_document,
+                &app.settings.committed_settings_document,
                 SettingId::FastMode,
                 &[]
             )
@@ -1219,7 +1145,41 @@ mod tests {
     }
 
     #[test]
-    fn save_persists_toggled_fast_mode() {
+    fn reopen_reload_picks_up_external_settings_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+        std::fs::write(&path, r#"{"fastMode":false}"#).expect("write");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        assert!(!app.settings.fast_mode_effective());
+
+        close(&mut app);
+        std::fs::write(&path, r#"{"fastMode":true}"#).expect("rewrite");
+
+        open(&mut app).expect("reopen");
+
+        assert!(app.settings.fast_mode_effective());
+    }
+
+    #[test]
+    fn reopen_clears_stale_transient_feedback() {
+        let (_dir, mut app) = open_settings_test_app();
+        app.settings.status_message = Some("stale status".to_owned());
+        app.settings.last_error = Some("stale error".to_owned());
+
+        close(&mut app);
+        open(&mut app).expect("reopen");
+
+        assert!(app.settings.status_message.is_none());
+        assert!(app.settings.last_error.is_none());
+    }
+
+    #[test]
+    fn space_persists_toggled_fast_mode_immediately() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".claude").join("settings.json");
         let mut app = App::test_default();
@@ -1228,12 +1188,11 @@ mod tests {
 
         open(&mut app).expect("open");
         app.settings.selected_config_index = 4;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"fastMode\": true"));
-        assert!(!app.settings.dirty);
+        assert!(app.settings.last_error.is_none());
     }
 
     #[test]
@@ -1274,70 +1233,71 @@ mod tests {
 
     #[test]
     fn always_thinking_toggles_in_settings_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 0;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-        assert_eq!(store::always_thinking_enabled(&app.settings.draft_settings_document), Ok(true));
+        assert_eq!(
+            store::always_thinking_enabled(&app.settings.committed_settings_document),
+            Ok(true)
+        );
     }
 
     #[test]
     fn reduce_motion_toggles_in_local_settings_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 6;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::prefers_reduced_motion(&app.settings.draft_local_settings_document),
+            store::prefers_reduced_motion(&app.settings.committed_local_settings_document),
             Ok(true)
         );
     }
 
     #[test]
     fn show_tips_toggles_in_local_settings_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 8;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::spinner_tips_enabled(&app.settings.draft_local_settings_document),
+            store::spinner_tips_enabled(&app.settings.committed_local_settings_document),
             Ok(false)
         );
     }
 
     #[test]
     fn handle_key_cycles_default_permission_mode() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 2;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::default_permission_mode(&app.settings.draft_settings_document),
+            store::default_permission_mode(&app.settings.committed_settings_document),
             Ok(DefaultPermissionMode::AcceptEdits)
         );
     }
 
     #[test]
     fn respect_gitignore_toggles_in_preferences_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 7;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-        assert_eq!(store::respect_gitignore(&app.settings.draft_preferences_document), Ok(false));
+        assert_eq!(
+            store::respect_gitignore(&app.settings.committed_preferences_document),
+            Ok(false)
+        );
     }
 
     #[test]
-    fn save_respect_gitignore_invalidates_active_mention_session_cache() {
+    fn immediate_save_respect_gitignore_invalidates_active_mention_session_cache() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -1346,8 +1306,7 @@ mod tests {
         open(&mut app).expect("open");
         app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
         app.settings.selected_config_index = 7;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let mention = app.mention.as_ref().expect("mention should stay active");
         assert!(mention.candidates.is_empty());
@@ -1368,8 +1327,7 @@ mod tests {
 
         open(&mut app).expect("open");
         app.settings.selected_config_index = 4;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"defaultMode\": \"broken\""));
@@ -1380,7 +1338,7 @@ mod tests {
     fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
         let mut app = App::test_default();
         app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
-        store::set_model(&mut app.settings.draft_settings_document, Some("unknown"));
+        store::set_model(&mut app.settings.committed_settings_document, Some("unknown"));
 
         let resolved = resolved_setting(&app, config_setting(SettingId::Model));
 
@@ -1393,28 +1351,26 @@ mod tests {
 
     #[test]
     fn notifications_cycle_in_preferences_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 5;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::preferred_notification_channel(&app.settings.draft_preferences_document),
+            store::preferred_notification_channel(&app.settings.committed_preferences_document),
             Ok(PreferredNotifChannel::Iterm2WithBell)
         );
     }
 
     #[test]
     fn theme_cycles_in_preferences_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 9;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let stored = store::read_persisted_setting(
-            &app.settings.draft_preferences_document,
+            &app.settings.committed_preferences_document,
             config_setting(SettingId::Theme),
         );
         assert_eq!(stored, Ok(store::PersistedSettingValue::String("light".to_owned())));
@@ -1422,21 +1378,20 @@ mod tests {
 
     #[test]
     fn editor_mode_cycles_in_preferences_document() {
-        let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
+        let (_dir, mut app) = open_settings_test_app();
         app.settings.selected_config_index = 3;
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let stored = store::read_persisted_setting(
-            &app.settings.draft_preferences_document,
+            &app.settings.committed_preferences_document,
             config_setting(SettingId::EditorMode),
         );
         assert_eq!(stored, Ok(store::PersistedSettingValue::String("vim".to_owned())));
     }
 
     #[test]
-    fn save_persists_local_project_settings() {
+    fn space_persists_local_project_settings_immediately() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".claude").join("settings.local.json");
         let mut app = App::test_default();
@@ -1445,10 +1400,9 @@ mod tests {
 
         open(&mut app).expect("open");
         app.settings.selected_config_index = 6;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         app.settings.selected_config_index = 8;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"prefersReducedMotion\": true"));
@@ -1456,7 +1410,7 @@ mod tests {
     }
 
     #[test]
-    fn save_persists_always_thinking_in_user_settings() {
+    fn space_persists_always_thinking_in_user_settings() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".claude").join("settings.json");
         let mut app = App::test_default();
@@ -1465,10 +1419,50 @@ mod tests {
 
         open(&mut app).expect("open");
         app.settings.selected_config_index = 0;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        save(&mut app).expect("save");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"alwaysThinkingEnabled\": true"));
+    }
+
+    #[test]
+    fn enter_closes_settings_without_editing_selected_row() {
+        let (_dir, mut app) = open_settings_test_app();
+        app.settings.selected_config_index = 4;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert!(!app.settings.fast_mode_effective());
+    }
+
+    #[test]
+    fn esc_closes_settings_without_editing_selected_row() {
+        let (_dir, mut app) = open_settings_test_app();
+        app.settings.selected_config_index = 4;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert!(!app.settings.fast_mode_effective());
+    }
+
+    #[test]
+    fn save_failure_keeps_previous_value_and_surfaces_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        app.settings.settings_path = Some(PathBuf::new());
+        app.settings.selected_config_index = 4;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(app.active_view, ActiveView::Settings);
+        assert!(!app.settings.fast_mode_effective());
+        assert!(app.settings.last_error.is_some());
+        assert!(app.settings.status_message.is_none());
     }
 }

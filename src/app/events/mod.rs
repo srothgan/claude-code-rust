@@ -2817,8 +2817,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_view_routes_enter_to_settings_handler_not_chat_submit() {
+    fn settings_view_routes_space_to_settings_handler_not_chat_input() {
         let mut app = make_test_app();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        crate::app::settings::open(&mut app).expect("open settings");
         app.active_view = ActiveView::Settings;
         app.settings.selected_config_index = crate::app::settings::config_settings()
             .iter()
@@ -2828,13 +2832,33 @@ mod tests {
 
         handle_terminal_event(
             &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
         );
 
         assert_eq!(app.input.text(), "seed");
         assert!(!app.pending_submit);
         assert!(app.settings.fast_mode_effective());
-        assert!(app.settings.dirty);
+        assert!(app.settings.last_error.is_none());
+    }
+
+    #[test]
+    fn settings_view_routes_enter_to_close_not_chat_submit() {
+        let mut app = make_test_app();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        crate::app::settings::open(&mut app).expect("open settings");
+        app.active_view = ActiveView::Settings;
+        app.input.set_text("seed");
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.input.text(), "seed");
+        assert!(!app.pending_submit);
     }
 
     #[test]
