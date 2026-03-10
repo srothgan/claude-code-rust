@@ -114,6 +114,7 @@ pub struct App {
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
+    pub spinner_last_advance_at: Option<Instant>,
     /// Session-level default for tool call collapsed state.
     /// Toggled by Ctrl+O - new tool calls inherit this value.
     pub tools_collapsed: bool,
@@ -543,6 +544,7 @@ impl App {
             event_tx: tx,
             event_rx: rx,
             spinner_frame: 0,
+            spinner_last_advance_at: None,
             tools_collapsed: false,
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),

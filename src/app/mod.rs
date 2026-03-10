@@ -71,6 +71,9 @@ use crossterm::event::{
 use futures::{FutureExt as _, StreamExt};
 use std::time::{Duration, Instant};
 
+const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
+const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
+
 // ---------------------------------------------------------------------------
 // Terminal suspend / resume helpers (reused by /login, /logout)
 // ---------------------------------------------------------------------------
@@ -198,8 +201,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 | AppStatus::Running
         ) || app.is_compacting;
         if is_animating {
-            app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            advance_spinner_frame(app, Instant::now());
             app.needs_redraw = true;
+        } else {
+            app.spinner_last_advance_at = None;
         }
         // Smooth scroll still settling
         let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
@@ -268,6 +273,26 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+fn advance_spinner_frame(app: &mut App, now: Instant) {
+    let interval = if app.settings.prefers_reduced_motion_effective() {
+        SPINNER_FRAME_INTERVAL_REDUCED
+    } else {
+        SPINNER_FRAME_INTERVAL_NORMAL
+    };
+
+    match app.spinner_last_advance_at {
+        Some(last_advance) if now.duration_since(last_advance) < interval => {}
+        Some(_) => {
+            app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            app.spinner_last_advance_at = Some(now);
+        }
+        None => {
+            app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            app.spinner_last_advance_at = Some(now);
+        }
+    }
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
@@ -515,5 +540,30 @@ mod tests {
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
         assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
+    }
+
+    #[test]
+    fn spinner_advances_less_frequently_when_reduced_motion_enabled() {
+        let mut app = App::test_default();
+        let base = Instant::now();
+
+        advance_spinner_frame(&mut app, base);
+        assert_eq!(app.spinner_frame, 1);
+        advance_spinner_frame(&mut app, base + Duration::from_millis(40));
+        assert_eq!(app.spinner_frame, 2);
+
+        crate::app::settings::store::set_prefers_reduced_motion(
+            &mut app.settings.committed_local_settings_document,
+            true,
+        );
+        app.spinner_last_advance_at = None;
+        app.spinner_frame = 0;
+
+        advance_spinner_frame(&mut app, base);
+        assert_eq!(app.spinner_frame, 1);
+        advance_spinner_frame(&mut app, base + Duration::from_millis(95));
+        assert_eq!(app.spinner_frame, 1);
+        advance_spinner_frame(&mut app, base + Duration::from_millis(121));
+        assert_eq!(app.spinner_frame, 2);
     }
 }

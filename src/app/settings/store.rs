@@ -26,6 +26,7 @@ use super::{
 };
 
 const SETTINGS_FILENAME: &str = "settings.json";
+const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
 
@@ -39,25 +40,41 @@ pub enum PersistedSettingValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
     pub settings_path: PathBuf,
+    pub local_settings_path: PathBuf,
     pub preferences_path: PathBuf,
 }
 
 pub struct LoadedSettingsDocuments {
     pub paths: SettingsPaths,
     pub settings_document: Value,
+    pub local_settings_document: Value,
     pub preferences_document: Value,
     pub notice: Option<String>,
 }
 
-pub fn load(home_override: Option<&Path>) -> Result<LoadedSettingsDocuments, String> {
-    let paths = resolve_paths(home_override)?;
+pub fn load(
+    home_override: Option<&Path>,
+    project_root_override: Option<&Path>,
+) -> Result<LoadedSettingsDocuments, String> {
+    let paths = resolve_paths(home_override, project_root_override)?;
     let (settings_document, settings_notice) = load_document(&paths.settings_path)?;
+    let (local_settings_document, local_settings_notice) =
+        load_document(&paths.local_settings_path)?;
     let (preferences_document, preferences_notice) = load_document(&paths.preferences_path)?;
 
-    let notices = [settings_notice, preferences_notice].into_iter().flatten().collect::<Vec<_>>();
+    let notices = [settings_notice, local_settings_notice, preferences_notice]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let notice = (!notices.is_empty()).then(|| notices.join(" "));
 
-    Ok(LoadedSettingsDocuments { paths, settings_document, preferences_document, notice })
+    Ok(LoadedSettingsDocuments {
+        paths,
+        settings_document,
+        local_settings_document,
+        preferences_document,
+        notice,
+    })
 }
 
 pub fn save(path: &Path, document: &Value) -> Result<(), String> {
@@ -151,6 +168,22 @@ pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
     );
 }
 
+pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::ReduceMotion))? {
+        PersistedSettingValue::Missing => Ok(false),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
+    }
+}
+
+pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::ReduceMotion),
+        PersistedSettingValue::Bool(enabled),
+    );
+}
+
 pub fn model(document: &Value) -> Result<Option<String>, ()> {
     match read_persisted_setting(document, config_setting(SettingId::Model))? {
         PersistedSettingValue::Missing => Ok(None),
@@ -218,15 +251,25 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
     );
 }
 
-fn resolve_paths(home_override: Option<&Path>) -> Result<SettingsPaths, String> {
+fn resolve_paths(
+    home_override: Option<&Path>,
+    project_root_override: Option<&Path>,
+) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
     } else {
         dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
     };
+    let project_root = if let Some(path) = project_root_override {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|err| format!("Failed to resolve current directory: {err}"))?
+    };
 
     Ok(SettingsPaths {
         settings_path: home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+        local_settings_path: project_root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME),
         preferences_path: home.join(PREFERENCES_FILENAME),
     })
 }
@@ -356,12 +399,17 @@ mod tests {
     fn load_missing_files_returns_empty_objects() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let loaded = load(Some(dir.path())).expect("load");
+        let loaded = load(Some(dir.path()), Some(dir.path())).expect("load");
 
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
+        assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
         assert!(loaded.notice.is_none());
         assert_eq!(loaded.paths.settings_path, dir.path().join(".claude").join("settings.json"));
+        assert_eq!(
+            loaded.paths.local_settings_path,
+            dir.path().join(".claude").join("settings.local.json")
+        );
         assert_eq!(loaded.paths.preferences_path, dir.path().join(".claude.json"));
     }
 
@@ -375,7 +423,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"fastMode":true}"#).expect("write settings");
         std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
 
-        let loaded = load(Some(dir.path())).expect("load");
+        let loaded = load(Some(dir.path()), Some(dir.path())).expect("load");
 
         assert_eq!(fast_mode(&loaded.settings_document), Ok(true));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));

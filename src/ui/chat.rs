@@ -175,6 +175,7 @@ fn render_scrolled(
 ) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
     let vp = &mut app.viewport;
+    let reduced_motion = app.settings.prefers_reduced_motion_effective();
     let max_scroll = content_height.saturating_sub(viewport_height);
     if vp.auto_scroll {
         vp.scroll_target = max_scroll;
@@ -186,14 +187,14 @@ fn render_scrolled(
     if !vp.auto_scroll {
         let target = vp.scroll_target as f32;
         let delta = target - vp.scroll_pos;
-        if delta.abs() < 0.01 {
+        if reduced_motion || delta.abs() < 0.01 {
             vp.scroll_pos = target;
         } else {
             vp.scroll_pos += delta * 0.3;
         }
     }
     vp.scroll_offset = vp.scroll_pos.round() as usize;
-    clamp_scroll_to_content(vp, max_scroll);
+    clamp_scroll_to_content(vp, max_scroll, reduced_motion);
 
     let scroll_offset = vp.scroll_offset;
     crate::perf::mark_with("chat::max_scroll", "rows", max_scroll);
@@ -249,17 +250,25 @@ fn render_scrolled(
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-fn clamp_scroll_to_content(viewport: &mut crate::app::ChatViewport, max_scroll: usize) {
+fn clamp_scroll_to_content(
+    viewport: &mut crate::app::ChatViewport,
+    max_scroll: usize,
+    reduced_motion: bool,
+) {
     viewport.scroll_target = viewport.scroll_target.min(max_scroll);
 
     // Shrinks can leave the smoothed scroll position beyond new content end.
     // Ease it back toward the valid bound while keeping rendered offset clamped.
     let max_scroll_f = max_scroll as f32;
     if viewport.scroll_pos > max_scroll_f {
-        let overshoot = viewport.scroll_pos - max_scroll_f;
-        viewport.scroll_pos = max_scroll_f + overshoot * OVERSCROLL_CLAMP_EASE;
-        if (viewport.scroll_pos - max_scroll_f).abs() < SCROLLBAR_EASE_EPSILON {
+        if reduced_motion {
             viewport.scroll_pos = max_scroll_f;
+        } else {
+            let overshoot = viewport.scroll_pos - max_scroll_f;
+            viewport.scroll_pos = max_scroll_f + overshoot * OVERSCROLL_CLAMP_EASE;
+            if (viewport.scroll_pos - max_scroll_f).abs() < SCROLLBAR_EASE_EPSILON {
+                viewport.scroll_pos = max_scroll_f;
+            }
         }
     }
 
@@ -311,11 +320,12 @@ fn smooth_scrollbar_geometry(
     viewport: &mut crate::app::ChatViewport,
     target: ScrollbarGeometry,
     viewport_height: usize,
+    reduced_motion: bool,
 ) -> ScrollbarGeometry {
     let target_top = target.thumb_top as f32;
     let target_size = target.thumb_size as f32;
 
-    if viewport.scrollbar_thumb_size <= 0.0 {
+    if reduced_motion || viewport.scrollbar_thumb_size <= 0.0 {
         viewport.scrollbar_thumb_top = target_top;
         viewport.scrollbar_thumb_size = target_size;
     } else {
@@ -334,6 +344,7 @@ fn smooth_scrollbar_geometry(
 fn render_scrollbar_overlay(
     frame: &mut Frame,
     viewport: &mut crate::app::ChatViewport,
+    reduced_motion: bool,
     area: Rect,
     content_height: usize,
     viewport_height: usize,
@@ -348,7 +359,7 @@ fn render_scrollbar_overlay(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height);
+    let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height, reduced_motion);
     let rail_style = Style::default().add_modifier(Modifier::DIM);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = area.right().saturating_sub(1);
@@ -524,7 +535,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         frame.render_widget(SelectionOverlay { selection: sel }, app.rendered_chat_area);
     }
 
-    render_scrollbar_overlay(frame, &mut app.viewport, area, content_height, viewport_height);
+    render_scrollbar_overlay(
+        frame,
+        &mut app.viewport,
+        app.settings.prefers_reduced_motion_effective(),
+        area,
+        content_height,
+        viewport_height,
+    );
 
     enforce_and_emit_cache_metrics(app);
 }
@@ -660,7 +678,7 @@ fn render_lines_from_paragraph(
 mod tests {
     use super::{
         SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
-        compute_scrollbar_geometry, update_visual_heights,
+        compute_scrollbar_geometry, smooth_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -764,7 +782,7 @@ mod tests {
         viewport.scroll_pos = 120.0;
         viewport.scroll_offset = 120;
 
-        clamp_scroll_to_content(&mut viewport, 40);
+        clamp_scroll_to_content(&mut viewport, 40, false);
 
         assert!(viewport.auto_scroll);
         assert_eq!(viewport.scroll_target, 40);
@@ -781,7 +799,7 @@ mod tests {
         viewport.scroll_pos = 20.0;
         viewport.scroll_offset = 20;
 
-        clamp_scroll_to_content(&mut viewport, 40);
+        clamp_scroll_to_content(&mut viewport, 40, false);
 
         assert!(!viewport.auto_scroll);
         assert_eq!(viewport.scroll_target, 20);
@@ -798,12 +816,46 @@ mod tests {
         viewport.scroll_offset = 120;
 
         for _ in 0..12 {
-            clamp_scroll_to_content(&mut viewport, 40);
+            clamp_scroll_to_content(&mut viewport, 40, false);
         }
 
         assert_eq!(viewport.scroll_target, 40);
         assert_eq!(viewport.scroll_offset, 40);
         assert!(viewport.scroll_pos >= 40.0);
         assert!(viewport.scroll_pos < 40.1);
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_snaps_overscroll_when_reduced_motion_enabled() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 120;
+        viewport.scroll_pos = 120.0;
+        viewport.scroll_offset = 120;
+
+        clamp_scroll_to_content(&mut viewport, 40, true);
+
+        assert!(viewport.auto_scroll);
+        assert_eq!(viewport.scroll_target, 40);
+        assert!((viewport.scroll_pos - 40.0).abs() < f32::EPSILON);
+        assert_eq!(viewport.scroll_offset, 40);
+    }
+
+    #[test]
+    fn smooth_scrollbar_geometry_snaps_when_reduced_motion_enabled() {
+        let mut viewport = ChatViewport::new();
+        viewport.scrollbar_thumb_top = 2.0;
+        viewport.scrollbar_thumb_size = 3.0;
+
+        let geometry = smooth_scrollbar_geometry(
+            &mut viewport,
+            ScrollbarGeometry { thumb_top: 9, thumb_size: 5 },
+            20,
+            true,
+        );
+
+        assert_eq!(geometry, ScrollbarGeometry { thumb_top: 9, thumb_size: 5 });
+        assert!((viewport.scrollbar_thumb_top - 9.0).abs() < f32::EPSILON);
+        assert!((viewport.scrollbar_thumb_size - 5.0).abs() < f32::EPSILON);
     }
 }

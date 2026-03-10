@@ -126,6 +126,7 @@ pub fn create_app(cli: &Cli) -> App {
         event_tx,
         event_rx,
         spinner_frame: 0,
+        spinner_last_advance_at: None,
         tools_collapsed: true,
         active_task_ids: HashSet::new(),
         tool_call_scopes: HashMap::new(),
