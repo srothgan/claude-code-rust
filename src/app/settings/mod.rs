@@ -74,6 +74,7 @@ pub enum SettingId {
     ReduceMotion,
     RespectGitignore,
     ShowTips,
+    TerminalProgressBar,
     Theme,
     ThinkingEffort,
 }
@@ -302,7 +303,7 @@ const EFFORT_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "high", label: "High" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 11] = [
+const CONFIG_SETTINGS: [SettingSpec; 12] = [
     SettingSpec {
         id: SettingId::AlwaysThinking,
         entry_id: "A04",
@@ -422,6 +423,20 @@ const CONFIG_SETTINGS: [SettingSpec; 11] = [
         description: "Controls whether Claude should show spinner tips in supported clients for this project.",
         file: SettingFile::LocalSettingsJson,
         json_path: &["spinnerTipsEnabled"],
+        kind: SettingKind::Bool,
+        editor: EditorKind::Toggle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
+    },
+    SettingSpec {
+        id: SettingId::TerminalProgressBar,
+        entry_id: "A08",
+        label: "Terminal progress bar",
+        description: "Controls whether Claude should show its terminal progress bar in supported clients.",
+        file: SettingFile::PreferencesJson,
+        json_path: &["terminalProgressBarEnabled"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
         source: ValueSource::PersistedOnly,
@@ -864,6 +879,14 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                 store::set_spinner_tips_enabled(document, next);
             });
         }
+        SettingId::TerminalProgressBar => {
+            let next =
+                !store::terminal_progress_bar_enabled(&app.settings.committed_preferences_document)
+                    .unwrap_or(true);
+            persist_setting_change(app, spec, |document| {
+                store::set_terminal_progress_bar_enabled(document, next);
+            });
+        }
         SettingId::ReduceMotion => {
             let next =
                 !store::prefers_reduced_motion(&app.settings.committed_local_settings_document)
@@ -999,13 +1022,14 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
 
 const fn default_static_value(setting_id: SettingId) -> &'static str {
     match setting_id {
-        SettingId::AlwaysThinking => "",
         SettingId::Theme => "dark",
         SettingId::ThinkingEffort => "medium",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
-        SettingId::ReduceMotion => "",
-        SettingId::ShowTips
+        SettingId::AlwaysThinking
+        | SettingId::ReduceMotion
+        | SettingId::ShowTips
+        | SettingId::TerminalProgressBar
         | SettingId::FastMode
         | SettingId::DefaultPermissionMode
         | SettingId::RespectGitignore
@@ -1235,13 +1259,13 @@ fn resolve_setting_document(
 ) -> ResolvedSetting {
     let spec = config_setting(setting_id);
     match setting_id {
-        SettingId::AlwaysThinking => resolve_bool_setting(document, spec, false),
-        SettingId::FastMode => resolve_bool_setting(document, spec, false),
+        SettingId::AlwaysThinking | SettingId::FastMode | SettingId::ReduceMotion => {
+            resolve_bool_setting(document, spec, false)
+        }
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
-        SettingId::ReduceMotion => resolve_bool_setting(document, spec, false),
-        SettingId::ShowTips | SettingId::RespectGitignore => {
+        SettingId::ShowTips | SettingId::RespectGitignore | SettingId::TerminalProgressBar => {
             resolve_bool_setting(document, spec, true)
         }
         SettingId::Model => resolve_model_setting(document, spec, available_models),
@@ -1368,6 +1392,11 @@ mod tests {
         (dir, app)
     }
 
+    fn select_setting(app: &mut App, setting_id: SettingId) {
+        app.settings.selected_config_index =
+            config_settings().iter().position(|spec| spec.id == setting_id).expect("setting row");
+    }
+
     #[test]
     fn open_loads_document_and_switches_view() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1438,7 +1467,7 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 4;
+        select_setting(&mut app, SettingId::FastMode);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
@@ -1489,7 +1518,7 @@ mod tests {
     #[test]
     fn always_thinking_toggles_in_settings_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 0;
+        select_setting(&mut app, SettingId::AlwaysThinking);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1502,7 +1531,7 @@ mod tests {
     #[test]
     fn reduce_motion_toggles_in_local_settings_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 6;
+        select_setting(&mut app, SettingId::ReduceMotion);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1515,7 +1544,7 @@ mod tests {
     #[test]
     fn show_tips_toggles_in_local_settings_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 8;
+        select_setting(&mut app, SettingId::ShowTips);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1528,7 +1557,7 @@ mod tests {
     #[test]
     fn handle_key_cycles_default_permission_mode() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 2;
+        select_setting(&mut app, SettingId::DefaultPermissionMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1541,12 +1570,25 @@ mod tests {
     #[test]
     fn respect_gitignore_toggles_in_preferences_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 7;
+        select_setting(&mut app, SettingId::RespectGitignore);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
             store::respect_gitignore(&app.settings.committed_preferences_document),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn terminal_progress_bar_toggles_in_preferences_document() {
+        let (_dir, mut app) = open_settings_test_app();
+        select_setting(&mut app, SettingId::TerminalProgressBar);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(
+            store::terminal_progress_bar_enabled(&app.settings.committed_preferences_document),
             Ok(false)
         );
     }
@@ -1560,7 +1602,7 @@ mod tests {
 
         open(&mut app).expect("open");
         app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-        app.settings.selected_config_index = 7;
+        select_setting(&mut app, SettingId::RespectGitignore);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let mention = app.mention.as_ref().expect("mention should stay active");
@@ -1581,7 +1623,7 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 4;
+        select_setting(&mut app, SettingId::FastMode);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
@@ -1624,7 +1666,7 @@ mod tests {
     #[test]
     fn notifications_cycle_in_preferences_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 5;
+        select_setting(&mut app, SettingId::Notifications);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1637,7 +1679,7 @@ mod tests {
     #[test]
     fn theme_cycles_in_preferences_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 9;
+        select_setting(&mut app, SettingId::Theme);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1651,7 +1693,7 @@ mod tests {
     #[test]
     fn editor_mode_cycles_in_preferences_document() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 3;
+        select_setting(&mut app, SettingId::EditorMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -1671,9 +1713,9 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 6;
+        select_setting(&mut app, SettingId::ReduceMotion);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        app.settings.selected_config_index = 8;
+        select_setting(&mut app, SettingId::ShowTips);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
@@ -1690,7 +1732,7 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.selected_config_index = 0;
+        select_setting(&mut app, SettingId::AlwaysThinking);
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let raw = std::fs::read_to_string(path).expect("read");
@@ -1698,9 +1740,25 @@ mod tests {
     }
 
     #[test]
+    fn space_persists_terminal_progress_bar_in_preferences() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::TerminalProgressBar);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"terminalProgressBarEnabled\": false"));
+    }
+
+    #[test]
     fn enter_closes_settings_without_editing_selected_row() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 4;
+        select_setting(&mut app, SettingId::FastMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -1711,7 +1769,7 @@ mod tests {
     #[test]
     fn esc_closes_settings_without_editing_selected_row() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.selected_config_index = 4;
+        select_setting(&mut app, SettingId::FastMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -1728,7 +1786,7 @@ mod tests {
 
         open(&mut app).expect("open");
         app.settings.settings_path = Some(PathBuf::new());
-        app.settings.selected_config_index = 4;
+        select_setting(&mut app, SettingId::FastMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 

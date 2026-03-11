@@ -201,6 +201,22 @@ pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
     );
 }
 
+pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::TerminalProgressBar))? {
+        PersistedSettingValue::Missing => Ok(true),
+        PersistedSettingValue::Bool(value) => Ok(value),
+        PersistedSettingValue::String(_) => Err(()),
+    }
+}
+
+pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::TerminalProgressBar),
+        PersistedSettingValue::Bool(enabled),
+    );
+}
+
 pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
     match read_persisted_setting(document, config_setting(SettingId::ReduceMotion))? {
         PersistedSettingValue::Missing => Ok(false),
@@ -505,6 +521,13 @@ mod tests {
     }
 
     #[test]
+    fn terminal_progress_bar_defaults_to_true() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(terminal_progress_bar_enabled(&document), Ok(true));
+    }
+
+    #[test]
     fn model_defaults_to_none() {
         let document = Value::Object(Map::new());
 
@@ -628,6 +651,23 @@ mod tests {
         let raw = std::fs::read_to_string(path).expect("read");
 
         assert!(raw.contains("\"respectGitignore\": false"));
+        assert!(raw.contains("\"preferredNotifChannel\": \"iterm2\""));
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys_and_updates_terminal_progress_bar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        let mut document = serde_json::json!({
+            "terminalProgressBarEnabled": true,
+            "preferredNotifChannel": "iterm2"
+        });
+        set_terminal_progress_bar_enabled(&mut document, false);
+
+        save(&path, &document).expect("save");
+        let raw = std::fs::read_to_string(path).expect("read");
+
+        assert!(raw.contains("\"terminalProgressBarEnabled\": false"));
         assert!(raw.contains("\"preferredNotifChannel\": \"iterm2\""));
     }
 
