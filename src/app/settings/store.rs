@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    DefaultPermissionMode, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
+    DefaultPermissionMode, OutputStyle, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
     config_setting,
 };
 use crate::agent::model::EffortLevel;
@@ -230,6 +230,22 @@ pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
         document,
         config_setting(SettingId::ReduceMotion),
         PersistedSettingValue::Bool(enabled),
+    );
+}
+
+pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::OutputStyle))? {
+        PersistedSettingValue::Missing => Ok(OutputStyle::Default),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => OutputStyle::from_stored(&value).ok_or(()),
+    }
+}
+
+pub fn set_output_style(document: &mut Value, style: OutputStyle) {
+    write_persisted_setting(
+        document,
+        config_setting(SettingId::OutputStyle),
+        PersistedSettingValue::String(style.as_stored().to_owned()),
     );
 }
 
@@ -528,6 +544,13 @@ mod tests {
     }
 
     #[test]
+    fn output_style_defaults_to_default() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(output_style(&document), Ok(OutputStyle::Default));
+    }
+
+    #[test]
     fn model_defaults_to_none() {
         let document = Value::Object(Map::new());
 
@@ -548,6 +571,15 @@ mod tests {
         });
 
         assert_eq!(preferred_notification_channel(&document), Err(()));
+    }
+
+    #[test]
+    fn output_style_rejects_invalid_stored_value() {
+        let document = serde_json::json!({
+            "outputStyle": "Verbose"
+        });
+
+        assert_eq!(output_style(&document), Err(()));
     }
 
     #[test]
@@ -635,6 +667,24 @@ mod tests {
 
         assert!(raw.contains("\"preferredNotifChannel\": \"terminal_bell\""));
         assert!(raw.contains("\"theme\": \"dark\""));
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys_and_updates_output_style() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.local.json");
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+        let mut document = serde_json::json!({
+            "outputStyle": "Default",
+            "spinnerTipsEnabled": true
+        });
+        set_output_style(&mut document, OutputStyle::Learning);
+
+        save(&path, &document).expect("save");
+        let raw = std::fs::read_to_string(path).expect("read");
+
+        assert!(raw.contains("\"outputStyle\": \"Learning\""));
+        assert!(raw.contains("\"spinnerTipsEnabled\": true"));
     }
 
     #[test]

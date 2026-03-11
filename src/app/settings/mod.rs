@@ -71,6 +71,7 @@ pub enum SettingId {
     EditorMode,
     FastMode,
     Notifications,
+    OutputStyle,
     ReduceMotion,
     RespectGitignore,
     ShowTips,
@@ -265,6 +266,55 @@ impl PreferredNotifChannel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputStyle {
+    #[default]
+    Default,
+    Explanatory,
+    Learning,
+}
+
+impl OutputStyle {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Explanatory, Self::Learning];
+
+    #[must_use]
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Explanatory => "Explanatory",
+            Self::Learning => "Learning",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.as_stored()
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Default => {
+                "Claude completes coding tasks efficiently and provides concise responses"
+            }
+            Self::Explanatory => "Claude explains its implementation choices and codebase patterns",
+            Self::Learning => {
+                "Claude pauses and asks you to write small pieces of code for hands-on practice"
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "Default" => Some(Self::Default),
+            "Explanatory" => Some(Self::Explanatory),
+            "Learning" => Some(Self::Learning),
+            _ => None,
+        }
+    }
+}
+
 const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "acceptEdits", label: "Accept Edits" },
@@ -279,6 +329,12 @@ const NOTIFICATION_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "terminal_bell", label: "Terminal Bell" },
     SettingOption { stored: "ghostty", label: "Ghostty" },
     SettingOption { stored: "notifications_disabled", label: "Disabled" },
+];
+
+const OUTPUT_STYLE_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "Default", label: "Default" },
+    SettingOption { stored: "Explanatory", label: "Explanatory" },
+    SettingOption { stored: "Learning", label: "Learning" },
 ];
 
 const THEME_OPTIONS: &[SettingOption] = &[
@@ -303,7 +359,7 @@ const EFFORT_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "high", label: "High" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 12] = [
+const CONFIG_SETTINGS: [SettingSpec; 13] = [
     SettingSpec {
         id: SettingId::AlwaysThinking,
         entry_id: "A04",
@@ -387,6 +443,20 @@ const CONFIG_SETTINGS: [SettingSpec; 12] = [
         options: SettingOptions::Static(NOTIFICATION_OPTIONS),
         fallback: FallbackPolicy::AppDefault,
         supported: true,
+    },
+    SettingSpec {
+        id: SettingId::OutputStyle,
+        entry_id: "A15",
+        label: "Output style",
+        description: "Changes how Claude Code communicates with you for this project.",
+        file: SettingFile::LocalSettingsJson,
+        json_path: &["outputStyle"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Overlay,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(OUTPUT_STYLE_OPTIONS),
+        fallback: FallbackPolicy::AppDefault,
+        supported: false,
     },
     SettingSpec {
         id: SettingId::ReduceMotion,
@@ -519,15 +589,22 @@ pub struct ModelAndEffortOverlayState {
     pub selected_effort: EffortLevel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputStyleOverlayState {
+    pub selected: OutputStyle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
+    OutputStyle(OutputStyleOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsState {
     pub active_tab: SettingsTab,
     pub selected_config_index: usize,
+    pub config_scroll_offset: usize,
     pub overlay: Option<SettingsOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
@@ -544,6 +621,7 @@ impl Default for SettingsState {
         Self {
             active_tab: SettingsTab::Config,
             selected_config_index: 0,
+            config_scroll_offset: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
@@ -634,6 +712,11 @@ impl SettingsState {
     }
 
     #[must_use]
+    pub fn output_style_effective(&self) -> OutputStyle {
+        store::output_style(&self.committed_local_settings_document).unwrap_or_default()
+    }
+
+    #[must_use]
     pub fn selected_config_spec(&self) -> Option<&'static SettingSpec> {
         config_settings().get(self.selected_config_index)
     }
@@ -642,14 +725,29 @@ impl SettingsState {
     pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
         match &self.overlay {
             Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            None => None,
+            Some(SettingsOverlayState::OutputStyle(_)) | None => None,
         }
     }
 
     pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
         match &mut self.overlay {
             Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            None => None,
+            Some(SettingsOverlayState::OutputStyle(_)) | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
+        match &self.overlay {
+            Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
+            Some(SettingsOverlayState::ModelAndEffort(_)) | None => None,
+        }
+    }
+
+    pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
+        match &mut self.overlay {
+            Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
+            Some(SettingsOverlayState::ModelAndEffort(_)) | None => None,
         }
     }
 
@@ -694,6 +792,7 @@ impl SettingsState {
         self.overlay = None;
         self.selected_config_index =
             self.selected_config_index.min(config_settings().len().saturating_sub(1));
+        self.config_scroll_offset = self.config_scroll_offset.min(self.selected_config_index);
         if !preserve_status {
             self.status_message = notice;
             self.last_error = None;
@@ -928,6 +1027,7 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
             });
         }
         SettingId::Model => open_model_and_effort_overlay(app, OverlayFocus::Model),
+        SettingId::OutputStyle => open_output_style_overlay(app),
         SettingId::ThinkingEffort => {
             open_model_and_effort_overlay(app, OverlayFocus::Effort);
         }
@@ -938,20 +1038,28 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
 }
 
 fn handle_overlay_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
-        (KeyCode::Tab, KeyModifiers::NONE)
-        | (KeyCode::Right, KeyModifiers::NONE)
-        | (KeyCode::Left, KeyModifiers::NONE)
-        | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
-        (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
-        (KeyCode::Down, KeyModifiers::NONE) => move_overlay_selection(app, 1),
-        _ => {}
+    match app.settings.overlay.clone() {
+        Some(SettingsOverlayState::ModelAndEffort(_)) => match (key.code, key.modifiers) {
+            (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
+            (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
+            (KeyCode::Tab | KeyCode::Right | KeyCode::Left, KeyModifiers::NONE)
+            | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
+            (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
+            (KeyCode::Down, KeyModifiers::NONE) => move_overlay_selection(app, 1),
+            _ => {}
+        },
+        Some(SettingsOverlayState::OutputStyle(_)) => match (key.code, key.modifiers) {
+            (KeyCode::Enter, KeyModifiers::NONE) => confirm_output_style_overlay(app),
+            (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
+            (KeyCode::Up, KeyModifiers::NONE) => move_output_style_overlay_selection(app, -1),
+            (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
+            _ => {}
+        },
+        None => {}
     }
 }
 
-fn persist_setting_change<F>(app: &mut App, spec: &SettingSpec, edit: F)
+fn persist_setting_change<F>(app: &mut App, spec: &SettingSpec, edit: F) -> bool
 where
     F: FnOnce(&mut Value),
 {
@@ -959,7 +1067,7 @@ where
         let message = "Settings paths are not available".to_owned();
         app.settings.last_error = Some(message.clone());
         app.settings.status_message = None;
-        return;
+        return false;
     };
 
     let previous_respect_gitignore = matches!(spec.id, SettingId::RespectGitignore)
@@ -981,10 +1089,12 @@ where
                 spec.label,
                 setting_display_value(app, spec, &resolved_setting(app, spec))
             ));
+            true
         }
         Err(err) => {
             app.settings.last_error = Some(err);
             app.settings.status_message = None;
+            false
         }
     }
 }
@@ -1023,6 +1133,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
 const fn default_static_value(setting_id: SettingId) -> &'static str {
     match setting_id {
         SettingId::Theme => "dark",
+        SettingId::OutputStyle => OutputStyle::Default.as_stored(),
         SettingId::ThinkingEffort => "medium",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
@@ -1121,6 +1232,13 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
     app.settings.last_error = None;
 }
 
+fn open_output_style_overlay(app: &mut App) {
+    app.settings.overlay = Some(SettingsOverlayState::OutputStyle(OutputStyleOverlayState {
+        selected: app.settings.output_style_effective(),
+    }));
+    app.settings.last_error = None;
+}
+
 fn toggle_model_and_effort_focus(app: &mut App) {
     let Some(overlay) = app.settings.model_and_effort_overlay_mut() else {
         return;
@@ -1179,6 +1297,30 @@ fn confirm_model_and_effort_overlay(app: &mut App) {
         return;
     };
     if persist_model_and_effort_change(app, &overlay.selected_model, overlay.selected_effort) {
+        app.settings.overlay = None;
+    }
+}
+
+fn move_output_style_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.settings.output_style_overlay().copied() else {
+        return;
+    };
+    let current_index =
+        OutputStyle::ALL.iter().position(|style| *style == overlay.selected).unwrap_or_default();
+    let next_index = step_index_clamped(current_index, delta, OutputStyle::ALL.len());
+    if let Some(state) = app.settings.output_style_overlay_mut() {
+        state.selected = OutputStyle::ALL[next_index];
+    }
+}
+
+fn confirm_output_style_overlay(app: &mut App) {
+    let Some(overlay) = app.settings.output_style_overlay().copied() else {
+        return;
+    };
+    let spec = config_setting(SettingId::OutputStyle);
+    if persist_setting_change(app, spec, |document| {
+        store::set_output_style(document, overlay.selected);
+    }) {
         app.settings.overlay = None;
     }
 }
@@ -1269,6 +1411,9 @@ fn resolve_setting_document(
             resolve_bool_setting(document, spec, true)
         }
         SettingId::Model => resolve_model_setting(document, spec, available_models),
+        SettingId::OutputStyle => {
+            resolve_string_setting(document, spec, OutputStyle::Default.as_stored())
+        }
         SettingId::ThinkingEffort => resolve_string_setting(document, spec, "medium"),
         SettingId::Theme => resolve_string_setting(document, spec, "dark"),
         SettingId::Notifications => {
@@ -1484,34 +1629,10 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.settings.selected_config_index, 1);
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 2);
+        for _ in 0..config_settings().len().saturating_add(4) {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 3);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 4);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 5);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 6);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 7);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 8);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 9);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 10);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.settings.selected_config_index, last_index);
     }
 
@@ -1705,6 +1826,64 @@ mod tests {
     }
 
     #[test]
+    fn output_style_resolves_existing_project_value() {
+        let mut app = App::test_default();
+        store::set_output_style(
+            &mut app.settings.committed_local_settings_document,
+            OutputStyle::Explanatory,
+        );
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+
+        assert_eq!(resolved.validation, SettingValidation::Valid);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            "Explanatory"
+        );
+    }
+
+    #[test]
+    fn output_style_missing_value_falls_back_to_default() {
+        let app = App::test_default();
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+
+        assert_eq!(resolved.validation, SettingValidation::Valid);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            "Default"
+        );
+    }
+
+    #[test]
+    fn output_style_invalid_value_uses_default_with_invalid_state() {
+        let mut app = App::test_default();
+        app.settings.committed_local_settings_document =
+            serde_json::json!({ "outputStyle": "Verbose" });
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+
+        assert_eq!(resolved.validation, SettingValidation::InvalidValue);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            "Default"
+        );
+    }
+
+    #[test]
+    fn space_opens_output_style_overlay() {
+        let (_dir, mut app) = open_settings_test_app();
+        select_setting(&mut app, SettingId::OutputStyle);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(
+            app.settings.output_style_overlay().map(|overlay| overlay.selected),
+            Some(OutputStyle::Default)
+        );
+    }
+
+    #[test]
     fn space_persists_local_project_settings_immediately() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".claude").join("settings.local.json");
@@ -1721,6 +1900,52 @@ mod tests {
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"prefersReducedMotion\": true"));
         assert!(raw.contains("\"spinnerTipsEnabled\": false"));
+    }
+
+    #[test]
+    fn output_style_overlay_confirm_persists_local_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.local.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::OutputStyle);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"outputStyle\": \"Learning\""));
+        assert_eq!(
+            store::output_style(&app.settings.committed_local_settings_document),
+            Ok(OutputStyle::Learning)
+        );
+        assert!(app.settings.overlay.is_none());
+    }
+
+    #[test]
+    fn output_style_overlay_escape_cancels_without_persisting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.local.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::OutputStyle);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!path.exists());
+        assert!(app.settings.overlay.is_none());
+        assert_eq!(
+            store::output_style(&app.settings.committed_local_settings_document),
+            Ok(OutputStyle::Default)
+        );
     }
 
     #[test]
