@@ -27,7 +27,7 @@ async function downloadFile(url, outPath, redirects = 0) {
   await new Promise((resolve, reject) => {
     const req = https.get(
       url,
-      { headers: { "User-Agent": "claude-code-rust-pnpm-installer" } },
+      { headers: { "User-Agent": "claude-code-rust-installer" } },
       (res) => {
         const status = res.statusCode ?? 0;
 

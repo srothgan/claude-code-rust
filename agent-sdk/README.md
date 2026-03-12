@@ -5,8 +5,8 @@ Initial scaffold for the NDJSON stdio bridge that will connect Rust (`claude-cod
 ## Local build
 
 ```bash
-pnpm install
-pnpm run build
+npm install
+npm run build
 ```
 
 Build output is written to `dist/bridge.mjs`.

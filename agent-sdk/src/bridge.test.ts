@@ -500,7 +500,7 @@ test("permissionOptionsFromSuggestions uses persistent label when settings scope
       type: "addRules",
       behavior: "allow",
       destination: "localSettings",
-      rules: [{ toolName: "Bash", ruleContent: "pnpm install" }],
+      rules: [{ toolName: "Bash", ruleContent: "npm install" }],
     },
   ]);
   assert.deepEqual(options, [
@@ -514,14 +514,14 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
   const allow = permissionResultFromOutcome(
     { outcome: "selected", option_id: "allow_always" },
     "tool-1",
-    { command: "pnpm install" },
+    { command: "npm install" },
     [
       {
         type: "addRules",
         behavior: "allow",
         destination: "localSettings",
         rules: [
-          { toolName: "Bash", ruleContent: "pnpm install" },
+          { toolName: "Bash", ruleContent: "npm install" },
           { toolName: "WebFetch", ruleContent: "https://example.com" },
           { toolName: "Bash", ruleContent: "dir /B" },
         ],
@@ -540,7 +540,7 @@ test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged"
       behavior: "allow",
       destination: "localSettings",
       rules: [
-        { toolName: "Bash", ruleContent: "pnpm install" },
+        { toolName: "Bash", ruleContent: "npm install" },
         { toolName: "WebFetch", ruleContent: "https://example.com" },
         { toolName: "Bash", ruleContent: "dir /B" },
       ],

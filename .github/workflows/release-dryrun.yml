@@ -25,14 +25,11 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
       - name: Install agent-sdk dependencies
-        run: pnpm -C agent-sdk install
+        run: npm ci --prefix agent-sdk
 
       - name: Sync package version from Cargo.toml
-        run: pnpm version "${{ steps.get_version.outputs.version }}" --no-git-tag-version --allow-same-version
+        run: npm version "${{ steps.get_version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Dry-run publish
-        run: pnpm publish --dry-run --access public --no-git-checks
+        run: npm publish --dry-run --access public

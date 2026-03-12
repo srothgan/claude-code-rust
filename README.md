@@ -19,14 +19,17 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Install
 
-### pnpm (global, recommended)
+### npm (global, recommended)
 
 ```bash
-pnpm add -g claude-code-rust
+npm install -g claude-code-rust
 ```
 
-The published package installs a `claude-rs` command and downloads the matching
-prebuilt release binary for your platform during `postinstall`.
+The published package installs a `claude-rs` command and fetches the matching
+prebuilt release binary for your platform during install.
+
+If `claude-rs` resolves to an older global shim, ensure your npm global bin
+directory comes first on `PATH` or remove the stale shim before retrying.
 
 ## Usage
 

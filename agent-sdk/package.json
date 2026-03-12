@@ -5,12 +5,11 @@
   "type": "module",
   "description": "NDJSON bridge between claude-code-rust and the Claude Agent SDK",
   "main": "dist/bridge.js",
-  "packageManager": "pnpm@10.16.1",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/bridge.js",
-    "check": "pnpm run build",
-    "test": "pnpm run build && node --test dist/**/*.test.js"
+    "check": "npm run build",
+    "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.63"
