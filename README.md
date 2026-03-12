@@ -10,7 +10,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge (`agent-sdk/dist/bridge.js`). Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
+Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
 ## Requisites
 
@@ -58,7 +58,7 @@ Three-layer design:
 
 ## Known Limitations
 
-- `/login` and `/logout` are intentionally not offered in command discovery for this release.
+- The config view includes the Settings tab but the Status, Usage, and MCP tabs are not yet implemented.
 
 ## Status
 
