@@ -265,8 +265,8 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
 }
 
 fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
-    if app.pending_submit && is_editing_like_key(key) {
-        app.pending_submit = false;
+    if app.pending_submit.is_some() && is_editing_like_key(key) {
+        app.pending_submit = None;
     }
     !app.pending_paste_text.is_empty() && is_editing_like_key(key)
 }
@@ -335,11 +335,10 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
-        let _ = app.input.textarea_insert_newline();
-        app.pending_submit = true;
+        app.pending_submit = Some(app.input.snapshot());
         return true;
     }
-    app.pending_submit = false;
+    app.pending_submit = None;
     let _ = app.input.textarea_insert_newline();
     true
 }

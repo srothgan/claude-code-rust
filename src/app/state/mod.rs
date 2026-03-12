@@ -52,7 +52,7 @@ use tokio::sync::mpsc;
 use super::config::ConfigState;
 use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
-use super::input::{InputState, parse_paste_placeholder_before_cursor};
+use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::slash;
 use super::subagent;
@@ -178,11 +178,12 @@ pub struct App {
     pub slash: Option<slash::SlashState>,
     /// Active subagent autocomplete state (`&name`).
     pub subagent: Option<subagent::SubagentState>,
-    /// Deferred submit: set `true` when Enter is pressed. If another key event
-    /// arrives during the same drain cycle (paste), this is cleared and the Enter
-    /// becomes a newline. After the drain, the main loop checks: if still `true`,
-    /// strips the trailing newline and submits.
-    pub pending_submit: bool,
+    /// Deferred plain-Enter submit. Stores the exact input state from before the
+    /// Enter key so submission can restore and use the original draft text.
+    ///
+    /// If another editing-like event or a paste payload arrives in the same
+    /// drain cycle, this is cleared and no submit occurs.
+    pub pending_submit: Option<InputSnapshot>,
     /// Timing-based paste burst detector. Detects rapid character streams
     /// (paste delivered as individual key events) and buffers them into a
     /// single paste payload. Fallback for terminals without bracketed paste.
@@ -256,7 +257,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        self.pending_submit = false;
+        self.pending_submit = None;
         if self.pending_paste_text.is_empty() {
             let continued_session = self.active_paste_session.and_then(|session| {
                 let current_line = self.input.lines().get(self.input.cursor_row())?;
@@ -586,7 +587,7 @@ impl App {
             mention: None,
             slash: None,
             subagent: None,
-            pending_submit: false,
+            pending_submit: None,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
             pending_paste_session: None,

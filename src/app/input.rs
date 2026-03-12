@@ -16,6 +16,14 @@
 
 use tui_textarea::{CursorMove, TextArea, WrapMode};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputSnapshot {
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub paste_blocks: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct InputState {
     /// Monotonically increasing version counter. Bumped on every content or cursor change
@@ -152,6 +160,22 @@ impl InputState {
     pub fn clear(&mut self) {
         self.paste_blocks.clear();
         self.replace_lines_and_cursor(vec![String::new()], 0, 0);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> InputSnapshot {
+        let (cursor_row, cursor_col) = self.cursor();
+        InputSnapshot {
+            lines: self.lines().to_vec(),
+            cursor_row,
+            cursor_col,
+            paste_blocks: self.paste_blocks.clone(),
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: InputSnapshot) {
+        self.paste_blocks = snapshot.paste_blocks;
+        self.replace_lines_and_cursor(snapshot.lines, snapshot.cursor_row, snapshot.cursor_col);
     }
 
     /// Replace the input with the given text, placing the cursor at the end.

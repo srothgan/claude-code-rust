@@ -74,7 +74,7 @@ fn reset_messages_for_new_session(app: &mut App) {
 
 fn reset_input_state_for_new_session(app: &mut App) {
     app.input.clear();
-    app.pending_submit = false;
+    app.pending_submit = None;
     app.pending_paste_text.clear();
     app.pending_paste_session = None;
     app.active_paste_session = None;

@@ -186,9 +186,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         mention::tick(app, Instant::now());
 
         // Deferred submit: if Enter was pressed and no paste payload arrived
-        // in this drain cycle, strip the trailing newline and submit.
-        if app.active_view == ActiveView::Chat && app.pending_submit {
-            app.pending_submit = false;
+        // in this drain cycle, restore the exact pre-submit snapshot and
+        // submit that unchanged draft.
+        if app.active_view == ActiveView::Chat && app.pending_submit.is_some() {
             finalize_deferred_submit(app);
         }
 
@@ -441,26 +441,32 @@ fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) 
     apply_merged_input_snapshot(app, &merged, start_offset);
 }
 
-/// Finalize a deferred Enter: strip trailing empty lines that were optimistically
-/// inserted by the deferred-submit Enter handler, then submit the input.
+/// Finalize a deferred Enter by restoring the exact pre-submit input snapshot
+/// and submitting that original draft text.
 fn finalize_deferred_submit(app: &mut App) {
-    // Remove trailing empty lines added by deferred Enter presses.
-    let mut lines = app.input.lines().to_vec();
-    while lines.len() > 1 && lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
-    // Place cursor at end of last line
-    let cursor_row = lines.len().saturating_sub(1);
-    let cursor_col = lines.last().map_or(0, |l| l.chars().count());
-    app.input.replace_lines_and_cursor(lines, cursor_row, cursor_col);
-
+    let Some(snapshot) = app.pending_submit.take() else {
+        return;
+    };
+    app.input.restore_snapshot(snapshot);
     input_submit::submit_input(app);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::Event;
+    use crate::agent::model;
+    use crate::agent::wire::BridgeCommand;
+    use crate::app::{MessageBlock, MessageRole};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    fn app_with_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+        let mut app = App::test_default();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+        (app, rx)
+    }
 
     #[test]
     fn pending_paste_chunks_are_merged_before_threshold_check() {
@@ -540,6 +546,85 @@ mod tests {
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
         assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
+    }
+
+    #[test]
+    fn plain_enter_preserves_single_line_draft_before_submit() {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("hello world");
+        let _ = app.input.set_cursor(0, "hello".chars().count());
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "hello world");
+        assert_eq!(app.input.cursor(), (0, "hello".chars().count()));
+        assert!(app.pending_submit.is_some());
+
+        finalize_deferred_submit(&mut app);
+
+        assert!(app.pending_submit.is_none());
+        assert!(app.input.text().is_empty());
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(
+            app.messages[0].blocks.as_slice(),
+            [MessageBlock::Text(block)] if block.text == "hello world"
+        ));
+        let envelope = rx.try_recv().expect("prompt command should be sent");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn plain_enter_preserves_multiline_draft_with_mid_buffer_cursor() {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("alpha beta\ngamma");
+        let _ = app.input.set_cursor(0, "alpha".chars().count());
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "alpha beta\ngamma");
+        assert_eq!(app.input.cursor(), (0, "alpha".chars().count()));
+        assert!(app.pending_submit.is_some());
+
+        finalize_deferred_submit(&mut app);
+
+        assert!(app.pending_submit.is_none());
+        assert!(matches!(
+            app.messages[0].blocks.as_slice(),
+            [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
+        ));
+        let envelope = rx.try_recv().expect("prompt command should be sent");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn paste_event_cancels_deferred_submit_snapshot() {
+        let mut app = App::test_default();
+        app.input.set_text("draft");
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(app.pending_submit.is_some());
+
+        events::handle_terminal_event(&mut app, Event::Paste("pasted".into()));
+
+        assert!(app.pending_submit.is_none());
+        assert_eq!(app.pending_paste_text, "pasted");
+        assert_eq!(app.input.text(), "draft");
     }
 
     #[test]

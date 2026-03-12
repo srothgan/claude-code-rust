@@ -2445,7 +2445,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.input.set_text("seed");
-        app.pending_submit = false;
+        app.pending_submit = None;
         app.help_view = HelpView::Keys;
 
         for key in [
@@ -2460,7 +2460,7 @@ mod tests {
         }
 
         assert_eq!(app.input.text(), "seed");
-        assert!(!app.pending_submit);
+        assert!(app.pending_submit.is_none());
         assert_eq!(app.help_view, HelpView::Keys);
     }
 
@@ -2597,7 +2597,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Error;
         app.input.set_text("seed");
-        app.pending_submit = false;
+        app.pending_submit = None;
 
         for key in [
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -2611,7 +2611,7 @@ mod tests {
         }
 
         assert_eq!(app.input.text(), "seed");
-        assert!(!app.pending_submit);
+        assert!(app.pending_submit.is_none());
     }
 
     #[test]
@@ -2842,7 +2842,7 @@ mod tests {
         );
 
         assert_eq!(app.input.text(), "seed");
-        assert!(!app.pending_submit);
+        assert!(app.pending_submit.is_none());
         assert!(app.config.fast_mode_effective());
         assert!(app.config.last_error.is_none());
     }
@@ -2864,7 +2864,7 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert_eq!(app.input.text(), "seed");
-        assert!(!app.pending_submit);
+        assert!(app.pending_submit.is_none());
     }
 
     #[test]

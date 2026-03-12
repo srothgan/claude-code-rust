@@ -40,7 +40,7 @@ fn clear_transient_view_state(app: &mut App) {
     app.active_paste_session = None;
     app.pending_paste_session = None;
     app.pending_paste_text.clear();
-    app.pending_submit = false;
+    app.pending_submit = None;
     app.mention = None;
     app.slash = None;
     app.subagent = None;

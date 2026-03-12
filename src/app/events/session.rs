@@ -117,7 +117,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.pending_command_label = None;
     app.pending_command_ack = None;
     app.input.clear();
-    app.pending_submit = false;
+    app.pending_submit = None;
     app.status = AppStatus::Error;
     push_connection_error_message(app, msg);
 }
@@ -236,7 +236,7 @@ pub(super) fn handle_service_status_event(
     if matches!(severity, ServiceStatusSeverity::Error) {
         app.startup_status_blocking_error = true;
         app.input.clear();
-        app.pending_submit = false;
+        app.pending_submit = None;
         app.status = AppStatus::Error;
     }
 }
@@ -245,7 +245,7 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;
-    app.pending_submit = false;
+    app.pending_submit = None;
     app.pending_command_label = None;
     app.pending_command_ack = None;
 }

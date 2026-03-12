@@ -11,7 +11,7 @@ fn config_enter_closes_and_preserves_chat_draft() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert_eq!(app.input.text(), "seed");
-    assert!(!app.pending_submit);
+    assert!(app.pending_submit.is_none());
 }
 
 #[test]
@@ -24,7 +24,7 @@ fn config_escape_closes_and_preserves_chat_draft() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert_eq!(app.input.text(), "seed");
-    assert!(!app.pending_submit);
+    assert!(app.pending_submit.is_none());
 }
 
 #[test]

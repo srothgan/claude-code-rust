@@ -157,7 +157,7 @@ pub fn create_app(cli: &Cli) -> App {
         mention: None,
         slash: None,
         subagent: None,
-        pending_submit: false,
+        pending_submit: None,
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         pending_paste_text: String::new(),
         pending_paste_session: None,

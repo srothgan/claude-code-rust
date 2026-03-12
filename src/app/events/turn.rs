@@ -169,7 +169,7 @@ pub(super) fn handle_turn_error_event(
         );
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-        app.pending_submit = false;
+        app.pending_submit = None;
         app.status = AppStatus::Ready;
         app.files_accessed = 0;
         app.clear_tool_scope_tracking();
@@ -212,7 +212,7 @@ pub(super) fn handle_turn_error_event(
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
-    app.pending_submit = false;
+    app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
         app.last_rate_limit_update

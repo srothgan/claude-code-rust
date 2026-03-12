@@ -10,6 +10,7 @@ use crate::app::{
 
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
+    app.input.set_text("draft");
     app.selection = Some(SelectionState {
         kind: SelectionKind::Chat,
         start: SelectionPoint { row: 0, col: 0 },
@@ -17,7 +18,7 @@ fn busy_view_test_app() -> App {
         dragging: true,
     });
     app.scrollbar_drag = Some(ScrollbarDragState { thumb_grab_offset: 1 });
-    app.pending_submit = true;
+    app.pending_submit = Some(app.input.snapshot());
     app.pending_paste_text = "blocked".to_owned();
     app.pending_paste_session = Some(PasteSessionState {
         id: 1,
@@ -54,7 +55,6 @@ fn busy_view_test_app() -> App {
     app.claim_focus_target(FocusTarget::TodoList);
     app.pending_permission_ids.push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
-    app.input.set_text("draft");
     app
 }
 
@@ -74,7 +74,7 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     assert!(app.pending_paste_text.is_empty());
     assert!(app.pending_paste_session.is_none());
     assert!(app.active_paste_session.is_none());
-    assert!(!app.pending_submit);
+    assert!(app.pending_submit.is_none());
 }
 
 #[test]
@@ -100,6 +100,6 @@ fn set_active_view_same_view_is_noop() {
     assert!(app.selection.is_some());
     assert!(app.mention.is_some());
     assert!(!app.pending_paste_text.is_empty());
-    assert!(app.pending_submit);
+    assert!(app.pending_submit.is_some());
     assert!(!app.needs_redraw);
 }
