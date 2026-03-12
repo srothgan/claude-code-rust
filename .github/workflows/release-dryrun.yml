@@ -1,0 +1,38 @@
+name: Release Dry Run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+
+jobs:
+  dry-run-publish:
+    name: Validate npm publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get crate version
+        id: get_version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install agent-sdk dependencies
+        run: pnpm -C agent-sdk install
+
+      - name: Sync package version from Cargo.toml
+        run: pnpm version "${{ steps.get_version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Dry-run publish
+        run: pnpm publish --dry-run --access public --no-git-checks
