@@ -71,13 +71,19 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) {
             super::keys::dispatch_key_by_focus(app, key);
         }
         ActiveView::Config => super::config::handle_key(app, key),
+        ActiveView::Trusted => super::trust::handle_key(app, key),
     }
 }
 
 fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
-    if app.active_view == ActiveView::Chat {
-        app.active_paste_session = None;
-        mouse::handle_mouse_event(app, mouse);
+    match app.active_view {
+        ActiveView::Chat => {
+            app.active_paste_session = None;
+            mouse::handle_mouse_event(app, mouse);
+        }
+        ActiveView::Config | ActiveView::Trusted => {
+            let _ = mouse;
+        }
     }
 }
 
@@ -2876,6 +2882,69 @@ mod tests {
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Config;
+        app.viewport.scroll_target = 4;
+        app.selection = Some(SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert_eq!(app.viewport.scroll_target, 4);
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn trusted_view_accept_key_does_not_edit_chat_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
+
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Trusted;
+        app.input.set_text("seed");
+        app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+        app.config.preferences_path = Some(path);
+        app.trust.status = crate::app::trust::TrustStatus::Untrusted;
+        app.trust.project_key =
+            crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.input.text(), "seed");
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.startup_connection_requested);
+    }
+
+    #[test]
+    fn trusted_view_ignores_paste_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Trusted;
+
+        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn trusted_view_ignores_mouse_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::Trusted;
         app.viewport.scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,

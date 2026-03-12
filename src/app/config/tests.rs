@@ -125,6 +125,20 @@ fn handle_key_moves_between_config_rows() {
 }
 
 #[test]
+fn open_rejects_untrusted_projects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = App::test_default();
+    app.settings_home_override = Some(dir.path().to_path_buf());
+    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.trust.status = crate::app::trust::TrustStatus::Untrusted;
+
+    let err = open(&mut app).expect_err("open should be blocked");
+
+    assert!(err.contains("Project trust"));
+    assert_eq!(app.active_view, ActiveView::Chat);
+}
+
+#[test]
 fn tab_navigation_wraps_and_clears_status_message() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.status_message = Some("saved".to_owned());

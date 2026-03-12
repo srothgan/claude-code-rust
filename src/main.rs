@@ -57,8 +57,8 @@ fn run() -> anyhow::Result<()> {
         // Phase 1: create app in Connecting state (instant, no I/O)
         let mut app = claude_code_rust::app::create_app(&cli);
 
-        // Phase 2: start background connection + TUI in parallel
-        claude_code_rust::app::start_connection(&app, &cli);
+        // Phase 2: start non-session startup work + TUI.
+        // The bridge itself is started from the TUI loop only after trust is accepted.
         claude_code_rust::app::start_update_check(&app, &cli);
         claude_code_rust::app::start_service_status_check(&app);
         let result = claude_code_rust::app::run_tui(&mut app).await;

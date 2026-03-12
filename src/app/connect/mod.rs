@@ -31,6 +31,7 @@ use super::dialog::DialogState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
 };
+use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::Cli;
@@ -92,6 +93,7 @@ pub fn create_app(cli: &Cli) -> App {
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
+        trust: trust::TrustState::default(),
         settings_home_override: None,
         messages: vec![super::ChatMessage::welcome_with_recent(
             &initial_model_name,
@@ -184,6 +186,11 @@ pub fn create_app(cli: &Cli) -> App {
         cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
+        startup_connection_requested: false,
+        connection_started: false,
+        startup_bridge_script: cli.bridge_script.clone(),
+        startup_resume_id: cli.resume.clone(),
+        startup_resume_requested: cli.resume.is_some(),
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -191,18 +198,24 @@ pub fn create_app(cli: &Cli) -> App {
         app.config.last_error = Some(err);
     }
 
+    trust::initialize(&mut app);
     app.refresh_git_branch();
     app
 }
 
 /// Spawn the background bridge task.
-pub fn start_connection(app: &App, cli: &Cli) {
+pub fn start_connection(app: &mut App) {
+    if !app.startup_connection_requested || app.connection_started {
+        return;
+    }
+
+    app.connection_started = true;
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
         cwd_raw: app.cwd_raw.clone(),
-        bridge_script: cli.bridge_script.clone(),
-        resume_id: cli.resume.clone(),
-        resume_requested: cli.resume.is_some(),
+        bridge_script: app.startup_bridge_script.clone(),
+        resume_id: app.startup_resume_id.clone(),
+        resume_requested: app.startup_resume_requested,
         session_launch_settings: session_start::session_launch_settings_for_reason(
             app,
             session_start::SessionStartReason::Startup,

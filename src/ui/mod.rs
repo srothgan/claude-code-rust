@@ -30,6 +30,7 @@ mod tables;
 pub mod theme;
 mod todo;
 mod tool_call;
+mod trusted;
 
 pub use message::{SpinnerState, measure_message_height_cached};
 
@@ -41,5 +42,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
         ActiveView::Config => config::render(frame, app),
+        ActiveView::Trusted => trusted::render(frame, app),
     }
 }

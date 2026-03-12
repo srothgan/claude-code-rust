@@ -62,9 +62,9 @@ fn busy_view_test_app() -> App {
 fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     let mut app = busy_view_test_app();
 
-    set_active_view(&mut app, ActiveView::Config);
+    set_active_view(&mut app, ActiveView::Trusted);
 
-    assert_eq!(app.active_view, ActiveView::Config);
+    assert_eq!(app.active_view, ActiveView::Trusted);
     assert_eq!(app.input.text(), "draft");
     assert!(app.selection.is_none());
     assert!(app.scrollbar_drag.is_none());
@@ -75,6 +75,18 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     assert!(app.pending_paste_session.is_none());
     assert!(app.active_paste_session.is_none());
     assert!(!app.pending_submit);
+}
+
+#[test]
+fn set_active_view_switches_to_config_from_trusted() {
+    let mut app = busy_view_test_app();
+    app.active_view = ActiveView::Trusted;
+
+    set_active_view(&mut app, ActiveView::Config);
+
+    assert_eq!(app.active_view, ActiveView::Config);
+    assert!(app.selection.is_none());
+    assert!(app.pending_paste_text.is_empty());
 }
 
 #[test]

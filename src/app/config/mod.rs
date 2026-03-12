@@ -970,6 +970,10 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
 }
 
 pub fn open(app: &mut App) -> Result<(), String> {
+    if !app.is_project_trusted() {
+        return Err("Project trust must be accepted before opening settings".to_owned());
+    }
+
     let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);

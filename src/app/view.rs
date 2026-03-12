@@ -21,6 +21,7 @@ use std::time::Instant;
 pub enum ActiveView {
     Chat,
     Config,
+    Trusted,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {

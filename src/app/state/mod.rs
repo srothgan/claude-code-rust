@@ -56,12 +56,14 @@ use super::input::{InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::slash;
 use super::subagent;
+use super::trust::TrustState;
 use super::view::ActiveView;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
     pub config: ConfigState,
+    pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub messages: Vec<ChatMessage>,
     /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
@@ -239,6 +241,11 @@ pub struct App {
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
+    pub startup_connection_requested: bool,
+    pub connection_started: bool,
+    pub startup_bridge_script: Option<PathBuf>,
+    pub startup_resume_id: Option<String>,
+    pub startup_resume_requested: bool,
 }
 
 impl App {
@@ -287,6 +294,11 @@ impl App {
             Some(current) => current * 0.9 + fps * 0.1,
             None => fps,
         });
+    }
+
+    #[must_use]
+    pub fn is_project_trusted(&self) -> bool {
+        self.trust.is_trusted()
     }
 
     #[must_use]
@@ -514,6 +526,7 @@ impl App {
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
+            trust: TrustState::default(),
             settings_home_override: None,
             messages: Vec::new(),
             viewport: ChatViewport::new(),
@@ -599,6 +612,11 @@ impl App {
             cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
+            startup_connection_requested: false,
+            connection_started: false,
+            startup_bridge_script: None,
+            startup_resume_id: None,
+            startup_resume_requested: false,
         }
     }
 

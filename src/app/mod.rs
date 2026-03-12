@@ -35,6 +35,7 @@ mod state;
 pub(crate) mod subagent;
 mod terminal;
 mod todos;
+mod trust;
 mod update_check;
 mod view;
 
@@ -60,6 +61,7 @@ pub use state::{
     TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
     ToolCallScope, WelcomeBlock, is_execute_tool_name,
 };
+pub use trust::TrustSelection;
 pub use update_check::start_update_check;
 pub use view::ActiveView;
 
@@ -124,6 +126,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut last_render = Instant::now();
 
     loop {
+        start_connection(app);
+
         // Phase 1: wait for at least one event or the next frame tick
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
