@@ -123,7 +123,11 @@ mod tests {
     #[test]
     fn initialize_routes_untrusted_projects_to_trusted_view() {
         let mut app = App::test_default();
-        app.cwd_raw = r"C:\work\project".to_owned();
+        app.cwd_raw = if cfg!(windows) {
+            r"C:\work\project".to_owned()
+        } else {
+            "/home/user/work/project".to_owned()
+        };
         app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
         app.config.committed_preferences_document = json!({
             "projects": {}
@@ -139,16 +143,17 @@ mod tests {
 
     #[test]
     fn initialize_allows_trusted_projects_into_chat() {
+        let project_path =
+            if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
+
         let mut app = App::test_default();
-        app.cwd_raw = r"C:\work\project".to_owned();
+        app.cwd_raw = project_path.to_owned();
         app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
-        app.config.committed_preferences_document = json!({
-            "projects": {
-                "C:/work/project": {
-                    "hasTrustDialogAccepted": true
-                }
-            }
+        let mut prefs = json!({ "projects": {} });
+        prefs["projects"][project_path] = json!({
+            "hasTrustDialogAccepted": true
         });
+        app.config.committed_preferences_document = prefs;
 
         initialize(&mut app);
 

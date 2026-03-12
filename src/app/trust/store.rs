@@ -219,6 +219,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(windows)]
     #[test]
     fn read_status_accepts_equivalent_backslash_entry() {
         let document = json!({
@@ -238,6 +239,24 @@ mod tests {
         assert_eq!(lookup.project_key, "C:/Users/Simon Peter Rothgang/Desktop/claude_rust");
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn read_status_accepts_equivalent_normalized_entry() {
+        let document = json!({
+            "projects": {
+                "/home/user/work/project/": {
+                    "hasTrustDialogAccepted": true
+                }
+            }
+        });
+
+        let lookup = read_status(&document, Path::new("/home/user/work/project"));
+
+        assert!(lookup.trusted);
+        assert_eq!(lookup.project_key, "/home/user/work/project");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn read_status_treats_any_equivalent_true_entry_as_trusted() {
         let document = json!({
@@ -257,33 +276,51 @@ mod tests {
         assert!(lookup.trusted);
     }
 
+    #[cfg(not(windows))]
     #[test]
-    fn set_trusted_preserves_unknown_project_fields() {
-        let mut document = json!({
+    fn read_status_treats_any_equivalent_true_entry_as_trusted() {
+        let document = json!({
             "projects": {
-                "C:/work/project": {
-                    "allowedTools": [],
+                "/home/user/work/project": {
                     "hasTrustDialogAccepted": false
+                },
+                "/home/user/work/project/": {
+                    "hasTrustDialogAccepted": true
                 }
-            },
-            "theme": "dark"
+            }
         });
 
-        let project_key = set_trusted(&mut document, Path::new("C:/work/project"));
+        let lookup = read_status(&document, Path::new("/home/user/work/project"));
 
-        assert_eq!(
-            document,
-            json!({
-                "projects": {
-                    "C:/work/project": {
-                        "allowedTools": [],
-                        "hasTrustDialogAccepted": true
-                    }
-                },
-                "theme": "dark"
-            })
-        );
-        assert_eq!(project_key, "C:/work/project");
+        assert!(lookup.trusted);
+    }
+
+    #[test]
+    fn set_trusted_preserves_unknown_project_fields() {
+        let project_path =
+            if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
+
+        let mut document = serde_json::json!({
+            "projects": {},
+            "theme": "dark"
+        });
+        document["projects"][project_path] = json!({
+            "allowedTools": [],
+            "hasTrustDialogAccepted": false
+        });
+
+        let project_key = set_trusted(&mut document, Path::new(project_path));
+
+        let mut expected = json!({
+            "projects": {},
+            "theme": "dark"
+        });
+        expected["projects"][project_path] = json!({
+            "allowedTools": [],
+            "hasTrustDialogAccepted": true
+        });
+        assert_eq!(document, expected);
+        assert_eq!(project_key, project_path);
     }
 
     #[test]
