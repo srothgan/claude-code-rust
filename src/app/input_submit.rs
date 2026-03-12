@@ -160,6 +160,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 mod tests {
     use super::*;
     use crate::agent::wire::BridgeCommand;
+    use crate::app::ActiveView;
 
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
@@ -270,6 +271,37 @@ mod tests {
             prompt.command,
             BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
         ));
+    }
+
+    #[test]
+    fn auto_submit_opens_config_only_after_cancel_finishes() {
+        let (mut app, mut rx) = app_with_connection();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.status = AppStatus::Running;
+        app.input.set_text("/config");
+
+        submit_input(&mut app);
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.input.text(), "/config");
+        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.pending_auto_submit_after_cancel);
+        let cancel = rx.try_recv().expect("cancel command should be sent");
+        assert!(matches!(
+            cancel.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
+        ));
+
+        app.status = AppStatus::Ready;
+        app.pending_cancel_origin = None;
+        maybe_auto_submit_after_cancel(&mut app);
+
+        assert!(!app.pending_auto_submit_after_cancel);
+        assert_eq!(app.active_view, ActiveView::Config);
+        assert!(app.input.text().is_empty());
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
     }
 
     #[test]

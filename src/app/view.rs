@@ -49,3 +49,6 @@ fn clear_transient_view_state(app: &mut App) {
     app.release_focus_target(crate::app::FocusTarget::Mention);
     app.paste_burst.on_non_char_key(Instant::now());
 }
+
+#[cfg(test)]
+mod tests;
