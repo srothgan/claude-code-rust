@@ -18,7 +18,7 @@ use crate::agent::client::AgentConnection;
 use crate::agent::model::EffortLevel;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::app::App;
-use crate::app::settings::{model_supports_effort, store};
+use crate::app::settings::{language_input_validation_message, model_supports_effort, store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionStartReason {
@@ -43,8 +43,15 @@ pub(crate) fn session_launch_settings_for_reason(
                 store::always_thinking_enabled(&app.settings.committed_settings_document)
                     .unwrap_or(false);
             let model = store::model(&app.settings.committed_settings_document).ok().flatten();
+            let language = store::language(&app.settings.committed_settings_document)
+                .ok()
+                .flatten()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .filter(|value| language_input_validation_message(value).is_none());
             SessionLaunchSettings {
                 model: model.clone(),
+                language,
                 permission_mode: Some(
                     store::default_permission_mode(&app.settings.committed_settings_document)
                         .unwrap_or_default()
@@ -102,6 +109,7 @@ mod tests {
             &mut app.settings.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
+        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
         store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
         store::set_thinking_effort_level(
             &mut app.settings.committed_settings_document,
@@ -111,9 +119,20 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
+        assert_eq!(launch_settings.language.as_deref(), Some("German"));
         assert_eq!(launch_settings.permission_mode.as_deref(), Some("plan"));
         assert_eq!(launch_settings.thinking_mode.as_deref(), Some("adaptive"));
         assert_eq!(launch_settings.effort_level, Some(EffortLevel::High));
+    }
+
+    #[test]
+    fn persisted_launch_settings_trim_language_value() {
+        let mut app = App::test_default();
+        app.settings.committed_settings_document = serde_json::json!({ "language": "  German  " });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_eq!(launch_settings.language.as_deref(), Some("German"));
     }
 
     #[test]
@@ -124,6 +143,7 @@ mod tests {
             session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
 
         assert_eq!(launch_settings.model, None);
+        assert_eq!(launch_settings.language, None);
         assert_eq!(launch_settings.permission_mode.as_deref(), Some("default"));
         assert_eq!(launch_settings.thinking_mode.as_deref(), Some("disabled"));
         assert_eq!(launch_settings.effort_level, None);
@@ -144,8 +164,29 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
+        assert_eq!(launch_settings.language, None);
         assert_eq!(launch_settings.thinking_mode.as_deref(), Some("adaptive"));
         assert_eq!(launch_settings.effort_level, None);
+    }
+
+    #[test]
+    fn persisted_launch_settings_omit_invalid_language_value() {
+        let mut app = App::test_default();
+        app.settings.committed_settings_document = serde_json::json!({ "language": "E" });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_eq!(launch_settings.language, None);
+    }
+
+    #[test]
+    fn persisted_launch_settings_omit_whitespace_only_language_value() {
+        let mut app = App::test_default();
+        app.settings.committed_settings_document = serde_json::json!({ "language": "   " });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_eq!(launch_settings.language, None);
     }
 
     #[test]

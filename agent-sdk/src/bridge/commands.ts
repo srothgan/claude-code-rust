@@ -76,11 +76,13 @@ function optionalLaunchSettings(
   }
   const parsed = asRecord(value, `${context}.${key}`);
   const model = optionalString(parsed, "model", `${context}.${key}`);
+  const language = optionalString(parsed, "language", `${context}.${key}`);
   const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
   const thinkingMode = optionalThinkingMode(parsed, "thinking_mode", `${context}.${key}`);
   const effortLevel = optionalEffortLevel(parsed, "effort_level", `${context}.${key}`);
   return {
     ...(model ? { model } : {}),
+    ...(language ? { language } : {}),
     ...(permissionMode ? { permission_mode: permissionMode } : {}),
     ...(thinkingMode ? { thinking_mode: thinkingMode } : {}),
     ...(effortLevel ? { effort_level: effortLevel } : {}),

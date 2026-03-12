@@ -48,6 +48,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
       session_id: "session-123",
       launch_settings: {
         model: "haiku",
+        language: "German",
         permission_mode: "plan",
         thinking_mode: "adaptive",
         effort_level: "high",
@@ -61,6 +62,7 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
   }
   assert.equal(parsed.command.session_id, "session-123");
   assert.equal(parsed.command.launch_settings.model, "haiku");
+  assert.equal(parsed.command.launch_settings.language, "German");
   assert.equal(parsed.command.launch_settings.permission_mode, "plan");
   assert.equal(parsed.command.launch_settings.thinking_mode, "adaptive");
   assert.equal(parsed.command.launch_settings.effort_level, "high");
@@ -72,6 +74,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     cwd: "C:/work",
     launchSettings: {
       model: "haiku",
+      language: "German",
       permission_mode: "plan",
       thinking_mode: "adaptive",
       effort_level: "medium",
@@ -85,6 +88,13 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   });
 
   assert.equal(options.model, "haiku");
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append:
+      "Always respond to the user in German unless the user explicitly asks for a different language. " +
+      "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
+  });
   assert.equal(options.permissionMode, "plan");
   assert.deepEqual(options.thinking, { type: "adaptive" });
   assert.equal(options.effort, "medium");
@@ -127,6 +137,31 @@ test("buildQueryOptions omits startup overrides for default logout path", () => 
 
   assert.equal("model" in options, false);
   assert.equal("permissionMode" in options, false);
+  assert.equal("systemPrompt" in options, false);
+});
+
+test("buildQueryOptions trims language before appending system prompt", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      language: "  German  ",
+    },
+    provisionalSessionId: "session-4",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-4",
+  });
+
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append:
+      "Always respond to the user in German unless the user explicitly asks for a different language. " +
+      "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
+  });
 });
 
 test("parseCommandEnvelope rejects missing required fields", () => {

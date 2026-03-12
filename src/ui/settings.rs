@@ -17,7 +17,8 @@
 mod overlay;
 
 use crate::app::settings::{
-    OutputStyle, OverlayFocus, config_settings, model_overlay_options, resolved_setting,
+    LanguageOverlayState, OutputStyle, OverlayFocus, config_settings,
+    language_input_validation_message, model_overlay_options, resolved_setting,
     setting_detail_options, setting_display_value, setting_invalid_hint,
     supported_effort_levels_for_model,
 };
@@ -73,6 +74,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_model_and_effort_overlay(frame, frame_area, app);
     } else if app.settings.output_style_overlay().is_some() {
         render_output_style_overlay(frame, frame_area, app);
+    } else if app.settings.language_overlay().is_some() {
+        render_language_overlay(frame, frame_area, app);
     }
 
     let message = app.settings.last_error.clone().unwrap_or_default();
@@ -90,6 +93,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let help = if app.settings.model_and_effort_overlay().is_some()
         || app.settings.output_style_overlay().is_some()
+        || app.settings.language_overlay().is_some()
     {
         ""
     } else {
@@ -433,6 +437,89 @@ fn render_output_style_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.settings.language_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 8,
+            width_percent: 72,
+            height_percent: 48,
+            preferred_height: 10,
+            fullscreen_below: Some((56, 14)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Language",
+            subtitle: Some("Free-text prompt language for Claude sessions"),
+            help: Some("Enter confirm | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(language_overlay_input_line(overlay)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::RUST_ORANGE)),
+        ),
+        sections[0],
+    );
+
+    let validation = language_input_validation_message(&overlay.draft);
+    let (message, style) = match validation {
+        Some(message) => (message, Style::default().fg(theme::STATUS_ERROR)),
+        None => (
+            "Examples: en, Greek, Japanese, Klingon, Pirate. Stored as prompt guidance, not UI language.",
+            Style::default().fg(theme::DIM),
+        ),
+    };
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(message, style))), sections[1]);
+}
+
+fn language_overlay_input_line(overlay: &LanguageOverlayState) -> Line<'static> {
+    const PLACEHOLDER: &str = "e.g. en, Greek, Japanese, Pirate";
+    let cursor_style =
+        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(Color::White);
+    let placeholder_style = Style::default().fg(theme::DIM);
+
+    if overlay.draft.is_empty() {
+        return Line::from(vec![
+            Span::styled(" ".to_owned(), cursor_style),
+            Span::styled(PLACEHOLDER.to_owned(), placeholder_style),
+        ]);
+    }
+
+    let cursor = overlay.cursor.min(overlay.draft.chars().count());
+    let chars = overlay.draft.chars().collect::<Vec<_>>();
+    let prefix = chars[..cursor].iter().collect::<String>();
+    let mut spans = Vec::new();
+
+    if !prefix.is_empty() {
+        spans.push(Span::styled(prefix, text_style));
+    }
+
+    if cursor < chars.len() {
+        spans.push(Span::styled(chars[cursor].to_string(), cursor_style));
+        let suffix = chars[cursor + 1..].iter().collect::<String>();
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, text_style));
+        }
+    } else {
+        spans.push(Span::styled(" ".to_owned(), cursor_style));
+    }
+
+    Line::from(spans)
+}
+
 fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
     let Some(overlay) = app.settings.output_style_overlay() else {
         return Vec::new();
@@ -745,8 +832,8 @@ mod tests {
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
     use crate::app::settings::{
-        ModelAndEffortOverlayState, OutputStyle, OutputStyleOverlayState, OverlayFocus, SettingId,
-        SettingsOverlayState, config_settings,
+        LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle, OutputStyleOverlayState,
+        OverlayFocus, SettingId, SettingsOverlayState, config_settings,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -832,6 +919,48 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("1. Default")));
         assert!(rendered.iter().any(|line| line.contains("2. Explanatory")));
         assert!(rendered.iter().any(|line| line.contains("3. Learning")));
+    }
+
+    #[test]
+    fn language_overlay_input_uses_placeholder_when_empty() {
+        let line = super::language_overlay_input_line(&LanguageOverlayState {
+            draft: String::new(),
+            cursor: 0,
+        })
+        .to_string();
+
+        assert!(line.contains("e.g. en, Greek, Japanese, Pirate"));
+    }
+
+    #[test]
+    fn language_overlay_renders_inline_validation_message() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Settings;
+        app.settings.overlay = Some(SettingsOverlayState::Language(LanguageOverlayState {
+            draft: "E".to_owned(),
+            cursor: 1,
+        }));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Language must be at least 2 characters."));
     }
 
     #[test]

@@ -114,7 +114,7 @@ pub fn read_persisted_setting(
             Value::Bool(flag) => Ok(PersistedSettingValue::Bool(*flag)),
             _ => Err(()),
         },
-        SettingKind::Enum | SettingKind::DynamicEnum => match value {
+        SettingKind::Enum | SettingKind::DynamicEnum | SettingKind::Text => match value {
             Value::String(text) => Ok(PersistedSettingValue::String(text.clone())),
             _ => Err(()),
         },
@@ -280,6 +280,24 @@ pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermission
         config_setting(SettingId::DefaultPermissionMode),
         PersistedSettingValue::String(mode.as_stored().to_owned()),
     );
+}
+
+pub fn language(document: &Value) -> Result<Option<String>, ()> {
+    match read_persisted_setting(document, config_setting(SettingId::Language))? {
+        PersistedSettingValue::Missing => Ok(None),
+        PersistedSettingValue::Bool(_) => Err(()),
+        PersistedSettingValue::String(value) => Ok(Some(value)),
+    }
+}
+
+pub fn set_language(document: &mut Value, value: Option<&str>) {
+    let persisted = value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map_or(PersistedSettingValue::Missing, |text| {
+            PersistedSettingValue::String(text.to_owned())
+        });
+    write_persisted_setting(document, config_setting(SettingId::Language), persisted);
 }
 
 pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
@@ -558,6 +576,13 @@ mod tests {
     }
 
     #[test]
+    fn language_defaults_to_none() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(language(&document), Ok(None));
+    }
+
+    #[test]
     fn preferred_notification_channel_defaults_to_iterm2() {
         let document = Value::Object(Map::new());
 
@@ -598,6 +623,15 @@ mod tests {
         });
 
         assert_eq!(model(&document), Err(()));
+    }
+
+    #[test]
+    fn language_rejects_invalid_stored_value() {
+        let document = serde_json::json!({
+            "language": true
+        });
+
+        assert_eq!(language(&document), Err(()));
     }
 
     #[test]
@@ -650,6 +684,35 @@ mod tests {
 
         assert!(raw.contains("\"model\": \"sonnet\""));
         assert!(raw.contains("\"keep\": true"));
+    }
+
+    #[test]
+    fn save_preserves_unknown_keys_and_updates_language() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let mut document = serde_json::json!({
+            "language": "English",
+            "unknown": {
+                "keep": true
+            }
+        });
+        set_language(&mut document, Some("German"));
+
+        save(&path, &document).expect("save");
+        let raw = std::fs::read_to_string(path).expect("read");
+
+        assert!(raw.contains("\"language\": \"German\""));
+        assert!(raw.contains("\"keep\": true"));
+    }
+
+    #[test]
+    fn set_language_trims_and_removes_whitespace_only_values() {
+        let mut document = Value::Object(Map::new());
+        set_language(&mut document, Some("  German  "));
+        assert_eq!(language(&document), Ok(Some("German".to_owned())));
+
+        set_language(&mut document, Some("   "));
+        assert_eq!(language(&document), Ok(None));
     }
 
     #[test]

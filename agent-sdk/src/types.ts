@@ -164,6 +164,7 @@ export type SessionEffortLevel = EffortLevel;
 
 export interface SessionLaunchSettings {
   model?: string;
+  language?: string;
   permission_mode?: string;
   thinking_mode?: SessionThinkingMode;
   effort_level?: SessionEffortLevel;

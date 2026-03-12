@@ -359,18 +359,43 @@ function effortFromLaunchSettings(
   return launchSettings.effort_level;
 }
 
+function systemPromptFromLaunchSettings(
+  launchSettings: SessionLaunchSettings,
+):
+  | {
+      type: "preset";
+      preset: "claude_code";
+      append: string;
+    }
+  | undefined {
+  const language = launchSettings.language?.trim();
+  if (!language) {
+    return undefined;
+  }
+
+  return {
+    type: "preset",
+    preset: "claude_code",
+    append:
+      `Always respond to the user in ${language} unless the user explicitly asks for a different language. ` +
+      `Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.`,
+  };
+}
+
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const permissionMode = permissionModeFromLaunchSettings(
     params.launchSettings.permission_mode,
   );
   const thinking = thinkingConfigFromLaunchSettings(params.launchSettings);
   const effort = effortFromLaunchSettings(params.launchSettings);
+  const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(params.launchSettings.model ? { model: params.launchSettings.model } : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     ...(thinking ? { thinking } : {}),
     ...(effort ? { effort } : {}),

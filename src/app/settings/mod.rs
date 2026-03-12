@@ -70,6 +70,7 @@ pub enum SettingId {
     DefaultPermissionMode,
     EditorMode,
     FastMode,
+    Language,
     Notifications,
     OutputStyle,
     ReduceMotion,
@@ -85,6 +86,7 @@ pub enum SettingKind {
     Bool,
     Enum,
     DynamicEnum,
+    Text,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +122,7 @@ pub enum FallbackPolicy {
     AppDefault,
     English,
     RuntimeDefault,
+    Unset,
 }
 
 impl FallbackPolicy {
@@ -130,6 +133,7 @@ impl FallbackPolicy {
             Self::AppDefault => "default",
             Self::English => "English",
             Self::RuntimeDefault => "runtime default",
+            Self::Unset => "unset",
         }
     }
 }
@@ -352,6 +356,8 @@ const DEFAULT_MODEL_ID: &str = "default";
 const DEFAULT_MODEL_LABEL: &str = "Default";
 const DEFAULT_EFFORT_LEVELS: [EffortLevel; 3] =
     [EffortLevel::Low, EffortLevel::Medium, EffortLevel::High];
+const LANGUAGE_MIN_CHARS: usize = 2;
+const LANGUAGE_MAX_CHARS: usize = 30;
 
 const EFFORT_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "low", label: "Low" },
@@ -359,7 +365,7 @@ const EFFORT_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "high", label: "High" },
 ];
 
-const CONFIG_SETTINGS: [SettingSpec; 13] = [
+const CONFIG_SETTINGS: [SettingSpec; 14] = [
     SettingSpec {
         id: SettingId::AlwaysThinking,
         entry_id: "A04",
@@ -406,7 +412,7 @@ const CONFIG_SETTINGS: [SettingSpec; 13] = [
         id: SettingId::EditorMode,
         entry_id: "A17",
         label: "Editor mode",
-        description: "Controls how text editing keys behave.",
+        description: "Controls how text editing keys behave in the TUI.",
         file: SettingFile::PreferencesJson,
         json_path: &["editorMode"],
         kind: SettingKind::Enum,
@@ -431,10 +437,24 @@ const CONFIG_SETTINGS: [SettingSpec; 13] = [
         supported: false,
     },
     SettingSpec {
+        id: SettingId::Language,
+        entry_id: "A16",
+        label: "Language",
+        description: "Controls the free-text language instruction Claude uses in sessions. Accepts 2 to 30 characters and does not localize the UI.",
+        file: SettingFile::SettingsJson,
+        json_path: &["language"],
+        kind: SettingKind::Text,
+        editor: EditorKind::Overlay,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::None,
+        fallback: FallbackPolicy::Unset,
+        supported: true,
+    },
+    SettingSpec {
         id: SettingId::Notifications,
         entry_id: "A14",
         label: "Notifications",
-        description: "Controls how the app notifies you when attention is needed.",
+        description: "Controls how Claude Code notifies you when attention is needed.",
         file: SettingFile::PreferencesJson,
         json_path: &["preferredNotifChannel"],
         kind: SettingKind::Enum,
@@ -448,7 +468,7 @@ const CONFIG_SETTINGS: [SettingSpec; 13] = [
         id: SettingId::OutputStyle,
         entry_id: "A15",
         label: "Output style",
-        description: "Changes how Claude Code communicates with you for this project.",
+        description: "Changes how Claude communicates with you in sessions.",
         file: SettingFile::LocalSettingsJson,
         json_path: &["outputStyle"],
         kind: SettingKind::Enum,
@@ -490,7 +510,7 @@ const CONFIG_SETTINGS: [SettingSpec; 13] = [
         id: SettingId::ShowTips,
         entry_id: "A02",
         label: "Show Tips",
-        description: "Controls whether Claude should show spinner tips in supported clients for this project.",
+        description: "Controls whether Claude shows spinner tips in supported clients.",
         file: SettingFile::LocalSettingsJson,
         json_path: &["spinnerTipsEnabled"],
         kind: SettingKind::Bool,
@@ -518,7 +538,7 @@ const CONFIG_SETTINGS: [SettingSpec; 13] = [
         id: SettingId::Theme,
         entry_id: "A13",
         label: "Theme",
-        description: "Controls the app color theme.",
+        description: "Controls the TUI color theme.",
         file: SettingFile::PreferencesJson,
         json_path: &["theme"],
         kind: SettingKind::Enum,
@@ -568,6 +588,7 @@ pub enum ResolvedChoice {
 pub enum ResolvedSettingValue {
     Bool(bool),
     Choice(ResolvedChoice),
+    Text(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,9 +616,16 @@ pub struct OutputStyleOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanguageOverlayState {
+    pub draft: String,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
+    Language(LanguageOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -642,7 +670,7 @@ impl SettingsState {
             .value
         {
             ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) => false,
+            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
         }
     }
 
@@ -656,7 +684,7 @@ impl SettingsState {
         .value
         {
             ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) => false,
+            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
         }
     }
 
@@ -669,7 +697,7 @@ impl SettingsState {
                 Some(DEFAULT_MODEL_ID.to_owned())
             }
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
-            _ => None,
+            ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,
         }
     }
 
@@ -691,7 +719,9 @@ impl SettingsState {
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
                 DefaultPermissionMode::from_stored(&value).unwrap_or_default()
             }
-            _ => DefaultPermissionMode::Default,
+            ResolvedSettingValue::Bool(_)
+            | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
+            | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
         }
     }
 
@@ -725,14 +755,16 @@ impl SettingsState {
     pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
         match &self.overlay {
             Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::OutputStyle(_)) | None => None,
+            Some(SettingsOverlayState::OutputStyle(_) | SettingsOverlayState::Language(_))
+            | None => None,
         }
     }
 
     pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
         match &mut self.overlay {
             Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::OutputStyle(_)) | None => None,
+            Some(SettingsOverlayState::OutputStyle(_) | SettingsOverlayState::Language(_))
+            | None => None,
         }
     }
 
@@ -740,14 +772,37 @@ impl SettingsState {
     pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
         match &self.overlay {
             Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::ModelAndEffort(_)) | None => None,
+            Some(SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::Language(_))
+            | None => None,
         }
     }
 
     pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
         match &mut self.overlay {
             Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::ModelAndEffort(_)) | None => None,
+            Some(SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::Language(_))
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
+        match &self.overlay {
+            Some(SettingsOverlayState::Language(overlay)) => Some(overlay),
+            Some(
+                SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::OutputStyle(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn language_overlay_mut(&mut self) -> Option<&mut LanguageOverlayState> {
+        match &mut self.overlay {
+            Some(SettingsOverlayState::Language(overlay)) => Some(overlay),
+            Some(
+                SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::OutputStyle(_),
+            )
+            | None => None,
         }
     }
 
@@ -828,6 +883,13 @@ pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedS
                 "Off".to_owned()
             }
         }
+        (ResolvedSettingValue::Text(value), _) => {
+            if value.is_empty() {
+                "Not set".to_owned()
+            } else {
+                value.clone()
+            }
+        }
         (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
             DEFAULT_MODEL_LABEL.to_owned()
         }
@@ -865,6 +927,7 @@ pub fn setting_invalid_hint(spec: &SettingSpec, validation: SettingValidation) -
 pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
     match spec.kind {
         SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
+        SettingKind::Text => Vec::new(),
         SettingKind::Enum | SettingKind::DynamicEnum => match spec.options {
             SettingOptions::None => Vec::new(),
             SettingOptions::Static(options) => {
@@ -1019,13 +1082,16 @@ fn activate_setting(app: &mut App, spec: &SettingSpec) {
                 ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
                     DefaultPermissionMode::from_stored(&value).unwrap_or_default()
                 }
-                _ => DefaultPermissionMode::Default,
+                ResolvedSettingValue::Bool(_)
+                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
+                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
             };
             let next = current.next();
             persist_setting_change(app, spec, |document| {
                 store::set_default_permission_mode(document, next);
             });
         }
+        SettingId::Language => open_language_overlay(app),
         SettingId::Model => open_model_and_effort_overlay(app, OverlayFocus::Model),
         SettingId::OutputStyle => open_output_style_overlay(app),
         SettingId::ThinkingEffort => {
@@ -1055,6 +1121,7 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent) {
             (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
             _ => {}
         },
+        Some(SettingsOverlayState::Language(_)) => handle_language_overlay_key(app, key),
         None => {}
     }
 }
@@ -1143,6 +1210,7 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
         | SettingId::TerminalProgressBar
         | SettingId::FastMode
         | SettingId::DefaultPermissionMode
+        | SettingId::Language
         | SettingId::RespectGitignore
         | SettingId::Model => "",
     }
@@ -1239,6 +1307,18 @@ fn open_output_style_overlay(app: &mut App) {
     app.settings.last_error = None;
 }
 
+fn open_language_overlay(app: &mut App) {
+    let draft = store::language(&app.settings.committed_settings_document)
+        .ok()
+        .flatten()
+        .and_then(|value| normalized_language_value(&value))
+        .unwrap_or_default();
+    let cursor = draft.chars().count();
+    app.settings.overlay =
+        Some(SettingsOverlayState::Language(LanguageOverlayState { draft, cursor }));
+    app.settings.last_error = None;
+}
+
 fn toggle_model_and_effort_focus(app: &mut App) {
     let Some(overlay) = app.settings.model_and_effort_overlay_mut() else {
         return;
@@ -1325,6 +1405,112 @@ fn confirm_output_style_overlay(app: &mut App) {
     }
 }
 
+fn handle_language_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_language_overlay(app),
+        (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
+        (KeyCode::Left, KeyModifiers::NONE) => move_language_cursor_left(app),
+        (KeyCode::Right, KeyModifiers::NONE) => move_language_cursor_right(app),
+        (KeyCode::Home, KeyModifiers::NONE) => set_language_cursor(app, 0),
+        (KeyCode::End, KeyModifiers::NONE) => move_language_cursor_to_end(app),
+        (KeyCode::Backspace, KeyModifiers::NONE) => delete_language_before_cursor(app),
+        (KeyCode::Delete, KeyModifiers::NONE) => delete_language_at_cursor(app),
+        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
+            insert_language_char(app, ch);
+        }
+        _ => {}
+    }
+}
+
+fn accepts_text_input(modifiers: KeyModifiers) -> bool {
+    modifiers.is_empty() || modifiers == KeyModifiers::SHIFT
+}
+
+fn confirm_language_overlay(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay().cloned() else {
+        return;
+    };
+    let normalized = normalized_language_value(&overlay.draft);
+    if normalized
+        .as_deref()
+        .is_some_and(|value| language_input_validation_message(value).is_some())
+    {
+        return;
+    }
+
+    let spec = config_setting(SettingId::Language);
+    if persist_setting_change(app, spec, |document| {
+        store::set_language(document, normalized.as_deref());
+    }) {
+        app.settings.overlay = None;
+    }
+}
+
+fn move_language_cursor_left(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = overlay.cursor.saturating_sub(1);
+}
+
+fn move_language_cursor_right(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = (overlay.cursor + 1).min(overlay.draft.chars().count());
+}
+
+fn move_language_cursor_to_end(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = overlay.draft.chars().count();
+}
+
+fn set_language_cursor(app: &mut App, cursor: usize) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = cursor.min(overlay.draft.chars().count());
+}
+
+fn insert_language_char(app: &mut App, ch: char) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
+    overlay.draft.insert(byte_index, ch);
+    overlay.cursor += 1;
+}
+
+fn delete_language_before_cursor(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    if overlay.cursor == 0 {
+        return;
+    }
+
+    let end = char_to_byte_index(&overlay.draft, overlay.cursor);
+    let start = char_to_byte_index(&overlay.draft, overlay.cursor - 1);
+    overlay.draft.replace_range(start..end, "");
+    overlay.cursor -= 1;
+}
+
+fn delete_language_at_cursor(app: &mut App) {
+    let Some(overlay) = app.settings.language_overlay_mut() else {
+        return;
+    };
+    let char_count = overlay.draft.chars().count();
+    if overlay.cursor >= char_count {
+        return;
+    }
+
+    let start = char_to_byte_index(&overlay.draft, overlay.cursor);
+    let end = char_to_byte_index(&overlay.draft, overlay.cursor + 1);
+    overlay.draft.replace_range(start..end, "");
+}
+
 fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
     let Some(path) = app.settings.path_for(SettingFile::SettingsJson).cloned() else {
         app.settings.last_error = Some("Settings paths are not available".to_owned());
@@ -1407,6 +1593,7 @@ fn resolve_setting_document(
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
+        SettingId::Language => resolve_language_setting(document, spec),
         SettingId::ShowTips | SettingId::RespectGitignore | SettingId::TerminalProgressBar => {
             resolve_bool_setting(document, spec, true)
         }
@@ -1459,6 +1646,32 @@ fn resolve_string_setting(
         Ok(store::PersistedSettingValue::String(_) | store::PersistedSettingValue::Bool(_))
         | Err(()) => ResolvedSetting {
             value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(fallback.to_owned())),
+            validation: SettingValidation::InvalidValue,
+        },
+    }
+}
+
+fn resolve_language_setting(document: &Value, spec: &SettingSpec) -> ResolvedSetting {
+    match store::read_persisted_setting(document, spec) {
+        Ok(store::PersistedSettingValue::String(value)) => normalized_language_value(&value)
+            .filter(|normalized| language_input_validation_message(normalized).is_none())
+            .map_or(
+                ResolvedSetting {
+                    value: ResolvedSettingValue::Text(String::new()),
+                    validation: SettingValidation::InvalidValue,
+                },
+                |normalized| ResolvedSetting {
+                    value: ResolvedSettingValue::Text(normalized),
+                    validation: SettingValidation::Valid,
+                },
+            ),
+        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
+            value: ResolvedSettingValue::Text(String::new()),
+            validation: SettingValidation::Valid,
+        },
+        Ok(store::PersistedSettingValue::String(_) | store::PersistedSettingValue::Bool(_))
+        | Err(()) => ResolvedSetting {
+            value: ResolvedSettingValue::Text(String::new()),
             validation: SettingValidation::InvalidValue,
         },
     }
@@ -1520,6 +1733,30 @@ fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+#[must_use]
+pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static str> {
+    let Some(value) = normalized_language_value(value) else {
+        return None;
+    };
+    let length = value.chars().count();
+    if length < LANGUAGE_MIN_CHARS {
+        Some("Language must be at least 2 characters.")
+    } else if length > LANGUAGE_MAX_CHARS {
+        Some("Language must be at most 30 characters.")
+    } else {
+        None
+    }
+}
+
+fn normalized_language_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn char_to_byte_index(text: &str, char_index: usize) -> usize {
+    text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
 }
 
 #[cfg(test)]
@@ -1871,6 +2108,61 @@ mod tests {
     }
 
     #[test]
+    fn language_resolves_existing_project_value() {
+        let mut app = App::test_default();
+        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+
+        assert_eq!(resolved.validation, SettingValidation::Valid);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            "German"
+        );
+    }
+
+    #[test]
+    fn language_missing_value_displays_not_set() {
+        let app = App::test_default();
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+
+        assert_eq!(resolved.validation, SettingValidation::Valid);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            "Not set"
+        );
+    }
+
+    #[test]
+    fn language_invalid_persisted_length_uses_not_set_with_invalid_state() {
+        let mut app = App::test_default();
+        app.settings.committed_settings_document = serde_json::json!({ "language": "E" });
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+
+        assert_eq!(resolved.validation, SettingValidation::InvalidValue);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            "Not set"
+        );
+    }
+
+    #[test]
+    fn language_whitespace_only_persisted_value_uses_not_set_with_invalid_state() {
+        let mut app = App::test_default();
+        app.settings.committed_settings_document = serde_json::json!({ "language": "   " });
+
+        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+
+        assert_eq!(resolved.validation, SettingValidation::InvalidValue);
+        assert_eq!(
+            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            "Not set"
+        );
+    }
+
+    #[test]
     fn space_opens_output_style_overlay() {
         let (_dir, mut app) = open_settings_test_app();
         select_setting(&mut app, SettingId::OutputStyle);
@@ -1881,6 +2173,21 @@ mod tests {
             app.settings.output_style_overlay().map(|overlay| overlay.selected),
             Some(OutputStyle::Default)
         );
+    }
+
+    #[test]
+    fn space_opens_language_overlay_with_existing_value() {
+        let (_dir, mut app) = open_settings_test_app();
+        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
+        select_setting(&mut app, SettingId::Language);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(
+            app.settings.language_overlay().map(|overlay| overlay.draft.as_str()),
+            Some("German")
+        );
+        assert_eq!(app.settings.language_overlay().map(|overlay| overlay.cursor), Some(6));
     }
 
     #[test]
@@ -1945,6 +2252,169 @@ mod tests {
         assert_eq!(
             store::output_style(&app.settings.committed_local_settings_document),
             Ok(OutputStyle::Default)
+        );
+    }
+
+    #[test]
+    fn language_overlay_confirm_persists_project_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        for ch in "German".chars() {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"language\": \"German\""));
+        assert_eq!(
+            store::language(&app.settings.committed_settings_document),
+            Ok(Some("German".to_owned()))
+        );
+        assert!(app.settings.overlay.is_none());
+    }
+
+    #[test]
+    fn language_overlay_confirm_trims_project_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        for ch in "German".chars() {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(raw.contains("\"language\": \"German\""));
+        assert_eq!(
+            store::language(&app.settings.committed_settings_document),
+            Ok(Some("German".to_owned()))
+        );
+        assert!(app.settings.overlay.is_none());
+    }
+
+    #[test]
+    fn language_overlay_empty_confirm_clears_existing_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+        std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        for _ in 0..6 {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let raw = std::fs::read_to_string(path).expect("read");
+        assert!(!raw.contains("\"language\""));
+        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+        assert!(app.settings.overlay.is_none());
+    }
+
+    #[test]
+    fn language_overlay_escape_cancels_without_persisting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!path.exists());
+        assert!(app.settings.overlay.is_none());
+        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+    }
+
+    #[test]
+    fn language_overlay_blocks_too_short_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.settings.language_overlay().is_some());
+        assert!(!path.exists());
+        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+    }
+
+    #[test]
+    fn language_overlay_blocks_too_long_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        for ch in "abcdefghijklmnopqrstuvwxyzabcde".chars() {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.settings.language_overlay().is_some());
+        assert!(!path.exists());
+        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+    }
+
+    #[test]
+    fn language_overlay_supports_cursor_aware_editing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+        std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
+
+        open(&mut app).expect("open");
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            store::language(&app.settings.committed_settings_document),
+            Ok(Some("Gerian".to_owned()))
         );
     }
 
