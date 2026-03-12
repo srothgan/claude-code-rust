@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.1] - 2026-03-12 [Changes][v0.7.1]
+
+### Fixes
+
+- **npm rollback for installs and releases**: Revert active package manager guidance, package scripts, and GitHub release workflows from `pnpm` back to `npm`; runtime reinstall guidance now recommends `npm install -g`
+- **Leading blank row before Claude text**: Trim leading rendered blank rows before the first visible assistant text block while preserving paragraph spacing for later content
+- **Deferred Enter submit stability**: Plain `Enter` now snapshots and restores the exact draft instead of mutating the input before submit, fixing hidden newline leaks when the cursor is in the middle of the text
+
 ## [0.7.0] - 2026-03-12 [Changes][v0.7.0]
 
 ### Features
@@ -306,6 +314,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.7.1]: https://github.com/srothgan/claude-code-rust/compare/v0.7.0...v0.7.1
 [v0.7.0]: https://github.com/srothgan/claude-code-rust/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/srothgan/claude-code-rust/compare/v0.5.1...v0.6.0
 [v0.5.1]: https://github.com/srothgan/claude-code-rust/compare/v0.5.0...v0.5.1
