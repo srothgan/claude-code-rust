@@ -14,29 +14,38 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod edit;
+mod resolve;
 pub mod store;
 
 use super::view::{self, ActiveView};
-use crate::agent::model::{AvailableModel, EffortLevel};
+use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde_json::Value;
 use std::path::PathBuf;
 
+pub(crate) use edit::{
+    OverlayModelOption, model_overlay_options, model_supports_effort,
+    supported_effort_levels_for_model,
+};
+pub(crate) use resolve::language_input_validation_message;
+use resolve::resolve_setting_document;
+use serde_json::Value;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsTab {
-    Config,
+pub enum ConfigTab {
+    Settings,
     Status,
     Usage,
     Mcp,
 }
 
-impl SettingsTab {
-    pub const ALL: [Self; 4] = [Self::Config, Self::Status, Self::Usage, Self::Mcp];
+impl ConfigTab {
+    pub const ALL: [Self; 4] = [Self::Settings, Self::Status, Self::Usage, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Config => "Settings",
+            Self::Settings => "Settings",
             Self::Status => "Status",
             Self::Usage => "Usage",
             Self::Mcp => "MCP",
@@ -45,17 +54,17 @@ impl SettingsTab {
 
     const fn next(self) -> Self {
         match self {
-            Self::Config => Self::Status,
+            Self::Settings => Self::Status,
             Self::Status => Self::Usage,
             Self::Usage => Self::Mcp,
-            Self::Mcp => Self::Config,
+            Self::Mcp => Self::Settings,
         }
     }
 
     const fn prev(self) -> Self {
         match self {
-            Self::Config => Self::Mcp,
-            Self::Status => Self::Config,
+            Self::Settings => Self::Mcp,
+            Self::Status => Self::Settings,
             Self::Usage => Self::Status,
             Self::Mcp => Self::Usage,
         }
@@ -105,9 +114,9 @@ pub enum ValueSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingFile {
-    SettingsJson,
-    LocalSettingsJson,
-    PreferencesJson,
+    Settings,
+    LocalSettings,
+    Preferences,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +380,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A04",
         label: "Always Thinking",
         description: "Enable adaptive thinking for new sessions. When off, new sessions start with thinking disabled.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["alwaysThinkingEnabled"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -385,7 +394,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A19",
         label: "Default model",
         description: "Sets the default model for new sessions and opens the combined model and thinking effort picker.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,
         editor: EditorKind::Overlay,
@@ -399,7 +408,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A09",
         label: "Default permission mode",
         description: "Sets the default approval behavior for future sessions.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["permissions", "defaultMode"],
         kind: SettingKind::DynamicEnum,
         editor: EditorKind::Cycle,
@@ -413,7 +422,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A17",
         label: "Editor mode",
         description: "Controls how text editing keys behave in the TUI.",
-        file: SettingFile::PreferencesJson,
+        file: SettingFile::Preferences,
         json_path: &["editorMode"],
         kind: SettingKind::Enum,
         editor: EditorKind::Cycle,
@@ -427,7 +436,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A05",
         label: "Fast mode",
         description: "Controls the persisted fast-mode preference for future sessions.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["fastMode"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -441,7 +450,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A16",
         label: "Language",
         description: "Controls the free-text language instruction Claude uses in sessions. Accepts 2 to 30 characters and does not localize the UI.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["language"],
         kind: SettingKind::Text,
         editor: EditorKind::Overlay,
@@ -455,7 +464,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A14",
         label: "Notifications",
         description: "Controls how Claude Code notifies you when attention is needed.",
-        file: SettingFile::PreferencesJson,
+        file: SettingFile::Preferences,
         json_path: &["preferredNotifChannel"],
         kind: SettingKind::Enum,
         editor: EditorKind::Cycle,
@@ -469,7 +478,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A15",
         label: "Output style",
         description: "Changes how Claude communicates with you in sessions.",
-        file: SettingFile::LocalSettingsJson,
+        file: SettingFile::LocalSettings,
         json_path: &["outputStyle"],
         kind: SettingKind::Enum,
         editor: EditorKind::Overlay,
@@ -483,7 +492,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A03",
         label: "Reduce motion",
         description: "Reduce UI motion by slowing spinners and disabling smooth chat scrolling.",
-        file: SettingFile::LocalSettingsJson,
+        file: SettingFile::LocalSettings,
         json_path: &["prefersReducedMotion"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -497,7 +506,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A10",
         label: "Respect .gitignore",
         description: "Controls whether @ file mentions hide entries ignored by git ignore rules.",
-        file: SettingFile::PreferencesJson,
+        file: SettingFile::Preferences,
         json_path: &["respectGitignore"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -511,7 +520,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A02",
         label: "Show Tips",
         description: "Controls whether Claude shows spinner tips in supported clients.",
-        file: SettingFile::LocalSettingsJson,
+        file: SettingFile::LocalSettings,
         json_path: &["spinnerTipsEnabled"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -525,7 +534,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A08",
         label: "Terminal progress bar",
         description: "Controls whether Claude should show its terminal progress bar in supported clients.",
-        file: SettingFile::PreferencesJson,
+        file: SettingFile::Preferences,
         json_path: &["terminalProgressBarEnabled"],
         kind: SettingKind::Bool,
         editor: EditorKind::Toggle,
@@ -539,7 +548,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A13",
         label: "Theme",
         description: "Controls the TUI color theme.",
-        file: SettingFile::PreferencesJson,
+        file: SettingFile::Preferences,
         json_path: &["theme"],
         kind: SettingKind::Enum,
         editor: EditorKind::Cycle,
@@ -553,7 +562,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         entry_id: "A20",
         label: "Thinking effort",
         description: "Controls how much effort Claude uses when thinking for new sessions. Only applies when Always Thinking is on and the selected model supports effort.",
-        file: SettingFile::SettingsJson,
+        file: SettingFile::Settings,
         json_path: &["effortLevel"],
         kind: SettingKind::Enum,
         editor: EditorKind::Overlay,
@@ -629,10 +638,10 @@ pub enum SettingsOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SettingsState {
-    pub active_tab: SettingsTab,
-    pub selected_config_index: usize,
-    pub config_scroll_offset: usize,
+pub struct ConfigState {
+    pub active_tab: ConfigTab,
+    pub selected_setting_index: usize,
+    pub settings_scroll_offset: usize,
     pub overlay: Option<SettingsOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
@@ -644,12 +653,12 @@ pub struct SettingsState {
     pub last_error: Option<String>,
 }
 
-impl Default for SettingsState {
+impl Default for ConfigState {
     fn default() -> Self {
         Self {
-            active_tab: SettingsTab::Config,
-            selected_config_index: 0,
-            config_scroll_offset: 0,
+            active_tab: ConfigTab::Settings,
+            selected_setting_index: 0,
+            settings_scroll_offset: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
@@ -663,7 +672,7 @@ impl Default for SettingsState {
     }
 }
 
-impl SettingsState {
+impl ConfigState {
     #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
         match resolve_setting_document(&self.committed_settings_document, SettingId::FastMode, &[])
@@ -747,8 +756,8 @@ impl SettingsState {
     }
 
     #[must_use]
-    pub fn selected_config_spec(&self) -> Option<&'static SettingSpec> {
-        config_settings().get(self.selected_config_index)
+    pub fn selected_setting_spec(&self) -> Option<&'static SettingSpec> {
+        setting_specs().get(self.selected_setting_index)
     }
 
     #[must_use]
@@ -809,26 +818,26 @@ impl SettingsState {
     #[must_use]
     pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
         match file {
-            SettingFile::SettingsJson => self.settings_path.as_ref(),
-            SettingFile::LocalSettingsJson => self.local_settings_path.as_ref(),
-            SettingFile::PreferencesJson => self.preferences_path.as_ref(),
+            SettingFile::Settings => self.settings_path.as_ref(),
+            SettingFile::LocalSettings => self.local_settings_path.as_ref(),
+            SettingFile::Preferences => self.preferences_path.as_ref(),
         }
     }
 
     #[must_use]
     pub fn document_for(&self, file: SettingFile) -> &Value {
         match file {
-            SettingFile::SettingsJson => &self.committed_settings_document,
-            SettingFile::LocalSettingsJson => &self.committed_local_settings_document,
-            SettingFile::PreferencesJson => &self.committed_preferences_document,
+            SettingFile::Settings => &self.committed_settings_document,
+            SettingFile::LocalSettings => &self.committed_local_settings_document,
+            SettingFile::Preferences => &self.committed_preferences_document,
         }
     }
 
     pub fn committed_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
         match file {
-            SettingFile::SettingsJson => &mut self.committed_settings_document,
-            SettingFile::LocalSettingsJson => &mut self.committed_local_settings_document,
-            SettingFile::PreferencesJson => &mut self.committed_preferences_document,
+            SettingFile::Settings => &mut self.committed_settings_document,
+            SettingFile::LocalSettings => &mut self.committed_local_settings_document,
+            SettingFile::Preferences => &mut self.committed_preferences_document,
         }
     }
 
@@ -838,16 +847,16 @@ impl SettingsState {
         notice: Option<String>,
         preserve_status: bool,
     ) {
-        self.settings_path = Some(loaded.paths.settings_path);
-        self.local_settings_path = Some(loaded.paths.local_settings_path);
-        self.preferences_path = Some(loaded.paths.preferences_path);
+        self.settings_path = Some(loaded.paths.settings);
+        self.local_settings_path = Some(loaded.paths.local_settings);
+        self.preferences_path = Some(loaded.paths.preferences);
         self.committed_settings_document = loaded.settings_document;
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
         self.overlay = None;
-        self.selected_config_index =
-            self.selected_config_index.min(config_settings().len().saturating_sub(1));
-        self.config_scroll_offset = self.config_scroll_offset.min(self.selected_config_index);
+        self.selected_setting_index =
+            self.selected_setting_index.min(setting_specs().len().saturating_sub(1));
+        self.settings_scroll_offset = self.settings_scroll_offset.min(self.selected_setting_index);
         if !preserve_status {
             self.status_message = notice;
             self.last_error = None;
@@ -858,18 +867,18 @@ impl SettingsState {
 }
 
 #[must_use]
-pub const fn config_settings() -> &'static [SettingSpec] {
+pub const fn setting_specs() -> &'static [SettingSpec] {
     &CONFIG_SETTINGS
 }
 
 #[must_use]
-pub fn config_setting(id: SettingId) -> &'static SettingSpec {
+pub fn setting_spec(id: SettingId) -> &'static SettingSpec {
     &CONFIG_SETTINGS[id as usize]
 }
 
 #[must_use]
 pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
-    let document = app.settings.document_for(spec.file);
+    let document = app.config.document_for(spec.file);
     resolve_setting_document(document, spec.id, &app.available_models)
 }
 
@@ -956,15 +965,15 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
 pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
     let notice = loaded.notice.clone();
-    app.settings.apply_loaded(loaded, notice, false);
+    app.config.apply_loaded(loaded, notice, false);
     Ok(())
 }
 
 pub fn open(app: &mut App) -> Result<(), String> {
     let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
     let notice = loaded.notice.clone();
-    app.settings.apply_loaded(loaded, notice, false);
-    view::set_active_view(app, ActiveView::Settings);
+    app.config.apply_loaded(loaded, notice, false);
+    view::set_active_view(app, ActiveView::Config);
     Ok(())
 }
 
@@ -978,41 +987,41 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if app.settings.overlay.is_some() {
-        handle_overlay_key(app, key);
+    if app.config.overlay.is_some() {
+        edit::handle_overlay_key(app, key);
         return;
     }
 
     match (key.code, key.modifiers) {
         (KeyCode::Char(' '), KeyModifiers::NONE)
-            if app.settings.active_tab == SettingsTab::Config =>
+            if app.config.active_tab == ConfigTab::Settings =>
         {
-            if let Some(spec) = app.settings.selected_config_spec() {
-                activate_setting(app, spec);
+            if let Some(spec) = app.config.selected_setting_spec() {
+                edit::activate_setting(app, spec);
             }
         }
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
         (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::BackTab, _) => {
-            app.settings.active_tab = app.settings.active_tab.prev();
-            app.settings.status_message = None;
+            app.config.active_tab = app.config.active_tab.prev();
+            app.config.status_message = None;
         }
         (KeyCode::Right | KeyCode::Tab, KeyModifiers::NONE) => {
-            app.settings.active_tab = app.settings.active_tab.next();
-            app.settings.status_message = None;
+            app.config.active_tab = app.config.active_tab.next();
+            app.config.status_message = None;
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
-            if app.settings.active_tab == SettingsTab::Config {
-                app.settings.selected_config_index =
-                    app.settings.selected_config_index.saturating_sub(1);
+            if app.config.active_tab == ConfigTab::Settings {
+                app.config.selected_setting_index =
+                    app.config.selected_setting_index.saturating_sub(1);
             }
         }
         (KeyCode::Down, KeyModifiers::NONE) => {
-            if app.settings.active_tab == SettingsTab::Config {
-                let last_index = config_settings().len().saturating_sub(1);
-                app.settings.selected_config_index =
-                    (app.settings.selected_config_index + 1).min(last_index);
+            if app.config.active_tab == ConfigTab::Settings {
+                let last_index = setting_specs().len().saturating_sub(1);
+                app.config.selected_setting_index =
+                    (app.config.selected_setting_index + 1).min(last_index);
             }
         }
         _ => {}
@@ -1022,198 +1031,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(candidate) if candidate == ch)
         && key.modifiers == KeyModifiers::CONTROL
-}
-
-fn activate_setting(app: &mut App, spec: &SettingSpec) {
-    match spec.id {
-        SettingId::AlwaysThinking => {
-            let next = !store::always_thinking_enabled(&app.settings.committed_settings_document)
-                .unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_always_thinking_enabled(document, next);
-            });
-        }
-        SettingId::ShowTips => {
-            let next =
-                !store::spinner_tips_enabled(&app.settings.committed_local_settings_document)
-                    .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_spinner_tips_enabled(document, next);
-            });
-        }
-        SettingId::TerminalProgressBar => {
-            let next =
-                !store::terminal_progress_bar_enabled(&app.settings.committed_preferences_document)
-                    .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_terminal_progress_bar_enabled(document, next);
-            });
-        }
-        SettingId::ReduceMotion => {
-            let next =
-                !store::prefers_reduced_motion(&app.settings.committed_local_settings_document)
-                    .unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_prefers_reduced_motion(document, next);
-            });
-        }
-        SettingId::FastMode => {
-            let next =
-                !store::fast_mode(&app.settings.committed_settings_document).unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_fast_mode(document, next);
-            });
-        }
-        SettingId::RespectGitignore => {
-            let next = !store::respect_gitignore(&app.settings.committed_preferences_document)
-                .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_respect_gitignore(document, next);
-            });
-        }
-        SettingId::DefaultPermissionMode => {
-            let current = match resolve_setting_document(
-                &app.settings.committed_settings_document,
-                SettingId::DefaultPermissionMode,
-                &[],
-            )
-            .value
-            {
-                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
-                }
-                ResolvedSettingValue::Bool(_)
-                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
-            };
-            let next = current.next();
-            persist_setting_change(app, spec, |document| {
-                store::set_default_permission_mode(document, next);
-            });
-        }
-        SettingId::Language => open_language_overlay(app),
-        SettingId::Model => open_model_and_effort_overlay(app, OverlayFocus::Model),
-        SettingId::OutputStyle => open_output_style_overlay(app),
-        SettingId::ThinkingEffort => {
-            open_model_and_effort_overlay(app, OverlayFocus::Effort);
-        }
-        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
-            cycle_static_enum(app, spec);
-        }
-    }
-}
-
-fn handle_overlay_key(app: &mut App, key: KeyEvent) {
-    match app.settings.overlay.clone() {
-        Some(SettingsOverlayState::ModelAndEffort(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
-            (KeyCode::Tab | KeyCode::Right | KeyCode::Left, KeyModifiers::NONE)
-            | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
-            (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_overlay_selection(app, 1),
-            _ => {}
-        },
-        Some(SettingsOverlayState::OutputStyle(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_output_style_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
-            (KeyCode::Up, KeyModifiers::NONE) => move_output_style_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
-            _ => {}
-        },
-        Some(SettingsOverlayState::Language(_)) => handle_language_overlay_key(app, key),
-        None => {}
-    }
-}
-
-fn persist_setting_change<F>(app: &mut App, spec: &SettingSpec, edit: F) -> bool
-where
-    F: FnOnce(&mut Value),
-{
-    let Some(path) = app.settings.path_for(spec.file).cloned() else {
-        let message = "Settings paths are not available".to_owned();
-        app.settings.last_error = Some(message.clone());
-        app.settings.status_message = None;
-        return false;
-    };
-
-    let previous_respect_gitignore = matches!(spec.id, SettingId::RespectGitignore)
-        .then(|| app.settings.respect_gitignore_effective());
-    let mut next_document = app.settings.document_for(spec.file).clone();
-    edit(&mut next_document);
-
-    match store::save(&path, &next_document) {
-        Ok(()) => {
-            *app.settings.committed_document_for_mut(spec.file) = next_document;
-            if previous_respect_gitignore
-                .is_some_and(|previous| previous != app.settings.respect_gitignore_effective())
-            {
-                crate::app::mention::invalidate_session_cache(app);
-            }
-            app.settings.last_error = None;
-            app.settings.status_message = Some(format!(
-                "Saved {}: {}",
-                spec.label,
-                setting_display_value(app, spec, &resolved_setting(app, spec))
-            ));
-            true
-        }
-        Err(err) => {
-            app.settings.last_error = Some(err);
-            app.settings.status_message = None;
-            false
-        }
-    }
-}
-
-fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
-    let current = {
-        let document = app.settings.document_for(spec.file);
-        match store::read_persisted_setting(document, spec) {
-            Ok(store::PersistedSettingValue::String(value)) => value,
-            _ => default_static_value(spec.id).to_owned(),
-        }
-    };
-
-    let SettingOptions::Static(options) = spec.options else {
-        return;
-    };
-    let current_index =
-        options.iter().position(|option| option.stored == current).unwrap_or_default();
-    let next = options[(current_index + 1) % options.len()].stored;
-
-    persist_setting_change(app, spec, |document| {
-        if spec.id == SettingId::Notifications {
-            if let Some(channel) = PreferredNotifChannel::from_stored(next) {
-                store::set_preferred_notification_channel(document, channel);
-            }
-        } else {
-            store::write_persisted_setting(
-                document,
-                spec,
-                store::PersistedSettingValue::String(next.to_owned()),
-            );
-        }
-    });
-}
-
-const fn default_static_value(setting_id: SettingId) -> &'static str {
-    match setting_id {
-        SettingId::Theme => "dark",
-        SettingId::OutputStyle => OutputStyle::Default.as_stored(),
-        SettingId::ThinkingEffort => "medium",
-        SettingId::Notifications => "iterm2",
-        SettingId::EditorMode => "default",
-        SettingId::AlwaysThinking
-        | SettingId::ReduceMotion
-        | SettingId::ShowTips
-        | SettingId::TerminalProgressBar
-        | SettingId::FastMode
-        | SettingId::DefaultPermissionMode
-        | SettingId::Language
-        | SettingId::RespectGitignore
-        | SettingId::Model => "",
-    }
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
@@ -1239,484 +1056,8 @@ fn effort_level_label(value: &str) -> Option<String> {
     EffortLevel::from_stored(value).map(|level| level.label().to_owned())
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct OverlayModelOption {
-    pub id: String,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub supports_effort: bool,
-    pub supported_effort_levels: Vec<EffortLevel>,
-}
-
-pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
-    let mut options = app
-        .available_models
-        .iter()
-        .map(|model| OverlayModelOption {
-            id: model.id.clone(),
-            display_name: model.display_name.clone(),
-            description: model.description.clone(),
-            supports_effort: model.supports_effort,
-            supported_effort_levels: if model.supported_effort_levels.is_empty()
-                && model.supports_effort
-            {
-                DEFAULT_EFFORT_LEVELS.to_vec()
-            } else {
-                model.supported_effort_levels.clone()
-            },
-        })
-        .collect::<Vec<_>>();
-    if !options.iter().any(|option| option.id == DEFAULT_MODEL_ID) {
-        options.push(OverlayModelOption {
-            id: DEFAULT_MODEL_ID.to_owned(),
-            display_name: DEFAULT_MODEL_LABEL.to_owned(),
-            description: Some("Uses Claude's default model selection.".to_owned()),
-            supports_effort: true,
-            supported_effort_levels: DEFAULT_EFFORT_LEVELS.to_vec(),
-        });
-    }
-    options.sort_by(|left, right| {
-        let left_key = left.display_name.to_ascii_lowercase();
-        let right_key = right.display_name.to_ascii_lowercase();
-        left_key.cmp(&right_key).then_with(|| left.id.cmp(&right.id))
-    });
-    options
-}
-
-fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
-    let options = model_overlay_options(app);
-    let current_model = app
-        .settings
-        .model_effective()
-        .filter(|value| options.iter().any(|option| option.id == *value))
-        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_owned());
-    let current_effort = app.settings.thinking_effort_effective();
-    let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
-    app.settings.overlay = Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-        focus,
-        selected_model: current_model,
-        selected_effort,
-    }));
-    app.settings.last_error = None;
-}
-
-fn open_output_style_overlay(app: &mut App) {
-    app.settings.overlay = Some(SettingsOverlayState::OutputStyle(OutputStyleOverlayState {
-        selected: app.settings.output_style_effective(),
-    }));
-    app.settings.last_error = None;
-}
-
-fn open_language_overlay(app: &mut App) {
-    let draft = store::language(&app.settings.committed_settings_document)
-        .ok()
-        .flatten()
-        .and_then(|value| normalized_language_value(&value))
-        .unwrap_or_default();
-    let cursor = draft.chars().count();
-    app.settings.overlay =
-        Some(SettingsOverlayState::Language(LanguageOverlayState { draft, cursor }));
-    app.settings.last_error = None;
-}
-
-fn toggle_model_and_effort_focus(app: &mut App) {
-    let Some(overlay) = app.settings.model_and_effort_overlay_mut() else {
-        return;
-    };
-    overlay.focus = match overlay.focus {
-        OverlayFocus::Model => OverlayFocus::Effort,
-        OverlayFocus::Effort => OverlayFocus::Model,
-    };
-}
-
-fn move_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.settings.model_and_effort_overlay().cloned() else {
-        return;
-    };
-    match overlay.focus {
-        OverlayFocus::Model => move_overlay_model_selection(app, &overlay, delta),
-        OverlayFocus::Effort => move_overlay_effort_selection(app, &overlay, delta),
-    }
-}
-
-fn move_overlay_model_selection(app: &mut App, overlay: &ModelAndEffortOverlayState, delta: isize) {
-    let options = model_overlay_options(app);
-    if options.is_empty() {
-        return;
-    }
-    let current_index =
-        options.iter().position(|option| option.id == overlay.selected_model).unwrap_or(0);
-    let next_index = step_index_clamped(current_index, delta, options.len());
-    let next_model = &options[next_index];
-    let next_effort = overlay_effort_for_model(app, &next_model.id, overlay.selected_effort);
-    if let Some(state) = app.settings.model_and_effort_overlay_mut() {
-        state.selected_model = next_model.id.clone();
-        state.selected_effort = next_effort;
-    }
-}
-
-fn move_overlay_effort_selection(
-    app: &mut App,
-    overlay: &ModelAndEffortOverlayState,
-    delta: isize,
-) {
-    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
-    if levels.is_empty() {
-        return;
-    }
-    let current_index =
-        levels.iter().position(|level| *level == overlay.selected_effort).unwrap_or(0);
-    let next_index = step_index_clamped(current_index, delta, levels.len());
-    if let Some(state) = app.settings.model_and_effort_overlay_mut() {
-        state.selected_effort = levels[next_index];
-    }
-}
-
-fn confirm_model_and_effort_overlay(app: &mut App) {
-    let Some(overlay) = app.settings.model_and_effort_overlay().cloned() else {
-        return;
-    };
-    if persist_model_and_effort_change(app, &overlay.selected_model, overlay.selected_effort) {
-        app.settings.overlay = None;
-    }
-}
-
-fn move_output_style_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.settings.output_style_overlay().copied() else {
-        return;
-    };
-    let current_index =
-        OutputStyle::ALL.iter().position(|style| *style == overlay.selected).unwrap_or_default();
-    let next_index = step_index_clamped(current_index, delta, OutputStyle::ALL.len());
-    if let Some(state) = app.settings.output_style_overlay_mut() {
-        state.selected = OutputStyle::ALL[next_index];
-    }
-}
-
-fn confirm_output_style_overlay(app: &mut App) {
-    let Some(overlay) = app.settings.output_style_overlay().copied() else {
-        return;
-    };
-    let spec = config_setting(SettingId::OutputStyle);
-    if persist_setting_change(app, spec, |document| {
-        store::set_output_style(document, overlay.selected);
-    }) {
-        app.settings.overlay = None;
-    }
-}
-
-fn handle_language_overlay_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_language_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.settings.overlay = None,
-        (KeyCode::Left, KeyModifiers::NONE) => move_language_cursor_left(app),
-        (KeyCode::Right, KeyModifiers::NONE) => move_language_cursor_right(app),
-        (KeyCode::Home, KeyModifiers::NONE) => set_language_cursor(app, 0),
-        (KeyCode::End, KeyModifiers::NONE) => move_language_cursor_to_end(app),
-        (KeyCode::Backspace, KeyModifiers::NONE) => delete_language_before_cursor(app),
-        (KeyCode::Delete, KeyModifiers::NONE) => delete_language_at_cursor(app),
-        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
-            insert_language_char(app, ch);
-        }
-        _ => {}
-    }
-}
-
-fn accepts_text_input(modifiers: KeyModifiers) -> bool {
-    modifiers.is_empty() || modifiers == KeyModifiers::SHIFT
-}
-
-fn confirm_language_overlay(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay().cloned() else {
-        return;
-    };
-    let normalized = normalized_language_value(&overlay.draft);
-    if normalized
-        .as_deref()
-        .is_some_and(|value| language_input_validation_message(value).is_some())
-    {
-        return;
-    }
-
-    let spec = config_setting(SettingId::Language);
-    if persist_setting_change(app, spec, |document| {
-        store::set_language(document, normalized.as_deref());
-    }) {
-        app.settings.overlay = None;
-    }
-}
-
-fn move_language_cursor_left(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.cursor.saturating_sub(1);
-}
-
-fn move_language_cursor_right(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = (overlay.cursor + 1).min(overlay.draft.chars().count());
-}
-
-fn move_language_cursor_to_end(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = overlay.draft.chars().count();
-}
-
-fn set_language_cursor(app: &mut App, cursor: usize) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    overlay.cursor = cursor.min(overlay.draft.chars().count());
-}
-
-fn insert_language_char(app: &mut App, ch: char) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
-    overlay.draft.insert(byte_index, ch);
-    overlay.cursor += 1;
-}
-
-fn delete_language_before_cursor(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    if overlay.cursor == 0 {
-        return;
-    }
-
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor - 1);
-    overlay.draft.replace_range(start..end, "");
-    overlay.cursor -= 1;
-}
-
-fn delete_language_at_cursor(app: &mut App) {
-    let Some(overlay) = app.settings.language_overlay_mut() else {
-        return;
-    };
-    let char_count = overlay.draft.chars().count();
-    if overlay.cursor >= char_count {
-        return;
-    }
-
-    let start = char_to_byte_index(&overlay.draft, overlay.cursor);
-    let end = char_to_byte_index(&overlay.draft, overlay.cursor + 1);
-    overlay.draft.replace_range(start..end, "");
-}
-
-fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
-    let Some(path) = app.settings.path_for(SettingFile::SettingsJson).cloned() else {
-        app.settings.last_error = Some("Settings paths are not available".to_owned());
-        app.settings.status_message = None;
-        return false;
-    };
-    let mut next_document = app.settings.committed_settings_document.clone();
-    store::set_model(&mut next_document, Some(model));
-    if model_supports_effort(app, model) {
-        store::set_thinking_effort_level(&mut next_document, effort);
-    }
-    match store::save(&path, &next_document) {
-        Ok(()) => {
-            app.settings.committed_settings_document = next_document;
-            app.settings.last_error = None;
-            app.settings.status_message = None;
-            true
-        }
-        Err(err) => {
-            app.settings.last_error = Some(err);
-            app.settings.status_message = None;
-            false
-        }
-    }
-}
-
-fn overlay_effort_for_model(app: &App, model_id: &str, current: EffortLevel) -> EffortLevel {
-    let supported = supported_effort_levels_for_model(app, model_id);
-    if supported.is_empty() || supported.contains(&current) {
-        return current;
-    }
-    supported.iter().copied().find(|level| *level == EffortLevel::Medium).unwrap_or(supported[0])
-}
-
-pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
-    if model_id == DEFAULT_MODEL_ID {
-        return true;
-    }
-
-    model_overlay_options(app)
-        .into_iter()
-        .find(|option| option.id == model_id)
-        .map_or(true, |option| option.supports_effort)
-}
-
-pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
-    model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
-        Vec::new,
-        |option| {
-            if option.supports_effort { option.supported_effort_levels } else { Vec::new() }
-        },
-    )
-}
-
-fn step_index_clamped(current: usize, delta: isize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if delta.is_negative() {
-        current.saturating_sub(delta.unsigned_abs()).min(len.saturating_sub(1))
-    } else {
-        (current + delta as usize).min(len.saturating_sub(1))
-    }
-}
-
 fn project_root(app: &App) -> &std::path::Path {
     std::path::Path::new(&app.cwd_raw)
-}
-
-fn resolve_setting_document(
-    document: &Value,
-    setting_id: SettingId,
-    available_models: &[AvailableModel],
-) -> ResolvedSetting {
-    let spec = config_setting(setting_id);
-    match setting_id {
-        SettingId::AlwaysThinking | SettingId::FastMode | SettingId::ReduceMotion => {
-            resolve_bool_setting(document, spec, false)
-        }
-        SettingId::DefaultPermissionMode => {
-            resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
-        }
-        SettingId::Language => resolve_language_setting(document, spec),
-        SettingId::ShowTips | SettingId::RespectGitignore | SettingId::TerminalProgressBar => {
-            resolve_bool_setting(document, spec, true)
-        }
-        SettingId::Model => resolve_model_setting(document, spec, available_models),
-        SettingId::OutputStyle => {
-            resolve_string_setting(document, spec, OutputStyle::Default.as_stored())
-        }
-        SettingId::ThinkingEffort => resolve_string_setting(document, spec, "medium"),
-        SettingId::Theme => resolve_string_setting(document, spec, "dark"),
-        SettingId::Notifications => {
-            resolve_string_setting(document, spec, PreferredNotifChannel::default().as_stored())
-        }
-        SettingId::EditorMode => resolve_string_setting(document, spec, "default"),
-    }
-}
-
-fn resolve_bool_setting(document: &Value, spec: &SettingSpec, fallback: bool) -> ResolvedSetting {
-    match store::read_persisted_setting(document, spec) {
-        Ok(store::PersistedSettingValue::Bool(value)) => ResolvedSetting {
-            value: ResolvedSettingValue::Bool(value),
-            validation: SettingValidation::Valid,
-        },
-        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
-            value: ResolvedSettingValue::Bool(fallback),
-            validation: SettingValidation::Valid,
-        },
-        Ok(store::PersistedSettingValue::String(_)) | Err(()) => ResolvedSetting {
-            value: ResolvedSettingValue::Bool(fallback),
-            validation: SettingValidation::InvalidValue,
-        },
-    }
-}
-
-fn resolve_string_setting(
-    document: &Value,
-    spec: &SettingSpec,
-    fallback: &'static str,
-) -> ResolvedSetting {
-    match store::read_persisted_setting(document, spec) {
-        Ok(store::PersistedSettingValue::String(value)) if option_exists(spec, &value) => {
-            ResolvedSetting {
-                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
-                validation: SettingValidation::Valid,
-            }
-        }
-        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
-            value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(fallback.to_owned())),
-            validation: SettingValidation::Valid,
-        },
-        Ok(store::PersistedSettingValue::String(_) | store::PersistedSettingValue::Bool(_))
-        | Err(()) => ResolvedSetting {
-            value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(fallback.to_owned())),
-            validation: SettingValidation::InvalidValue,
-        },
-    }
-}
-
-fn resolve_language_setting(document: &Value, spec: &SettingSpec) -> ResolvedSetting {
-    match store::read_persisted_setting(document, spec) {
-        Ok(store::PersistedSettingValue::String(value)) => normalized_language_value(&value)
-            .filter(|normalized| language_input_validation_message(normalized).is_none())
-            .map_or(
-                ResolvedSetting {
-                    value: ResolvedSettingValue::Text(String::new()),
-                    validation: SettingValidation::InvalidValue,
-                },
-                |normalized| ResolvedSetting {
-                    value: ResolvedSettingValue::Text(normalized),
-                    validation: SettingValidation::Valid,
-                },
-            ),
-        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
-            value: ResolvedSettingValue::Text(String::new()),
-            validation: SettingValidation::Valid,
-        },
-        Ok(store::PersistedSettingValue::String(_) | store::PersistedSettingValue::Bool(_))
-        | Err(()) => ResolvedSetting {
-            value: ResolvedSettingValue::Text(String::new()),
-            validation: SettingValidation::InvalidValue,
-        },
-    }
-}
-
-fn resolve_model_setting(
-    document: &Value,
-    spec: &SettingSpec,
-    available_models: &[AvailableModel],
-) -> ResolvedSetting {
-    match store::read_persisted_setting(document, spec) {
-        Ok(store::PersistedSettingValue::Missing) => ResolvedSetting {
-            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
-            validation: SettingValidation::Valid,
-        },
-        Ok(store::PersistedSettingValue::String(value))
-            if available_models.is_empty()
-                || value == DEFAULT_MODEL_ID
-                || available_models.iter().any(|model| model.id == value) =>
-        {
-            ResolvedSetting {
-                value: ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
-                validation: SettingValidation::Valid,
-            }
-        }
-        Ok(store::PersistedSettingValue::String(_)) => ResolvedSetting {
-            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
-            validation: SettingValidation::UnavailableOption,
-        },
-        Ok(store::PersistedSettingValue::Bool(_)) | Err(()) => ResolvedSetting {
-            value: ResolvedSettingValue::Choice(ResolvedChoice::Automatic),
-            validation: SettingValidation::InvalidValue,
-        },
-    }
-}
-
-fn option_exists(spec: &SettingSpec, value: &str) -> bool {
-    match spec.options {
-        SettingOptions::Static(options) => options.iter().any(|option| option.stored == value),
-        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
-            DEFAULT_PERMISSION_OPTIONS.iter().any(|option| option.stored == value)
-        }
-        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => value == DEFAULT_MODEL_ID,
-        _ => false,
-    }
 }
 
 fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
@@ -1735,33 +1076,10 @@ fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
     }
 }
 
-#[must_use]
-pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static str> {
-    let Some(value) = normalized_language_value(value) else {
-        return None;
-    };
-    let length = value.chars().count();
-    if length < LANGUAGE_MIN_CHARS {
-        Some("Language must be at least 2 characters.")
-    } else if length > LANGUAGE_MAX_CHARS {
-        Some("Language must be at most 30 characters.")
-    } else {
-        None
-    }
-}
-
-fn normalized_language_value(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_owned())
-}
-
-fn char_to_byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::model::AvailableModel;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
@@ -1775,8 +1093,8 @@ mod tests {
     }
 
     fn select_setting(app: &mut App, setting_id: SettingId) {
-        app.settings.selected_config_index =
-            config_settings().iter().position(|spec| spec.id == setting_id).expect("setting row");
+        app.config.selected_setting_index =
+            setting_specs().iter().position(|spec| spec.id == setting_id).expect("setting row");
     }
 
     #[test]
@@ -1791,19 +1109,19 @@ mod tests {
 
         open(&mut app).expect("open");
 
-        assert_eq!(app.active_view, ActiveView::Settings);
+        assert_eq!(app.active_view, ActiveView::Config);
         assert!(matches!(
             resolve_setting_document(
-                &app.settings.committed_settings_document,
+                &app.config.committed_settings_document,
                 SettingId::FastMode,
                 &[]
             )
             .value,
             ResolvedSettingValue::Bool(true)
         ));
-        assert!(app.settings.settings_path.is_some());
-        assert!(app.settings.local_settings_path.is_some());
-        assert!(app.settings.preferences_path.is_some());
+        assert!(app.config.settings_path.is_some());
+        assert!(app.config.local_settings_path.is_some());
+        assert!(app.config.preferences_path.is_some());
     }
 
     #[test]
@@ -1817,27 +1135,27 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        assert!(!app.settings.fast_mode_effective());
+        assert!(!app.config.fast_mode_effective());
 
         close(&mut app);
         std::fs::write(&path, r#"{"fastMode":true}"#).expect("rewrite");
 
         open(&mut app).expect("reopen");
 
-        assert!(app.settings.fast_mode_effective());
+        assert!(app.config.fast_mode_effective());
     }
 
     #[test]
     fn reopen_clears_stale_transient_feedback() {
         let (_dir, mut app) = open_settings_test_app();
-        app.settings.status_message = Some("stale status".to_owned());
-        app.settings.last_error = Some("stale error".to_owned());
+        app.config.status_message = Some("stale status".to_owned());
+        app.config.last_error = Some("stale error".to_owned());
 
         close(&mut app);
         open(&mut app).expect("reopen");
 
-        assert!(app.settings.status_message.is_none());
-        assert!(app.settings.last_error.is_none());
+        assert!(app.config.status_message.is_none());
+        assert!(app.config.last_error.is_none());
     }
 
     #[test]
@@ -1854,23 +1172,23 @@ mod tests {
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"fastMode\": true"));
-        assert!(app.settings.last_error.is_none());
+        assert!(app.config.last_error.is_none());
     }
 
     #[test]
     fn handle_key_moves_between_config_rows() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::Settings;
-        let last_index = config_settings().len().saturating_sub(1);
+        app.active_view = ActiveView::Config;
+        let last_index = setting_specs().len().saturating_sub(1);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.settings.selected_config_index, 1);
+        assert_eq!(app.config.selected_setting_index, 1);
 
-        for _ in 0..config_settings().len().saturating_add(4) {
+        for _ in 0..setting_specs().len().saturating_add(4) {
             handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
 
-        assert_eq!(app.settings.selected_config_index, last_index);
+        assert_eq!(app.config.selected_setting_index, last_index);
     }
 
     #[test]
@@ -1881,7 +1199,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::always_thinking_enabled(&app.settings.committed_settings_document),
+            store::always_thinking_enabled(&app.config.committed_settings_document),
             Ok(true)
         );
     }
@@ -1894,7 +1212,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::prefers_reduced_motion(&app.settings.committed_local_settings_document),
+            store::prefers_reduced_motion(&app.config.committed_local_settings_document),
             Ok(true)
         );
     }
@@ -1907,7 +1225,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::spinner_tips_enabled(&app.settings.committed_local_settings_document),
+            store::spinner_tips_enabled(&app.config.committed_local_settings_document),
             Ok(false)
         );
     }
@@ -1920,7 +1238,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::default_permission_mode(&app.settings.committed_settings_document),
+            store::default_permission_mode(&app.config.committed_settings_document),
             Ok(DefaultPermissionMode::AcceptEdits)
         );
     }
@@ -1932,10 +1250,7 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-        assert_eq!(
-            store::respect_gitignore(&app.settings.committed_preferences_document),
-            Ok(false)
-        );
+        assert_eq!(store::respect_gitignore(&app.config.committed_preferences_document), Ok(false));
     }
 
     #[test]
@@ -1946,7 +1261,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::terminal_progress_bar_enabled(&app.settings.committed_preferences_document),
+            store::terminal_progress_bar_enabled(&app.config.committed_preferences_document),
             Ok(false)
         );
     }
@@ -1966,7 +1281,7 @@ mod tests {
         let mention = app.mention.as_ref().expect("mention should stay active");
         assert!(mention.candidates.is_empty());
         assert_eq!(mention.placeholder_message().as_deref(), Some("Searching files..."));
-        assert!(!app.settings.respect_gitignore_effective());
+        assert!(!app.config.respect_gitignore_effective());
     }
 
     #[test]
@@ -1993,13 +1308,13 @@ mod tests {
     fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
         let mut app = App::test_default();
         app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
-        store::set_model(&mut app.settings.committed_settings_document, Some("unknown"));
+        store::set_model(&mut app.config.committed_settings_document, Some("unknown"));
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::Model));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
 
         assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::Model), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::Model), &resolved),
             "Default"
         );
     }
@@ -2029,7 +1344,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            store::preferred_notification_channel(&app.settings.committed_preferences_document),
+            store::preferred_notification_channel(&app.config.committed_preferences_document),
             Ok(PreferredNotifChannel::Iterm2WithBell)
         );
     }
@@ -2042,8 +1357,8 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let stored = store::read_persisted_setting(
-            &app.settings.committed_preferences_document,
-            config_setting(SettingId::Theme),
+            &app.config.committed_preferences_document,
+            setting_spec(SettingId::Theme),
         );
         assert_eq!(stored, Ok(store::PersistedSettingValue::String("light".to_owned())));
     }
@@ -2056,8 +1371,8 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         let stored = store::read_persisted_setting(
-            &app.settings.committed_preferences_document,
-            config_setting(SettingId::EditorMode),
+            &app.config.committed_preferences_document,
+            setting_spec(SettingId::EditorMode),
         );
         assert_eq!(stored, Ok(store::PersistedSettingValue::String("vim".to_owned())));
     }
@@ -2066,15 +1381,15 @@ mod tests {
     fn output_style_resolves_existing_project_value() {
         let mut app = App::test_default();
         store::set_output_style(
-            &mut app.settings.committed_local_settings_document,
+            &mut app.config.committed_local_settings_document,
             OutputStyle::Explanatory,
         );
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::OutputStyle));
 
         assert_eq!(resolved.validation, SettingValidation::Valid);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::OutputStyle), &resolved),
             "Explanatory"
         );
     }
@@ -2083,11 +1398,11 @@ mod tests {
     fn output_style_missing_value_falls_back_to_default() {
         let app = App::test_default();
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::OutputStyle));
 
         assert_eq!(resolved.validation, SettingValidation::Valid);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::OutputStyle), &resolved),
             "Default"
         );
     }
@@ -2095,14 +1410,14 @@ mod tests {
     #[test]
     fn output_style_invalid_value_uses_default_with_invalid_state() {
         let mut app = App::test_default();
-        app.settings.committed_local_settings_document =
+        app.config.committed_local_settings_document =
             serde_json::json!({ "outputStyle": "Verbose" });
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::OutputStyle));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::OutputStyle));
 
         assert_eq!(resolved.validation, SettingValidation::InvalidValue);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::OutputStyle), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::OutputStyle), &resolved),
             "Default"
         );
     }
@@ -2110,13 +1425,13 @@ mod tests {
     #[test]
     fn language_resolves_existing_project_value() {
         let mut app = App::test_default();
-        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
+        store::set_language(&mut app.config.committed_settings_document, Some("German"));
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::Language));
 
         assert_eq!(resolved.validation, SettingValidation::Valid);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::Language), &resolved),
             "German"
         );
     }
@@ -2125,11 +1440,11 @@ mod tests {
     fn language_missing_value_displays_not_set() {
         let app = App::test_default();
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::Language));
 
         assert_eq!(resolved.validation, SettingValidation::Valid);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::Language), &resolved),
             "Not set"
         );
     }
@@ -2137,13 +1452,13 @@ mod tests {
     #[test]
     fn language_invalid_persisted_length_uses_not_set_with_invalid_state() {
         let mut app = App::test_default();
-        app.settings.committed_settings_document = serde_json::json!({ "language": "E" });
+        app.config.committed_settings_document = serde_json::json!({ "language": "E" });
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::Language));
 
         assert_eq!(resolved.validation, SettingValidation::InvalidValue);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::Language), &resolved),
             "Not set"
         );
     }
@@ -2151,13 +1466,13 @@ mod tests {
     #[test]
     fn language_whitespace_only_persisted_value_uses_not_set_with_invalid_state() {
         let mut app = App::test_default();
-        app.settings.committed_settings_document = serde_json::json!({ "language": "   " });
+        app.config.committed_settings_document = serde_json::json!({ "language": "   " });
 
-        let resolved = resolved_setting(&app, config_setting(SettingId::Language));
+        let resolved = resolved_setting(&app, setting_spec(SettingId::Language));
 
         assert_eq!(resolved.validation, SettingValidation::InvalidValue);
         assert_eq!(
-            setting_display_value(&app, config_setting(SettingId::Language), &resolved),
+            setting_display_value(&app, setting_spec(SettingId::Language), &resolved),
             "Not set"
         );
     }
@@ -2170,7 +1485,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            app.settings.output_style_overlay().map(|overlay| overlay.selected),
+            app.config.output_style_overlay().map(|overlay| overlay.selected),
             Some(OutputStyle::Default)
         );
     }
@@ -2178,16 +1493,16 @@ mod tests {
     #[test]
     fn space_opens_language_overlay_with_existing_value() {
         let (_dir, mut app) = open_settings_test_app();
-        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
+        store::set_language(&mut app.config.committed_settings_document, Some("German"));
         select_setting(&mut app, SettingId::Language);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
         assert_eq!(
-            app.settings.language_overlay().map(|overlay| overlay.draft.as_str()),
+            app.config.language_overlay().map(|overlay| overlay.draft.as_str()),
             Some("German")
         );
-        assert_eq!(app.settings.language_overlay().map(|overlay| overlay.cursor), Some(6));
+        assert_eq!(app.config.language_overlay().map(|overlay| overlay.cursor), Some(6));
     }
 
     #[test]
@@ -2227,10 +1542,10 @@ mod tests {
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"outputStyle\": \"Learning\""));
         assert_eq!(
-            store::output_style(&app.settings.committed_local_settings_document),
+            store::output_style(&app.config.committed_local_settings_document),
             Ok(OutputStyle::Learning)
         );
-        assert!(app.settings.overlay.is_none());
+        assert!(app.config.overlay.is_none());
     }
 
     #[test]
@@ -2248,9 +1563,9 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(!path.exists());
-        assert!(app.settings.overlay.is_none());
+        assert!(app.config.overlay.is_none());
         assert_eq!(
-            store::output_style(&app.settings.committed_local_settings_document),
+            store::output_style(&app.config.committed_local_settings_document),
             Ok(OutputStyle::Default)
         );
     }
@@ -2274,10 +1589,10 @@ mod tests {
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"language\": \"German\""));
         assert_eq!(
-            store::language(&app.settings.committed_settings_document),
+            store::language(&app.config.committed_settings_document),
             Ok(Some("German".to_owned()))
         );
-        assert!(app.settings.overlay.is_none());
+        assert!(app.config.overlay.is_none());
     }
 
     #[test]
@@ -2302,10 +1617,10 @@ mod tests {
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"language\": \"German\""));
         assert_eq!(
-            store::language(&app.settings.committed_settings_document),
+            store::language(&app.config.committed_settings_document),
             Ok(Some("German".to_owned()))
         );
-        assert!(app.settings.overlay.is_none());
+        assert!(app.config.overlay.is_none());
     }
 
     #[test]
@@ -2328,8 +1643,8 @@ mod tests {
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(!raw.contains("\"language\""));
-        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
-        assert!(app.settings.overlay.is_none());
+        assert_eq!(store::language(&app.config.committed_settings_document), Ok(None));
+        assert!(app.config.overlay.is_none());
     }
 
     #[test]
@@ -2347,8 +1662,8 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(!path.exists());
-        assert!(app.settings.overlay.is_none());
-        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+        assert!(app.config.overlay.is_none());
+        assert_eq!(store::language(&app.config.committed_settings_document), Ok(None));
     }
 
     #[test]
@@ -2365,9 +1680,9 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE));
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(app.settings.language_overlay().is_some());
+        assert!(app.config.language_overlay().is_some());
         assert!(!path.exists());
-        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+        assert_eq!(store::language(&app.config.committed_settings_document), Ok(None));
     }
 
     #[test]
@@ -2386,9 +1701,9 @@ mod tests {
         }
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(app.settings.language_overlay().is_some());
+        assert!(app.config.language_overlay().is_some());
         assert!(!path.exists());
-        assert_eq!(store::language(&app.settings.committed_settings_document), Ok(None));
+        assert_eq!(store::language(&app.config.committed_settings_document), Ok(None));
     }
 
     #[test]
@@ -2413,7 +1728,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(
-            store::language(&app.settings.committed_settings_document),
+            store::language(&app.config.committed_settings_document),
             Ok(Some("Gerian".to_owned()))
         );
     }
@@ -2458,7 +1773,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(!app.settings.fast_mode_effective());
+        assert!(!app.config.fast_mode_effective());
     }
 
     #[test]
@@ -2469,7 +1784,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(!app.settings.fast_mode_effective());
+        assert!(!app.config.fast_mode_effective());
     }
 
     #[test]
@@ -2480,14 +1795,14 @@ mod tests {
         app.cwd_raw = dir.path().to_string_lossy().to_string();
 
         open(&mut app).expect("open");
-        app.settings.settings_path = Some(PathBuf::new());
+        app.config.settings_path = Some(PathBuf::new());
         select_setting(&mut app, SettingId::FastMode);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-        assert_eq!(app.active_view, ActiveView::Settings);
-        assert!(!app.settings.fast_mode_effective());
-        assert!(app.settings.last_error.is_some());
-        assert!(app.settings.status_message.is_none());
+        assert_eq!(app.active_view, ActiveView::Config);
+        assert!(!app.config.fast_mode_effective());
+        assert!(app.config.last_error.is_some());
+        assert!(app.config.status_message.is_none());
     }
 }

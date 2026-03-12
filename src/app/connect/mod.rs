@@ -26,8 +26,8 @@ mod event_dispatch;
 mod session_start;
 mod type_converters;
 
+use super::config::ConfigState;
 use super::dialog::DialogState;
-use super::settings::SettingsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
 };
@@ -91,7 +91,7 @@ pub fn create_app(cli: &Cli) -> App {
 
     let mut app = App {
         active_view: ActiveView::Chat,
-        settings: SettingsState::default(),
+        config: ConfigState::default(),
         settings_home_override: None,
         messages: vec![super::ChatMessage::welcome_with_recent(
             &initial_model_name,
@@ -186,9 +186,9 @@ pub fn create_app(cli: &Cli) -> App {
         last_frame_at: None,
     };
 
-    if let Err(err) = super::settings::initialize_shared_state(&mut app) {
+    if let Err(err) = super::config::initialize_shared_state(&mut app) {
         tracing::warn!("failed to initialize shared settings state: {err}");
-        app.settings.last_error = Some(err);
+        app.config.last_error = Some(err);
     }
 
     app.refresh_git_branch();

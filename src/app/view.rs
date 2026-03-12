@@ -20,7 +20,7 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Chat,
-    Settings,
+    Config,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {

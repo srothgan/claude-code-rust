@@ -17,6 +17,7 @@
 mod autocomplete;
 mod chat;
 mod chat_view;
+mod config;
 mod diff;
 mod footer;
 mod header;
@@ -25,7 +26,6 @@ mod input;
 mod layout;
 mod markdown;
 mod message;
-mod settings;
 mod tables;
 pub mod theme;
 mod todo;
@@ -40,6 +40,6 @@ use ratatui::Frame;
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
-        ActiveView::Settings => settings::render(frame, app),
+        ActiveView::Config => config::render(frame, app),
     }
 }

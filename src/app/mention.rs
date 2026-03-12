@@ -464,7 +464,7 @@ pub fn invalidate_session_cache(app: &mut App) {
         if mention.query.chars().count() < MIN_QUERY_CHARS {
             mention.mark_hint();
         } else {
-            mention.start_search(&app.cwd_raw, app.settings.respect_gitignore_effective());
+            mention.start_search(&app.cwd_raw, app.config.respect_gitignore_effective());
         }
     }
     sync_focus(app);
@@ -481,7 +481,7 @@ fn refresh_query_state(app: &mut App, _now: Instant) {
         return;
     }
 
-    mention.start_search(&app.cwd_raw, app.settings.respect_gitignore_effective());
+    mention.start_search(&app.cwd_raw, app.config.respect_gitignore_effective());
     sync_focus(app);
 }
 
@@ -786,8 +786,8 @@ mod tests {
         let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
         std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
         std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
-        crate::app::settings::store::set_respect_gitignore(
-            &mut app.settings.committed_preferences_document,
+        crate::app::config::store::set_respect_gitignore(
+            &mut app.config.committed_preferences_document,
             false,
         );
         app.input.set_text("@rs");

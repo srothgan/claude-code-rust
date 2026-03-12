@@ -16,6 +16,7 @@
 
 pub(crate) mod auth;
 mod cache_policy;
+pub(crate) mod config;
 mod connect;
 mod dialog;
 mod events;
@@ -29,7 +30,6 @@ pub(crate) mod paste_burst;
 mod permissions;
 mod selection;
 mod service_status_check;
-pub(crate) mod settings;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
@@ -44,13 +44,13 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
+pub use config::{ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
-pub use settings::{SettingsState, SettingsTab};
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, HelpView,
@@ -276,7 +276,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
-    let interval = if app.settings.prefers_reduced_motion_effective() {
+    let interval = if app.config.prefers_reduced_motion_effective() {
         SPINNER_FRAME_INTERVAL_REDUCED
     } else {
         SPINNER_FRAME_INTERVAL_NORMAL
@@ -284,11 +284,7 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
 
     match app.spinner_last_advance_at {
         Some(last_advance) if now.duration_since(last_advance) < interval => {}
-        Some(_) => {
-            app.spinner_frame = app.spinner_frame.wrapping_add(1);
-            app.spinner_last_advance_at = Some(now);
-        }
-        None => {
+        Some(_) | None => {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.spinner_last_advance_at = Some(now);
         }
@@ -552,8 +548,8 @@ mod tests {
         advance_spinner_frame(&mut app, base + Duration::from_millis(40));
         assert_eq!(app.spinner_frame, 2);
 
-        crate::app::settings::store::set_prefers_reduced_motion(
-            &mut app.settings.committed_local_settings_document,
+        crate::app::config::store::set_prefers_reduced_motion(
+            &mut app.config.committed_local_settings_document,
             true,
         );
         app.spinner_last_advance_at = None;

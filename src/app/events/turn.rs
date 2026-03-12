@@ -74,7 +74,7 @@ pub(super) fn handle_permission_request_event(
         app.claim_focus_target(FocusTarget::Permission);
         app.viewport.engage_auto_scroll();
         app.notifications.notify(
-            app.settings.preferred_notification_channel_effective(),
+            app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::PermissionRequired,
         );
     } else {
@@ -138,7 +138,7 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     }
     if turn_was_active {
         app.notifications.notify(
-            app.settings.preferred_notification_channel_effective(),
+            app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::TurnComplete,
         );
     }

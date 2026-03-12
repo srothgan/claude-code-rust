@@ -49,11 +49,11 @@ use std::rc::Rc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use super::config::ConfigState;
 use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::{InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
-use super::settings::SettingsState;
 use super::slash;
 use super::subagent;
 use super::view::ActiveView;
@@ -61,7 +61,7 @@ use super::view::ActiveView;
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
-    pub settings: SettingsState,
+    pub config: ConfigState,
     pub settings_home_override: Option<PathBuf>,
     pub messages: Vec<ChatMessage>,
     /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
@@ -513,7 +513,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             active_view: ActiveView::Chat,
-            settings: SettingsState::default(),
+            config: ConfigState::default(),
             settings_home_override: None,
             messages: Vec::new(),
             viewport: ChatViewport::new(),

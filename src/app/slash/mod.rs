@@ -213,7 +213,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/config");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Settings);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
     }
 
     #[test]

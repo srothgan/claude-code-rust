@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     DefaultPermissionMode, OutputStyle, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
-    config_setting,
+    setting_spec,
 };
 use crate::agent::model::EffortLevel;
 
@@ -40,9 +40,9 @@ pub enum PersistedSettingValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
-    pub settings_path: PathBuf,
-    pub local_settings_path: PathBuf,
-    pub preferences_path: PathBuf,
+    pub settings: PathBuf,
+    pub local_settings: PathBuf,
+    pub preferences: PathBuf,
 }
 
 pub struct LoadedSettingsDocuments {
@@ -58,10 +58,9 @@ pub fn load(
     project_root_override: Option<&Path>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override)?;
-    let (settings_document, settings_notice) = load_document(&paths.settings_path)?;
-    let (local_settings_document, local_settings_notice) =
-        load_document(&paths.local_settings_path)?;
-    let (preferences_document, preferences_notice) = load_document(&paths.preferences_path)?;
+    let (settings_document, settings_notice) = load_document(&paths.settings)?;
+    let (local_settings_document, local_settings_notice) = load_document(&paths.local_settings)?;
+    let (preferences_document, preferences_notice) = load_document(&paths.preferences)?;
 
     let notices = [settings_notice, local_settings_notice, preferences_notice]
         .into_iter()
@@ -138,7 +137,7 @@ pub fn write_persisted_setting(
 }
 
 pub fn fast_mode(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::FastMode))? {
+    match read_persisted_setting(document, setting_spec(SettingId::FastMode))? {
         PersistedSettingValue::Missing => Ok(false),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -148,13 +147,13 @@ pub fn fast_mode(document: &Value) -> Result<bool, ()> {
 pub fn set_fast_mode(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::FastMode),
+        setting_spec(SettingId::FastMode),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::AlwaysThinking))? {
+    match read_persisted_setting(document, setting_spec(SettingId::AlwaysThinking))? {
         PersistedSettingValue::Missing => Ok(false),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -164,13 +163,13 @@ pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
 pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::AlwaysThinking),
+        setting_spec(SettingId::AlwaysThinking),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::ThinkingEffort))? {
+    match read_persisted_setting(document, setting_spec(SettingId::ThinkingEffort))? {
         PersistedSettingValue::Missing => Ok(EffortLevel::Medium),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
@@ -180,13 +179,13 @@ pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
 pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::ThinkingEffort),
+        setting_spec(SettingId::ThinkingEffort),
         PersistedSettingValue::String(level.as_stored().to_owned()),
     );
 }
 
 pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::ShowTips))? {
+    match read_persisted_setting(document, setting_spec(SettingId::ShowTips))? {
         PersistedSettingValue::Missing => Ok(true),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -196,13 +195,13 @@ pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
 pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::ShowTips),
+        setting_spec(SettingId::ShowTips),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::TerminalProgressBar))? {
+    match read_persisted_setting(document, setting_spec(SettingId::TerminalProgressBar))? {
         PersistedSettingValue::Missing => Ok(true),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -212,13 +211,13 @@ pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
 pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::TerminalProgressBar),
+        setting_spec(SettingId::TerminalProgressBar),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::ReduceMotion))? {
+    match read_persisted_setting(document, setting_spec(SettingId::ReduceMotion))? {
         PersistedSettingValue::Missing => Ok(false),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -228,13 +227,13 @@ pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
 pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::ReduceMotion),
+        setting_spec(SettingId::ReduceMotion),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::OutputStyle))? {
+    match read_persisted_setting(document, setting_spec(SettingId::OutputStyle))? {
         PersistedSettingValue::Missing => Ok(OutputStyle::Default),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => OutputStyle::from_stored(&value).ok_or(()),
@@ -244,13 +243,13 @@ pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
 pub fn set_output_style(document: &mut Value, style: OutputStyle) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::OutputStyle),
+        setting_spec(SettingId::OutputStyle),
         PersistedSettingValue::String(style.as_stored().to_owned()),
     );
 }
 
 pub fn model(document: &Value) -> Result<Option<String>, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::Model))? {
+    match read_persisted_setting(document, setting_spec(SettingId::Model))? {
         PersistedSettingValue::Missing => Ok(None),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => Ok(Some(value)),
@@ -261,11 +260,11 @@ pub fn set_model(document: &mut Value, model: Option<&str>) {
     let value = model.map_or(PersistedSettingValue::Missing, |model| {
         PersistedSettingValue::String(model.to_owned())
     });
-    write_persisted_setting(document, config_setting(SettingId::Model), value);
+    write_persisted_setting(document, setting_spec(SettingId::Model), value);
 }
 
 pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::DefaultPermissionMode))? {
+    match read_persisted_setting(document, setting_spec(SettingId::DefaultPermissionMode))? {
         PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Default),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => {
@@ -277,13 +276,13 @@ pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode
 pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::DefaultPermissionMode),
+        setting_spec(SettingId::DefaultPermissionMode),
         PersistedSettingValue::String(mode.as_stored().to_owned()),
     );
 }
 
 pub fn language(document: &Value) -> Result<Option<String>, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::Language))? {
+    match read_persisted_setting(document, setting_spec(SettingId::Language))? {
         PersistedSettingValue::Missing => Ok(None),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => Ok(Some(value)),
@@ -297,11 +296,11 @@ pub fn set_language(document: &mut Value, value: Option<&str>) {
         .map_or(PersistedSettingValue::Missing, |text| {
             PersistedSettingValue::String(text.to_owned())
         });
-    write_persisted_setting(document, config_setting(SettingId::Language), persisted);
+    write_persisted_setting(document, setting_spec(SettingId::Language), persisted);
 }
 
 pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::RespectGitignore))? {
+    match read_persisted_setting(document, setting_spec(SettingId::RespectGitignore))? {
         PersistedSettingValue::Missing => Ok(true),
         PersistedSettingValue::Bool(value) => Ok(value),
         PersistedSettingValue::String(_) => Err(()),
@@ -311,13 +310,13 @@ pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
 pub fn set_respect_gitignore(document: &mut Value, enabled: bool) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::RespectGitignore),
+        setting_spec(SettingId::RespectGitignore),
         PersistedSettingValue::Bool(enabled),
     );
 }
 
 pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotifChannel, ()> {
-    match read_persisted_setting(document, config_setting(SettingId::Notifications))? {
+    match read_persisted_setting(document, setting_spec(SettingId::Notifications))? {
         PersistedSettingValue::Missing => Ok(PreferredNotifChannel::default()),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => {
@@ -329,7 +328,7 @@ pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotif
 pub fn set_preferred_notification_channel(document: &mut Value, channel: PreferredNotifChannel) {
     write_persisted_setting(
         document,
-        config_setting(SettingId::Notifications),
+        setting_spec(SettingId::Notifications),
         PersistedSettingValue::String(channel.as_stored().to_owned()),
     );
 }
@@ -351,9 +350,9 @@ fn resolve_paths(
     };
 
     Ok(SettingsPaths {
-        settings_path: home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
-        local_settings_path: project_root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME),
-        preferences_path: home.join(PREFERENCES_FILENAME),
+        settings: home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+        local_settings: project_root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME),
+        preferences: home.join(PREFERENCES_FILENAME),
     })
 }
 
@@ -476,7 +475,7 @@ fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::settings::config_setting;
+    use crate::app::config::setting_spec;
 
     #[test]
     fn load_missing_files_returns_empty_objects() {
@@ -488,12 +487,12 @@ mod tests {
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));
         assert!(loaded.notice.is_none());
-        assert_eq!(loaded.paths.settings_path, dir.path().join(".claude").join("settings.json"));
+        assert_eq!(loaded.paths.settings, dir.path().join(".claude").join("settings.json"));
         assert_eq!(
-            loaded.paths.local_settings_path,
+            loaded.paths.local_settings,
             dir.path().join(".claude").join("settings.local.json")
         );
-        assert_eq!(loaded.paths.preferences_path, dir.path().join(".claude.json"));
+        assert_eq!(loaded.paths.preferences, dir.path().join(".claude.json"));
     }
 
     #[test]
@@ -795,7 +794,7 @@ mod tests {
 
         write_persisted_setting(
             &mut document,
-            config_setting(SettingId::DefaultPermissionMode),
+            setting_spec(SettingId::DefaultPermissionMode),
             PersistedSettingValue::Missing,
         );
 
@@ -816,7 +815,7 @@ mod tests {
         });
 
         let value =
-            read_persisted_setting(&document, config_setting(SettingId::DefaultPermissionMode));
+            read_persisted_setting(&document, setting_spec(SettingId::DefaultPermissionMode));
 
         assert_eq!(value, Ok(PersistedSettingValue::String("plan".to_owned())));
     }

@@ -70,7 +70,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) {
             app.active_paste_session = None;
             super::keys::dispatch_key_by_focus(app, key);
         }
-        ActiveView::Settings => super::settings::handle_key(app, key),
+        ActiveView::Config => super::config::handle_key(app, key),
     }
 }
 
@@ -2822,11 +2822,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.cwd_raw = dir.path().to_string_lossy().to_string();
-        crate::app::settings::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Settings;
-        app.settings.selected_config_index = crate::app::settings::config_settings()
+        crate::app::config::open(&mut app).expect("open settings");
+        app.active_view = ActiveView::Config;
+        app.config.selected_setting_index = crate::app::config::setting_specs()
             .iter()
-            .position(|spec| spec.id == crate::app::settings::SettingId::FastMode)
+            .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
             .expect("fast mode setting row");
         app.input.set_text("seed");
 
@@ -2837,8 +2837,8 @@ mod tests {
 
         assert_eq!(app.input.text(), "seed");
         assert!(!app.pending_submit);
-        assert!(app.settings.fast_mode_effective());
-        assert!(app.settings.last_error.is_none());
+        assert!(app.config.fast_mode_effective());
+        assert!(app.config.last_error.is_none());
     }
 
     #[test]
@@ -2847,8 +2847,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.cwd_raw = dir.path().to_string_lossy().to_string();
-        crate::app::settings::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Settings;
+        crate::app::config::open(&mut app).expect("open settings");
+        app.active_view = ActiveView::Config;
         app.input.set_text("seed");
 
         handle_terminal_event(
@@ -2864,7 +2864,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_paste_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Settings;
+        app.active_view = ActiveView::Config;
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
@@ -2875,7 +2875,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Settings;
+        app.active_view = ActiveView::Config;
         app.viewport.scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,

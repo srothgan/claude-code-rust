@@ -175,7 +175,7 @@ fn render_scrolled(
 ) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
     let vp = &mut app.viewport;
-    let reduced_motion = app.settings.prefers_reduced_motion_effective();
+    let reduced_motion = app.config.prefers_reduced_motion_effective();
     let max_scroll = content_height.saturating_sub(viewport_height);
     if vp.auto_scroll {
         vp.scroll_target = max_scroll;
@@ -538,7 +538,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     render_scrollbar_overlay(
         frame,
         &mut app.viewport,
-        app.settings.prefers_reduced_motion_effective(),
+        app.config.prefers_reduced_motion_effective(),
         area,
         content_height,
         viewport_height,

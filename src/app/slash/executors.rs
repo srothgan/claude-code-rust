@@ -83,7 +83,7 @@ fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    if let Err(err) = crate::app::settings::open(app) {
+    if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open settings: {err}"));
     }
     true

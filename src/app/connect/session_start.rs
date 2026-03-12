@@ -18,7 +18,7 @@ use crate::agent::client::AgentConnection;
 use crate::agent::model::EffortLevel;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::app::App;
-use crate::app::settings::{language_input_validation_message, model_supports_effort, store};
+use crate::app::config::{language_input_validation_message, model_supports_effort, store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionStartReason {
@@ -40,10 +40,10 @@ pub(crate) fn session_launch_settings_for_reason(
         | SessionStartReason::Resume
         | SessionStartReason::Login => {
             let always_thinking =
-                store::always_thinking_enabled(&app.settings.committed_settings_document)
+                store::always_thinking_enabled(&app.config.committed_settings_document)
                     .unwrap_or(false);
-            let model = store::model(&app.settings.committed_settings_document).ok().flatten();
-            let language = store::language(&app.settings.committed_settings_document)
+            let model = store::model(&app.config.committed_settings_document).ok().flatten();
+            let language = store::language(&app.config.committed_settings_document)
                 .ok()
                 .flatten()
                 .map(|value| value.trim().to_owned())
@@ -53,7 +53,7 @@ pub(crate) fn session_launch_settings_for_reason(
                 model: model.clone(),
                 language,
                 permission_mode: Some(
-                    store::default_permission_mode(&app.settings.committed_settings_document)
+                    store::default_permission_mode(&app.config.committed_settings_document)
                         .unwrap_or_default()
                         .as_stored()
                         .to_owned(),
@@ -67,7 +67,7 @@ pub(crate) fn session_launch_settings_for_reason(
                     })
                     .filter(|supports_effort| *supports_effort)
                     .map(|_| {
-                        store::thinking_effort_level(&app.settings.committed_settings_document)
+                        store::thinking_effort_level(&app.config.committed_settings_document)
                             .unwrap_or(EffortLevel::Medium)
                     }),
             }
@@ -99,20 +99,20 @@ mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
     use crate::agent::model::EffortLevel;
     use crate::app::App;
-    use crate::app::settings::{DefaultPermissionMode, store};
+    use crate::app::config::{DefaultPermissionMode, store};
 
     #[test]
     fn persisted_launch_settings_include_model_and_permission_mode() {
         let mut app = App::test_default();
-        store::set_model(&mut app.settings.committed_settings_document, Some("haiku"));
+        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
         store::set_default_permission_mode(
-            &mut app.settings.committed_settings_document,
+            &mut app.config.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
-        store::set_language(&mut app.settings.committed_settings_document, Some("German"));
-        store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
+        store::set_language(&mut app.config.committed_settings_document, Some("German"));
+        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
         store::set_thinking_effort_level(
-            &mut app.settings.committed_settings_document,
+            &mut app.config.committed_settings_document,
             EffortLevel::High,
         );
 
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn persisted_launch_settings_trim_language_value() {
         let mut app = App::test_default();
-        app.settings.committed_settings_document = serde_json::json!({ "language": "  German  " });
+        app.config.committed_settings_document = serde_json::json!({ "language": "  German  " });
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
@@ -154,10 +154,10 @@ mod tests {
         let mut app = App::test_default();
         app.available_models =
             vec![crate::agent::model::AvailableModel::new("haiku", "Haiku").supports_effort(false)];
-        store::set_model(&mut app.settings.committed_settings_document, Some("haiku"));
-        store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
+        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
+        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
         store::set_thinking_effort_level(
-            &mut app.settings.committed_settings_document,
+            &mut app.config.committed_settings_document,
             EffortLevel::High,
         );
 
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn persisted_launch_settings_omit_invalid_language_value() {
         let mut app = App::test_default();
-        app.settings.committed_settings_document = serde_json::json!({ "language": "E" });
+        app.config.committed_settings_document = serde_json::json!({ "language": "E" });
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn persisted_launch_settings_omit_whitespace_only_language_value() {
         let mut app = App::test_default();
-        app.settings.committed_settings_document = serde_json::json!({ "language": "   " });
+        app.config.committed_settings_document = serde_json::json!({ "language": "   " });
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
@@ -192,12 +192,12 @@ mod tests {
     #[test]
     fn logout_launch_settings_omit_all_overrides() {
         let mut app = App::test_default();
-        store::set_model(&mut app.settings.committed_settings_document, Some("haiku"));
+        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
         store::set_default_permission_mode(
-            &mut app.settings.committed_settings_document,
+            &mut app.config.committed_settings_document,
             DefaultPermissionMode::Plan,
         );
-        store::set_always_thinking_enabled(&mut app.settings.committed_settings_document, true);
+        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Logout);
 
