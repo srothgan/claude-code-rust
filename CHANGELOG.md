@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-03-12 [Changes][v0.7.0]
+
+### Features
+
+- **Native `/login` and `/logout` commands** (#67): Shell out to `claude auth login`/`logout` with TUI suspend/resume; credential verification reads `~/.claude/.credentials.json` directly; skip redundant operations when already authenticated or not authenticated
+- **User settings system** (#74): 14 persisted settings across three JSON files (`~/.claude/settings.json`, `<project>/.claude/settings.local.json`, `~/.claude.json`); metadata-driven two-column config view with compact narrow-terminal fallback; toggle/cycle/overlay mutation with immediate persistence
+- **Workspace trust** (#74): Startup gated on per-project trust acceptance; path normalization for Windows drive letters, UNC paths, and symlinks; trust state persisted in `~/.claude.json`
+- **Session launch settings** (#74): Saved preferences (model, language, permission mode, thinking mode, effort level) propagate into every new session via `SessionLaunchSettings`; available models flowed back from SDK for dynamic UI
+- **Cancel-and-resubmit** (#68): Submitting while the agent is running cancels the current turn and auto-resubmits once ready; draft stays visible and editable throughout with cancellation spinner banner
+- **Desktop and bell notifications** (#68, #74): `NotificationManager` tracks terminal focus via DECSET 1004; fires bell + OS-native desktop toasts on permission requests and turn completion when unfocused; channel-based delivery (disabled, bell, OSC 9, desktop) driven by user preference
+- **Compaction overhaul** (#68): `/compact` keeps chat history and appends a success system message after the turn completes; input and keyboard blocked during compaction; auto-compaction clears silently without a banner
+- **Cache observability** (#69): `CacheMetrics` accumulator with rate-limited structured tracing; warn-level alerts for high utilization and eviction spikes with cooldown; integration test suite covering the full stream-to-split-to-measure-to-prefix-sums pipeline
+- **Unified textarea input** (#70): Replace snapshot-based input state plus shadow editor with one persistent `TextArea` as source of truth; fixes wrapped visual-row cursor navigation; `&` subagent autocomplete now eager, matching `@` and `/` behavior
+- **Incremental mention search** (#74): Replace repeated full rescans with incremental BFS (400 entries/tick budget) and 4-tier ranking; `.gitignore` awareness with global, local, and nested rule support; search threshold lowered from 3 characters to 1
+
+### Fixes
+
+- **Permission `allow_always` persistence** (#68, #71): Synthesize persistent `addRules` fallback when the SDK omits suggestions, fixing silent degradation to one-time allow; `allow_always` fallback now persists to `localSettings`
+- **Paste burst reliability** (#71): Reworked burst detection into a timing-based state machine (`Idle`/`Pending`/`Buffering`) with idle flush; retro-capture cleanup for leaked leading characters; enter suppression during and immediately after paste; CRLF normalized to LF in `insert_str`
+- **Bridge `reject_once` match arm** (#68): Added missing match arm that caused spurious warning logs on every permission prompt
+
+### UI
+
+- **Help panel keyboard navigation** (#67): Up/Down scroll and selection for Slash Commands and Subagents tabs; dynamic visible-item computation from wrapped text heights; fixed panel height across tabs; orange highlight for selected item
+- **Paragraph gap preservation** (#74): `TextBlock` state with trailing spacing metadata preserves paragraph gaps in chat rendering
+- **Built-in slash entries** (#74): `/config`, `/login`, `/logout` appear in slash help and autocomplete
+- **Input blocking during async commands** (#67): General `CommandPending` status with dynamic spinner text used by `/login`, `/logout`, `/mode`, `/model`, `/new-session`, `/resume`
+
+### Performance
+
+- **Capacity-based byte accounting** (#69): Replace heuristic message sizing with `IncrementalMarkdown::text_capacity` measurement
+- **Protected-bytes tracking** (#69): Non-evictable streaming-tail blocks excluded from eviction targets in render budget enforcement
+- **Layout invalidation consolidation** (#69): `InvalidationLevel` enum and `invalidate_layout` helper replace ad-hoc invalidation across event flows
+
+### Refactoring
+
+- **Codebase split** (#68): `ui/tool_call.rs`, `app/connect.rs`, `app/slash.rs`, `app/state.rs`, `app/events.rs` split into submodule directories (4-9 files each); `bridge.ts` split into 8 files under `bridge/`; all public APIs preserved via re-exports
+- **Usage pipeline removal** (#68): Delete entire `usage_update` pipeline (bridge/usage.ts, UsageUpdate types, session/message token tracking, footer cost display) across TypeScript and Rust
+- **Input state unification** (#70): Remove rebuild/sync debt from snapshot-based input; route all input reads/writes through accessor + replace flows on a single `TextArea` instance
+
+### CI and Dependencies
+
+- Bump `uuid` from 1.21.0 to 1.22.0 (#72)
+- Bump `which` from 8.0.0 to 8.0.2 (#73)
+- Switch `tui-textarea-2` from local path dependency to crates.io `0.10.1` (#70)
+- Switch remaining npm command surfaces to pnpm across workflows, docs, and scripts (#74)
+
 ## [0.6.0] - 2026-03-03 [Changes][v0.6.0]
 
 ### Features
@@ -259,6 +306,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.7.0]: https://github.com/srothgan/claude-code-rust/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/srothgan/claude-code-rust/compare/v0.5.1...v0.6.0
 [v0.5.1]: https://github.com/srothgan/claude-code-rust/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/srothgan/claude-code-rust/compare/v0.4.1...v0.5.0
