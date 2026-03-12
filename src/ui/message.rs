@@ -140,14 +140,24 @@ fn render_assistant_message(
 
     let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
+    let mut has_visible_content = false;
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
                 if prev_was_tool {
                     out.push(Line::default());
                 }
-                render_text_block_cached(block, width, None, false, out);
-                emit_blank_lines(out, block.trailing_blank_lines());
+                let rendered = assistant_text_block_render(block, width, !has_visible_content);
+                let trailing_gap = if !has_visible_content && rendered.height == 0 {
+                    0
+                } else {
+                    block.trailing_blank_lines()
+                };
+                out.extend(rendered.lines);
+                emit_blank_lines(out, trailing_gap);
+                if rendered.height > 0 {
+                    has_visible_content = true;
+                }
                 prev_was_tool = false;
             }
             MessageBlock::ToolCall(tc) => {
@@ -159,6 +169,7 @@ fn render_assistant_message(
                     out.push(Line::default());
                 }
                 tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
+                has_visible_content = true;
                 prev_was_tool = true;
             }
             MessageBlock::Welcome(_) => {}
@@ -296,6 +307,7 @@ fn measure_assistant_blocks_height(
     let mut lines_after_label = 0usize;
     let mut height = 0usize;
     let mut wrapped_lines = 0usize;
+    let mut has_visible_content = false;
 
     for block in &mut msg.blocks {
         match block {
@@ -304,11 +316,20 @@ fn measure_assistant_blocks_height(
                     height += 1;
                     lines_after_label += 1;
                 }
-                let trailing_gap = block.trailing_blank_lines();
-                let (h, lines) = text_block_height_cached(block, width, None, false);
+                let rendered = assistant_text_block_render(block, width, !has_visible_content);
+                let trailing_gap = if !has_visible_content && rendered.height == 0 {
+                    0
+                } else {
+                    block.trailing_blank_lines()
+                };
+                let h = rendered.height;
+                let lines = rendered.lines.len();
                 height += h + trailing_gap;
                 lines_after_label += h + trailing_gap;
                 wrapped_lines += lines;
+                if h > 0 {
+                    has_visible_content = true;
+                }
                 prev_was_tool = false;
             }
             MessageBlock::ToolCall(tc) => {
@@ -329,6 +350,7 @@ fn measure_assistant_blocks_height(
                 height += h;
                 lines_after_label += h;
                 wrapped_lines += lines;
+                has_visible_content = true;
                 prev_was_tool = true;
             }
             MessageBlock::Welcome(_) => {}
@@ -472,6 +494,7 @@ fn render_assistant_from_offset(
     let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     let mut lines_after_label = 0usize;
+    let mut has_visible_content = false;
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
@@ -479,17 +502,29 @@ fn render_assistant_from_offset(
                     emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
                     lines_after_label += 1;
                 }
-                let trailing_gap = block.trailing_blank_lines();
-                let (h, _) = text_block_height_cached(block, width, None, false);
+                let rendered = assistant_text_block_render(block, width, !has_visible_content);
+                let trailing_gap = if !has_visible_content && rendered.height == 0 {
+                    0
+                } else {
+                    block.trailing_blank_lines()
+                };
+                let h = rendered.height;
                 let total_h = h + trailing_gap;
-                if *can_consume_skip && *remaining_skip >= total_h {
+                if h == 0 {
+                    emit_blank_lines_with_skip(
+                        trailing_gap,
+                        out,
+                        remaining_skip,
+                        *can_consume_skip,
+                    );
+                } else if *can_consume_skip && *remaining_skip >= total_h {
                     *remaining_skip -= total_h;
                 } else if *can_consume_skip && *remaining_skip >= h {
                     *remaining_skip -= h;
                     emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
                 } else {
                     if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                        render_text_block_cached(block, width, None, false, out);
+                        out.extend(rendered.lines);
                     }
                     emit_blank_lines_with_skip(
                         trailing_gap,
@@ -499,6 +534,9 @@ fn render_assistant_from_offset(
                     );
                 }
                 lines_after_label += h + trailing_gap;
+                if h > 0 {
+                    has_visible_content = true;
+                }
                 prev_was_tool = false;
             }
             MessageBlock::ToolCall(tc) => {
@@ -520,6 +558,7 @@ fn render_assistant_from_offset(
                     tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
                 }
                 lines_after_label += h;
+                has_visible_content = true;
                 prev_was_tool = true;
             }
             MessageBlock::Welcome(_) => {}
@@ -606,6 +645,42 @@ fn emit_blank_lines_with_skip(
     for _ in 0..count {
         emit_line_with_skip(Line::default(), out, remaining_skip, can_consume_skip);
     }
+}
+
+struct RenderedTextBlock {
+    lines: Vec<Line<'static>>,
+    height: usize,
+}
+
+fn assistant_text_block_render(
+    block: &mut TextBlock,
+    width: u16,
+    trim_leading_blank_lines: bool,
+) -> RenderedTextBlock {
+    let mut lines = Vec::new();
+    render_text_block_cached(block, width, None, false, &mut lines);
+
+    let mut height = block.cache.height_at(width).unwrap_or_else(|| {
+        Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width)
+    });
+
+    if trim_leading_blank_lines {
+        let leading_blank_lines = count_leading_blank_lines(&lines);
+        if leading_blank_lines > 0 {
+            lines.drain(..leading_blank_lines);
+            height = height.saturating_sub(leading_blank_lines);
+        }
+    }
+
+    RenderedTextBlock { lines, height }
+}
+
+fn count_leading_blank_lines(lines: &[Line<'static>]) -> usize {
+    lines.iter().take_while(|line| line_is_blank(line)).count()
+}
+
+fn line_is_blank(line: &Line<'_>) -> bool {
+    line.spans.iter().all(|span| span.content.as_ref().chars().all(char::is_whitespace))
 }
 
 fn should_skip_whole_block(
@@ -1453,6 +1528,68 @@ mod tests {
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
+    fn assistant_heading_at_start_does_not_render_blank_line_after_label() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 80, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Heading"));
+        assert!(!rendered[1].is_empty());
+    }
+
+    #[test]
+    fn assistant_heading_at_start_height_matches_rendered_output() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut measured = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
+        let mut truth = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
+
+        let (h, _) = measure_message_height_cached(&mut measured, &spinner, 80, 1);
+        let truth_h = ground_truth_height(&mut truth, &spinner, 80);
+
+        assert_eq!(h, truth_h);
+    }
+
+    #[test]
+    fn assistant_heading_at_start_offset_render_omits_leading_blank_row() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
+        let mut out = Vec::new();
+
+        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 0, &mut out);
+        let rendered = render_lines_to_strings(&out);
+
+        assert_eq!(remaining, 0);
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Heading"));
+        assert!(!rendered[1].is_empty());
     }
 
     #[test]
