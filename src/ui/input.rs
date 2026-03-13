@@ -26,7 +26,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use tui_textarea::{TextArea, WrapMode};
+use tui_textarea::TextArea;
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -209,14 +209,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn configure_input_textarea(app: &mut App) {
-    let lines = app.input.lines().to_vec();
-    let textarea = app.input.editor_mut();
-    textarea.set_placeholder_text("Type a message...");
-    textarea.set_placeholder_style(Style::default().fg(theme::DIM));
-    textarea.set_cursor_line_style(Style::default());
-    textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    textarea.clear_custom_highlight();
-    apply_textarea_highlights(textarea, &lines);
+    let needs_highlight_update = app.input.highlight_version != app.input.content_version;
+
+    {
+        let textarea = app.input.editor_mut();
+        textarea.set_placeholder_text("Type a message...");
+        textarea.set_placeholder_style(Style::default().fg(theme::DIM));
+        textarea.set_cursor_line_style(Style::default());
+        textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+    }
+
+    if needs_highlight_update {
+        let lines = app.input.lines().to_vec();
+        let textarea = app.input.editor_mut();
+        textarea.clear_custom_highlight();
+        apply_textarea_highlights(textarea, &lines);
+        app.input.highlight_version = app.input.content_version;
+    }
 }
 
 fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
@@ -321,16 +330,11 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 
 /// Total visual height for the input area: input lines + hint banners.
 /// Called by the layout to allocate the correct input area height.
-pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
+pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
     let content_width =
         area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
-    let mut textarea = TextArea::from(app.input.lines().to_vec());
-    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
-    textarea.set_min_rows(1);
-    textarea.set_max_rows(MAX_INPUT_HEIGHT);
-    let input_lines =
-        if content_width == 0 { 1 } else { textarea.measure(content_width).preferred_rows };
+    let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
     hint + input_lines
 }
 
@@ -374,7 +378,7 @@ mod tests {
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
         app.input.set_text(&"x".repeat(500));
-        assert_eq!(visual_line_count(&app, 8), MAX_INPUT_HEIGHT);
+        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT);
     }
 
     #[test]
@@ -384,13 +388,13 @@ mod tests {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
-        assert_eq!(visual_line_count(&app, 80), LOGIN_HINT_LINES + 1);
+        assert_eq!(visual_line_count(&mut app, 80), LOGIN_HINT_LINES + 1);
     }
 
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
-        assert_eq!(visual_line_count(&app, 80), CANCEL_HINT_LINES + 1);
+        assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
     }
 }

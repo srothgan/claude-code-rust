@@ -164,8 +164,10 @@ impl PasteBurstDetector {
                     CharAction::Passthrough(ch)
                 }
             }
-            BurstState::Pending { held_char, retro_prefix, .. } => {
-                if is_fast {
+            BurstState::Pending { held_char, received_at, retro_prefix } => {
+                let within_pending_window =
+                    now.saturating_duration_since(*received_at) <= IDLE_TIMEOUT;
+                if is_fast || within_pending_window {
                     // Second fast character confirms a burst is starting.
                     let held = *held_char;
                     let retro_len = retro_prefix.len();
@@ -572,5 +574,22 @@ mod tests {
 
         let t4 = fast(t3, 80);
         assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pending_confirmation_tolerates_jitter_within_idle_timeout() {
+        let mut d = PasteBurstDetector::new();
+        let t0 = Instant::now();
+
+        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
+        let t1 = fast(t0, 20);
+        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
+
+        let jitter_ms =
+            u64::try_from((CHAR_INTERVAL + Duration::from_millis(5)).as_millis()).unwrap();
+        let t2 = fast(t1, jitter_ms);
+        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
+        assert!(d.is_buffering());
     }
 }

@@ -29,10 +29,18 @@ pub struct InputState {
     /// Monotonically increasing version counter. Bumped on every content or cursor change
     /// so that downstream caches (e.g. wrap result) can detect staleness cheaply.
     pub version: u64,
+    /// Bumped only when visible input content changes (not cursor-only movement).
+    /// Used to key wrap/highlight caches that don't depend on cursor position.
+    pub content_version: u64,
     /// Stored paste blocks: each entry holds the full text of a large paste (>1000 chars).
     /// A placeholder token `[Pasted Text N]` is inserted into `lines` at the paste point.
     /// On `text()`, placeholders are expanded back to the original pasted content.
     pub paste_blocks: Vec<String>,
+    /// Cached visual line measurement: (`content_version`, width, `max_rows`, result).
+    cached_measure: Option<(u64, u16, u16, u16)>,
+    /// Tracks which `content_version` highlights were last applied for.
+    /// Initialized to `u64::MAX` so the first render always applies highlights.
+    pub highlight_version: u64,
     editor: TextArea<'static>,
 }
 
@@ -47,26 +55,26 @@ impl InputState {
         editor.set_wrap_mode(WrapMode::WordOrGlyph);
     }
 
-    fn clamp_cursor(lines: &[String], row: usize, col: usize) -> (usize, usize) {
-        let row = row.min(lines.len().saturating_sub(1));
-        let col = col.min(lines[row].chars().count());
-        (row, col)
+    fn bump_cursor_version(&mut self) {
+        self.version += 1;
     }
 
-    fn build_editor(lines: Vec<String>, row: usize, col: usize) -> TextArea<'static> {
-        let mut textarea = TextArea::from(lines);
-        Self::configure_editor(&mut textarea);
-        textarea.move_cursor(CursorMove::Jump(
-            u16::try_from(row).unwrap_or(u16::MAX),
-            u16::try_from(col).unwrap_or(u16::MAX),
-        ));
-        textarea
+    fn bump_content_version(&mut self) {
+        self.version += 1;
+        self.content_version += 1;
     }
 
     pub fn new() -> Self {
         let mut editor = TextArea::default();
         Self::configure_editor(&mut editor);
-        Self { version: 0, paste_blocks: Vec::new(), editor }
+        Self {
+            version: 0,
+            content_version: 0,
+            paste_blocks: Vec::new(),
+            cached_measure: None,
+            highlight_version: u64::MAX,
+            editor,
+        }
     }
 
     #[must_use]
@@ -99,7 +107,7 @@ impl InputState {
     }
 
     pub fn set_cursor(&mut self, row: usize, col: usize) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Jump(
                 u16::try_from(row).unwrap_or(u16::MAX),
                 u16::try_from(col).unwrap_or(u16::MAX),
@@ -120,9 +128,8 @@ impl InputState {
         if lines.is_empty() {
             lines.push(String::new());
         }
-        let (row, col) = Self::clamp_cursor(&lines, cursor_row, cursor_col);
-        self.editor = Self::build_editor(lines, row, col);
-        self.version += 1;
+        self.editor.set_lines(lines, (cursor_row, cursor_col));
+        self.bump_content_version();
     }
 
     pub fn clear_custom_highlights(&mut self) {
@@ -194,112 +201,122 @@ impl InputState {
         let _ = self.textarea_insert_char(c);
     }
 
-    fn apply_textarea_edit(&mut self, edit: impl FnOnce(&mut TextArea<'_>)) -> bool {
-        let before_cursor = self.editor.cursor();
-        let before_lines = self.editor.lines().to_vec();
+    fn apply_cursor_edit(&mut self, edit: impl FnOnce(&mut TextArea<'_>)) -> bool {
+        let before = self.editor.cursor();
         edit(&mut self.editor);
-        let changed =
-            before_cursor != self.editor.cursor() || before_lines.as_slice() != self.editor.lines();
+        let changed = before != self.editor.cursor();
         if changed {
-            self.version += 1;
+            self.bump_cursor_version();
         }
         changed
     }
 
     pub fn textarea_insert_char(&mut self, c: char) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            textarea.insert_char(c);
-        })
+        self.editor.insert_char(c);
+        self.bump_content_version();
+        true
     }
 
     pub fn textarea_insert_newline(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            textarea.insert_newline();
-        })
+        self.editor.insert_newline();
+        self.bump_content_version();
+        true
     }
 
     pub fn textarea_delete_char_before(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.delete_char();
-        })
+        let changed = self.editor.delete_char();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn textarea_delete_char_after(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.delete_next_char();
-        })
+        let changed = self.editor.delete_next_char();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn textarea_move_left(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Back);
         })
     }
 
     pub fn textarea_move_right(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Forward);
         })
     }
 
     pub fn textarea_move_up(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Up);
         })
     }
 
     pub fn textarea_move_down(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Down);
         })
     }
 
     pub fn textarea_move_home(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::Head);
         })
     }
 
     pub fn textarea_move_end(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::End);
         })
     }
 
     pub fn textarea_undo(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.undo();
-        })
+        let changed = self.editor.undo();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn textarea_redo(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.redo();
-        })
+        let changed = self.editor.redo();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn textarea_move_word_left(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::WordBack);
         })
     }
 
     pub fn textarea_move_word_right(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
+        self.apply_cursor_edit(|textarea| {
             textarea.move_cursor(CursorMove::WordForward);
         })
     }
 
     pub fn textarea_delete_word_before(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.delete_word();
-        })
+        let changed = self.editor.delete_word();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn textarea_delete_word_after(&mut self) -> bool {
-        self.apply_textarea_edit(|textarea| {
-            let _ = textarea.delete_next_word();
-        })
+        let changed = self.editor.delete_next_word();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
     }
 
     pub fn insert_newline(&mut self) {
@@ -314,41 +331,10 @@ impl InputState {
         if normalized.is_empty() {
             return;
         }
-
-        let (cursor_row, cursor_col) = self.cursor();
-        let Some(current_line) = self.lines().get(cursor_row).cloned() else {
-            return;
-        };
-        let split_byte = char_to_byte_index(&current_line, cursor_col);
-        let head = &current_line[..split_byte];
-        let tail = &current_line[split_byte..];
-
-        let mut chunks = normalized.split('\n');
-        let Some(first_chunk) = chunks.next() else {
-            return;
-        };
-        let rest: Vec<&str> = chunks.collect();
-
-        let mut lines = self.lines().to_vec();
-        if rest.is_empty() {
-            lines[cursor_row] = format!("{head}{first_chunk}{tail}");
-            let new_col = head.chars().count() + first_chunk.chars().count();
-            self.replace_lines_and_cursor(lines, cursor_row, new_col);
-            return;
+        let changed = self.editor.insert_str(&normalized);
+        if changed {
+            self.bump_content_version();
         }
-
-        let mut inserted = Vec::with_capacity(rest.len() + 1);
-        inserted.push(format!("{head}{first_chunk}"));
-        for chunk in &rest[..rest.len().saturating_sub(1)] {
-            inserted.push((*chunk).to_owned());
-        }
-        let last = rest.last().copied().unwrap_or_default();
-        inserted.push(format!("{last}{tail}"));
-
-        lines.splice(cursor_row..=cursor_row, inserted);
-        let new_row = cursor_row + rest.len();
-        let new_col = last.chars().count();
-        self.replace_lines_and_cursor(lines, new_row, new_col);
     }
 
     /// Insert a large paste as a compact placeholder token at the cursor.
@@ -443,6 +429,27 @@ impl InputState {
         if !self.textarea_move_end() {
             self.version += 1;
         }
+    }
+
+    pub fn measure_visual_lines(&mut self, content_width: u16, max_rows: u16) -> u16 {
+        if let Some((v, w, m, result)) = self.cached_measure
+            && v == self.content_version
+            && w == content_width
+            && m == max_rows
+        {
+            return result;
+        }
+
+        let result = if content_width == 0 {
+            1
+        } else {
+            self.editor.set_min_rows(1);
+            self.editor.set_max_rows(max_rows);
+            self.editor.measure(content_width).preferred_rows
+        };
+
+        self.cached_measure = Some((self.content_version, content_width, max_rows, result));
+        result
     }
 
     #[must_use]

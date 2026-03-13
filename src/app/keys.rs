@@ -119,30 +119,31 @@ fn slice_by_cols(text: &str, start_col: usize, end_col: usize) -> String {
     out
 }
 
-pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
+pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     if handle_always_allowed_shortcuts(app, key) {
-        return;
+        return true;
     }
 
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
         || app.is_compacting
     {
-        handle_blocked_input_shortcuts(app, key);
-        return;
+        return handle_blocked_input_shortcuts(app, key);
     }
 
     sync_help_focus(app);
 
     if handle_global_shortcuts(app, key) {
-        return;
+        return true;
     }
 
     match app.focus_owner() {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Permission => {
-            if !handle_permission_key(app, key) {
-                handle_normal_key(app, key);
+            if handle_permission_key(app, key) {
+                true
+            } else {
+                handle_normal_key(app, key)
             }
         }
         FocusOwner::Input | FocusOwner::TodoList => handle_normal_key(app, key),
@@ -151,49 +152,55 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 
 /// During blocked-input states (Connecting, `CommandPending`, Error), keep input disabled and only allow
 /// navigation/help shortcuts.
-fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
+fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
         sync_help_focus(app);
-        return;
+        return true;
     }
 
     if is_ctrl_char_shortcut(key, 'h') {
         toggle_header(app);
         sync_help_focus(app);
-        return;
+        return true;
     }
 
     if is_ctrl_char_shortcut(key, 'l') {
         app.force_redraw = true;
         sync_help_focus(app);
-        return;
+        return true;
     }
 
-    match (key.code, key.modifiers) {
+    let changed = match (key.code, key.modifiers) {
         (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if app.is_help_active() {
                 app.input.clear();
             } else {
                 app.input.set_text("?");
             }
+            true
         }
         (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
             set_help_view(app, prev_help_view(app.help_view));
+            true
         }
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
             set_help_view(app, next_help_view(app.help_view));
+            true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
             app.viewport.scroll_up(1);
+            true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
             app.viewport.scroll_down(1);
+            true
         }
-        _ => {}
-    }
+        _ => false,
+    };
 
     sync_help_focus(app);
+    changed
 }
 
 /// Handle shortcuts that should work regardless of current focus owner.
@@ -245,15 +252,15 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
     !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
 }
 
-pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
+pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     sync_help_focus(app);
     let input_version_before = app.input.version;
 
     if should_ignore_key_during_paste(app, key) {
-        return;
+        return false;
     }
 
-    handle_normal_key_actions(app, key);
+    let changed = handle_normal_key_actions(app, key);
 
     if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
@@ -262,6 +269,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     }
 
     sync_help_focus(app);
+    changed
 }
 
 fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
@@ -278,29 +286,29 @@ fn is_editing_like_key(key: KeyEvent) -> bool {
     )
 }
 
-fn handle_normal_key_actions(app: &mut App, key: KeyEvent) {
+fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
     if handle_turn_control_key(app, key) {
-        return;
+        return true;
     }
     if handle_submit_key(app, key) {
-        return;
+        return true;
     }
     if handle_history_key(app, key) {
-        return;
+        return true;
     }
     if handle_navigation_key(app, key) {
-        return;
+        return true;
     }
     if handle_focus_toggle_key(app, key) {
-        return;
+        return true;
     }
     if handle_mode_cycle_key(app, key) {
-        return;
+        return true;
     }
     if handle_editing_key(app, key) {
-        return;
+        return true;
     }
-    let _ = handle_printable_key(app, key);
+    handle_printable_key(app, key)
 }
 
 fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
@@ -329,18 +337,17 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
     if app.paste_burst.on_enter(now) {
-        return true;
+        return false;
     }
 
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
         app.pending_submit = Some(app.input.snapshot());
-        return true;
+        return false;
     }
     app.pending_submit = None;
-    let _ = app.input.textarea_insert_newline();
-    true
+    app.input.textarea_insert_newline()
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
@@ -348,14 +355,8 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     match (key.code, key.modifiers) {
-        (KeyCode::Char('z'), m) if m == KeyModifiers::CONTROL => {
-            let _ = app.input.textarea_undo();
-            true
-        }
-        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => {
-            let _ = app.input.textarea_redo();
-            true
-        }
+        (KeyCode::Char('z'), m) if m == KeyModifiers::CONTROL => app.input.textarea_undo(),
+        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => app.input.textarea_redo(),
         _ => false,
     }
 }
@@ -367,24 +368,20 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            let _ = app.input.textarea_move_word_left();
-            true
+            app.input.textarea_move_word_left()
         }
         (KeyCode::Right, m)
             if app.focus_owner() != FocusOwner::TodoList
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            let _ = app.input.textarea_move_word_right();
-            true
+            app.input.textarea_move_word_right()
         }
         (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_move_left();
-            true
+            app.input.textarea_move_left()
         }
         (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_move_right();
-            true
+            app.input.textarea_move_right()
         }
         (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_up(app);
@@ -407,12 +404,10 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_move_home();
-            true
+            app.input.textarea_move_home()
         }
         (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_move_end();
-            true
+            app.input.textarea_move_end()
         }
         _ => false,
     }
@@ -489,24 +484,20 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            let _ = app.input.textarea_delete_word_before();
-            true
+            app.input.textarea_delete_word_before()
         }
         (KeyCode::Delete, m)
             if app.focus_owner() != FocusOwner::TodoList
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            let _ = app.input.textarea_delete_word_after();
-            true
+            app.input.textarea_delete_word_after()
         }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_delete_char_before();
-            true
+            app.input.textarea_delete_char_before()
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
-            let _ = app.input.textarea_delete_char_after();
-            true
+            app.input.textarea_delete_char_after()
         }
         _ => false,
     }
@@ -529,7 +520,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     match app.paste_burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
-            return true;
+            return false;
         }
         CharAction::RetroCapture(delete_count) => {
             // Burst confirmation retro-captured already-inserted leading chars.
@@ -637,41 +628,42 @@ pub(super) fn move_todo_selection_down(app: &mut App) {
 }
 
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
-pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) {
+pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
     if app.mention.is_some() {
-        handle_mention_key(app, key);
-        return;
+        return handle_mention_key(app, key);
     }
     if app.slash.is_some() {
-        handle_slash_key(app, key);
-        return;
+        return handle_slash_key(app, key);
     }
     if app.subagent.is_some() {
-        handle_subagent_key(app, key);
-        return;
+        return handle_subagent_key(app, key);
     }
-    dispatch_key_by_focus(app, key);
+    dispatch_key_by_focus(app, key)
 }
 
-fn handle_help_key(app: &mut App, key: KeyEvent) {
+fn handle_help_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => {
             set_help_view(app, prev_help_view(app.help_view));
+            true
         }
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
             set_help_view(app, next_help_view(app.help_view));
+            true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE => {
             if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
                 let count = crate::ui::help::help_item_count(app);
                 app.help_dialog.move_up(count, app.help_visible_count);
             }
+            true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE => {
             if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
                 let count = crate::ui::help::help_item_count(app);
                 app.help_dialog.move_down(count, app.help_visible_count);
             }
+            true
         }
         _ => handle_normal_key(app, key),
     }
@@ -715,72 +707,114 @@ fn sync_help_focus(app: &mut App) {
 }
 
 /// Handle keystrokes while the `@` mention autocomplete dropdown is active.
-pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) {
+pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        (KeyCode::Up, _) => mention::move_up(app),
-        (KeyCode::Down, _) => mention::move_down(app),
-        (KeyCode::Enter | KeyCode::Tab, _) => mention::confirm_selection(app),
-        (KeyCode::Esc, _) => mention::deactivate(app),
+        (KeyCode::Up, _) => {
+            mention::move_up(app);
+            true
+        }
+        (KeyCode::Down, _) => {
+            mention::move_down(app);
+            true
+        }
+        (KeyCode::Enter | KeyCode::Tab, _) => {
+            mention::confirm_selection(app);
+            true
+        }
+        (KeyCode::Esc, _) => {
+            mention::deactivate(app);
+            true
+        }
         (KeyCode::Backspace, _) => {
-            let _ = app.input.textarea_delete_char_before();
+            let changed = app.input.textarea_delete_char_before();
             mention::update_query(app);
+            changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let _ = app.input.textarea_insert_char(c);
+            let changed = app.input.textarea_insert_char(c);
             if c.is_whitespace() {
                 mention::deactivate(app);
             } else {
                 mention::update_query(app);
             }
+            changed
         }
         // Any other key: deactivate mention and forward to normal handling
         _ => {
             mention::deactivate(app);
-            dispatch_key_by_focus(app, key);
+            dispatch_key_by_focus(app, key)
         }
     }
 }
 
 /// Handle keystrokes while slash autocomplete dropdown is active.
-fn handle_slash_key(app: &mut App, key: KeyEvent) {
+fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        (KeyCode::Up, _) => slash::move_up(app),
-        (KeyCode::Down, _) => slash::move_down(app),
-        (KeyCode::Enter | KeyCode::Tab, _) => slash::confirm_selection(app),
-        (KeyCode::Esc, _) => slash::deactivate(app),
+        (KeyCode::Up, _) => {
+            slash::move_up(app);
+            true
+        }
+        (KeyCode::Down, _) => {
+            slash::move_down(app);
+            true
+        }
+        (KeyCode::Enter | KeyCode::Tab, _) => {
+            slash::confirm_selection(app);
+            true
+        }
+        (KeyCode::Esc, _) => {
+            slash::deactivate(app);
+            true
+        }
         (KeyCode::Backspace, _) => {
-            let _ = app.input.textarea_delete_char_before();
+            let changed = app.input.textarea_delete_char_before();
             slash::update_query(app);
+            changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let _ = app.input.textarea_insert_char(c);
+            let changed = app.input.textarea_insert_char(c);
             slash::update_query(app);
+            changed
         }
         _ => {
             slash::deactivate(app);
-            dispatch_key_by_focus(app, key);
+            dispatch_key_by_focus(app, key)
         }
     }
 }
 
 /// Handle keystrokes while `&` subagent autocomplete dropdown is active.
-fn handle_subagent_key(app: &mut App, key: KeyEvent) {
+fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        (KeyCode::Up, _) => subagent::move_up(app),
-        (KeyCode::Down, _) => subagent::move_down(app),
-        (KeyCode::Enter | KeyCode::Tab, _) => subagent::confirm_selection(app),
-        (KeyCode::Esc, _) => subagent::deactivate(app),
+        (KeyCode::Up, _) => {
+            subagent::move_up(app);
+            true
+        }
+        (KeyCode::Down, _) => {
+            subagent::move_down(app);
+            true
+        }
+        (KeyCode::Enter | KeyCode::Tab, _) => {
+            subagent::confirm_selection(app);
+            true
+        }
+        (KeyCode::Esc, _) => {
+            subagent::deactivate(app);
+            true
+        }
         (KeyCode::Backspace, _) => {
-            let _ = app.input.textarea_delete_char_before();
+            let changed = app.input.textarea_delete_char_before();
             subagent::update_query(app);
+            changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let _ = app.input.textarea_insert_char(c);
+            let changed = app.input.textarea_insert_char(c);
             subagent::update_query(app);
+            changed
         }
         _ => {
             subagent::deactivate(app);
-            dispatch_key_by_focus(app, key);
+            dispatch_key_by_focus(app, key)
         }
     }
 }

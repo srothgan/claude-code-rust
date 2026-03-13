@@ -35,21 +35,21 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
-    app.needs_redraw = true;
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => {
-            dispatch_key_by_view(app, key);
-        }
+    let changed = match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
             dispatch_mouse_by_view(app, mouse);
+            true
         }
         Event::Paste(text) => dispatch_paste_by_view(app, &text),
         Event::FocusGained => {
             app.notifications.on_focus_gained();
             app.refresh_git_branch();
+            true
         }
         Event::FocusLost => {
             app.notifications.on_focus_lost();
+            true
         }
         Event::Resize(_, _) => {
             // Force a full terminal clear on resize. Without this, terminal
@@ -58,20 +58,28 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             // shift even though ratatui paints the correct content. The clear
             // resets the terminal's internal state.
             app.force_redraw = true;
+            true
         }
         // Non-press key events (Release, Repeat) -- ignored.
-        Event::Key(_) => {}
-    }
+        Event::Key(_) => false,
+    };
+    app.needs_redraw |= changed;
 }
 
-fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) {
+fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     match app.active_view {
         ActiveView::Chat => {
             app.active_paste_session = None;
-            super::keys::dispatch_key_by_focus(app, key);
+            super::keys::dispatch_key_by_focus(app, key)
         }
-        ActiveView::Config => super::config::handle_key(app, key),
-        ActiveView::Trusted => super::trust::handle_key(app, key),
+        ActiveView::Config => {
+            super::config::handle_key(app, key);
+            true
+        }
+        ActiveView::Trusted => {
+            super::trust::handle_key(app, key);
+            true
+        }
     }
 }
 
@@ -87,16 +95,18 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 }
 
-fn dispatch_paste_by_view(app: &mut App, text: &str) {
+fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
     if app.active_view != ActiveView::Chat {
-        return;
+        return false;
     }
 
     if !matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
         && !app.is_compacting
     {
         app.queue_paste_text(text);
+        return true;
     }
+    false
 }
 
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
@@ -383,6 +393,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
+    use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -2942,6 +2953,34 @@ mod tests {
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
         assert!(app.pending_paste_text.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn buffered_paste_char_does_not_force_redraw() {
+        let mut app = make_test_app();
+        let now = Instant::now();
+
+        assert_eq!(
+            app.paste_burst.on_char('a', now),
+            super::super::paste_burst::CharAction::Passthrough('a')
+        );
+        assert_eq!(
+            app.paste_burst.on_char('b', now + Duration::from_millis(1)),
+            super::super::paste_burst::CharAction::Consumed
+        );
+        assert_eq!(
+            app.paste_burst.on_char('c', now + Duration::from_millis(2)),
+            super::super::paste_burst::CharAction::RetroCapture(1)
+        );
+
+        app.needs_redraw = false;
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
+        );
+
+        assert!(!app.needs_redraw);
         assert!(app.input.is_empty());
     }
 
