@@ -218,6 +218,8 @@ pub struct App {
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
+    /// Account info from the bridge status snapshot (email, org, subscription).
+    pub account_info: Option<crate::agent::types::AccountInfo>,
 
     /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -603,6 +605,7 @@ impl App {
             fast_mode_state: model::FastModeState::Off,
             last_rate_limit_update: None,
             is_compacting: false,
+            account_info: None,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),

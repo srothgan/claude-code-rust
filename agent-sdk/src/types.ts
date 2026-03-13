@@ -159,6 +159,14 @@ export interface SessionListEntry {
   first_prompt?: string;
 }
 
+export interface AccountInfo {
+  email?: string;
+  organization?: string;
+  subscription_type?: string;
+  token_source?: string;
+  api_key_source?: string;
+}
+
 export type SessionThinkingMode = "adaptive" | "disabled";
 export type SessionEffortLevel = EffortLevel;
 
@@ -233,6 +241,10 @@ export type BridgeCommand =
       content?: Record<string, Json>;
     }
   | {
+      command: "get_status_snapshot";
+      session_id: string;
+    }
+  | {
       command: "shutdown";
     };
 
@@ -291,4 +303,5 @@ export type BridgeEvent =
       history_updates?: SessionUpdate[];
     }
   | { event: "initialized"; result: InitializeResult }
-  | { event: "sessions_listed"; sessions: SessionListEntry[] };
+  | { event: "sessions_listed"; sessions: SessionListEntry[] }
+  | { event: "status_snapshot"; session_id: string; account: AccountInfo };

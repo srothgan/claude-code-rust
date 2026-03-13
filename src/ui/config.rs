@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
-        ConfigTab::Status => status::render(frame, chunks[1]),
+        ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1]),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
     }
@@ -97,6 +97,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         || app.config.language_overlay().is_some()
     {
         ""
+    } else if app.config.active_tab == ConfigTab::Status {
+        "Enter close | Esc close"
     } else {
         "Space edit | Enter close | Esc close"
     };
@@ -825,5 +827,64 @@ mod tests {
         );
         assert_eq!(super::settings::settings_hint_height(0), 0);
         assert!(!SETTINGS_LIMITATION_HINT.is_empty());
+    }
+
+    #[test]
+    fn status_tab_renders_session_info() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Status;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Version"), "missing Version");
+        assert!(rendered.contains("cwd"), "missing cwd");
+        assert!(rendered.contains("Model"), "missing Model");
+    }
+
+    #[test]
+    fn status_tab_help_omits_space_edit() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Status;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
+        assert!(rendered.contains("Enter close"), "missing Enter close");
     }
 }

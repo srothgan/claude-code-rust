@@ -293,3 +293,12 @@ pub struct PromptChunk {
     pub kind: String,
     pub value: serde_json::Value,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub email: Option<String>,
+    pub organization: Option<String>,
+    pub subscription_type: Option<String>,
+    pub token_source: Option<String>,
+    pub api_key_source: Option<String>,
+}

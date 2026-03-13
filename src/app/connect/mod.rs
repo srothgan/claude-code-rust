@@ -173,6 +173,7 @@ pub fn create_app(cli: &Cli) -> App {
         fast_mode_state: model::FastModeState::Off,
         last_rate_limit_update: None,
         is_compacting: false,
+        account_info: None,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),

@@ -153,6 +153,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetStatusSnapshot { session_id },
+        })
+    }
+
     pub fn new_session(
         &self,
         cwd: String,

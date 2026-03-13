@@ -136,6 +136,9 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
+        crate::agent::wire::BridgeEvent::StatusSnapshot { account, .. } => {
+            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { account });
+        }
     }
 }
 

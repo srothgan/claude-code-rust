@@ -73,6 +73,8 @@ pub enum ClientEvent {
     AuthCompleted { conn: Rc<crate::agent::client::AgentConnection> },
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
+    /// Status snapshot received from bridge (account info).
+    StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
 }

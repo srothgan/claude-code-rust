@@ -172,6 +172,10 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
         }
+        ClientEvent::StatusSnapshotReceived { account } => {
+            app.account_info = Some(account);
+            app.needs_redraw = true;
+        }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
     }
 }

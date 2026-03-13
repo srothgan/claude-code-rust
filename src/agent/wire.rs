@@ -100,6 +100,9 @@ pub enum BridgeCommand {
         tool_call_id: String,
         outcome: types::PermissionOutcome,
     },
+    GetStatusSnapshot {
+        session_id: String,
+    },
     Shutdown,
 }
 
@@ -166,6 +169,10 @@ pub enum BridgeEvent {
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
+    },
+    StatusSnapshot {
+        session_id: String,
+        account: types::AccountInfo,
     },
 }
 

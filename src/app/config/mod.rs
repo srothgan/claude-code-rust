@@ -1010,10 +1010,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::BackTab, _) => {
             app.config.active_tab = app.config.active_tab.prev();
             app.config.status_message = None;
+            request_status_snapshot_if_needed(app);
         }
         (KeyCode::Right | KeyCode::Tab, KeyModifiers::NONE) => {
             app.config.active_tab = app.config.active_tab.next();
             app.config.status_message = None;
+            request_status_snapshot_if_needed(app);
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
             if app.config.active_tab == ConfigTab::Settings {
@@ -1035,6 +1037,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(candidate) if candidate == ch)
         && key.modifiers == KeyModifiers::CONTROL
+}
+
+/// Send a `get_status_snapshot` command when the Status tab is active.
+pub fn request_status_snapshot_if_needed(app: &App) {
+    if app.config.active_tab != ConfigTab::Status {
+        return;
+    }
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    let _ = conn.get_status_snapshot(sid.to_string());
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {

@@ -148,6 +148,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
     by_name.insert("/resume".into(), "Resume a session by ID".into());
+    by_name.insert("/status".into(), "Show session status".into());
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
@@ -341,6 +342,13 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
     matches!(
         command_name,
-        "/cancel" | "/compact" | "/config" | "/mode" | "/model" | "/new-session" | "/resume"
+        "/cancel"
+            | "/compact"
+            | "/config"
+            | "/mode"
+            | "/model"
+            | "/new-session"
+            | "/resume"
+            | "/status"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }

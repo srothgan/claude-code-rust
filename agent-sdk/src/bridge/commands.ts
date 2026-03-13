@@ -191,6 +191,11 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           session_id: expectString(raw, "session_id", "set_mode"),
           mode: expectString(raw, "mode", "set_mode"),
         };
+      case "get_status_snapshot":
+        return {
+          command: "get_status_snapshot",
+          session_id: expectString(raw, "session_id", "get_status_snapshot"),
+        };
       case "permission_response": {
         const outcome = asRecord(raw.outcome, "permission_response.outcome");
         const outcomeType = expectString(outcome, "outcome", "permission_response.outcome");

@@ -242,6 +242,30 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
     }
 
+    case "get_status_snapshot": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      const account = await session.query.accountInfo();
+      writeEvent(
+        {
+          event: "status_snapshot",
+          session_id: session.sessionId,
+          account: {
+            email: account.email,
+            organization: account.organization,
+            subscription_type: account.subscriptionType,
+            token_source: account.tokenSource,
+            api_key_source: account.apiKeySource,
+          },
+        },
+        requestId,
+      );
+      return;
+    }
+
     case "permission_response":
       handlePermissionResponse(command);
       return;
