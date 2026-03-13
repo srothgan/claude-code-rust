@@ -27,7 +27,8 @@ use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
-    convert_mode_state, map_available_models, map_permission_request, map_session_update,
+    convert_mode_state, map_available_models, map_permission_request, map_question_request,
+    map_session_update,
 };
 
 struct ConnectedEventData {
@@ -87,6 +88,9 @@ pub(super) fn handle_bridge_event(
         }
         crate::agent::wire::BridgeEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, cmd_tx, session_id, request);
+        }
+        crate::agent::wire::BridgeEvent::QuestionRequest { session_id, request } => {
+            handle_question_request_event(event_tx, cmd_tx, session_id, request);
         }
         crate::agent::wire::BridgeEvent::TurnComplete { .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete);
@@ -201,6 +205,25 @@ fn handle_permission_request_event(
     }
 }
 
+fn handle_question_request_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    session_id: String,
+    request: types::QuestionRequest,
+) {
+    tracing::debug!(
+        "bridge question_request: session_id={} tool_call_id={} options={}",
+        session_id,
+        request.tool_call.tool_call_id,
+        request.prompt.options.len()
+    );
+    let (request, tool_call_id) = map_question_request(&session_id, request);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    if event_tx.send(ClientEvent::QuestionRequest { request, response_tx }).is_ok() {
+        spawn_question_response_forwarder(cmd_tx.clone(), response_rx, session_id, tool_call_id);
+    }
+}
+
 fn spawn_permission_response_forwarder(
     cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
@@ -234,6 +257,48 @@ fn spawn_permission_response_forwarder(
         let _ = cmd_tx.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::PermissionResponse { session_id, tool_call_id, outcome },
+        });
+    });
+}
+
+fn spawn_question_response_forwarder(
+    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    response_rx: tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>,
+    session_id: String,
+    tool_call_id: String,
+) {
+    tokio::task::spawn_local(async move {
+        let Ok(response) = response_rx.await else {
+            return;
+        };
+        let outcome = match response.outcome {
+            model::RequestQuestionOutcome::Answered(answered) => {
+                tracing::debug!(
+                    "forward question_response: session_id={} tool_call_id={} selections={}",
+                    session_id,
+                    tool_call_id,
+                    answered.selected_option_ids.len()
+                );
+                types::QuestionOutcome::Answered {
+                    selected_option_ids: answered.selected_option_ids,
+                    annotation: answered.annotation.map(|annotation| types::QuestionAnnotation {
+                        preview: annotation.preview,
+                        notes: annotation.notes,
+                    }),
+                }
+            }
+            model::RequestQuestionOutcome::Cancelled => {
+                tracing::debug!(
+                    "forward question_response: session_id={} tool_call_id={} outcome=cancelled",
+                    session_id,
+                    tool_call_id
+                );
+                types::QuestionOutcome::Cancelled
+            }
+        };
+        let _ = cmd_tx.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::QuestionResponse { session_id, tool_call_id, outcome },
         });
     });
 }

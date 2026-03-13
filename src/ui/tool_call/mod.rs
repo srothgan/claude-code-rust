@@ -19,12 +19,12 @@
 //! Submodules handle specific rendering concerns:
 //! - [`standard`] -- non-Execute tool calls (Read, Write, Glob, etc.)
 //! - [`execute`] -- Execute/Bash two-layer bordered rendering
-//! - [`permissions`] -- inline permission UI (approve/deny, questions, plan)
+//! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
 mod execute;
-mod permissions;
+mod interactions;
 mod standard;
 
 use crate::agent::model;
@@ -307,6 +307,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         }
     }
 
@@ -420,6 +421,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         };
 
         let rendered = execute::render_execute_with_borders(&tc, &[], 80, 0);
@@ -539,6 +541,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         };
         assert_eq!(content_summary(&tc), "done");
     }
@@ -568,6 +571,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         };
         assert_eq!(content_summary(&tc), "bad");
     }
@@ -599,6 +603,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         };
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
@@ -630,6 +635,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         };
 
         let lines = execute::render_execute_content(&tc);

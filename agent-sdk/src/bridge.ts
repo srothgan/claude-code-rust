@@ -24,6 +24,7 @@ import {
   closeSession,
   closeAllSessions,
   handlePermissionResponse,
+  handleQuestionResponse,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 
@@ -56,7 +57,12 @@ export {
   parseRateLimitStatus,
   buildRateLimitUpdate,
 } from "./bridge/state_parsing.js";
-export type { SessionState, ConnectEventKind, PendingPermission } from "./bridge/session_lifecycle.js";
+export type {
+  SessionState,
+  ConnectEventKind,
+  PendingPermission,
+  PendingQuestion,
+} from "./bridge/session_lifecycle.js";
 
 const EXPECTED_AGENT_SDK_VERSION = "0.2.74";
 const require = createRequire(import.meta.url);
@@ -273,6 +279,10 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
     case "permission_response":
       handlePermissionResponse(command);
+      return;
+
+    case "question_response":
+      handleQuestionResponse(command);
       return;
 
     case "shutdown":

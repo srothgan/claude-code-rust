@@ -725,6 +725,84 @@ impl PermissionOption {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub option_id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub preview: Option<String>,
+}
+
+impl QuestionOption {
+    #[must_use]
+    pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { option_id: option_id.into(), label: label.into(), description: None, preview: None }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    #[must_use]
+    pub fn preview(mut self, preview: Option<String>) -> Self {
+        self.preview = preview;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionPrompt {
+    pub question: String,
+    pub header: String,
+    pub multi_select: bool,
+    pub options: Vec<QuestionOption>,
+}
+
+impl QuestionPrompt {
+    #[must_use]
+    pub fn new(
+        question: impl Into<String>,
+        header: impl Into<String>,
+        multi_select: bool,
+        options: Vec<QuestionOption>,
+    ) -> Self {
+        Self { question: question.into(), header: header.into(), multi_select, options }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionAnnotation {
+    pub preview: Option<String>,
+    pub notes: Option<String>,
+}
+
+impl QuestionAnnotation {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { preview: None, notes: None }
+    }
+
+    #[must_use]
+    pub fn preview(mut self, preview: Option<String>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    #[must_use]
+    pub fn notes(mut self, notes: Option<String>) -> Self {
+        self.notes = notes;
+        self
+    }
+}
+
+impl Default for QuestionAnnotation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedPermissionOutcome {
     pub option_id: String,
 }
@@ -743,6 +821,31 @@ pub enum RequestPermissionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnsweredQuestionOutcome {
+    pub selected_option_ids: Vec<String>,
+    pub annotation: Option<QuestionAnnotation>,
+}
+
+impl AnsweredQuestionOutcome {
+    #[must_use]
+    pub fn new(selected_option_ids: Vec<String>) -> Self {
+        Self { selected_option_ids, annotation: None }
+    }
+
+    #[must_use]
+    pub fn annotation(mut self, annotation: Option<QuestionAnnotation>) -> Self {
+        self.annotation = annotation;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestQuestionOutcome {
+    Answered(AnsweredQuestionOutcome),
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPermissionResponse {
     pub outcome: RequestPermissionOutcome,
 }
@@ -750,6 +853,18 @@ pub struct RequestPermissionResponse {
 impl RequestPermissionResponse {
     #[must_use]
     pub fn new(outcome: RequestPermissionOutcome) -> Self {
+        Self { outcome }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestQuestionResponse {
+    pub outcome: RequestQuestionOutcome,
+}
+
+impl RequestQuestionResponse {
+    #[must_use]
+    pub fn new(outcome: RequestQuestionOutcome) -> Self {
         Self { outcome }
     }
 }
@@ -769,5 +884,27 @@ impl RequestPermissionRequest {
         options: Vec<PermissionOption>,
     ) -> Self {
         Self { session_id: session_id.into(), tool_call, options }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RequestQuestionRequest {
+    pub session_id: SessionId,
+    pub tool_call: ToolCallUpdate,
+    pub prompt: QuestionPrompt,
+    pub question_index: usize,
+    pub total_questions: usize,
+}
+
+impl RequestQuestionRequest {
+    #[must_use]
+    pub fn new(
+        session_id: impl Into<SessionId>,
+        tool_call: ToolCallUpdate,
+        prompt: QuestionPrompt,
+        question_index: usize,
+        total_questions: usize,
+    ) -> Self {
+        Self { session_id: session_id.into(), tool_call, prompt, question_index, total_questions }
     }
 }

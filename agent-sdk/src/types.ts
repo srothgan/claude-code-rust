@@ -137,6 +137,32 @@ export type ElicitationMode = "form" | "url";
 
 export type ElicitationAction = "accept" | "decline" | "cancel";
 
+export interface QuestionOption {
+  option_id: string;
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface QuestionPrompt {
+  question: string;
+  header: string;
+  multi_select: boolean;
+  options: QuestionOption[];
+}
+
+export interface QuestionRequest {
+  tool_call: ToolCall;
+  prompt: QuestionPrompt;
+  question_index: number;
+  total_questions: number;
+}
+
+export interface QuestionAnnotation {
+  preview?: string;
+  notes?: string;
+}
+
 export interface ElicitationRequest {
   request_id: string;
   server_name: string;
@@ -149,6 +175,14 @@ export interface ElicitationRequest {
 
 export type PermissionOutcome =
   | { outcome: "selected"; option_id: string }
+  | { outcome: "cancelled" };
+
+export type QuestionOutcome =
+  | {
+      outcome: "answered";
+      selected_option_ids: string[];
+      annotation?: QuestionAnnotation;
+    }
   | { outcome: "cancelled" };
 
 export interface SessionListEntry {
@@ -232,6 +266,12 @@ export type BridgeCommand =
       outcome: PermissionOutcome;
     }
   | {
+      command: "question_response";
+      session_id: string;
+      tool_call_id: string;
+      outcome: QuestionOutcome;
+    }
+  | {
       command: "elicitation_response";
       session_id: string;
       elicitation_request_id: string;
@@ -280,6 +320,7 @@ export type BridgeEvent =
   | { event: "connection_failed"; message: string }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
+  | { event: "question_request"; session_id: string; request: QuestionRequest }
   | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
   | { event: "turn_complete"; session_id: string }
   | {

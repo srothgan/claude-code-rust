@@ -15,14 +15,15 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::super::{
-    App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InvalidationLevel,
-    MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
+    InvalidationLevel, MessageBlock, MessageRole, SystemSeverity, TextBlock,
 };
 use super::clear_compaction_state;
 use super::rate_limit::format_rate_limit_summary;
 use super::session::set_ready_status_unless_startup_blocked;
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
+use std::collections::BTreeSet;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
@@ -80,6 +81,67 @@ pub(super) fn handle_permission_request_event(
     } else {
         tracing::warn!("Permission request for non-tool block index: {tool_id}; auto-rejecting");
         reject_permission_request(response_tx, &options);
+    }
+
+    if layout_dirty {
+        app.invalidate_layout(InvalidationLevel::Single(mi));
+    }
+}
+
+pub(super) fn handle_question_request_event(
+    app: &mut App,
+    request: model::RequestQuestionRequest,
+    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+) {
+    let tool_id = request.tool_call.tool_call_id.clone();
+
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
+        tracing::warn!("Question request for unknown tool call: {tool_id}; auto-cancelling");
+        let _ = response_tx
+            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        return;
+    };
+
+    if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
+        tracing::warn!(
+            "Duplicate inline interaction request for tool call: {tool_id}; auto-cancelling duplicate"
+        );
+        let _ = response_tx
+            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        return;
+    }
+
+    let mut layout_dirty = false;
+    if let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let tc = tc.as_mut();
+        let is_first = app.pending_permission_ids.is_empty();
+        tc.pending_question = Some(InlineQuestion {
+            prompt: request.prompt,
+            response_tx,
+            focused_option_index: 0,
+            selected_option_indices: BTreeSet::new(),
+            notes: String::new(),
+            notes_cursor: 0,
+            editing_notes: false,
+            focused: is_first,
+            question_index: request.question_index,
+            total_questions: request.total_questions,
+        });
+        tc.mark_tool_call_layout_dirty();
+        layout_dirty = true;
+        app.pending_permission_ids.push(tool_id);
+        app.claim_focus_target(FocusTarget::Permission);
+        app.viewport.engage_auto_scroll();
+        app.notifications.notify(
+            app.config.preferred_notification_channel_effective(),
+            super::super::notify::NotifyEvent::QuestionRequired,
+        );
+    } else {
+        tracing::warn!("Question request for non-tool block index: {tool_id}; auto-cancelling");
+        let _ = response_tx
+            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
     }
 
     if layout_dirty {

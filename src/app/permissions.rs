@@ -14,53 +14,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo};
+use super::inline_interactions::{
+    focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
+    get_focused_interaction_tc, invalidate_if_changed,
+};
+use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::agent::model::PermissionOptionKind;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Look up the tool call that currently has keyboard focus for its permission.
-/// This is the first entry in `pending_permission_ids`.
-/// Returns mutable reference to its `ToolCallInfo`.
-fn get_focused_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
-    let tool_id = app.pending_permission_ids.first()?;
-    let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
-    match app.messages.get_mut(mi)?.blocks.get_mut(bi)? {
-        MessageBlock::ToolCall(tc) if tc.pending_permission.is_some() => Some(tc.as_mut()),
-        _ => None,
-    }
+fn focused_permission(app: &App) -> Option<&crate::app::InlinePermission> {
+    focused_interaction(app)?.pending_permission.as_ref()
 }
 
-/// Set the `focused` flag on a permission at the given index in `pending_permission_ids`.
-/// Also invalidates the tool call's render cache.
-fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
-    let Some(tool_id) = app.pending_permission_ids.get(queue_index) else {
-        return;
-    };
-    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
-        return;
-    };
-    let mut invalidated = false;
-    if let Some(msg) = app.messages.get_mut(mi)
-        && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
-    {
-        let tc = tc.as_mut();
-        if let Some(ref mut perm) = tc.pending_permission
-            && perm.focused != focused
-        {
-            perm.focused = focused;
-            tc.mark_tool_call_layout_dirty();
-            invalidated = true;
-        }
-    }
-    if invalidated {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
-    }
-}
-
-/// Find the option index for the currently focused permission by kind.
 fn focused_option_index_by_kind(app: &App, kind: PermissionOptionKind) -> Option<usize> {
     focused_option_index_where(app, |opt| opt.kind == kind)
 }
@@ -69,13 +35,7 @@ fn focused_option_index_where<F>(app: &App, mut predicate: F) -> Option<usize>
 where
     F: FnMut(&model::PermissionOption) -> bool,
 {
-    let tool_id = app.pending_permission_ids.first()?;
-    let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
-    let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
-        return None;
-    };
-    let pending = tc.pending_permission.as_ref()?;
-    pending.options.iter().position(&mut predicate)
+    focused_permission(app)?.options.iter().position(&mut predicate)
 }
 
 fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
@@ -137,147 +97,52 @@ fn option_is_reject_fallback(option: &model::PermissionOption) -> bool {
     reject_like && !allow_like
 }
 
-fn focused_permission_is_active(app: &App) -> bool {
-    let Some(tool_id) = app.pending_permission_ids.first() else {
-        return false;
-    };
-    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
-        return false;
-    };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
-    else {
-        return false;
-    };
-    tc.pending_permission.as_ref().is_some_and(|p| p.focused)
-}
-
-fn focused_permission_is_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_permission_ids.first() else {
-        return false;
-    };
-    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
-        return false;
-    };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
-    else {
-        return false;
-    };
-    let Some(pending) = tc.pending_permission.as_ref() else {
-        return false;
-    };
-    !pending.options.is_empty()
-        && pending
-            .options
-            .iter()
-            .all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
-}
-
-fn focused_permission_is_plan_approval(app: &App) -> bool {
-    let Some(tool_id) = app.pending_permission_ids.first() else {
-        return false;
-    };
-    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
-        return false;
-    };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
-    else {
-        return false;
-    };
-    let Some(pending) = tc.pending_permission.as_ref() else {
-        return false;
-    };
-    pending.options.iter().any(|opt| {
-        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+pub(super) fn focused_permission_is_plan_approval(app: &App) -> bool {
+    focused_permission(app).is_some_and(|pending| {
+        pending.options.iter().any(|opt| {
+            matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+        })
     })
 }
 
-fn handle_permission_focus_cycle(
-    app: &mut App,
-    key: KeyEvent,
-    permission_has_focus: bool,
-) -> Option<bool> {
-    if !permission_has_focus {
-        return None;
-    }
-    if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
-        return None;
-    }
-    if app.pending_permission_ids.len() <= 1 {
-        if focused_permission_is_question_prompt(app) || focused_permission_is_plan_approval(app) {
-            // For AskUserQuestion and ExitPlanMode, Up/Down are option navigation keys.
-            return None;
-        }
-        // Single pending permission: consume navigation keys so they do not
-        // leak into normal chat/input scrolling.
-        return Some(true);
-    }
-
-    // Unfocus the current (first) permission.
-    set_permission_focused(app, 0, false);
-
-    if key.code == KeyCode::Down {
-        // Move first to end (rotate forward).
-        let first = app.pending_permission_ids.remove(0);
-        app.pending_permission_ids.push(first);
-    } else {
-        // Move last to front (rotate backward).
-        let Some(last) = app.pending_permission_ids.pop() else {
-            return Some(false);
-        };
-        app.pending_permission_ids.insert(0, last);
-    }
-
-    // Focus the new first permission and scroll to it.
-    set_permission_focused(app, 0, true);
-    app.viewport.engage_auto_scroll();
-    Some(true)
-}
-
 fn move_permission_option_left(app: &mut App) {
-    let dirty_idx =
-        app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    let dirty_idx = focused_interaction_dirty_idx(app);
     let mut changed = false;
-    if let Some(tc) = get_focused_permission_tc(app)
-        && let Some(ref mut p) = tc.pending_permission
+    if let Some(tc) = get_focused_interaction_tc(app)
+        && let Some(ref mut permission) = tc.pending_permission
     {
-        let next = p.selected_index.saturating_sub(1);
-        if next != p.selected_index {
-            p.selected_index = next;
+        let next = permission.selected_index.saturating_sub(1);
+        if next != permission.selected_index {
+            permission.selected_index = next;
             tc.mark_tool_call_layout_dirty();
             changed = true;
         }
     }
-    if changed && let Some((mi, _)) = dirty_idx {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
-    }
+    invalidate_if_changed(app, dirty_idx, changed);
 }
 
 fn move_permission_option_right(app: &mut App, option_count: usize) {
-    let dirty_idx =
-        app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    let dirty_idx = focused_interaction_dirty_idx(app);
     let mut changed = false;
-    if let Some(tc) = get_focused_permission_tc(app)
-        && let Some(ref mut p) = tc.pending_permission
-        && p.selected_index + 1 < option_count
+    if let Some(tc) = get_focused_interaction_tc(app)
+        && let Some(ref mut permission) = tc.pending_permission
+        && permission.selected_index + 1 < option_count
     {
-        p.selected_index += 1;
+        permission.selected_index += 1;
         tc.mark_tool_call_layout_dirty();
         changed = true;
     }
-    if changed && let Some((mi, _)) = dirty_idx {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
-    }
+    invalidate_if_changed(app, dirty_idx, changed);
 }
 
 fn handle_permission_option_keys(
     app: &mut App,
     key: KeyEvent,
-    permission_has_focus: bool,
+    interaction_has_focus: bool,
     option_count: usize,
-    question_prompt: bool,
     plan_approval: bool,
 ) -> Option<bool> {
-    if !permission_has_focus {
+    if !interaction_has_focus {
         return None;
     }
     match key.code {
@@ -289,11 +154,11 @@ fn handle_permission_option_keys(
             move_permission_option_right(app, option_count);
             Some(true)
         }
-        KeyCode::Up if (question_prompt || plan_approval) && option_count > 0 => {
+        KeyCode::Up if plan_approval && option_count > 0 => {
             move_permission_option_left(app);
             Some(true)
         }
-        KeyCode::Down if (question_prompt || plan_approval) && option_count > 0 => {
+        KeyCode::Down if plan_approval && option_count > 0 => {
             move_permission_option_right(app, option_count);
             Some(true)
         }
@@ -302,10 +167,6 @@ fn handle_permission_option_keys(
             Some(true)
         }
         KeyCode::Esc => {
-            if question_prompt {
-                respond_permission_cancel(app);
-                return Some(true);
-            }
             if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
                 .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
                 .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
@@ -313,7 +174,6 @@ fn handle_permission_option_keys(
                 respond_permission(app, Some(idx));
                 Some(true)
             } else if option_count > 0 {
-                // Fallback for unknown adapters: keep previous behavior if no kind metadata.
                 respond_permission(app, Some(option_count - 1));
                 Some(true)
             } else {
@@ -328,7 +188,6 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
     if !matches!(key.code, KeyCode::Char(_)) {
         return None;
     }
-    // Plan approval: plain y/n approve or reject; suppress Ctrl+Y/A/N (not applicable here).
     if focused_permission_is_plan_approval(app) {
         if is_ctrl_char_shortcut(key, 'y')
             || is_ctrl_char_shortcut(key, 'a')
@@ -336,7 +195,7 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
         {
             return Some(false);
         }
-        if focused_permission_is_active(app) && !is_ctrl_shortcut(key.modifiers) {
+        if !is_ctrl_shortcut(key.modifiers) {
             if matches!(key.code, KeyCode::Char('y' | 'Y'))
                 && let Some(idx) =
                     focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
@@ -353,13 +212,6 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
             }
         }
         return None;
-    }
-    if focused_permission_is_question_prompt(app)
-        && (is_ctrl_char_shortcut(key, 'y')
-            || is_ctrl_char_shortcut(key, 'a')
-            || is_ctrl_char_shortcut(key, 'n'))
-    {
-        return Some(true);
     }
     if is_ctrl_char_shortcut(key, 'y') {
         if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
@@ -396,27 +248,17 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
     None
 }
 
-/// Handle permission-only shortcuts.
-/// Returns `true` when the key was consumed by permission UI.
-pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
-    let option_count = get_focused_permission_tc(app)
-        .and_then(|tc| tc.pending_permission.as_ref())
-        .map_or(0, |p| p.options.len());
-    let permission_has_focus = focused_permission_is_active(app);
-    let question_prompt = focused_permission_is_question_prompt(app);
+pub(super) fn handle_permission_key(
+    app: &mut App,
+    key: KeyEvent,
+    interaction_has_focus: bool,
+) -> bool {
+    let option_count = focused_permission(app).map_or(0, |permission| permission.options.len());
     let plan_approval = focused_permission_is_plan_approval(app);
 
-    if let Some(consumed) = handle_permission_focus_cycle(app, key, permission_has_focus) {
-        return consumed;
-    }
-    if let Some(consumed) = handle_permission_option_keys(
-        app,
-        key,
-        permission_has_focus,
-        option_count,
-        question_prompt,
-        plan_approval,
-    ) {
+    if let Some(consumed) =
+        handle_permission_option_keys(app, key, interaction_has_focus, option_count, plan_approval)
+    {
         return consumed;
     }
     if let Some(consumed) = handle_permission_quick_shortcuts(app, key) {
@@ -429,7 +271,6 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     if app.pending_permission_ids.is_empty() {
         return;
     }
-    // Remove the focused (first) permission from the queue.
     let tool_id = app.pending_permission_ids.remove(0);
 
     let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
@@ -472,15 +313,10 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 
-    // Focus the next permission in the queue (now at index 0), if any.
-    set_permission_focused(app, 0, true);
-    if app.pending_permission_ids.is_empty() {
-        app.release_focus_target(FocusTarget::Permission);
-    } else {
-        app.claim_focus_target(FocusTarget::Permission);
-    }
+    focus_next_inline_interaction(app);
 }
 
+#[cfg(test)]
 fn respond_permission_cancel(app: &mut App) {
     if app.pending_permission_ids.is_empty() {
         return;
@@ -504,12 +340,7 @@ fn respond_permission_cancel(app: &mut App) {
         app.invalidate_layout(InvalidationLevel::Single(mi));
     }
 
-    set_permission_focused(app, 0, true);
-    if app.pending_permission_ids.is_empty() {
-        app.release_focus_target(FocusTarget::Permission);
-    } else {
-        app.claim_focus_target(FocusTarget::Permission);
-    }
+    focus_next_inline_interaction(app);
 }
 
 #[cfg(test)]
@@ -546,6 +377,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         }
     }
 
@@ -602,7 +434,7 @@ mod tests {
         else {
             return false;
         };
-        tc.pending_permission.as_ref().is_some_and(|p| p.focused)
+        tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
     }
 
     #[test]
@@ -616,18 +448,21 @@ mod tests {
         assert!(permission_focused(&app, "perm-1"));
         assert!(!permission_focused(&app, "perm-2"));
 
-        let consumed = handle_permission_key(
+        let consumed = crate::app::inline_interactions::handle_interaction_focus_cycle(
             &mut app,
-            KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            true,
+            false,
         );
-        assert!(consumed);
+        assert_eq!(consumed, Some(true));
         assert_eq!(app.pending_permission_ids, vec!["perm-2", "perm-1"]);
         assert!(permission_focused(&app, "perm-2"));
         assert!(!permission_focused(&app, "perm-1"));
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            true,
         );
         assert!(consumed);
 
@@ -647,7 +482,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            true,
         );
 
         assert!(!consumed, "lowercase 'a' should flow to normal typing");
@@ -684,7 +520,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('y'), crossterm::event::KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            true,
         );
         assert!(consumed);
 
@@ -704,11 +541,13 @@ mod tests {
 
         let consumed_y = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('y'), crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            true,
         );
         let consumed_n = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('n'), crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            true,
         );
 
         assert!(!consumed_y);
@@ -724,7 +563,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('n'), crossterm::event::KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            true,
         );
         assert!(consumed);
         assert!(app.pending_permission_ids.is_empty());
@@ -759,7 +599,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('n'), crossterm::event::KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            true,
         );
         assert!(!consumed);
         assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
@@ -794,7 +635,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('a'), crossterm::event::KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            true,
         );
         assert!(consumed);
 
@@ -812,10 +654,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(
-                KeyCode::Char('A'),
-                crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
-            ),
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            true,
         );
         assert!(consumed);
 
@@ -833,11 +673,13 @@ mod tests {
 
         let consumed_left = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Left, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            false,
         );
         let consumed_right = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Right, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            false,
         );
 
         assert!(!consumed_left);
@@ -852,7 +694,8 @@ mod tests {
 
         let consumed = handle_permission_key(
             &mut app,
-            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            false,
         );
 
         assert!(!consumed);
@@ -873,19 +716,43 @@ mod tests {
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
         app.viewport.scroll_target = 7;
 
-        let consumed_up = handle_permission_key(
+        let consumed_up = crate::app::inline_interactions::handle_interaction_focus_cycle(
             &mut app,
-            KeyEvent::new(KeyCode::Up, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            true,
+            false,
         );
-        let consumed_down = handle_permission_key(
+        let consumed_down = crate::app::inline_interactions::handle_interaction_focus_cycle(
             &mut app,
-            KeyEvent::new(KeyCode::Down, crossterm::event::KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            true,
+            false,
         );
 
-        assert!(consumed_up);
-        assert!(consumed_down);
+        assert_eq!(consumed_up, Some(true));
+        assert_eq!(consumed_down, Some(true));
         assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
         assert_eq!(app.viewport.scroll_target, 7);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn esc_cancels_permission_when_no_reject_option_exists() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![model::PermissionOption::new(
+                "allow-once",
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            )],
+            true,
+        );
+
+        respond_permission_cancel(&mut app);
+
+        let resp = rx.try_recv().expect("permission should be cancelled");
+        assert!(matches!(resp.outcome, model::RequestPermissionOutcome::Cancelled));
     }
 }

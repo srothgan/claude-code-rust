@@ -1305,6 +1305,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         }
     }
 

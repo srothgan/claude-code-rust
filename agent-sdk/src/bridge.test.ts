@@ -26,6 +26,7 @@ import {
   unwrapToolUseResult,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
+import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 
 function makeSessionState(): SessionState {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
@@ -43,6 +44,7 @@ function makeSessionState(): SessionState {
     toolCalls: new Map(),
     taskToolUseIds: new Map(),
     pendingPermissions: new Map(),
+    pendingQuestions: new Map(),
     authHintSent: false,
   };
 }
@@ -71,8 +73,50 @@ function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
 
   return writes
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+    .filter((line) => line.startsWith("{"))
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
+}
+
+async function captureBridgeEventsAsync(
+  run: () => Promise<void>,
+): Promise<Array<Record<string, unknown>>> {
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
+    chunk: unknown,
+  ): boolean => {
+    if (typeof chunk === "string") {
+      writes.push(chunk);
+    } else if (Buffer.isBuffer(chunk)) {
+      writes.push(chunk.toString("utf8"));
+    } else {
+      writes.push(String(chunk));
+    }
+    return true;
+  };
+
+  try {
+    await run();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  return writes
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("{"))
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
 }
 
 test("parseCommandEnvelope validates initialize command", () => {
@@ -183,6 +227,9 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+  assert.deepEqual(options.toolConfig, {
+    askUserQuestion: { previewFormat: "markdown" },
+  });
 });
 
 test("buildQueryOptions forwards settings without direct model and permission flags", () => {
@@ -389,6 +436,186 @@ test("parseCommandEnvelope rejects missing required fields", () => {
     () => parseCommandEnvelope(JSON.stringify({ command: "set_model", session_id: "s1" })),
     /set_model\.model must be a string/,
   );
+});
+
+test("parseCommandEnvelope validates question_response command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-question",
+      command: "question_response",
+      session_id: "session-1",
+      tool_call_id: "tool-1",
+      outcome: {
+        outcome: "answered",
+        selected_option_ids: ["question_0", "question_2"],
+        annotation: {
+          preview: "Rendered preview",
+          notes: "User note",
+        },
+      },
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-question");
+  assert.equal(parsed.command.command, "question_response");
+  if (parsed.command.command !== "question_response") {
+    throw new Error("unexpected command variant");
+  }
+  assert.deepEqual(parsed.command.outcome, {
+    outcome: "answered",
+    selected_option_ids: ["question_0", "question_2"],
+    annotation: {
+      preview: "Rendered preview",
+      notes: "User note",
+    },
+  });
+});
+
+test("requestAskUserQuestionAnswers preserves previews and annotations in updated input", async () => {
+  const session = makeSessionState();
+  const baseToolCall = {
+    tool_call_id: "tool-question",
+    title: "AskUserQuestion",
+    kind: "other",
+    status: "in_progress",
+    content: [] as Array<import("./types.js").ToolCallContent>,
+    locations: [] as Array<import("./types.js").ToolLocation>,
+    meta: { claudeCode: { toolName: "AskUserQuestion" } },
+  };
+
+  const events = await captureBridgeEventsAsync(async () => {
+    const resultPromise = requestAskUserQuestionAnswers(
+      session,
+      "tool-question",
+      {
+        questions: [
+          {
+            question: "Pick deployment target",
+            header: "Target",
+            multiSelect: true,
+            options: [
+              {
+                label: "Staging",
+                description: "Low-risk validation",
+                preview: "Deploy to staging first.",
+              },
+              {
+                label: "Production",
+                description: "Customer-facing rollout",
+                preview: "Deploy to production after approval.",
+              },
+            ],
+          },
+        ],
+      },
+      baseToolCall,
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const pending = session.pendingQuestions.get("tool-question");
+    assert.ok(pending, "expected pending question");
+    pending.onOutcome({
+      outcome: "answered",
+      selected_option_ids: ["question_0", "question_1"],
+      annotation: {
+        notes: "Roll out in both environments",
+      },
+    });
+
+    const result = await resultPromise;
+    assert.equal(result.behavior, "allow");
+    if (result.behavior !== "allow") {
+      throw new Error("expected allow result");
+    }
+    assert.deepEqual(result.updatedInput, {
+      questions: [
+        {
+          question: "Pick deployment target",
+          header: "Target",
+          multiSelect: true,
+          options: [
+            {
+              label: "Staging",
+              description: "Low-risk validation",
+              preview: "Deploy to staging first.",
+            },
+            {
+              label: "Production",
+              description: "Customer-facing rollout",
+              preview: "Deploy to production after approval.",
+            },
+          ],
+        },
+      ],
+      answers: {
+        "Pick deployment target": "Staging, Production",
+      },
+      annotations: {
+        "Pick deployment target": {
+          preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+          notes: "Roll out in both environments",
+        },
+      },
+    });
+  });
+
+  const questionEvent = events.find((event) => event.event === "question_request");
+  assert.ok(questionEvent, "expected question request event");
+  assert.deepEqual(questionEvent.request, {
+    tool_call: {
+      tool_call_id: "tool-question",
+      title: "Pick deployment target",
+      kind: "other",
+      status: "in_progress",
+      content: [],
+      locations: [],
+      meta: { claudeCode: { toolName: "AskUserQuestion" } },
+      raw_input: {
+        prompt: {
+          question: "Pick deployment target",
+          header: "Target",
+          multi_select: true,
+          options: [
+            {
+              option_id: "question_0",
+              label: "Staging",
+              description: "Low-risk validation",
+              preview: "Deploy to staging first.",
+            },
+            {
+              option_id: "question_1",
+              label: "Production",
+              description: "Customer-facing rollout",
+              preview: "Deploy to production after approval.",
+            },
+          ],
+        },
+        question_index: 0,
+        total_questions: 1,
+      },
+    },
+    prompt: {
+      question: "Pick deployment target",
+      header: "Target",
+      multi_select: true,
+      options: [
+        {
+          option_id: "question_0",
+          label: "Staging",
+          description: "Low-risk validation",
+          preview: "Deploy to staging first.",
+        },
+        {
+          option_id: "question_1",
+          label: "Production",
+          description: "Customer-facing rollout",
+          preview: "Deploy to production after approval.",
+        },
+      ],
+    },
+    question_index: 0,
+    total_questions: 1,
+  });
 });
 
 test("normalizeToolKind maps known tool names", () => {

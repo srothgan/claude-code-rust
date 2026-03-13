@@ -1,5 +1,17 @@
 import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionOption, PermissionOutcome, PermissionRequest, ToolCall, ToolCallUpdateFields } from "../types.js";
+import type {
+  Json,
+  PermissionOption,
+  PermissionOutcome,
+  PermissionRequest,
+  QuestionAnnotation,
+  QuestionOption,
+  QuestionOutcome,
+  QuestionPrompt,
+  QuestionRequest,
+  ToolCall,
+  ToolCallUpdateFields,
+} from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { writeEvent, emitSessionUpdate } from "./events.js";
 import { setToolCallStatus } from "./tool_calls.js";
@@ -8,6 +20,7 @@ import type { SessionState } from "./session_lifecycle.js";
 export type AskUserQuestionOption = {
   label: string;
   description: string;
+  preview?: string;
 };
 
 export type AskUserQuestionPrompt = {
@@ -93,10 +106,15 @@ export function parseAskUserQuestionPrompts(inputData: Record<string, unknown>):
       const label = typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
       const description =
         typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
+      const preview = typeof optionRecord.preview === "string" ? optionRecord.preview.trim() : "";
       if (!label) {
         continue;
       }
-      options.push({ label, description });
+      options.push({
+        label,
+        description,
+        ...(preview.length > 0 ? { preview } : {}),
+      });
     }
     if (options.length < 2) {
       continue;
@@ -107,13 +125,35 @@ export function parseAskUserQuestionPrompts(inputData: Record<string, unknown>):
   return prompts;
 }
 
-function askUserQuestionOptions(prompt: AskUserQuestionPrompt): PermissionOption[] {
+function askUserQuestionOptions(prompt: AskUserQuestionPrompt): QuestionOption[] {
   return prompt.options.map((option, index) => ({
     option_id: `question_${index}`,
-    name: option.label,
+    label: option.label,
     description: option.description,
-    kind: QUESTION_CHOICE_KIND,
+    ...(option.preview ? { preview: option.preview } : {}),
   }));
+}
+
+function askUserQuestionPromptRawInput(
+  prompt: AskUserQuestionPrompt,
+  index: number,
+  total: number,
+): Json {
+  return {
+    prompt: {
+      question: prompt.question,
+      header: prompt.header,
+      multi_select: prompt.multiSelect,
+      options: prompt.options.map((option, optionIndex) => ({
+        option_id: `question_${optionIndex}`,
+        label: option.label,
+        description: option.description,
+        ...(option.preview ? { preview: option.preview } : {}),
+      })),
+    },
+    question_index: index,
+    total_questions: total,
+  };
 }
 
 function askUserQuestionPromptToolCall(
@@ -125,18 +165,26 @@ function askUserQuestionPromptToolCall(
   return {
     ...base,
     title: prompt.question,
-    raw_input: {
-      questions: [
-        {
-          question: prompt.question,
-          header: prompt.header,
-          multiSelect: prompt.multiSelect,
-          options: prompt.options,
-        },
-      ],
-      question_index: index,
-      total_questions: total,
+    raw_input: askUserQuestionPromptRawInput(prompt, index, total),
+  };
+}
+
+function buildQuestionRequest(
+  promptToolCall: ToolCall,
+  prompt: AskUserQuestionPrompt,
+  index: number,
+  total: number,
+): QuestionRequest {
+  return {
+    tool_call: promptToolCall,
+    prompt: {
+      question: prompt.question,
+      header: prompt.header,
+      multi_select: prompt.multiSelect,
+      options: askUserQuestionOptions(prompt),
     },
+    question_index: index,
+    total_questions: total,
   };
 }
 
@@ -146,10 +194,29 @@ function askUserQuestionTranscript(
   return answers.map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`).join("\n");
 }
 
+function deriveAnnotation(
+  selectedOptions: QuestionOption[],
+  annotation?: QuestionAnnotation,
+): QuestionAnnotation | undefined {
+  const preview = annotation?.preview?.trim().length
+    ? annotation.preview
+    : selectedOptions
+        .map((option) => option.preview?.trim() ?? "")
+        .filter((previewText) => previewText.length > 0)
+        .join("\n\n");
+  const notes = annotation?.notes?.trim().length ? annotation.notes.trim() : undefined;
+  if (!preview && !notes) {
+    return undefined;
+  }
+  return {
+    ...(preview ? { preview } : {}),
+    ...(notes ? { notes } : {}),
+  };
+}
+
 export async function requestAskUserQuestionAnswers(
   session: SessionState,
   toolUseId: string,
-  toolName: string,
   inputData: Record<string, unknown>,
   baseToolCall: ToolCall,
 ): Promise<PermissionResult> {
@@ -159,6 +226,7 @@ export async function requestAskUserQuestionAnswers(
   }
 
   const answers: Record<string, string> = {};
+  const annotations: Record<string, QuestionAnnotation> = {};
   const transcript: Array<{ header: string; question: string; answer: string }> = [];
 
   for (const [index, prompt] of prompts.entries()) {
@@ -179,33 +247,39 @@ export async function requestAskUserQuestionAnswers(
       tracked.raw_input = promptToolCall.raw_input;
     }
 
-    const request: PermissionRequest = {
-      tool_call: promptToolCall,
-      options: askUserQuestionOptions(prompt),
-    };
-
-    const outcome = await new Promise<PermissionOutcome>((resolve) => {
-      session.pendingPermissions.set(toolUseId, {
+    const request = buildQuestionRequest(promptToolCall, prompt, index, prompts.length);
+    const outcome = await new Promise<QuestionOutcome>((resolve) => {
+      session.pendingQuestions.set(toolUseId, {
         onOutcome: resolve,
-        toolName,
+        toolName: ASK_USER_QUESTION_TOOL_NAME,
         inputData,
       });
-      writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+      writeEvent({ event: "question_request", session_id: session.sessionId, request });
     });
 
-    if (outcome.outcome !== "selected") {
+    if (outcome.outcome !== "answered") {
       setToolCallStatus(session, toolUseId, "failed", "Question cancelled");
       return { behavior: "deny", message: "Question cancelled", toolUseID: toolUseId };
     }
 
-    const selected = request.options.find((option) => option.option_id === outcome.option_id);
-    if (!selected) {
+    const selectedOptions = request.prompt.options.filter((option) =>
+      outcome.selected_option_ids.includes(option.option_id),
+    );
+    if (
+      selectedOptions.length === 0 ||
+      (!prompt.multiSelect && selectedOptions.length !== 1)
+    ) {
       setToolCallStatus(session, toolUseId, "failed", "Question answer was invalid");
       return { behavior: "deny", message: "Question answer was invalid", toolUseID: toolUseId };
     }
 
-    answers[prompt.question] = selected.name;
-    transcript.push({ header: prompt.header, question: prompt.question, answer: selected.name });
+    const answer = selectedOptions.map((option) => option.label).join(", ");
+    answers[prompt.question] = answer;
+    const annotation = deriveAnnotation(selectedOptions, outcome.annotation);
+    if (annotation) {
+      annotations[prompt.question] = annotation;
+    }
+    transcript.push({ header: prompt.header, question: prompt.question, answer });
 
     const summary = askUserQuestionTranscript(transcript);
     const progressFields: ToolCallUpdateFields = {
@@ -226,7 +300,11 @@ export async function requestAskUserQuestionAnswers(
 
   return {
     behavior: "allow",
-    updatedInput: { ...inputData, answers },
+    updatedInput: {
+      ...inputData,
+      answers,
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+    },
     toolUseID: toolUseId,
   };
 }

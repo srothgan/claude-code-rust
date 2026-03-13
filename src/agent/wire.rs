@@ -93,6 +93,11 @@ pub enum BridgeCommand {
         tool_call_id: String,
         outcome: types::PermissionOutcome,
     },
+    QuestionResponse {
+        session_id: String,
+        tool_call_id: String,
+        outcome: types::QuestionOutcome,
+    },
     GetStatusSnapshot {
         session_id: String,
     },
@@ -133,6 +138,10 @@ pub enum BridgeEvent {
     PermissionRequest {
         session_id: String,
         request: types::PermissionRequest,
+    },
+    QuestionRequest {
+        session_id: String,
+        request: types::QuestionRequest,
     },
     TurnComplete {
         session_id: String,

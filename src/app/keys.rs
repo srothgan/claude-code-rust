@@ -20,7 +20,7 @@ use super::{
     App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel,
     MessageBlock, ModeInfo, ModeState,
 };
-use crate::app::permissions::handle_permission_key;
+use crate::app::inline_interactions::handle_inline_interaction_key;
 use crate::app::selection::clear_selection;
 use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -140,7 +140,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Permission => {
-            if handle_permission_key(app, key) {
+            if handle_inline_interaction_key(app, key) {
                 true
             } else {
                 handle_normal_key(app, key)
@@ -213,7 +213,7 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 
     // Permission quick shortcuts are global when permissions are pending.
     if !app.pending_permission_ids.is_empty() && is_permission_ctrl_shortcut(key) {
-        return handle_permission_key(app, key);
+        return handle_inline_interaction_key(app, key);
     }
 
     match (key.code, key.modifiers) {

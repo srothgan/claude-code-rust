@@ -303,21 +303,43 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
 
-    // Permissions (when prompts are active)
+    // Inline interactions (permissions or questions)
     if !app.pending_permission_ids.is_empty() && focus_owner == FocusOwner::Permission {
         if app.pending_permission_ids.len() > 1 {
             items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
         }
-        items.push(("Left/Right".to_owned(), "Select option".to_owned()));
-        items.push(("Enter".to_owned(), "Confirm option".to_owned()));
-        items.push(("Ctrl+y/a/n".to_owned(), "Quick select".to_owned()));
-        items.push(("Esc".to_owned(), "Reject".to_owned()));
+        if focused_question_prompt(app) {
+            items.push(("Left/Right".to_owned(), "Move selection".to_owned()));
+            items.push(("Tab".to_owned(), "Toggle notes editor".to_owned()));
+            items.push(("Enter".to_owned(), "Confirm answer".to_owned()));
+            items.push(("Esc".to_owned(), "Cancel prompt".to_owned()));
+        } else {
+            items.push(("Left/Right".to_owned(), "Select option".to_owned()));
+            items.push(("Enter".to_owned(), "Confirm option".to_owned()));
+            items.push(("Ctrl+y/a/n".to_owned(), "Quick select".to_owned()));
+            items.push(("Esc".to_owned(), "Reject".to_owned()));
+        }
     }
     if focus_owner == FocusOwner::TodoList {
         items.push(("Up/Down".to_owned(), "Select todo (todo focus)".to_owned()));
     }
 
     items
+}
+
+fn focused_question_prompt(app: &App) -> bool {
+    let Some(tool_id) = app.pending_permission_ids.first() else {
+        return false;
+    };
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
+        return false;
+    };
+    let Some(crate::app::MessageBlock::ToolCall(tc)) =
+        app.messages.get(mi).and_then(|message| message.blocks.get(bi))
+    else {
+        return false;
+    };
+    tc.pending_question.is_some()
 }
 
 fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {

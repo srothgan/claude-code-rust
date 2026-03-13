@@ -25,7 +25,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::errors::failed_execute_first_line;
-use super::permissions::render_permission_lines;
+use super::interactions::{render_permission_lines, render_question_lines};
 use super::{markdown_inline_spans, spans_width, status_icon, truncate_spans_to_width};
 
 /// Max visible output lines for Execute/Bash tool calls.
@@ -100,6 +100,9 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     // Inline permission controls (no border prefix)
     if let Some(ref perm) = tc.pending_permission {
         lines.extend(render_permission_lines(tc, perm));
+    }
+    if let Some(ref question) = tc.pending_question {
+        lines.extend(render_question_lines(question));
     }
 
     lines

@@ -58,6 +58,8 @@ pub struct ToolCallInfo {
     pub cache: BlockCache,
     /// Inline permission prompt - rendered inside this tool call block.
     pub pending_permission: Option<InlinePermission>,
+    /// Inline question prompt from `AskUserQuestion`.
+    pub pending_question: Option<InlineQuestion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,4 +142,17 @@ pub struct InlinePermission {
     /// When multiple permissions are pending, only the focused one
     /// shows the selection arrow and accepts Left/Right/Enter input.
     pub focused: bool,
+}
+
+pub struct InlineQuestion {
+    pub prompt: model::QuestionPrompt,
+    pub response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+    pub focused_option_index: usize,
+    pub selected_option_indices: std::collections::BTreeSet<usize>,
+    pub notes: String,
+    pub notes_cursor: usize,
+    pub editing_notes: bool,
+    pub focused: bool,
+    pub question_index: usize,
+    pub total_questions: usize,
 }

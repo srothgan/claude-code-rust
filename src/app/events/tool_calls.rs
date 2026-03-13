@@ -153,6 +153,7 @@ fn build_tool_info_from_tool_call(
         last_measured_layout_generation: 0,
         cache: BlockCache::default(),
         pending_permission: None,
+        pending_question: None,
     };
     if let Some(output) = initial_execute_output {
         tool_info.terminal_output_len = output.len();

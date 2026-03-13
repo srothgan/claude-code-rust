@@ -116,6 +116,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::PermissionRequest { request, response_tx } => {
             turn::handle_permission_request_event(app, request, response_tx);
         }
+        ClientEvent::QuestionRequest { request, response_tx } => {
+            turn::handle_question_request_event(app, request, response_tx);
+        }
         ClientEvent::TurnCancelled => turn::handle_turn_cancelled_event(app),
         ClientEvent::TurnComplete => turn::handle_turn_complete_event(app),
         ClientEvent::TurnError(msg) => turn::handle_turn_error_event(app, &msg, None),
@@ -422,6 +425,7 @@ mod tests {
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
+            pending_question: None,
         }
     }
 

@@ -254,6 +254,46 @@ pub(super) fn map_permission_request(
     )
 }
 
+pub(super) fn map_question_request(
+    session_id: &str,
+    request: types::QuestionRequest,
+) -> (model::RequestQuestionRequest, String) {
+    let tool_call_id = request.tool_call.tool_call_id.clone();
+    let tool_call_meta = request.tool_call.meta.clone();
+    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
+    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
+    if let Some(meta) = tool_call_meta {
+        tool_call_update = tool_call_update.meta(meta);
+    }
+
+    let prompt = model::QuestionPrompt::new(
+        request.prompt.question,
+        request.prompt.header,
+        request.prompt.multi_select,
+        request
+            .prompt
+            .options
+            .into_iter()
+            .map(|option| {
+                model::QuestionOption::new(option.option_id, option.label)
+                    .description(option.description)
+                    .preview(option.preview)
+            })
+            .collect(),
+    );
+
+    (
+        model::RequestQuestionRequest::new(
+            model::SessionId::new(session_id),
+            tool_call_update,
+            prompt,
+            usize::try_from(request.question_index).unwrap_or(0),
+            usize::try_from(request.total_questions).unwrap_or(0),
+        ),
+        tool_call_id,
+    )
+}
+
 pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
     match content {
         types::ContentBlock::Text { text } => {
@@ -456,7 +496,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 #[cfg(test)]
 mod tests {
-    use super::map_available_models;
+    use super::{map_available_models, map_question_request};
     use crate::agent::{model, types};
 
     #[test]
@@ -507,6 +547,83 @@ mod tests {
                     .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
+        );
+    }
+
+    #[test]
+    fn map_question_request_preserves_preview_and_annotation_shape() {
+        let (request, tool_call_id) = map_question_request(
+            "session-1",
+            types::QuestionRequest {
+                tool_call: types::ToolCall {
+                    tool_call_id: "tool-1".to_owned(),
+                    title: "Pick target".to_owned(),
+                    kind: "other".to_owned(),
+                    status: "in_progress".to_owned(),
+                    content: Vec::new(),
+                    raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
+                    raw_output: None,
+                    locations: Vec::new(),
+                    meta: Some(
+                        serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } }),
+                    ),
+                },
+                prompt: types::QuestionPrompt {
+                    question: "Where should this roll out?".to_owned(),
+                    header: "Target".to_owned(),
+                    multi_select: true,
+                    options: vec![
+                        types::QuestionOption {
+                            option_id: "question_0".to_owned(),
+                            label: "Staging".to_owned(),
+                            description: Some("Validate in staging first".to_owned()),
+                            preview: Some("Deploy to staging first.".to_owned()),
+                        },
+                        types::QuestionOption {
+                            option_id: "question_1".to_owned(),
+                            label: "Production".to_owned(),
+                            description: Some("Customer-facing rollout".to_owned()),
+                            preview: None,
+                        },
+                    ],
+                },
+                question_index: 1,
+                total_questions: 3,
+            },
+        );
+
+        assert_eq!(tool_call_id, "tool-1");
+        assert_eq!(
+            request,
+            model::RequestQuestionRequest::new(
+                model::SessionId::new("session-1"),
+                model::ToolCallUpdate::new(
+                    "tool-1",
+                    model::ToolCallUpdateFields::new()
+                        .title("Pick target")
+                        .kind(model::ToolKind::Other)
+                        .status(model::ToolCallStatus::InProgress)
+                        .content(Vec::new())
+                        .raw_input(serde_json::json!({ "source": "ask_user_question" }))
+                        .locations(Vec::new()),
+                )
+                .meta(serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } })),
+                model::QuestionPrompt::new(
+                    "Where should this roll out?",
+                    "Target",
+                    true,
+                    vec![
+                        model::QuestionOption::new("question_0", "Staging")
+                            .description(Some("Validate in staging first".to_owned()))
+                            .preview(Some("Deploy to staging first.".to_owned())),
+                        model::QuestionOption::new("question_1", "Production")
+                            .description(Some("Customer-facing rollout".to_owned()))
+                            .preview(None),
+                    ],
+                ),
+                1,
+                3,
+            )
         );
     }
 }

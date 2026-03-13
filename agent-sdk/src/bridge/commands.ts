@@ -6,6 +6,7 @@ import type {
   ModeInfo,
   ModeState,
   PermissionOutcome,
+  QuestionOutcome,
   SessionLaunchSettings,
 } from "../types.js";
 
@@ -216,6 +217,33 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           outcome: parsedOutcome,
         };
       }
+      case "question_response": {
+        const outcome = asRecord(raw.outcome, "question_response.outcome");
+        const outcomeType = expectString(outcome, "outcome", "question_response.outcome");
+        if (outcomeType !== "answered" && outcomeType !== "cancelled") {
+          throw new Error("question_response.outcome.outcome must be 'answered' or 'cancelled'");
+        }
+        const parsedOutcome: QuestionOutcome =
+          outcomeType === "answered"
+            ? {
+                outcome: "answered",
+                selected_option_ids: expectStringArray(
+                  outcome,
+                  "selected_option_ids",
+                  "question_response.outcome",
+                ),
+                ...(outcome.annotation === undefined || outcome.annotation === null
+                  ? {}
+                  : { annotation: parseQuestionAnnotation(outcome.annotation) }),
+              }
+            : { outcome: "cancelled" };
+        return {
+          command: "question_response",
+          session_id: expectString(raw, "session_id", "question_response"),
+          tool_call_id: expectString(raw, "tool_call_id", "question_response"),
+          outcome: parsedOutcome,
+        };
+      }
       case "shutdown":
         return { command: "shutdown" };
       default:
@@ -224,6 +252,33 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
   })();
 
   return { requestId, command };
+}
+
+function expectStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${context}.${key} must be an array`);
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "string") {
+      throw new Error(`${context}.${key}[${index}] must be a string`);
+    }
+    return entry;
+  });
+}
+
+function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: string } {
+  const record = asRecord(value, "question_response.outcome.annotation");
+  const preview = optionalString(record, "preview", "question_response.outcome.annotation");
+  const notes = optionalString(record, "notes", "question_response.outcome.annotation");
+  return {
+    ...(preview !== undefined ? { preview } : {}),
+    ...(notes !== undefined ? { notes } : {}),
+  };
 }
 
 export function toPermissionMode(mode: string): PermissionMode | null {

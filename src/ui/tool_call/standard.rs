@@ -30,7 +30,7 @@ use super::errors::{
     debug_failed_tool_render, extract_tool_use_error_message, failed_execute_first_line,
     looks_like_internal_error, render_internal_failure_content, render_tool_use_error_content,
 };
-use super::permissions::render_permission_lines;
+use super::interactions::{render_permission_lines, render_question_lines};
 use super::{markdown_inline_spans, status_icon};
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
@@ -86,16 +86,17 @@ pub(super) fn render_tool_call(
 fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     let pipe_style = Style::default().fg(theme::DIM);
     let has_permission = tc.pending_permission.is_some();
+    let has_question = tc.pending_question.is_some();
 
     // Diffs (Edit tool) are always shown -- user needs to see changes
     let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
 
-    if tc.content.is_empty() && !has_permission {
+    if tc.content.is_empty() && !has_permission && !has_question {
         return;
     }
 
     // Force expanded when permission is pending (user needs to see context)
-    let effectively_collapsed = tc.collapsed && !has_diff && !has_permission;
+    let effectively_collapsed = tc.collapsed && !has_diff && !has_permission && !has_question;
 
     if effectively_collapsed {
         // Collapsed: show summary + ctrl+o hint
@@ -112,6 +113,9 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
         // Append inline permission controls if pending
         if let Some(ref perm) = tc.pending_permission {
             content_lines.extend(render_permission_lines(tc, perm));
+        }
+        if let Some(ref question) = tc.pending_question {
+            content_lines.extend(render_question_lines(question));
         }
 
         let last_idx = content_lines.len().saturating_sub(1);

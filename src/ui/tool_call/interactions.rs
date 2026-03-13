@@ -14,11 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Inline permission rendering: standard tool permissions, plan approval, and
-//! `AskUserQuestion` question-choice UI.
+//! Inline interaction rendering: permissions, plan approvals, and `AskUserQuestion`.
 
 use crate::agent::model::PermissionOptionKind;
-use crate::app::{InlinePermission, ToolCallInfo};
+use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -34,9 +33,6 @@ pub(super) fn render_permission_lines(
 ) -> Vec<Line<'static>> {
     if tc.is_exit_plan_mode_tool() || is_plan_approval_permission(perm) {
         return render_plan_approval_lines(tc, perm);
-    }
-    if is_question_permission(perm, tc) {
-        return render_question_permission_lines(tc, perm);
     }
 
     // Unfocused permissions: show a dimmed "waiting for focus" line
@@ -118,11 +114,6 @@ pub(super) fn render_permission_lines(
             Style::default().fg(theme::DIM),
         )),
     ]
-}
-
-fn is_question_permission(perm: &InlinePermission, tc: &ToolCallInfo) -> bool {
-    tc.is_ask_question_tool()
-        || perm.options.iter().all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
 }
 
 fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
@@ -214,58 +205,10 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     lines
 }
 
-#[derive(Default)]
-struct AskQuestionMeta {
-    header: Option<String>,
-    question: Option<String>,
-    question_index: Option<usize>,
-    total_questions: Option<usize>,
-}
-
-fn parse_ask_question_meta(raw_input: Option<&serde_json::Value>) -> AskQuestionMeta {
-    let Some(raw) = raw_input else {
-        return AskQuestionMeta::default();
-    };
-
-    let question = raw
-        .get("questions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(serde_json::Value::as_object);
-
-    AskQuestionMeta {
-        header: question
-            .and_then(|q| q.get("header"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        question: question
-            .and_then(|q| q.get("question"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        question_index: raw
-            .get("question_index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok()),
-        total_questions: raw
-            .get("total_questions")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok()),
-    }
-}
-
-fn render_question_permission_lines(
-    tc: &ToolCallInfo,
-    perm: &InlinePermission,
-) -> Vec<Line<'static>> {
-    let meta = parse_ask_question_meta(tc.raw_input.as_ref());
-    let header = meta.header.unwrap_or_else(|| "Question".to_owned());
-    let question_text = meta.question.unwrap_or_else(|| tc.title.clone());
-    let progress = match (meta.question_index, meta.total_questions) {
-        (Some(index), Some(total)) if total > 0 => format!(" ({}/{total})", index + 1),
+#[allow(clippy::too_many_lines)]
+pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'static>> {
+    let progress = match question.total_questions {
+        total if total > 0 => format!(" ({}/{total})", question.question_index + 1),
         _ => String::new(),
     };
 
@@ -274,20 +217,24 @@ fn render_question_permission_lines(
         Line::from(vec![
             Span::styled("  ? ", Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(
-                format!("{header}{progress}"),
+                format!("{}{}", question.prompt.header, progress),
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
 
-    for row in question_text.lines() {
+    for row in question.prompt.question.lines() {
         lines.push(Line::from(vec![Span::styled(
             format!("    {row}"),
-            Style::default().fg(Color::Gray),
+            if question.focused {
+                Style::default().fg(theme::RUST_ORANGE)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
         )]));
     }
 
-    if !perm.focused {
+    if !question.focused {
         lines.push(Line::from(Span::styled(
             "  waiting for input... (Up/Down to focus)",
             Style::default().fg(theme::DIM),
@@ -295,18 +242,19 @@ fn render_question_permission_lines(
         return lines;
     }
 
-    let horizontal = perm.options.len() <= 3
-        && perm.options.iter().all(|opt| {
-            opt.description.as_deref().is_none_or(str::is_empty) && opt.name.chars().count() <= 20
+    let horizontal = question.prompt.options.len() <= 3
+        && question.prompt.options.iter().all(|opt| {
+            opt.description.as_deref().is_none_or(str::is_empty) && opt.label.chars().count() <= 20
         });
 
     if horizontal {
         let mut spans: Vec<Span<'static>> = Vec::new();
-        for (i, opt) in perm.options.iter().enumerate() {
+        for (i, opt) in question.prompt.options.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
             }
-            let selected = i == perm.selected_index;
+            let selected = i == question.focused_option_index;
+            let checked = question.selected_option_indices.contains(&i);
             if selected {
                 spans.push(Span::styled(
                     "\u{25b8} ",
@@ -320,12 +268,17 @@ fn render_question_permission_lines(
             } else {
                 Style::default().fg(Color::Gray)
             };
-            spans.push(Span::styled(opt.name.clone(), style));
+            let marker = if checked { "[x] " } else { "[ ] " };
+            if question.prompt.multi_select {
+                spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
+            }
+            spans.push(Span::styled(opt.label.clone(), style));
         }
         lines.push(Line::from(spans));
     } else {
-        for (i, opt) in perm.options.iter().enumerate() {
-            let selected = i == perm.selected_index;
+        for (i, opt) in question.prompt.options.iter().enumerate() {
+            let selected = i == question.focused_option_index;
+            let checked = question.selected_option_indices.contains(&i);
             let bullet = if selected { "  \u{25b8} " } else { "  \u{25cb} " };
             let name_style = if selected {
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
@@ -341,7 +294,15 @@ fn render_question_permission_lines(
                         Style::default().fg(theme::DIM)
                     },
                 ),
-                Span::styled(opt.name.clone(), name_style),
+                Span::styled(
+                    if question.prompt.multi_select {
+                        if checked { "[x] " } else { "[ ] " }
+                    } else {
+                        ""
+                    },
+                    Style::default().fg(theme::DIM),
+                ),
+                Span::styled(opt.label.clone(), name_style),
             ]));
             if let Some(desc) = opt.description.as_ref().map(|d| d.trim()).filter(|d| !d.is_empty())
             {
@@ -353,9 +314,110 @@ fn render_question_permission_lines(
         }
     }
 
+    if let Some(preview) = question
+        .prompt
+        .options
+        .get(question.focused_option_index)
+        .and_then(|option| option.preview.as_deref())
+        .map(str::trim)
+        .filter(|preview| !preview.is_empty())
+    {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "  Preview",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        for row in preview.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("    {row}"),
+                Style::default().fg(theme::DIM),
+            )));
+        }
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  Notes{}: ", if question.editing_notes { " [editing]" } else { "" }),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if question.notes.is_empty() { "<empty>".to_owned() } else { question.notes.clone() },
+            if question.editing_notes {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(theme::DIM)
+            },
+        ),
+    ]));
+
     lines.push(Line::from(Span::styled(
-        "  Left/Right or Up/Down select  Enter confirm  Esc cancel",
+        if question.prompt.multi_select {
+            "  Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel"
+        } else {
+            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+        },
         Style::default().fg(theme::DIM),
     )));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_question_lines;
+    use crate::agent::model::{QuestionOption, QuestionPrompt};
+    use crate::app::InlineQuestion;
+    use crate::ui::theme;
+    use ratatui::style::Color;
+    use std::collections::BTreeSet;
+
+    fn test_question() -> InlineQuestion {
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        InlineQuestion {
+            prompt: QuestionPrompt::new(
+                "Which mode should we use?",
+                "Mode",
+                false,
+                vec![
+                    QuestionOption::new("safe", "Safer path"),
+                    QuestionOption::new("fast", "Faster path"),
+                ],
+            ),
+            response_tx,
+            focused_option_index: 0,
+            selected_option_indices: BTreeSet::new(),
+            notes: String::new(),
+            notes_cursor: 0,
+            editing_notes: false,
+            focused: true,
+            question_index: 0,
+            total_questions: 2,
+        }
+    }
+
+    #[test]
+    fn focused_question_uses_left_right_footer_hint() {
+        let lines = render_question_lines(&test_question());
+        let footer = lines.last().expect("question footer line");
+        assert_eq!(
+            footer.spans[0].content.as_ref(),
+            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+        );
+    }
+
+    #[test]
+    fn focused_question_text_turns_orange() {
+        let lines = render_question_lines(&test_question());
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme::RUST_ORANGE));
+    }
+
+    #[test]
+    fn unfocused_question_text_stays_gray() {
+        let mut question = test_question();
+        question.focused = false;
+        let lines = render_question_lines(&question);
+        let footer = lines.last().expect("question footer line");
+        assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Up/Down to focus)");
+        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
+    }
 }

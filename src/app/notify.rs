@@ -22,6 +22,8 @@ use std::borrow::Cow;
 pub enum NotifyEvent {
     /// A tool call requires explicit user approval.
     PermissionRequired,
+    /// `AskUserQuestion` is waiting for structured input.
+    QuestionRequired,
     /// The agent finished its turn.
     TurnComplete,
 }
@@ -123,6 +125,9 @@ fn send_desktop_notification(event: NotifyEvent) {
         NotifyEvent::PermissionRequired => {
             ("Claude Code", "Permission required -- waiting for your approval")
         }
+        NotifyEvent::QuestionRequired => {
+            ("Claude Code", "Question required -- waiting for your input")
+        }
         NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
     };
     std::thread::spawn(move || {
@@ -190,6 +195,7 @@ where
 const fn notification_text(event: NotifyEvent) -> &'static str {
     match event {
         NotifyEvent::PermissionRequired => "Claude Code: Permission required",
+        NotifyEvent::QuestionRequired => "Claude Code: Question required",
         NotifyEvent::TurnComplete => "Claude Code: Turn complete",
     }
 }

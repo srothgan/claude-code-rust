@@ -21,6 +21,7 @@ mod connect;
 mod dialog;
 mod events;
 mod focus;
+mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
 mod keys;
@@ -28,6 +29,7 @@ pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
+mod questions;
 mod selection;
 mod service_status_check;
 pub(crate) mod slash;
@@ -55,11 +57,11 @@ pub use service_status_check::start_service_status_check;
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, HelpView,
-    IncrementalMarkdown, InlinePermission, InvalidationLevel, LoginHint, MessageBlock, MessageRole,
-    MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
-    SelectionKind, SelectionPoint, SelectionState, SessionUsageState, SystemSeverity,
-    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-    ToolCallScope, WelcomeBlock, is_execute_tool_name,
+    IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LoginHint,
+    MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState, PasteSessionState,
+    PendingCommandAck, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
+    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
+    TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
@@ -259,6 +261,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                     model::RequestPermissionOutcome::Selected(
                         model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
                     ),
+                ));
+            }
+            if let Some(pending) = tc.pending_question.take() {
+                let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
+                    model::RequestQuestionOutcome::Cancelled,
                 ));
             }
         }

@@ -31,6 +31,11 @@ pub enum ClientEvent {
         request: model::RequestPermissionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     },
+    /// Question request from `AskUserQuestion` that needs structured user input.
+    QuestionRequest {
+        request: model::RequestQuestionRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+    },
     /// A prompt turn completed successfully.
     TurnComplete,
     /// `cancel` notification was accepted by the bridge.
