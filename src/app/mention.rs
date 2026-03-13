@@ -15,11 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, FocusTarget, dialog::DialogState};
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use std::cmp::Ordering;
-use std::collections::{HashSet, VecDeque};
-use std::fs::{self, ReadDir};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::mpsc as std_mpsc;
 use std::time::{Instant, SystemTime};
 
 /// Maximum candidates shown in the dropdown.
@@ -29,8 +28,12 @@ pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
-/// Maximum filesystem entries scanned within one tick.
-const SEARCH_ENTRY_BUDGET: usize = 400;
+/// Maximum walker entries drained from the channel per tick.
+const DRAIN_BUDGET: usize = 500;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 pub struct MentionState {
     /// Character position (row, col) where the `@` was typed.
@@ -43,7 +46,10 @@ pub struct MentionState {
     /// Shared autocomplete dialog navigation state.
     pub dialog: DialogState,
     search_status: MentionSearchStatus,
-    search_session: Option<MentionSearchSession>,
+    /// Cached file walker — persists across query edits.
+    file_walker: Option<FileWalker>,
+    /// Cache key: (cwd, `respect_gitignore`) that produced the walker.
+    walker_cache_key: Option<(String, bool)>,
 }
 
 #[derive(Clone)]
@@ -51,6 +57,10 @@ pub struct FileCandidate {
     /// Relative path from cwd (forward slashes, e.g. "src/main.rs").
     /// Directories have a trailing `/` (e.g. "src/").
     pub rel_path: String,
+    /// Pre-computed lowercase of `rel_path`.
+    rel_path_lower: String,
+    /// Pre-computed lowercase of the basename portion.
+    basename_lower: String,
     /// Depth (number of `/` separators) for grouping.
     pub depth: usize,
     /// Last modified time for sorting within depth groups.
@@ -67,29 +77,117 @@ enum MentionSearchStatus {
     NoMatches,
 }
 
-struct MentionSearchSession {
-    root: PathBuf,
-    query_lower: String,
-    current_level: VecDeque<PathBuf>,
-    next_level: VecDeque<PathBuf>,
-    active_dir: Option<ActiveDirectoryScan>,
-    candidates: Vec<FileCandidate>,
+// ---------------------------------------------------------------------------
+// Background file walker
+// ---------------------------------------------------------------------------
+
+struct FileWalker {
+    entry_rx: std_mpsc::Receiver<FileCandidate>,
+    cancel: Arc<AtomicBool>,
+    /// All entries discovered so far (the full file cache).
+    all_entries: Vec<FileCandidate>,
+    /// Whether the background walker has finished.
     finished: bool,
-    ignore_state: Option<IgnoreState>,
 }
 
-struct ActiveDirectoryScan {
-    read_dir: ReadDir,
+impl FileWalker {
+    fn spawn(root: PathBuf, respect_gitignore: bool) -> Self {
+        let (entry_tx, entry_rx) = std_mpsc::sync_channel(1024);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
+
+        std::thread::spawn(move || {
+            let mut builder = ignore::WalkBuilder::new(&root);
+            builder
+                .hidden(false)
+                .git_ignore(respect_gitignore)
+                .git_global(respect_gitignore)
+                .git_exclude(respect_gitignore)
+                .sort_by_file_path(std::cmp::Ord::cmp);
+
+            for result in builder.build() {
+                if cancel_clone.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
+                let Ok(entry) = result else { continue };
+
+                let Some(ft) = entry.file_type() else { continue };
+                let is_dir = ft.is_dir();
+                let is_file = ft.is_file();
+                if !is_dir && !is_file {
+                    continue;
+                }
+
+                let path = entry.path();
+                let Ok(rel) = path.strip_prefix(&root) else { continue };
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                if rel_str.is_empty() {
+                    continue;
+                }
+
+                let depth = rel_str.matches('/').count();
+                let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
+                let modified = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                let rel_path_lower = rel_path.to_lowercase();
+                let basename_lower = candidate_basename(&rel_path).to_lowercase();
+
+                let candidate = FileCandidate {
+                    rel_path,
+                    rel_path_lower,
+                    basename_lower,
+                    depth,
+                    modified,
+                    is_dir,
+                };
+
+                if entry_tx.send(candidate).is_err() {
+                    break; // receiver dropped
+                }
+            }
+        });
+
+        Self { entry_rx, cancel, all_entries: Vec::new(), finished: false }
+    }
+
+    /// Drain new entries from the background thread (non-blocking).
+    /// Returns true if new entries were added.
+    fn drain(&mut self) -> bool {
+        if self.finished {
+            return false;
+        }
+
+        let mut added = false;
+        for _ in 0..DRAIN_BUDGET {
+            match self.entry_rx.try_recv() {
+                Ok(candidate) => {
+                    self.all_entries.push(candidate);
+                    added = true;
+                }
+                Err(std_mpsc::TryRecvError::Empty) => break,
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    self.finished = true;
+                    break;
+                }
+            }
+        }
+        added
+    }
 }
 
-struct IgnoreState {
-    root: PathBuf,
-    local_builder: GitignoreBuilder,
-    local_matcher: Gitignore,
-    global_matcher: Gitignore,
-    git_exclude_matcher: Gitignore,
-    loaded_gitignores: HashSet<PathBuf>,
+impl Drop for FileWalker {
+    fn drop(&mut self) {
+        self.cancel.store(true, AtomicOrdering::Relaxed);
+    }
 }
+
+// ---------------------------------------------------------------------------
+// MentionState implementation
+// ---------------------------------------------------------------------------
 
 impl MentionState {
     #[must_use]
@@ -111,7 +209,8 @@ impl MentionState {
             candidates,
             dialog: DialogState::default(),
             search_status,
-            search_session: None,
+            file_walker: None,
+            walker_cache_key: None,
         }
     }
 
@@ -137,28 +236,44 @@ impl MentionState {
     fn mark_hint(&mut self) {
         self.candidates.clear();
         self.search_status = MentionSearchStatus::Hint;
-        self.search_session = None;
         self.dialog.clamp(0, MAX_VISIBLE);
+    }
+
+    fn ensure_walker(&mut self, cwd: &str, respect_gitignore: bool) {
+        let key = (cwd.to_owned(), respect_gitignore);
+        if self.walker_cache_key.as_ref() == Some(&key) && self.file_walker.is_some() {
+            return; // reuse existing walker
+        }
+        self.file_walker = Some(FileWalker::spawn(PathBuf::from(cwd), respect_gitignore));
+        self.walker_cache_key = Some(key);
     }
 
     fn start_search(&mut self, cwd: &str, respect_gitignore: bool) {
-        self.candidates.clear();
-        self.search_status = MentionSearchStatus::Searching;
-        self.search_session =
-            Some(MentionSearchSession::new(PathBuf::from(cwd), respect_gitignore, &self.query));
-        self.dialog.clamp(0, MAX_VISIBLE);
+        self.ensure_walker(cwd, respect_gitignore);
+        self.refilter();
     }
 
-    fn advance_search(&mut self) {
-        let Some(search_session) = self.search_session.as_mut() else {
+    fn refilter(&mut self) {
+        let query_lower = self.query.to_lowercase();
+        let Some(walker) = self.file_walker.as_ref() else {
+            self.candidates.clear();
             self.search_status = MentionSearchStatus::NoMatches;
             self.dialog.clamp(0, MAX_VISIBLE);
             return;
         };
 
-        search_session.scan_chunk();
-        self.candidates = search_session.candidates.clone();
-        self.search_status = if search_session.finished {
+        // Filter all cached entries against current query
+        let mut filtered: Vec<FileCandidate> = walker
+            .all_entries
+            .iter()
+            .filter(|c| match_tier(c, &query_lower).is_some())
+            .cloned()
+            .collect();
+
+        rank_and_truncate_candidates(&mut filtered, &query_lower);
+        self.candidates = filtered;
+
+        self.search_status = if walker.finished {
             if self.candidates.is_empty() {
                 MentionSearchStatus::NoMatches
             } else {
@@ -170,210 +285,78 @@ impl MentionState {
         self.dialog.clamp(self.candidates.len(), MAX_VISIBLE);
     }
 
-    fn invalidate_session_cache(&mut self) {
-        self.search_session = None;
-    }
-}
-
-impl MentionSearchSession {
-    fn new(root: PathBuf, respect_gitignore: bool, query: &str) -> Self {
-        let ignore_state = respect_gitignore.then(|| IgnoreState::new(&root));
-        let mut current_level = VecDeque::new();
-        current_level.push_back(root.clone());
-
-        Self {
-            root,
-            query_lower: query.to_lowercase(),
-            current_level,
-            next_level: VecDeque::new(),
-            active_dir: None,
-            candidates: Vec::new(),
-            finished: false,
-            ignore_state,
-        }
-    }
-
-    fn scan_chunk(&mut self) {
-        if self.finished {
-            return;
-        }
-
-        let mut entries_processed = 0;
-
-        while entries_processed < SEARCH_ENTRY_BUDGET {
-            if self.active_dir.is_none() && !self.open_next_directory() {
-                break;
-            }
-
-            let next_entry = {
-                let Some(active_dir) = self.active_dir.as_mut() else {
-                    continue;
-                };
-                active_dir.read_dir.next()
-            };
-
-            match next_entry {
-                Some(Ok(entry)) => {
-                    entries_processed += 1;
-                    self.process_entry(&entry);
-                }
-                Some(Err(_)) => {
-                    entries_processed += 1;
-                }
-                None => {
-                    self.active_dir = None;
-                }
-            }
-        }
-
-        rank_and_truncate_candidates(&mut self.candidates, &self.query_lower);
-    }
-
-    fn open_next_directory(&mut self) -> bool {
-        loop {
-            if let Some(dir) = self.current_level.pop_front() {
-                if let Some(ignore_state) = self.ignore_state.as_mut() {
-                    ignore_state.add_directory_gitignore(&dir);
-                }
-
-                match fs::read_dir(&dir) {
-                    Ok(read_dir) => {
-                        self.active_dir = Some(ActiveDirectoryScan { read_dir });
-                        return true;
-                    }
-                    Err(_) => continue,
-                }
-            }
-
-            if self.next_level.is_empty() {
-                self.finished = true;
-                return false;
-            }
-
-            self.current_level = std::mem::take(&mut self.next_level);
-            return false;
-        }
-    }
-
-    fn process_entry(&mut self, entry: &fs::DirEntry) {
-        let Ok(file_type) = entry.file_type() else {
-            return;
-        };
-        let is_dir = file_type.is_dir();
-        let is_file = file_type.is_file();
-        if !is_dir && !is_file {
-            return;
-        }
-
-        let path = entry.path();
-        if self.is_ignored(&path, is_dir) {
-            return;
-        }
-
-        if is_dir {
-            self.next_level.push_back(path.clone());
-        }
-
-        let Some(candidate) = candidate_from_path(&self.root, &path, is_dir, entry.metadata().ok())
-        else {
+    fn advance_search(&mut self) {
+        let Some(walker) = self.file_walker.as_mut() else {
+            self.search_status = MentionSearchStatus::NoMatches;
+            self.dialog.clamp(0, MAX_VISIBLE);
             return;
         };
 
-        if match_tier(&candidate, &self.query_lower).is_some() {
-            self.candidates.push(candidate);
+        let added = walker.drain();
+        let finished = walker.finished;
+
+        if added || finished {
+            self.refilter();
         }
     }
 
-    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
-        let Some(ignore_state) = self.ignore_state.as_ref() else {
-            return false;
-        };
-        ignore_state.is_ignored(path, is_dir)
-    }
-}
-
-impl IgnoreState {
-    fn new(root: &Path) -> Self {
-        let mut local_builder = GitignoreBuilder::new(root);
-        let mut loaded_gitignores = HashSet::new();
-        for ancestor_ignore in ancestor_gitignore_paths(root) {
-            let _ = local_builder.add(&ancestor_ignore);
-            loaded_gitignores.insert(ancestor_ignore);
+    fn invalidate_walker_cache(&mut self) {
+        if let Some(walker) = self.file_walker.take() {
+            walker.cancel.store(true, AtomicOrdering::Relaxed);
         }
-        let local_matcher = local_builder.build().unwrap_or_else(|_| Gitignore::empty());
-
-        let (global_matcher, _) = GitignoreBuilder::new(root).build_global();
-        let git_exclude_matcher = find_git_exclude_matcher(root);
-
-        Self {
-            root: root.to_path_buf(),
-            local_builder,
-            local_matcher,
-            global_matcher,
-            git_exclude_matcher,
-            loaded_gitignores,
-        }
-    }
-
-    fn add_directory_gitignore(&mut self, dir: &Path) {
-        let gitignore_path = dir.join(".gitignore");
-        if !gitignore_path.is_file() || !self.loaded_gitignores.insert(gitignore_path.clone()) {
-            return;
-        }
-
-        let _ = self.local_builder.add(&gitignore_path);
-        if let Ok(matcher) = self.local_builder.build() {
-            self.local_matcher = matcher;
-        }
-    }
-
-    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
-        let Ok(relative_path) = path.strip_prefix(&self.root) else {
-            return false;
-        };
-
-        let local = self.local_matcher.matched_path_or_any_parents(relative_path, is_dir);
-        if local.is_ignore() {
-            return true;
-        }
-        if local.is_whitelist() {
-            return false;
-        }
-
-        let git_exclude = self.git_exclude_matcher.matched(path, is_dir);
-        if git_exclude.is_ignore() {
-            return true;
-        }
-        if git_exclude.is_whitelist() {
-            return false;
-        }
-
-        self.global_matcher.matched(path, is_dir).is_ignore()
+        self.walker_cache_key = None;
     }
 }
 
-fn ancestor_gitignore_paths(root: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    for ancestor in root.ancestors().skip(1) {
-        let path = ancestor.join(".gitignore");
-        if path.is_file() {
-            paths.push(path);
-        }
+// ---------------------------------------------------------------------------
+// Matching and ranking
+// ---------------------------------------------------------------------------
+
+fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
+    if query_lower.is_empty() {
+        return Some(0);
     }
-    paths.reverse();
-    paths
+
+    if candidate.basename_lower.starts_with(query_lower) {
+        Some(0)
+    } else if candidate.rel_path_lower.starts_with(query_lower) {
+        Some(1)
+    } else if candidate.basename_lower.contains(query_lower) {
+        Some(2)
+    } else if candidate.rel_path_lower.contains(query_lower) {
+        Some(3)
+    } else {
+        None
+    }
 }
 
-fn find_git_exclude_matcher(root: &Path) -> Gitignore {
-    for ancestor in root.ancestors() {
-        let git_exclude = ancestor.join(".git").join("info").join("exclude");
-        if git_exclude.is_file() {
-            let (matcher, _) = Gitignore::new(git_exclude);
-            return matcher;
-        }
-    }
-    Gitignore::empty()
+fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
+    // Pre-compute tiers once to avoid repeated calls during sort
+    let tiers: Vec<Option<u8>> = candidates.iter().map(|c| match_tier(c, query_lower)).collect();
+
+    // Build index array and sort by tier + secondary criteria
+    let mut indices: Vec<usize> = (0..candidates.len()).collect();
+    indices.sort_by(|&i, &j| {
+        tiers[i]
+            .cmp(&tiers[j])
+            .then_with(|| candidates[i].depth.cmp(&candidates[j].depth))
+            .then_with(|| candidates[j].is_dir.cmp(&candidates[i].is_dir))
+            .then_with(|| candidates[j].modified.cmp(&candidates[i].modified))
+            .then_with(|| candidates[i].rel_path.cmp(&candidates[j].rel_path))
+    });
+
+    indices.truncate(MAX_CANDIDATES);
+    *candidates = indices.into_iter().map(|i| candidates[i].clone()).collect();
 }
+
+fn candidate_basename(rel_path: &str) -> &str {
+    let trimmed = rel_path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+// ---------------------------------------------------------------------------
+// Public API functions
+// ---------------------------------------------------------------------------
 
 /// Detect an `@` mention at the current cursor position.
 /// Scans backwards from the cursor to find `@`. The `@` must be preceded by
@@ -460,7 +443,7 @@ pub fn tick(app: &mut App, now: Instant) {
 
 pub fn invalidate_session_cache(app: &mut App) {
     if let Some(mention) = app.mention.as_mut() {
-        mention.invalidate_session_cache();
+        mention.invalidate_walker_cache();
         if mention.query.chars().count() < MIN_QUERY_CHARS {
             mention.mark_hint();
         } else {
@@ -491,64 +474,6 @@ fn sync_focus(app: &mut App) {
     } else {
         app.release_focus_target(FocusTarget::Mention);
     }
-}
-
-fn candidate_from_path(
-    root: &Path,
-    path: &Path,
-    is_dir: bool,
-    metadata: Option<fs::Metadata>,
-) -> Option<FileCandidate> {
-    let rel = path.strip_prefix(root).ok()?;
-    let rel_str = rel.to_string_lossy().replace('\\', "/");
-    if rel_str.is_empty() {
-        return None;
-    }
-
-    let depth = rel_str.matches('/').count();
-    let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
-    let modified = metadata.and_then(|item| item.modified().ok()).unwrap_or(SystemTime::UNIX_EPOCH);
-    Some(FileCandidate { rel_path, depth, modified, is_dir })
-}
-
-fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
-    candidates.sort_by(|left, right| compare_candidates(left, right, query_lower));
-    candidates.truncate(MAX_CANDIDATES);
-}
-
-fn compare_candidates(left: &FileCandidate, right: &FileCandidate, query_lower: &str) -> Ordering {
-    match_tier(left, query_lower)
-        .cmp(&match_tier(right, query_lower))
-        .then_with(|| left.depth.cmp(&right.depth))
-        .then_with(|| right.is_dir.cmp(&left.is_dir))
-        .then_with(|| right.modified.cmp(&left.modified))
-        .then_with(|| left.rel_path.cmp(&right.rel_path))
-}
-
-fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
-    if query_lower.is_empty() {
-        return Some(0);
-    }
-
-    let rel_path_lower = candidate.rel_path.to_lowercase();
-    let basename_lower = candidate_basename(&candidate.rel_path).to_lowercase();
-
-    if basename_lower.starts_with(query_lower) {
-        Some(0)
-    } else if rel_path_lower.starts_with(query_lower) {
-        Some(1)
-    } else if basename_lower.contains(query_lower) {
-        Some(2)
-    } else if rel_path_lower.contains(query_lower) {
-        Some(3)
-    } else {
-        None
-    }
-}
-
-fn candidate_basename(rel_path: &str) -> &str {
-    let trimmed = rel_path.trim_end_matches('/');
-    trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
 /// Keep mention state in sync with the current cursor location.
@@ -678,8 +603,10 @@ mod tests {
     }
 
     fn run_search(app: &mut App, now: Instant) {
-        for step in 0..64 {
+        for step in 0..200 {
             tick(app, now + Duration::from_millis(step));
+            // Give the background thread time to discover files
+            std::thread::sleep(Duration::from_millis(2));
             let is_settled = app.mention.as_ref().is_none_or(|mention| {
                 !matches!(mention.search_status, MentionSearchStatus::Searching)
             });
@@ -687,10 +614,6 @@ mod tests {
                 return;
             }
         }
-    }
-
-    fn run_single_search_tick(app: &mut App, now: Instant) {
-        tick(app, now);
     }
 
     #[test]
@@ -806,6 +729,7 @@ mod tests {
         let (mut app, _tmp) =
             app_with_temp_files(&["src/.gitignore", "src/visible.rs", "src/hidden.rs"]);
         let root = PathBuf::from(&app.cwd_raw);
+        std::fs::create_dir_all(root.join(".git")).expect("create .git");
         std::fs::write(root.join("src").join(".gitignore"), "hidden.rs\n")
             .expect("write .gitignore");
         app.input.set_text("@rs");
@@ -846,48 +770,39 @@ mod tests {
         let _ = app.input.set_cursor(0, 3);
 
         activate(&mut app);
-        run_single_search_tick(&mut app, Instant::now());
+
+        // With the background walker, after full search all matching files appear
+        run_search(&mut app, Instant::now());
 
         let mention = app.mention.as_ref().expect("mention should be active");
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs"));
         assert!(
-            !mention.candidates.iter().any(|candidate| candidate.rel_path == "src/nested/deep.rs")
-        );
-        assert_eq!(mention.search_status, MentionSearchStatus::Searching);
-
-        run_search(&mut app, Instant::now());
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert!(
             mention.candidates.iter().any(|candidate| candidate.rel_path == "src/nested/deep.rs")
         );
-        assert_eq!(mention.search_status, MentionSearchStatus::Ready);
+        assert!(matches!(mention.search_status, MentionSearchStatus::Ready));
     }
 
     #[test]
-    fn query_change_drops_partial_results_and_starts_fresh_search() {
+    fn query_change_refilters_from_cache_without_restarting_walk() {
         let (mut app, _tmp) =
             app_with_temp_files(&["root.rs", "src/nested/needle.rs", "src/nested/other.rs"]);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
         activate(&mut app);
-        run_single_search_tick(&mut app, Instant::now());
+        run_search(&mut app, Instant::now());
         assert!(app.mention.as_ref().is_some_and(|mention| {
             mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
         }));
 
+        // Change query — should refilter from cache, not restart the walker
         app.input.set_text("@needle");
         let _ = app.input.set_cursor(0, "@needle".chars().count());
         update_query(&mut app);
 
+        // The walker cache should still be present (not restarted)
         let mention = app.mention.as_ref().expect("mention should remain active");
-        assert!(mention.candidates.is_empty());
-        assert_eq!(mention.placeholder_message().as_deref(), Some("Searching files..."));
-
-        run_search(&mut app, Instant::now());
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
+        // Since walker finished and cache has all entries, refilter is instant
         assert_eq!(mention.candidates.len(), 1);
         assert_eq!(mention.candidates[0].rel_path, "src/nested/needle.rs");
     }
@@ -897,12 +812,16 @@ mod tests {
         let mut candidates = vec![
             FileCandidate {
                 rel_path: "docs/guide-rs.txt".to_owned(),
+                rel_path_lower: "docs/guide-rs.txt".to_owned(),
+                basename_lower: "guide-rs.txt".to_owned(),
                 depth: 1,
                 modified: SystemTime::UNIX_EPOCH,
                 is_dir: false,
             },
             FileCandidate {
                 rel_path: "src/rs-helper.rs".to_owned(),
+                rel_path_lower: "src/rs-helper.rs".to_owned(),
+                basename_lower: "rs-helper.rs".to_owned(),
                 depth: 1,
                 modified: SystemTime::UNIX_EPOCH,
                 is_dir: false,
