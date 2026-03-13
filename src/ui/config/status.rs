@@ -181,12 +181,8 @@ fn resolve_memory_path(app: &App) -> String {
         return "(unable to resolve home directory)".to_owned();
     };
     let encoded = encode_project_path(&app.cwd_raw);
-    let memory_md = home
-        .join(".claude")
-        .join("projects")
-        .join(&encoded)
-        .join("memory")
-        .join("MEMORY.md");
+    let memory_md =
+        home.join(".claude").join("projects").join(&encoded).join("memory").join("MEMORY.md");
 
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
@@ -196,10 +192,7 @@ fn resolve_memory_path(app: &App) -> String {
 }
 
 pub(crate) fn encode_project_path(cwd: &str) -> String {
-    cwd.replace(['/', '\\'], "-")
-        .replace(':', "-")
-        .trim_start_matches('-')
-        .to_owned()
+    cwd.replace(['/', '\\'], "-").replace(':', "-").trim_start_matches('-').to_owned()
 }
 
 fn setting_sources(app: &App) -> String {
@@ -213,11 +206,7 @@ fn setting_sources(app: &App) -> String {
     if app.config.preferences_path.is_some() {
         sources.push("Preferences");
     }
-    if sources.is_empty() {
-        "(none loaded)".to_owned()
-    } else {
-        sources.join(", ")
-    }
+    if sources.is_empty() { "(none loaded)".to_owned() } else { sources.join(", ") }
 }
 
 #[cfg(test)]
@@ -318,6 +307,6 @@ mod tests {
     }
 
     fn lines_to_string(lines: &[Line<'_>]) -> String {
-        lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+        lines.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("\n")
     }
 }
