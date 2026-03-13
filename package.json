@@ -2,7 +2,13 @@
   "name": "claude-code-rust",
   "version": "0.2.0",
   "description": "Claude Code Rust - native Rust terminal interface for Claude Code",
-  "keywords": ["cli", "tui", "claude", "ai", "terminal"],
+  "keywords": [
+    "cli",
+    "tui",
+    "claude",
+    "ai",
+    "terminal"
+  ],
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
@@ -23,7 +29,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.63"
+    "@anthropic-ai/claude-agent-sdk": "0.2.74"
   },
   "scripts": {
     "postinstall": "node ./scripts/postinstall.js",

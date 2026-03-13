@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
@@ -55,12 +57,14 @@ export {
 } from "./bridge/state_parsing.js";
 export type { SessionState, ConnectEventKind, PendingPermission } from "./bridge/session_lifecycle.js";
 
-const EXPECTED_AGENT_SDK_VERSION = "0.2.63";
+const EXPECTED_AGENT_SDK_VERSION = "0.2.74";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
   try {
-    const pkg = require("@anthropic-ai/claude-agent-sdk/package.json") as { version?: unknown };
+    const entryPath = require.resolve("@anthropic-ai/claude-agent-sdk");
+    const packageJsonPath = join(dirname(entryPath), "package.json");
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
     return typeof pkg.version === "string" ? pkg.version : undefined;
   } catch {
     return undefined;
