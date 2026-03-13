@@ -531,6 +531,9 @@ pub struct AvailableModel {
     pub description: Option<String>,
     pub supports_effort: bool,
     pub supported_effort_levels: Vec<EffortLevel>,
+    pub supports_adaptive_thinking: Option<bool>,
+    pub supports_fast_mode: Option<bool>,
+    pub supports_auto_mode: Option<bool>,
 }
 
 impl AvailableModel {
@@ -542,6 +545,9 @@ impl AvailableModel {
             description: None,
             supports_effort: false,
             supported_effort_levels: Vec::new(),
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
         }
     }
 
@@ -560,6 +566,24 @@ impl AvailableModel {
     #[must_use]
     pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
         self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
         self
     }
 }

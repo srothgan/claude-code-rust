@@ -93,6 +93,9 @@ pub(super) fn map_available_models(
                 mapped = mapped.description(description);
             }
             mapped = mapped.supports_effort(model_info.supports_effort);
+            mapped = mapped.supports_adaptive_thinking(model_info.supports_adaptive_thinking);
+            mapped = mapped.supports_fast_mode(model_info.supports_fast_mode);
+            mapped = mapped.supports_auto_mode(model_info.supports_auto_mode);
             if !model_info.supported_effort_levels.is_empty() {
                 mapped = mapped.supported_effort_levels(
                     model_info
@@ -448,5 +451,62 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
         current_mode_id: mode.current_mode_id,
         current_mode_name: mode.current_mode_name,
         available_modes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_available_models;
+    use crate::agent::{model, types};
+
+    #[test]
+    fn map_available_models_preserves_optional_fast_and_auto_metadata() {
+        let mapped = map_available_models(vec![
+            types::AvailableModel {
+                id: "sonnet".to_owned(),
+                display_name: "Claude Sonnet".to_owned(),
+                description: Some("Balanced model".to_owned()),
+                supports_effort: true,
+                supported_effort_levels: vec![
+                    types::EffortLevel::Low,
+                    types::EffortLevel::Medium,
+                    types::EffortLevel::High,
+                ],
+                supports_adaptive_thinking: Some(true),
+                supports_fast_mode: Some(true),
+                supports_auto_mode: Some(false),
+            },
+            types::AvailableModel {
+                id: "haiku".to_owned(),
+                display_name: "Claude Haiku".to_owned(),
+                description: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_adaptive_thinking: None,
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+            },
+        ]);
+
+        assert_eq!(
+            mapped,
+            vec![
+                model::AvailableModel::new("sonnet", "Claude Sonnet")
+                    .description("Balanced model")
+                    .supports_effort(true)
+                    .supported_effort_levels(vec![
+                        model::EffortLevel::Low,
+                        model::EffortLevel::Medium,
+                        model::EffortLevel::High,
+                    ])
+                    .supports_adaptive_thinking(Some(true))
+                    .supports_fast_mode(Some(true))
+                    .supports_auto_mode(Some(false)),
+                model::AvailableModel::new("haiku", "Claude Haiku")
+                    .supports_adaptive_thinking(None)
+                    .supports_fast_mode(None)
+                    .supports_auto_mode(None),
+            ]
+        );
     }
 }

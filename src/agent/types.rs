@@ -60,6 +60,9 @@ pub struct AvailableModel {
     pub supports_effort: bool,
     #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
+    pub supports_adaptive_thinking: Option<bool>,
+    pub supports_fast_mode: Option<bool>,
+    pub supports_auto_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

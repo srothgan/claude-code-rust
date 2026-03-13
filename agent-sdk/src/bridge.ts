@@ -49,7 +49,7 @@ export {
   mapSdkSessions,
 } from "./bridge/history.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
-export { buildQueryOptions } from "./bridge/session_lifecycle.js";
+export { buildQueryOptions, mapAvailableModels } from "./bridge/session_lifecycle.js";
 export {
   parseFastModeState,
   parseRateLimitStatus,

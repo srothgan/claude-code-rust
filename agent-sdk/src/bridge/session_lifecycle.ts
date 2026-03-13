@@ -466,7 +466,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   };
 }
 
-function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
+export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
   if (!Array.isArray(models)) {
     return [];
   }
@@ -490,6 +490,15 @@ function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
               level === "low" || level === "medium" || level === "high",
           )
         : [],
+      ...(typeof entry.supportsAdaptiveThinking === "boolean"
+        ? { supports_adaptive_thinking: entry.supportsAdaptiveThinking }
+        : {}),
+      ...(typeof entry.supportsFastMode === "boolean"
+        ? { supports_fast_mode: entry.supportsFastMode }
+        : {}),
+      ...(typeof entry.supportsAutoMode === "boolean"
+        ? { supports_auto_mode: entry.supportsAutoMode }
+        : {}),
       ...(typeof entry.description === "string" && entry.description.trim().length > 0
         ? { description: entry.description }
         : {}),

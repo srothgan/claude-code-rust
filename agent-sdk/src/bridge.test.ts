@@ -8,6 +8,7 @@ import {
   buildToolResultFields,
   createToolCall,
   mapAvailableAgents,
+  mapAvailableModels,
   mapSessionMessagesToUpdates,
   mapSdkSessions,
   agentSdkVersionCompatibilityError,
@@ -749,6 +750,47 @@ test("mapSdkSessions normalizes and sorts sessions", () => {
       last_modified_ms: 100,
       file_size_bytes: 10,
       cwd: "C:/work",
+    },
+  ]);
+});
+
+test("mapAvailableModels preserves optional fast and auto mode metadata", () => {
+  const mapped = mapAvailableModels([
+    {
+      value: "sonnet",
+      displayName: "Claude Sonnet",
+      description: "Balanced model",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "medium", "high", "max"],
+      supportsAdaptiveThinking: true,
+      supportsFastMode: true,
+      supportsAutoMode: false,
+    },
+    {
+      value: "haiku",
+      displayName: "Claude Haiku",
+      description: "Fast model",
+      supportsEffort: false,
+    },
+  ]);
+
+  assert.deepEqual(mapped, [
+    {
+      id: "sonnet",
+      display_name: "Claude Sonnet",
+      description: "Balanced model",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_adaptive_thinking: true,
+      supports_fast_mode: true,
+      supports_auto_mode: false,
+    },
+    {
+      id: "haiku",
+      display_name: "Claude Haiku",
+      description: "Fast model",
+      supports_effort: false,
+      supported_effort_levels: [],
     },
   ]);
 });

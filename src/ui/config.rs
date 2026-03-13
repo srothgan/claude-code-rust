@@ -168,10 +168,11 @@ fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
         .flat_map(|option| {
             let selected = option.id == overlay.selected_model;
             let marker = if selected { ">" } else { " " };
-            let support = if option.supports_effort { "effort" } else { "no effort" };
-            let mut lines = vec![Line::from(Span::styled(
-                format!("{marker} {} [{support}]", option.display_name),
-                overlay_line_style(selected, overlay.focus == OverlayFocus::Model),
+            let mut lines = vec![Line::from(model_overlay_title_spans(
+                &option,
+                marker,
+                selected,
+                overlay.focus == OverlayFocus::Model,
             ))];
             if let Some(description) = option.description {
                 lines.push(Line::from(Span::styled(
@@ -453,13 +454,93 @@ fn model_overlay_option_height(
     is_last: bool,
     viewport_width: u16,
 ) -> usize {
-    let support = if option.supports_effort { "effort" } else { "no effort" };
-    let title = format!("  {} [{support}]", option.display_name);
+    let title = model_overlay_title_text(option, " ");
     let mut height = wrapped_line_count(&title, viewport_width);
     if let Some(description) = option.description.as_deref() {
         height += wrapped_line_count(&format!("  {description}"), viewport_width);
     }
     height + usize::from(!is_last)
+}
+
+struct CapabilityBadge {
+    label: &'static str,
+    bg: Color,
+    fg: Color,
+}
+
+fn model_overlay_title_text(
+    option: &crate::app::config::OverlayModelOption,
+    marker: &str,
+) -> String {
+    let badges = model_capability_badges(option);
+    let mut title = format!("{marker} {}", option.display_name);
+    if !badges.is_empty() {
+        title.push_str("  ");
+        title.push_str(&badges.into_iter().map(|badge| badge.label).collect::<Vec<_>>().join("  "));
+    }
+    title
+}
+
+fn model_overlay_title_spans(
+    option: &crate::app::config::OverlayModelOption,
+    marker: &str,
+    selected: bool,
+    focused: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("{marker} {}", option.display_name),
+        overlay_line_style(selected, focused),
+    )];
+    let badges = model_capability_badges(option);
+    if badges.is_empty() {
+        return spans;
+    }
+    spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+    for (index, badge) in badges.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+        }
+        spans.push(Span::styled(
+            format!(" {} ", badge.label),
+            Style::default().fg(badge.fg).bg(badge.bg).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans
+}
+
+fn model_capability_badges(
+    option: &crate::app::config::OverlayModelOption,
+) -> Vec<CapabilityBadge> {
+    let mut badges = Vec::new();
+    if option.supports_effort {
+        badges.push(CapabilityBadge {
+            label: "Effort",
+            bg: Color::Rgb(64, 64, 64),
+            fg: Color::White,
+        });
+    }
+    if option.supports_adaptive_thinking == Some(true) {
+        badges.push(CapabilityBadge {
+            label: "Adaptive thinking",
+            bg: Color::Rgb(34, 92, 124),
+            fg: Color::White,
+        });
+    }
+    if option.supports_fast_mode == Some(true) {
+        badges.push(CapabilityBadge {
+            label: "Fast mode",
+            bg: Color::Rgb(24, 120, 82),
+            fg: Color::White,
+        });
+    }
+    if option.supports_auto_mode == Some(true) {
+        badges.push(CapabilityBadge {
+            label: "Auto mode",
+            bg: Color::Rgb(152, 106, 0),
+            fg: Color::Black,
+        });
+    }
+    badges
 }
 
 fn wrapped_line_count(text: &str, viewport_width: u16) -> usize {
@@ -511,7 +592,10 @@ fn centered_rect_with_size(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{SETTINGS_LIMITATION_HINT, model_overlay_scroll};
+    use super::{
+        SETTINGS_LIMITATION_HINT, model_overlay_lines, model_overlay_scroll,
+        model_overlay_title_text,
+    };
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
     use crate::app::config::{
@@ -584,7 +668,73 @@ mod tests {
                 selected_effort: EffortLevel::Medium,
             }));
 
-        assert_eq!(model_overlay_scroll(&app, 4, 10), 3);
+        assert_eq!(model_overlay_scroll(&app, 4, 10), 2);
+    }
+
+    #[test]
+    fn model_overlay_lines_show_positive_capability_badges_only() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            AvailableModel::new("sonnet", "Sonnet")
+                .description("Everyday tasks")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    EffortLevel::Low,
+                    EffortLevel::Medium,
+                    EffortLevel::High,
+                ])
+                .supports_adaptive_thinking(Some(true))
+                .supports_fast_mode(Some(true))
+                .supports_auto_mode(Some(true)),
+            AvailableModel::new("haiku", "Haiku")
+                .description("Fastest")
+                .supports_effort(false)
+                .supports_adaptive_thinking(Some(false))
+                .supports_fast_mode(Some(true))
+                .supports_auto_mode(None),
+        ];
+        app.config.overlay =
+            Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+                focus: OverlayFocus::Model,
+                selected_model: "sonnet".to_owned(),
+                selected_effort: EffortLevel::High,
+            }));
+
+        let rendered =
+            model_overlay_lines(&app).into_iter().map(|line| line.to_string()).collect::<Vec<_>>();
+
+        let sonnet_line =
+            rendered.iter().find(|line| line.contains("> Sonnet")).expect("sonnet line");
+        assert!(sonnet_line.contains("Effort"));
+        assert!(sonnet_line.contains("Adaptive thinking"));
+        assert!(sonnet_line.contains("Fast mode"));
+        assert!(sonnet_line.contains("Auto mode"));
+
+        let haiku_line = rendered.iter().find(|line| line.contains("  Haiku")).expect("haiku line");
+        assert!(haiku_line.contains("Fast mode"));
+        assert!(!haiku_line.contains("Auto mode"));
+        assert!(rendered.iter().all(|line| !line.contains("no effort")
+            && !line.contains("adaptive false")
+            && !line.contains('[')));
+    }
+
+    #[test]
+    fn model_overlay_title_text_uses_human_labels_without_divider() {
+        let title = model_overlay_title_text(
+            &crate::app::config::OverlayModelOption {
+                id: "sonnet".to_owned(),
+                display_name: "Sonnet".to_owned(),
+                description: None,
+                supports_effort: true,
+                supported_effort_levels: vec![EffortLevel::Low, EffortLevel::Medium],
+                supports_adaptive_thinking: Some(true),
+                supports_fast_mode: Some(true),
+                supports_auto_mode: Some(false),
+            },
+            ">",
+        );
+
+        assert_eq!(title, "> Sonnet  Effort  Adaptive thinking  Fast mode");
     }
 
     #[test]

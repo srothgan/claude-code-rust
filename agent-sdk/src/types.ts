@@ -37,6 +37,9 @@ export interface AvailableModel {
   description?: string;
   supports_effort: boolean;
   supported_effort_levels: EffortLevel[];
+  supports_adaptive_thinking?: boolean;
+  supports_fast_mode?: boolean;
+  supports_auto_mode?: boolean;
 }
 
 export type FastModeState = "off" | "cooldown" | "on";

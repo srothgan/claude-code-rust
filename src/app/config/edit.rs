@@ -138,6 +138,9 @@ pub(crate) struct OverlayModelOption {
     pub description: Option<String>,
     pub supports_effort: bool,
     pub supported_effort_levels: Vec<EffortLevel>,
+    pub supports_adaptive_thinking: Option<bool>,
+    pub supports_fast_mode: Option<bool>,
+    pub supports_auto_mode: Option<bool>,
 }
 
 pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
@@ -156,6 +159,9 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             } else {
                 model.supported_effort_levels.clone()
             },
+            supports_adaptive_thinking: model.supports_adaptive_thinking,
+            supports_fast_mode: model.supports_fast_mode,
+            supports_auto_mode: model.supports_auto_mode,
         })
         .collect::<Vec<_>>();
     if !options.iter().any(|option| option.id == DEFAULT_MODEL_ID) {
@@ -165,6 +171,9 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             description: Some("Uses Claude's default model selection.".to_owned()),
             supports_effort: true,
             supported_effort_levels: DEFAULT_EFFORT_LEVELS.to_vec(),
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
         });
     }
     options.sort_by(|left, right| {
