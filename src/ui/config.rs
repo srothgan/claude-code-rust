@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn output_style_details_show_unsupported_warning() {
+    fn output_style_details_do_not_show_unsupported_warning() {
         let mut app = App::test_default();
         app.config.selected_setting_index = setting_specs()
             .iter()
@@ -809,7 +809,7 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>();
 
-        assert!(rendered.iter().any(|line| line.contains("not supported yet")));
+        assert!(!rendered.iter().any(|line| line.contains("not supported yet")));
     }
 
     #[test]
@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_settings_list_inlines_unsupported_warning() {
+    fn compact_settings_list_does_not_inline_warning_for_supported_output_style() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -848,11 +848,11 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("not supported yet"));
+        assert!(!rendered.contains("not supported yet"));
     }
 
     #[test]
-    fn compact_settings_warning_wraps_on_narrow_widths() {
+    fn compact_settings_supported_output_style_does_not_render_warning_lines() {
         fn buffer_lines(buffer: &Buffer) -> Vec<String> {
             let width = usize::from(buffer.area.width);
             buffer
@@ -889,7 +889,7 @@ mod tests {
             })
             .count();
 
-        assert!(warning_lines >= 2);
+        assert_eq!(warning_lines, 0);
     }
 
     #[test]

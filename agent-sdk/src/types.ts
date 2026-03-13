@@ -170,15 +170,10 @@ export interface AccountInfo {
   api_key_source?: string;
 }
 
-export type SessionThinkingMode = "adaptive" | "disabled";
-export type SessionEffortLevel = EffortLevel;
-
 export interface SessionLaunchSettings {
-  model?: string;
   language?: string;
-  permission_mode?: string;
-  thinking_mode?: SessionThinkingMode;
-  effort_level?: SessionEffortLevel;
+  settings?: { [key: string]: Json };
+  agent_progress_summaries?: boolean;
 }
 
 export interface BridgeCommandEnvelope {

@@ -188,6 +188,10 @@ export function resolveTaskToolUseId(session: SessionState, msg: Record<string, 
 }
 
 export function taskProgressText(msg: Record<string, unknown>): string {
+  const summary = typeof msg.summary === "string" ? msg.summary.trim() : "";
+  if (summary) {
+    return summary;
+  }
   const description = typeof msg.description === "string" ? msg.description : "";
   const lastTool = typeof msg.last_tool_name === "string" ? msg.last_tool_name : "";
   if (description && lastTool) {

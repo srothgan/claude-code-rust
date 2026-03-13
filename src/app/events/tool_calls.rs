@@ -58,6 +58,9 @@ pub(super) fn register_tool_call_scope(
     id: &str,
     sdk_tool_name: &str,
 ) -> ToolCallScope {
+    // TODO: When the bridge exposes an explicit Task/Agent <-> child-tool relation,
+    // redesign subagent rendering so the parent Task/Agent summary block becomes
+    // the primary visible surface and child agent tools are not rendered directly.
     let is_task = matches!(sdk_tool_name, "Task" | "Agent");
     let scope = if is_task {
         ToolCallScope::Task

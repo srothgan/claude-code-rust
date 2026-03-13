@@ -13,11 +13,9 @@ import {
   type Query,
   type SDKUserMessage,
   type SettingSource,
-  type ThinkingConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AvailableCommand,
-  EffortLevel,
   AvailableModel,
   BridgeCommand,
   FastModeState,
@@ -92,6 +90,12 @@ export const sessions = new Map<string, SessionState>();
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_MODEL_NAME = "default";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
+
+function settingsObjectFromLaunchSettings(
+  launchSettings: SessionLaunchSettings,
+): Record<string, unknown> | undefined {
+  return launchSettings.settings;
+}
 
 export function sessionById(sessionId: string): SessionState | null {
   return sessions.get(sessionId) ?? null;
@@ -309,8 +313,8 @@ type QueryOptionsBuilderParams = {
   sessionIdForLogs: () => string;
 };
 
-function permissionModeFromLaunchSettings(rawMode: string | undefined): PermissionMode | undefined {
-  if (rawMode === undefined) {
+function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | undefined {
+  if (typeof rawMode !== "string") {
     return undefined;
   }
   switch (rawMode) {
@@ -321,42 +325,23 @@ function permissionModeFromLaunchSettings(rawMode: string | undefined): Permissi
     case "dontAsk":
       return rawMode;
     default:
-      throw new Error(`unsupported launch_settings.permission_mode: ${rawMode}`);
+      throw new Error(`unsupported launch_settings.settings.permissions.defaultMode: ${rawMode}`);
   }
 }
 
 function initialSessionModel(launchSettings: SessionLaunchSettings): string {
-  return launchSettings.model?.trim() || DEFAULT_MODEL_NAME;
+  const settings = settingsObjectFromLaunchSettings(launchSettings);
+  const model = typeof settings?.model === "string" ? settings.model.trim() : "";
+  return model || DEFAULT_MODEL_NAME;
 }
 
 function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMode {
-  return permissionModeFromLaunchSettings(launchSettings.permission_mode) ?? DEFAULT_PERMISSION_MODE;
-}
-
-function thinkingConfigFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): ThinkingConfig | undefined {
-  switch (launchSettings.thinking_mode) {
-    case undefined:
-      return undefined;
-    case "adaptive":
-      return { type: "adaptive" };
-    case "disabled":
-      return { type: "disabled" };
-    default:
-      throw new Error(
-        `unsupported launch_settings.thinking_mode: ${String(launchSettings.thinking_mode)}`,
-      );
-  }
-}
-
-function effortFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): EffortLevel | undefined {
-  if (launchSettings.thinking_mode !== "adaptive") {
-    return undefined;
-  }
-  return launchSettings.effort_level;
+  const settings = settingsObjectFromLaunchSettings(launchSettings);
+  const permissions =
+    settings?.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : undefined;
+  return permissionModeFromSettingsValue(permissions?.defaultMode) ?? DEFAULT_PERMISSION_MODE;
 }
 
 function systemPromptFromLaunchSettings(
@@ -383,22 +368,17 @@ function systemPromptFromLaunchSettings(
 }
 
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const permissionMode = permissionModeFromLaunchSettings(
-    params.launchSettings.permission_mode,
-  );
-  const thinking = thinkingConfigFromLaunchSettings(params.launchSettings);
-  const effort = effortFromLaunchSettings(params.launchSettings);
   const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
-    ...(params.launchSettings.model ? { model: params.launchSettings.model } : {}),
+    ...(params.launchSettings.settings ? { settings: params.launchSettings.settings } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
-    ...(permissionMode ? { permissionMode } : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(effort ? { effort } : {}),
+    ...(params.launchSettings.agent_progress_summaries !== undefined
+      ? { agentProgressSummaries: params.launchSettings.agent_progress_summaries }
+      : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
       : {}),

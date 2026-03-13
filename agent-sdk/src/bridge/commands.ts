@@ -6,8 +6,6 @@ import type {
   ModeInfo,
   ModeState,
   PermissionOutcome,
-  SessionEffortLevel,
-  SessionThinkingMode,
   SessionLaunchSettings,
 } from "../types.js";
 
@@ -75,48 +73,50 @@ function optionalLaunchSettings(
     return {};
   }
   const parsed = asRecord(value, `${context}.${key}`);
-  const model = optionalString(parsed, "model", `${context}.${key}`);
   const language = optionalString(parsed, "language", `${context}.${key}`);
-  const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
-  const thinkingMode = optionalThinkingMode(parsed, "thinking_mode", `${context}.${key}`);
-  const effortLevel = optionalEffortLevel(parsed, "effort_level", `${context}.${key}`);
+  const settings = optionalJsonObject(parsed, "settings", `${context}.${key}`);
+  const agentProgressSummaries = optionalBoolean(
+    parsed,
+    "agent_progress_summaries",
+    `${context}.${key}`,
+  );
   return {
-    ...(model ? { model } : {}),
     ...(language ? { language } : {}),
-    ...(permissionMode ? { permission_mode: permissionMode } : {}),
-    ...(thinkingMode ? { thinking_mode: thinkingMode } : {}),
-    ...(effortLevel ? { effort_level: effortLevel } : {}),
+    ...(settings ? { settings } : {}),
+    ...(agentProgressSummaries !== undefined
+      ? { agent_progress_summaries: agentProgressSummaries }
+      : {}),
   };
 }
 
-function optionalThinkingMode(
+function optionalBoolean(
   record: Record<string, unknown>,
   key: string,
   context: string,
-): SessionThinkingMode | undefined {
-  const value = optionalString(record, key, context);
-  if (value === undefined) {
+): boolean | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) {
     return undefined;
   }
-  if (value === "adaptive" || value === "disabled") {
-    return value;
+  if (typeof value !== "boolean") {
+    throw new Error(`${context}.${key} must be a boolean when provided`);
   }
-  throw new Error(`${context}.${key} must be "adaptive" or "disabled" when provided`);
+  return value;
 }
 
-function optionalEffortLevel(
+function optionalJsonObject(
   record: Record<string, unknown>,
   key: string,
   context: string,
-): SessionEffortLevel | undefined {
-  const value = optionalString(record, key, context);
-  if (value === undefined) {
+): { [key: string]: Json } | undefined {
+  const value = record[key];
+  if (value === undefined || value === null) {
     return undefined;
   }
-  if (value === "low" || value === "medium" || value === "high") {
-    return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${context}.${key} must be an object when provided`);
   }
-  throw new Error(`${context}.${key} must be "low", "medium", or "high" when provided`);
+  return value as { [key: string]: Json };
 }
 
 function parsePromptChunks(

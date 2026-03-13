@@ -25,8 +25,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
 pub(crate) use edit::{
-    OverlayModelOption, model_overlay_options, model_supports_effort,
-    supported_effort_levels_for_model,
+    OverlayModelOption, model_overlay_options, supported_effort_levels_for_model,
 };
 pub(crate) use resolve::language_input_validation_message;
 use resolve::resolve_setting_document;
@@ -443,7 +442,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         source: ValueSource::PersistedOnly,
         options: SettingOptions::None,
         fallback: FallbackPolicy::AppDefault,
-        supported: false,
+        supported: true,
     },
     SettingSpec {
         id: SettingId::Language,
@@ -485,7 +484,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         source: ValueSource::PersistedOnly,
         options: SettingOptions::Static(OUTPUT_STYLE_OPTIONS),
         fallback: FallbackPolicy::AppDefault,
-        supported: false,
+        supported: true,
     },
     SettingSpec {
         id: SettingId::ReduceMotion,

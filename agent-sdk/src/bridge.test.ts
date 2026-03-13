@@ -7,6 +7,7 @@ import {
   buildQueryOptions,
   buildToolResultFields,
   createToolCall,
+  handleTaskSystemMessage,
   mapAvailableAgents,
   mapAvailableModels,
   mapSessionMessagesToUpdates,
@@ -24,6 +25,55 @@ import {
   resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
 } from "./bridge.js";
+import type { SessionState } from "./bridge.js";
+
+function makeSessionState(): SessionState {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  return {
+    sessionId: "session-1",
+    cwd: "C:/work",
+    model: "haiku",
+    availableModels: [],
+    mode: null,
+    fastModeState: "off",
+    query: {} as import("@anthropic-ai/claude-agent-sdk").Query,
+    input,
+    connected: true,
+    connectEvent: "connected",
+    toolCalls: new Map(),
+    taskToolUseIds: new Map(),
+    pendingPermissions: new Map(),
+    authHintSent: false,
+  };
+}
+
+function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
+    chunk: unknown,
+  ): boolean => {
+    if (typeof chunk === "string") {
+      writes.push(chunk);
+    } else if (Buffer.isBuffer(chunk)) {
+      writes.push(chunk.toString("utf8"));
+    } else {
+      writes.push(String(chunk));
+    }
+    return true;
+  };
+
+  try {
+    run();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  return writes
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
 
 test("parseCommandEnvelope validates initialize command", () => {
   const parsed = parseCommandEnvelope(
@@ -48,11 +98,18 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
       command: "resume_session",
       session_id: "session-123",
       launch_settings: {
-        model: "haiku",
         language: "German",
-        permission_mode: "plan",
-        thinking_mode: "adaptive",
-        effort_level: "high",
+        settings: {
+          alwaysThinkingEnabled: true,
+          model: "haiku",
+          permissions: { defaultMode: "plan" },
+          fastMode: false,
+          effortLevel: "high",
+          outputStyle: "Default",
+          spinnerTipsEnabled: true,
+          terminalProgressBarEnabled: true,
+        },
+        agent_progress_summaries: true,
       },
     }),
   );
@@ -62,11 +119,18 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
     throw new Error("unexpected command variant");
   }
   assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.launch_settings.model, "haiku");
   assert.equal(parsed.command.launch_settings.language, "German");
-  assert.equal(parsed.command.launch_settings.permission_mode, "plan");
-  assert.equal(parsed.command.launch_settings.thinking_mode, "adaptive");
-  assert.equal(parsed.command.launch_settings.effort_level, "high");
+  assert.deepEqual(parsed.command.launch_settings.settings, {
+    alwaysThinkingEnabled: true,
+    model: "haiku",
+    permissions: { defaultMode: "plan" },
+    fastMode: false,
+    effortLevel: "high",
+    outputStyle: "Default",
+    spinnerTipsEnabled: true,
+    terminalProgressBarEnabled: true,
+  });
+  assert.equal(parsed.command.launch_settings.agent_progress_summaries, true);
 });
 
 test("buildQueryOptions maps launch settings into sdk query options", () => {
@@ -74,11 +138,18 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
-      model: "haiku",
       language: "German",
-      permission_mode: "plan",
-      thinking_mode: "adaptive",
-      effort_level: "medium",
+      settings: {
+        alwaysThinkingEnabled: true,
+        model: "haiku",
+        permissions: { defaultMode: "plan" },
+        fastMode: false,
+        effortLevel: "medium",
+        outputStyle: "Default",
+        spinnerTipsEnabled: true,
+        terminalProgressBarEnabled: true,
+      },
+      agent_progress_summaries: true,
     },
     provisionalSessionId: "session-1",
     input,
@@ -88,7 +159,16 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     sessionIdForLogs: () => "session-1",
   });
 
-  assert.equal(options.model, "haiku");
+  assert.deepEqual(options.settings, {
+    alwaysThinkingEnabled: true,
+    model: "haiku",
+    permissions: { defaultMode: "plan" },
+    fastMode: false,
+    effortLevel: "medium",
+    outputStyle: "Default",
+    spinnerTipsEnabled: true,
+    terminalProgressBarEnabled: true,
+  });
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
@@ -96,20 +176,29 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
       "Always respond to the user in German unless the user explicitly asks for a different language. " +
       "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
   });
-  assert.equal(options.permissionMode, "plan");
-  assert.deepEqual(options.thinking, { type: "adaptive" });
-  assert.equal(options.effort, "medium");
+  assert.equal("model" in options, false);
+  assert.equal("permissionMode" in options, false);
+  assert.equal("thinking" in options, false);
+  assert.equal("effort" in options, false);
+  assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
 });
 
-test("buildQueryOptions maps disabled thinking mode into sdk query options", () => {
+test("buildQueryOptions forwards settings without direct model and permission flags", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
-      thinking_mode: "disabled",
-      effort_level: "high",
+      settings: {
+        alwaysThinkingEnabled: false,
+        permissions: { defaultMode: "default" },
+        fastMode: true,
+        effortLevel: "high",
+        outputStyle: "Learning",
+        spinnerTipsEnabled: false,
+        terminalProgressBarEnabled: false,
+      },
     },
     provisionalSessionId: "session-3",
     input,
@@ -119,7 +208,18 @@ test("buildQueryOptions maps disabled thinking mode into sdk query options", () 
     sessionIdForLogs: () => "session-3",
   });
 
-  assert.deepEqual(options.thinking, { type: "disabled" });
+  assert.deepEqual(options.settings, {
+    alwaysThinkingEnabled: false,
+    permissions: { defaultMode: "default" },
+    fastMode: true,
+    effortLevel: "high",
+    outputStyle: "Learning",
+    spinnerTipsEnabled: false,
+    terminalProgressBarEnabled: false,
+  });
+  assert.equal("model" in options, false);
+  assert.equal("permissionMode" in options, false);
+  assert.equal("thinking" in options, false);
   assert.equal("effort" in options, false);
 });
 
@@ -139,6 +239,125 @@ test("buildQueryOptions omits startup overrides for default logout path", () => 
   assert.equal("model" in options, false);
   assert.equal("permissionMode" in options, false);
   assert.equal("systemPrompt" in options, false);
+  assert.equal("agentProgressSummaries" in options, false);
+});
+
+test("handleTaskSystemMessage prefers task_progress summary over fallback text", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_progress", {
+      task_id: "task-1",
+      summary: "Analyzing authentication flow",
+      description: "Should not be shown",
+      last_tool_name: "Read",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "in_progress",
+        raw_output: "Analyzing authentication flow",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Analyzing authentication flow" },
+          },
+        ],
+      },
+    },
+  });
+});
+
+test("handleTaskSystemMessage falls back to description and last tool when progress summary is absent", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_progress", {
+      task_id: "task-1",
+      description: "Inspecting auth code",
+      last_tool_name: "Read",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "in_progress",
+        raw_output: "Inspecting auth code (last tool: Read)",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Inspecting auth code (last tool: Read)" },
+          },
+        ],
+      },
+    },
+  });
+});
+
+test("handleTaskSystemMessage final summary replaces prior task content and finalizes status", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_progress", {
+      task_id: "task-1",
+      summary: "Analyzing authentication flow",
+      description: "Should not be shown",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-1",
+      status: "completed",
+      summary: "Found the auth bug and prepared the fix",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "completed",
+        raw_output: "Found the auth bug and prepared the fix",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Found the auth bug and prepared the fix" },
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(session.taskToolUseIds.has("task-1"), false);
 });
 
 test("buildQueryOptions trims language before appending system prompt", () => {

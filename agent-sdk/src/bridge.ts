@@ -48,6 +48,7 @@ export {
   mapSessionMessagesToUpdates,
   mapSdkSessions,
 } from "./bridge/history.js";
+export { handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
 export { buildQueryOptions, mapAvailableModels } from "./bridge/session_lifecycle.js";
 export {

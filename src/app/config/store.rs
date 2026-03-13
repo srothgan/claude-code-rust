@@ -263,6 +263,7 @@ pub fn set_model(document: &mut Value, model: Option<&str>) {
     write_persisted_setting(document, setting_spec(SettingId::Model), value);
 }
 
+#[cfg(test)]
 pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::DefaultPermissionMode))? {
         PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Default),

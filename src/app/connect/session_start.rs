@@ -15,10 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::agent::client::AgentConnection;
-use crate::agent::model::EffortLevel;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::app::App;
-use crate::app::config::{language_input_validation_message, model_supports_effort, store};
+use crate::app::config::{language_input_validation_message, store};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionStartReason {
@@ -39,10 +39,6 @@ pub(crate) fn session_launch_settings_for_reason(
         | SessionStartReason::NewSession
         | SessionStartReason::Resume
         | SessionStartReason::Login => {
-            let always_thinking =
-                store::always_thinking_enabled(&app.config.committed_settings_document)
-                    .unwrap_or(false);
-            let model = store::model(&app.config.committed_settings_document).ok().flatten();
             let language = store::language(&app.config.committed_settings_document)
                 .ok()
                 .flatten()
@@ -50,29 +46,57 @@ pub(crate) fn session_launch_settings_for_reason(
                 .filter(|value| !value.is_empty())
                 .filter(|value| language_input_validation_message(value).is_none());
             SessionLaunchSettings {
-                model: model.clone(),
                 language,
-                permission_mode: Some(
-                    store::default_permission_mode(&app.config.committed_settings_document)
-                        .unwrap_or_default()
-                        .as_stored()
-                        .to_owned(),
-                ),
-                thinking_mode: Some(
-                    if always_thinking { "adaptive" } else { "disabled" }.to_owned(),
-                ),
-                effort_level: always_thinking
-                    .then(|| {
-                        model.as_deref().is_none_or(|model_id| model_supports_effort(app, model_id))
-                    })
-                    .filter(|supports_effort| *supports_effort)
-                    .map(|_| {
-                        store::thinking_effort_level(&app.config.committed_settings_document)
-                            .unwrap_or(EffortLevel::Medium)
-                    }),
+                settings: Some(build_session_settings_object(app)),
+                agent_progress_summaries: Some(true),
             }
         }
     }
+}
+
+fn build_session_settings_object(app: &App) -> Value {
+    let mut settings = Map::new();
+
+    settings.insert(
+        "alwaysThinkingEnabled".to_owned(),
+        Value::Bool(app.config.always_thinking_effective()),
+    );
+
+    if let Some(model) = store::model(&app.config.committed_settings_document).ok().flatten() {
+        settings.insert("model".to_owned(), Value::String(model));
+    }
+
+    settings.insert(
+        "permissions".to_owned(),
+        json!({
+            "defaultMode": app.config.default_permission_mode_effective().as_stored()
+        }),
+    );
+    settings.insert("fastMode".to_owned(), Value::Bool(app.config.fast_mode_effective()));
+    settings.insert(
+        "effortLevel".to_owned(),
+        Value::String(app.config.thinking_effort_effective().as_stored().to_owned()),
+    );
+    settings.insert(
+        "outputStyle".to_owned(),
+        Value::String(app.config.output_style_effective().as_stored().to_owned()),
+    );
+    settings.insert(
+        "spinnerTipsEnabled".to_owned(),
+        Value::Bool(
+            store::spinner_tips_enabled(&app.config.committed_local_settings_document)
+                .unwrap_or(true),
+        ),
+    );
+    settings.insert(
+        "terminalProgressBarEnabled".to_owned(),
+        Value::Bool(
+            store::terminal_progress_bar_enabled(&app.config.committed_preferences_document)
+                .unwrap_or(true),
+        ),
+    );
+
+    Value::Object(settings)
 }
 
 pub(crate) fn start_new_session(
@@ -118,11 +142,21 @@ mod tests {
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
-        assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
         assert_eq!(launch_settings.language.as_deref(), Some("German"));
-        assert_eq!(launch_settings.permission_mode.as_deref(), Some("plan"));
-        assert_eq!(launch_settings.thinking_mode.as_deref(), Some("adaptive"));
-        assert_eq!(launch_settings.effort_level, Some(EffortLevel::High));
+        assert_eq!(
+            launch_settings.settings,
+            Some(serde_json::json!({
+                "alwaysThinkingEnabled": true,
+                "model": "haiku",
+                "permissions": { "defaultMode": "plan" },
+                "fastMode": false,
+                "effortLevel": "high",
+                "outputStyle": "Default",
+                "spinnerTipsEnabled": true,
+                "terminalProgressBarEnabled": true
+            }))
+        );
+        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
     #[test]
@@ -142,31 +176,57 @@ mod tests {
         let launch_settings =
             session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
 
-        assert_eq!(launch_settings.model, None);
         assert_eq!(launch_settings.language, None);
-        assert_eq!(launch_settings.permission_mode.as_deref(), Some("default"));
-        assert_eq!(launch_settings.thinking_mode.as_deref(), Some("disabled"));
-        assert_eq!(launch_settings.effort_level, None);
+        assert_eq!(
+            launch_settings.settings,
+            Some(serde_json::json!({
+                "alwaysThinkingEnabled": false,
+                "permissions": { "defaultMode": "default" },
+                "fastMode": false,
+                "effortLevel": "medium",
+                "outputStyle": "Default",
+                "spinnerTipsEnabled": true,
+                "terminalProgressBarEnabled": true
+            }))
+        );
+        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
     #[test]
-    fn persisted_launch_settings_omit_effort_for_models_without_effort_support() {
+    fn persisted_launch_settings_include_supported_settings_json_without_model_when_unset() {
         let mut app = App::test_default();
-        app.available_models =
-            vec![crate::agent::model::AvailableModel::new("haiku", "Haiku").supports_effort(false)];
-        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
         store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
         store::set_thinking_effort_level(
             &mut app.config.committed_settings_document,
             EffortLevel::High,
         );
+        store::set_fast_mode(&mut app.config.committed_settings_document, true);
+        store::set_output_style(
+            &mut app.config.committed_local_settings_document,
+            crate::app::config::OutputStyle::Learning,
+        );
+        store::set_spinner_tips_enabled(&mut app.config.committed_local_settings_document, false);
+        store::set_terminal_progress_bar_enabled(
+            &mut app.config.committed_preferences_document,
+            false,
+        );
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
-        assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
         assert_eq!(launch_settings.language, None);
-        assert_eq!(launch_settings.thinking_mode.as_deref(), Some("adaptive"));
-        assert_eq!(launch_settings.effort_level, None);
+        assert_eq!(
+            launch_settings.settings,
+            Some(serde_json::json!({
+                "alwaysThinkingEnabled": true,
+                "permissions": { "defaultMode": "default" },
+                "fastMode": true,
+                "effortLevel": "high",
+                "outputStyle": "Learning",
+                "spinnerTipsEnabled": false,
+                "terminalProgressBarEnabled": false
+            }))
+        );
+        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
     #[test]
