@@ -21,8 +21,8 @@ mod status;
 mod usage;
 
 use crate::app::config::{
-    LanguageOverlayState, OutputStyle, OverlayFocus, language_input_validation_message,
-    model_overlay_options, supported_effort_levels_for_model,
+    OutputStyle, OverlayFocus, language_input_validation_message, model_overlay_options,
+    supported_effort_levels_for_model,
 };
 use crate::app::{App, ConfigTab};
 use ratatui::Frame;
@@ -77,17 +77,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_output_style_overlay(frame, frame_area, app);
     } else if app.config.language_overlay().is_some() {
         render_language_overlay(frame, frame_area, app);
+    } else if app.config.session_rename_overlay().is_some() {
+        render_session_rename_overlay(frame, frame_area, app);
     }
 
-    let message = app.config.last_error.clone().unwrap_or_default();
+    let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
+        (error, true)
+    } else {
+        (app.config.status_message.clone().unwrap_or_default(), false)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             message,
-            Style::default().fg(if app.config.last_error.is_some() {
-                theme::STATUS_ERROR
-            } else {
-                theme::DIM
-            }),
+            Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
         ))),
         chunks[2],
     );
@@ -95,10 +97,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let help = if app.config.model_and_effort_overlay().is_some()
         || app.config.output_style_overlay().is_some()
         || app.config.language_overlay().is_some()
+        || app.config.session_rename_overlay().is_some()
     {
         ""
     } else if app.config.active_tab == ConfigTab::Status {
-        "Enter close | Esc close"
+        if app.session_id.is_some() {
+            "g generate | r rename | Enter close | Esc close"
+        } else {
+            "Enter close | Esc close"
+        }
     } else {
         "Space edit | Enter close | Esc close"
     };
@@ -284,7 +291,12 @@ fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
         .split(rendered.body_area);
 
     frame.render_widget(
-        Paragraph::new(language_overlay_input_line(overlay)).block(
+        Paragraph::new(text_input_line(
+            &overlay.draft,
+            overlay.cursor,
+            "e.g. en, Greek, Japanese, Pirate",
+        ))
+        .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme::RUST_ORANGE)),
@@ -303,22 +315,66 @@ fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(Span::styled(message, style))), sections[1]);
 }
 
-fn language_overlay_input_line(overlay: &LanguageOverlayState) -> Line<'static> {
-    const PLACEHOLDER: &str = "e.g. en, Greek, Japanese, Pirate";
+fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.session_rename_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 8,
+            width_percent: 72,
+            height_percent: 48,
+            preferred_height: 10,
+            fullscreen_below: Some((56, 14)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Rename session",
+            subtitle: Some("Set a custom title for the current session"),
+            help: Some("Enter confirm | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(text_input_line(&overlay.draft, overlay.cursor, "Custom session name"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::RUST_ORANGE)),
+            ),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Leave the field empty to clear the custom session name.",
+            Style::default().fg(theme::DIM),
+        ))),
+        sections[1],
+    );
+}
+
+fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
     let cursor_style =
         Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
     let text_style = Style::default().fg(Color::White);
     let placeholder_style = Style::default().fg(theme::DIM);
 
-    if overlay.draft.is_empty() {
+    if draft.is_empty() {
         return Line::from(vec![
             Span::styled(" ".to_owned(), cursor_style),
-            Span::styled(PLACEHOLDER.to_owned(), placeholder_style),
+            Span::styled(placeholder.to_owned(), placeholder_style),
         ]);
     }
 
-    let cursor = overlay.cursor.min(overlay.draft.chars().count());
-    let chars = overlay.draft.chars().collect::<Vec<_>>();
+    let cursor = cursor.min(draft.chars().count());
+    let chars = draft.chars().collect::<Vec<_>>();
     let prefix = chars[..cursor].iter().collect::<String>();
     let mut spans = Vec::new();
 
@@ -599,8 +655,8 @@ mod tests {
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
     use crate::app::config::{
-        LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle, OutputStyleOverlayState,
-        OverlayFocus, SettingId, SettingsOverlayState, setting_specs,
+        ConfigOverlayState, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
+        OutputStyleOverlayState, OverlayFocus, SettingId, setting_specs,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -637,12 +693,11 @@ mod tests {
                 ]),
             AvailableModel::new("haiku", "Haiku").description("Fastest").supports_effort(false),
         ];
-        app.config.overlay =
-            Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-                focus: OverlayFocus::Model,
-                selected_model: "sonnet".to_owned(),
-                selected_effort: EffortLevel::High,
-            }));
+        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+            focus: OverlayFocus::Model,
+            selected_model: "sonnet".to_owned(),
+            selected_effort: EffortLevel::High,
+        }));
 
         assert_eq!(model_overlay_scroll(&app, 6, 40), 5);
     }
@@ -661,12 +716,11 @@ mod tests {
                 ]),
             AvailableModel::new("haiku", "Haiku").supports_effort(false),
         ];
-        app.config.overlay =
-            Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-                focus: OverlayFocus::Model,
-                selected_model: "haiku".to_owned(),
-                selected_effort: EffortLevel::Medium,
-            }));
+        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+            focus: OverlayFocus::Model,
+            selected_model: "haiku".to_owned(),
+            selected_effort: EffortLevel::Medium,
+        }));
 
         assert_eq!(model_overlay_scroll(&app, 4, 10), 2);
     }
@@ -693,12 +747,11 @@ mod tests {
                 .supports_fast_mode(Some(true))
                 .supports_auto_mode(None),
         ];
-        app.config.overlay =
-            Some(SettingsOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-                focus: OverlayFocus::Model,
-                selected_model: "sonnet".to_owned(),
-                selected_effort: EffortLevel::High,
-            }));
+        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+            focus: OverlayFocus::Model,
+            selected_model: "sonnet".to_owned(),
+            selected_effort: EffortLevel::High,
+        }));
 
         let rendered =
             model_overlay_lines(&app).into_iter().map(|line| line.to_string()).collect::<Vec<_>>();
@@ -740,7 +793,7 @@ mod tests {
     #[test]
     fn output_style_overlay_lists_expected_options() {
         let mut app = App::test_default();
-        app.config.overlay = Some(SettingsOverlayState::OutputStyle(OutputStyleOverlayState {
+        app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
             selected: OutputStyle::Explanatory,
         }));
 
@@ -756,13 +809,16 @@ mod tests {
 
     #[test]
     fn language_overlay_input_uses_placeholder_when_empty() {
-        let line = super::language_overlay_input_line(&LanguageOverlayState {
-            draft: String::new(),
-            cursor: 0,
-        })
-        .to_string();
+        let line = super::text_input_line("", 0, "e.g. en, Greek, Japanese, Pirate").to_string();
 
         assert!(line.contains("e.g. en, Greek, Japanese, Pirate"));
+    }
+
+    #[test]
+    fn session_rename_overlay_input_uses_placeholder_when_empty() {
+        let line = super::text_input_line("", 0, "Custom session name").to_string();
+
+        assert!(line.contains("Custom session name"));
     }
 
     #[test]
@@ -781,7 +837,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
-        app.config.overlay = Some(SettingsOverlayState::Language(LanguageOverlayState {
+        app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
             draft: "E".to_owned(),
             cursor: 1,
         }));
@@ -1036,5 +1092,63 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
         assert!(rendered.contains("Enter close"), "missing Enter close");
+    }
+
+    #[test]
+    fn status_tab_help_shows_generate_and_rename_when_session_is_active() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Status;
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("g generate"));
+        assert!(rendered.contains("r rename"));
+    }
+
+    #[test]
+    fn config_footer_renders_status_message_when_present() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.status_message = Some("Renaming session...".to_owned());
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Renaming session..."));
     }
 }

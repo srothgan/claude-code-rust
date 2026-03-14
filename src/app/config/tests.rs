@@ -1,8 +1,10 @@
 use super::*;
 use crate::agent::model::AvailableModel;
+use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
+use std::rc::Rc;
 use tempfile::TempDir;
 
 fn open_settings_test_app() -> (TempDir, App) {
@@ -17,6 +19,26 @@ fn open_settings_test_app() -> (TempDir, App) {
 fn select_setting(app: &mut App, setting_id: SettingId) {
     app.config.selected_setting_index =
         setting_specs().iter().position(|spec| spec.id == setting_id).expect("setting row");
+}
+
+fn app_with_status_connection()
+-> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+    let mut app = App::test_default();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.config.active_tab = ConfigTab::Status;
+    app.recent_sessions = vec![crate::app::RecentSessionInfo {
+        session_id: "session-1".to_owned(),
+        summary: "Existing session summary".to_owned(),
+        last_modified_ms: 0,
+        file_size_bytes: 0,
+        cwd: Some("/test".to_owned()),
+        git_branch: None,
+        custom_title: Some("Current custom title".to_owned()),
+        first_prompt: Some("First prompt".to_owned()),
+    }];
+    (app, rx)
 }
 
 #[test]
@@ -168,6 +190,135 @@ fn placeholder_tabs_ignore_row_navigation_and_edit_activation() {
     assert_eq!(app.config.selected_setting_index, 3);
     assert!(app.config.overlay.is_none());
     assert!(!app.config.fast_mode_effective());
+}
+
+#[test]
+fn status_tab_r_opens_session_rename_overlay() {
+    let (mut app, _rx) = app_with_status_connection();
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+    assert_eq!(
+        app.config.session_rename_overlay().map(|overlay| overlay.draft.as_str()),
+        Some("Current custom title")
+    );
+    assert_eq!(app.config.session_rename_overlay().map(|overlay| overlay.cursor), Some(20));
+}
+
+#[test]
+fn status_tab_rename_confirm_sends_bridge_command() {
+    let (mut app, mut rx) = app_with_status_connection();
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    for _ in 0.."Current custom title".chars().count() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for ch in "Renamed session".chars() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let envelope = rx.try_recv().expect("rename command");
+    assert_eq!(
+        envelope.command,
+        BridgeCommand::RenameSession {
+            session_id: "session-1".to_owned(),
+            title: "Renamed session".to_owned(),
+        }
+    );
+    assert!(app.config.overlay.is_none());
+    assert_eq!(app.config.status_message.as_deref(), Some("Renaming session..."));
+    assert!(app.config.last_error.is_none());
+    assert!(matches!(
+        app.config.pending_session_title_change.as_ref(),
+        Some(pending)
+            if pending.session_id == "session-1"
+                && matches!(
+                    pending.kind,
+                    PendingSessionTitleChangeKind::Rename {
+                        requested_title: Some(ref requested_title)
+                    } if requested_title == "Renamed session"
+                )
+    ));
+}
+
+#[test]
+fn status_tab_rename_empty_confirm_clears_custom_title() {
+    let (mut app, mut rx) = app_with_status_connection();
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    for _ in 0.."Current custom title".chars().count() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let envelope = rx.try_recv().expect("rename command");
+    assert_eq!(
+        envelope.command,
+        BridgeCommand::RenameSession { session_id: "session-1".to_owned(), title: String::new() }
+    );
+    assert_eq!(app.config.status_message.as_deref(), Some("Clearing session name..."));
+    assert!(matches!(
+        app.config.pending_session_title_change.as_ref(),
+        Some(pending)
+            if matches!(
+                pending.kind,
+                PendingSessionTitleChangeKind::Rename { requested_title: None }
+            )
+    ));
+}
+
+#[test]
+fn status_tab_rename_escape_cancels_without_command() {
+    let (mut app, mut rx) = app_with_status_connection();
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+    assert!(rx.try_recv().is_err());
+    assert!(app.config.pending_session_title_change.is_none());
+}
+
+#[test]
+fn status_tab_g_generates_session_title_from_current_title_fallback() {
+    let (mut app, mut rx) = app_with_status_connection();
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+
+    let envelope = rx.try_recv().expect("generate command");
+    assert_eq!(
+        envelope.command,
+        BridgeCommand::GenerateSessionTitle {
+            session_id: "session-1".to_owned(),
+            description: "Current custom title".to_owned(),
+        }
+    );
+    assert_eq!(app.config.status_message.as_deref(), Some("Generating session title..."));
+    assert!(matches!(
+        app.config.pending_session_title_change.as_ref(),
+        Some(pending)
+            if pending.session_id == "session-1"
+                && matches!(pending.kind, PendingSessionTitleChangeKind::Generate)
+    ));
+}
+
+#[test]
+fn status_tab_g_requires_existing_session_metadata() {
+    let (mut app, mut rx) = app_with_status_connection();
+    app.recent_sessions[0].custom_title = None;
+    app.recent_sessions[0].summary.clear();
+    app.recent_sessions[0].first_prompt = None;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        app.config.last_error.as_deref(),
+        Some("No session summary is available to generate a title")
+    );
+    assert!(app.config.pending_session_title_change.is_none());
 }
 
 #[test]

@@ -630,10 +630,29 @@ pub struct LanguageOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SettingsOverlayState {
+pub struct SessionRenameOverlayState {
+    pub draft: String,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
     Language(LanguageOverlayState),
+    SessionRename(SessionRenameOverlayState),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSessionTitleChangeKind {
+    Rename { requested_title: Option<String> },
+    Generate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSessionTitleChangeState {
+    pub session_id: String,
+    pub kind: PendingSessionTitleChangeKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -641,7 +660,7 @@ pub struct ConfigState {
     pub active_tab: ConfigTab,
     pub selected_setting_index: usize,
     pub settings_scroll_offset: usize,
-    pub overlay: Option<SettingsOverlayState>,
+    pub overlay: Option<ConfigOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
     pub committed_preferences_document: Value,
@@ -650,6 +669,7 @@ pub struct ConfigState {
     pub preferences_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
+    pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
 }
 
 impl Default for ConfigState {
@@ -667,6 +687,7 @@ impl Default for ConfigState {
             preferences_path: None,
             status_message: None,
             last_error: None,
+            pending_session_title_change: None,
         }
     }
 }
@@ -762,16 +783,24 @@ impl ConfigState {
     #[must_use]
     pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
         match &self.overlay {
-            Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::OutputStyle(_) | SettingsOverlayState::Language(_))
+            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_),
+            )
             | None => None,
         }
     }
 
     pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
         match &mut self.overlay {
-            Some(SettingsOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::OutputStyle(_) | SettingsOverlayState::Language(_))
+            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_),
+            )
             | None => None,
         }
     }
@@ -779,16 +808,24 @@ impl ConfigState {
     #[must_use]
     pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
         match &self.overlay {
-            Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::Language(_))
+            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_),
+            )
             | None => None,
         }
     }
 
     pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
         match &mut self.overlay {
-            Some(SettingsOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::Language(_))
+            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_),
+            )
             | None => None,
         }
     }
@@ -796,9 +833,11 @@ impl ConfigState {
     #[must_use]
     pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
         match &self.overlay {
-            Some(SettingsOverlayState::Language(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
             Some(
-                SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::OutputStyle(_),
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::SessionRename(_),
             )
             | None => None,
         }
@@ -806,9 +845,36 @@ impl ConfigState {
 
     pub fn language_overlay_mut(&mut self) -> Option<&mut LanguageOverlayState> {
         match &mut self.overlay {
-            Some(SettingsOverlayState::Language(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
             Some(
-                SettingsOverlayState::ModelAndEffort(_) | SettingsOverlayState::OutputStyle(_),
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::SessionRename(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn session_rename_overlay(&self) -> Option<&SessionRenameOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn session_rename_overlay_mut(&mut self) -> Option<&mut SessionRenameOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_),
             )
             | None => None,
         }
@@ -1002,6 +1068,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             if let Some(spec) = app.config.selected_setting_spec() {
                 edit::activate_setting(app, spec);
             }
+        }
+        (KeyCode::Char(ch), modifiers)
+            if app.config.active_tab == ConfigTab::Status
+                && matches!(ch, 'r' | 'R')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
+        {
+            edit::open_session_rename_overlay(app);
+        }
+        (KeyCode::Char(ch), modifiers)
+            if app.config.active_tab == ConfigTab::Status
+                && matches!(ch, 'g' | 'G')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
+        {
+            edit::generate_session_title(app);
         }
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);

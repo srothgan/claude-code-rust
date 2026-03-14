@@ -76,6 +76,7 @@ pub(super) fn handle_sessions_listed_event(
     app: &mut App,
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
+    let pending_title_change = app.config.pending_session_title_change.take();
     app.recent_sessions = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
@@ -89,6 +90,26 @@ pub(super) fn handle_sessions_listed_event(
             first_prompt: entry.first_prompt,
         })
         .collect();
+    if let Some(pending_title_change) = pending_title_change {
+        let renamed_session_present = app
+            .recent_sessions
+            .iter()
+            .any(|session| session.session_id == pending_title_change.session_id);
+        if renamed_session_present {
+            app.config.last_error = None;
+            app.config.status_message = Some(match pending_title_change.kind {
+                crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
+                    match requested_title {
+                        Some(title) => format!("Renamed session to {title}"),
+                        None => "Cleared session name".to_owned(),
+                    }
+                }
+                crate::app::config::PendingSessionTitleChangeKind::Generate => {
+                    "Generated session title".to_owned()
+                }
+            });
+        }
+    }
     app.sync_welcome_recent_sessions();
 }
 
@@ -123,6 +144,12 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+    if app.config.pending_session_title_change.take().is_some() {
+        app.config.last_error = Some(msg.to_owned());
+        app.config.status_message = None;
+        app.needs_redraw = true;
+        return;
+    }
     app.messages.push(ChatMessage {
         role: MessageRole::System(None),
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(msg))],

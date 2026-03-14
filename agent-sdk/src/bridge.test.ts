@@ -5,6 +5,10 @@ import {
   CACHE_SPLIT_POLICY,
   buildRateLimitUpdate,
   buildQueryOptions,
+  canGenerateSessionTitle,
+  generatePersistedSessionTitle,
+  buildSessionMutationOptions,
+  buildSessionListOptions,
   buildToolResultFields,
   createToolCall,
   handleTaskSystemMessage,
@@ -175,6 +179,78 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
     terminalProgressBarEnabled: true,
   });
   assert.equal(parsed.command.launch_settings.agent_progress_summaries, true);
+});
+
+test("parseCommandEnvelope validates rename_session command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-rename",
+      command: "rename_session",
+      session_id: "session-123",
+      title: "Renamed session",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-rename");
+  assert.equal(parsed.command.command, "rename_session");
+  if (parsed.command.command !== "rename_session") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.title, "Renamed session");
+});
+
+test("parseCommandEnvelope validates generate_session_title command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-generate",
+      command: "generate_session_title",
+      session_id: "session-123",
+      description: "Current custom title",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-generate");
+  assert.equal(parsed.command.command, "generate_session_title");
+  if (parsed.command.command !== "generate_session_title") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.description, "Current custom title");
+});
+
+test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
+  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), { dir: "C:/worktree" });
+  assert.equal(buildSessionMutationOptions(undefined), undefined);
+});
+
+test("canGenerateSessionTitle detects supported query objects", () => {
+  const query = {
+    async generateSessionTitle(): Promise<string> {
+      return "Generated";
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  assert.equal(canGenerateSessionTitle(query), true);
+  assert.equal(canGenerateSessionTitle({} as import("@anthropic-ai/claude-agent-sdk").Query), false);
+});
+
+test("generatePersistedSessionTitle calls sdk query with persist true", async () => {
+  const calls: Array<{ description: string; persist?: boolean }> = [];
+  const query = {
+    async generateSessionTitle(
+      description: string,
+      options?: { persist?: boolean },
+    ): Promise<string> {
+      calls.push({ description, persist: options?.persist });
+      return "Generated title";
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const title = await generatePersistedSessionTitle(query, "Current summary");
+
+  assert.equal(title, "Generated title");
+  assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
 });
 
 test("buildQueryOptions maps launch settings into sdk query options", () => {
@@ -1354,6 +1430,17 @@ test("mapSdkSessions normalizes and sorts sessions", () => {
       cwd: "C:/work",
     },
   ]);
+});
+
+test("buildSessionListOptions scopes repo-local listings to worktrees", () => {
+  assert.deepEqual(buildSessionListOptions("C:/repo"), {
+    dir: "C:/repo",
+    includeWorktrees: true,
+    limit: 50,
+  });
+  assert.deepEqual(buildSessionListOptions(undefined), {
+    limit: 50,
+  });
 });
 
 test("buildToolResultFields extracts ExitPlanMode ultraplan metadata from structured results", () => {

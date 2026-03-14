@@ -1,10 +1,26 @@
-import { listSessions } from "@anthropic-ai/claude-agent-sdk";
+import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeEvent, BridgeEventEnvelope, SessionUpdate } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
+let sessionListingDir: string | undefined;
+
+export function buildSessionListOptions(
+  dir: string | undefined,
+  limit = SESSION_LIST_LIMIT,
+): ListSessionsOptions {
+  return dir ? { dir, includeWorktrees: true, limit } : { limit };
+}
+
+export function setSessionListingDir(dir: string | undefined): void {
+  sessionListingDir = dir;
+}
+
+export function currentSessionListOptions(): ListSessionsOptions {
+  return buildSessionListOptions(sessionListingDir);
+}
 
 export function writeEvent(event: BridgeEvent, requestId?: string): void {
   const envelope: BridgeEventEnvelope = {
@@ -78,7 +94,7 @@ export function emitConnectEvent(session: SessionState): void {
 
 export async function emitSessionsList(requestId?: string): Promise<void> {
   try {
-    const sdkSessions = await listSessions({ limit: SESSION_LIST_LIMIT });
+    const sdkSessions = await listSessions(currentSessionListOptions());
     writeEvent({ event: "sessions_listed", sessions: mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT) }, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

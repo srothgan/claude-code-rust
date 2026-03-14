@@ -83,6 +83,14 @@ pub enum BridgeCommand {
         session_id: String,
         mode: String,
     },
+    GenerateSessionTitle {
+        session_id: String,
+        description: String,
+    },
+    RenameSession {
+        session_id: String,
+        title: String,
+    },
     NewSession {
         cwd: String,
         #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]

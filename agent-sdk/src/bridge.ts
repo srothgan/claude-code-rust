@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   getSessionMessages,
   listSessions,
+  renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "./types.js";
 import { parseCommandEnvelope, toPermissionMode, buildModeState } from "./bridge/commands.js";
@@ -15,6 +16,8 @@ import {
   slashError,
   emitSessionUpdate,
   emitSessionsList,
+  currentSessionListOptions,
+  setSessionListingDir,
 } from "./bridge/events.js";
 import { textFromPrompt } from "./bridge/message_handlers.js";
 import {
@@ -41,6 +44,7 @@ export {
 } from "./bridge/tooling.js";
 export { looksLikeAuthRequired } from "./bridge/auth.js";
 export { parseCommandEnvelope } from "./bridge/commands.js";
+export { buildSessionListOptions } from "./bridge/events.js";
 export {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
@@ -63,6 +67,39 @@ export type {
   PendingPermission,
   PendingQuestion,
 } from "./bridge/session_lifecycle.js";
+
+export function buildSessionMutationOptions(
+  cwd?: string,
+): import("@anthropic-ai/claude-agent-sdk").SessionMutationOptions | undefined {
+  return cwd ? { dir: cwd } : undefined;
+}
+
+type SessionTitleGeneratingQuery = import("@anthropic-ai/claude-agent-sdk").Query & {
+  generateSessionTitle: (
+    description: string,
+    options?: { persist?: boolean },
+  ) => Promise<string | null | undefined>;
+};
+
+export function canGenerateSessionTitle(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+): query is SessionTitleGeneratingQuery {
+  return typeof (query as { generateSessionTitle?: unknown }).generateSessionTitle === "function";
+}
+
+export async function generatePersistedSessionTitle(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  description: string,
+): Promise<string> {
+  if (!canGenerateSessionTitle(query)) {
+    throw new Error("SDK query does not support generateSessionTitle");
+  }
+  const title = await query.generateSessionTitle(description, { persist: true });
+  if (typeof title !== "string" || title.trim().length === 0) {
+    throw new Error("SDK did not return a generated session title");
+  }
+  return title;
+}
 
 const EXPECTED_AGENT_SDK_VERSION = "0.2.74";
 const require = createRequire(import.meta.url);
@@ -108,6 +145,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         failConnection(sdkVersionError, requestId);
         return;
       }
+      setSessionListingDir(command.cwd);
       writeEvent(
         {
           event: "initialized",
@@ -135,6 +173,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
 
     case "create_session":
+      setSessionListingDir(command.cwd);
       await createSession({
         cwd: command.cwd,
         resume: command.resume,
@@ -146,12 +185,13 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
     case "resume_session": {
       try {
-        const sdkSessions = await listSessions();
+        const sdkSessions = await listSessions(currentSessionListOptions());
         const matched = sdkSessions.find((entry) => entry.sessionId === command.session_id);
         if (!matched) {
           slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
           return;
         }
+        setSessionListingDir(matched.cwd ?? process.cwd());
         const historyMessages = await getSessionMessages(
           command.session_id,
           matched.cwd ? { dir: matched.cwd } : undefined,
@@ -177,6 +217,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
     case "new_session":
       await closeAllSessions();
+      setSessionListingDir(command.cwd);
       await createSession({
         cwd: command.cwd,
         launchSettings: command.launch_settings,
@@ -250,6 +291,44 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         type: "current_mode_update",
         current_mode_id: mode,
       });
+      return;
+    }
+
+    case "generate_session_title": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await generatePersistedSessionTitle(session.query, command.description);
+        setSessionListingDir(session.cwd);
+        await emitSessionsList(requestId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to generate session title: ${message}`, requestId);
+      }
+      return;
+    }
+
+    case "rename_session": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await renameSession(
+          command.session_id,
+          command.title,
+          buildSessionMutationOptions(session.cwd),
+        );
+        setSessionListingDir(session.cwd);
+        await emitSessionsList(requestId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to rename session: ${message}`, requestId);
+      }
       return;
     }
 

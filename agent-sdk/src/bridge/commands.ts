@@ -192,6 +192,18 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           session_id: expectString(raw, "session_id", "set_mode"),
           mode: expectString(raw, "mode", "set_mode"),
         };
+      case "generate_session_title":
+        return {
+          command: "generate_session_title",
+          session_id: expectString(raw, "session_id", "generate_session_title"),
+          description: expectString(raw, "description", "generate_session_title"),
+        };
+      case "rename_session":
+        return {
+          command: "rename_session",
+          session_id: expectString(raw, "session_id", "rename_session"),
+          title: expectString(raw, "title", "rename_session"),
+        };
       case "get_status_snapshot":
         return {
           command: "get_status_snapshot",

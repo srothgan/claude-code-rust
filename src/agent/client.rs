@@ -146,6 +146,24 @@ impl AgentConnection {
         })
     }
 
+    pub fn generate_session_title(
+        &self,
+        session_id: String,
+        description: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GenerateSessionTitle { session_id, description },
+        })
+    }
+
+    pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::RenameSession { session_id, title },
+        })
+    }
+
     pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -188,5 +206,46 @@ impl AgentConnection {
 
     fn send(&self, envelope: CommandEnvelope) -> anyhow::Result<()> {
         self.command_tx.send(envelope).map_err(|_| anyhow::anyhow!("bridge command channel closed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentConnection;
+    use crate::agent::wire::BridgeCommand;
+
+    #[test]
+    fn generate_session_title_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.generate_session_title("session-1".to_owned(), "Summarize work".to_owned())
+            .expect("generate");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::GenerateSessionTitle {
+                session_id: "session-1".to_owned(),
+                description: "Summarize work".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn rename_session_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.rename_session("session-1".to_owned(), "Renamed".to_owned()).expect("rename");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::RenameSession {
+                session_id: "session-1".to_owned(),
+                title: "Renamed".to_owned(),
+            }
+        );
     }
 }
