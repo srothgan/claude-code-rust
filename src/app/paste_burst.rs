@@ -65,7 +65,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 /// After a burst is flushed, suppress Enter-as-submit for this duration.
 /// Handles terminals that insert a small gap between the last pasted
 /// character and a trailing newline.
+#[cfg(not(windows))]
 const ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(100);
+
+#[cfg(windows)]
+const ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(250);
 
 /// Minimum characters in a burst to classify it as paste (not fast typing).
 const MIN_BURST_LEN: usize = 3;
@@ -157,10 +161,16 @@ impl PasteBurstDetector {
                         received_at: now,
                         retro_prefix: self.collect_retro_prefix(now),
                     };
+                    tracing::debug!(
+                        ch = %debug_char(ch),
+                        recent_passthrough = self.recent_passthrough.len(),
+                        "paste_burst: idle -> pending"
+                    );
                     CharAction::Consumed
                 } else {
                     // Normal typing speed -- pass through immediately.
                     self.push_recent_passthrough(ch, now);
+                    tracing::debug!(ch = %debug_char(ch), "paste_burst: passthrough");
                     CharAction::Passthrough(ch)
                 }
             }
@@ -179,6 +189,14 @@ impl PasteBurstDetector {
                     self.buffer.push(ch);
                     self.state = BurstState::Buffering;
                     self.recent_passthrough.clear();
+                    tracing::debug!(
+                        held = %debug_char(held),
+                        ch = %debug_char(ch),
+                        retro_len,
+                        within_pending_window,
+                        buffer = %debug_text(&self.buffer),
+                        "paste_burst: pending -> buffering"
+                    );
                     if retro_len > 0 {
                         CharAction::RetroCapture(retro_len)
                     } else {
@@ -192,6 +210,11 @@ impl PasteBurstDetector {
                     self.state = BurstState::Idle;
                     self.push_recent_passthrough(prev, now);
                     self.push_recent_passthrough(ch, now);
+                    tracing::debug!(
+                        held = %debug_char(prev),
+                        ch = %debug_char(ch),
+                        "paste_burst: pending false alarm"
+                    );
                     CharAction::Passthrough(prev)
                 }
             }
@@ -199,13 +222,18 @@ impl PasteBurstDetector {
                 // Once a burst is confirmed, keep buffering until idle timeout.
                 // This tolerates Windows scheduling jitter between pasted chars.
                 self.buffer.push(ch);
+                tracing::debug!(
+                    ch = %debug_char(ch),
+                    buffer_len = self.buffer.chars().count(),
+                    "paste_burst: buffering append"
+                );
                 CharAction::Consumed
             }
         }
     }
 
     /// Feed an Enter key event. Returns `true` if Enter should be treated
-    /// as a newline (inserted into the buffer) rather than a submit action.
+    /// as a newline (routed through the paste buffer) rather than a submit action.
     ///
     /// This covers two cases:
     /// 1. Enter arrives while actively buffering a burst (append newline).
@@ -215,6 +243,7 @@ impl PasteBurstDetector {
             BurstState::Buffering => {
                 self.buffer.push('\n');
                 self.last_char_time = Some(now);
+                tracing::debug!(buffer = %debug_text(&self.buffer), "paste_burst: enter during buffering");
                 true
             }
             BurstState::Pending { held_char, .. } => {
@@ -225,9 +254,25 @@ impl PasteBurstDetector {
                 self.buffer.push('\n');
                 self.state = BurstState::Buffering;
                 self.last_char_time = Some(now);
+                tracing::debug!(
+                    held = %debug_char(held),
+                    buffer = %debug_text(&self.buffer),
+                    "paste_burst: enter promoted pending -> buffering"
+                );
                 true
             }
-            BurstState::Idle => self.should_suppress_enter(now),
+            BurstState::Idle if self.should_suppress_enter(now) => {
+                self.buffer.clear();
+                self.buffer.push('\n');
+                self.state = BurstState::Buffering;
+                self.last_char_time = Some(now);
+                tracing::debug!("paste_burst: suppressed enter queued as newline");
+                true
+            }
+            BurstState::Idle => {
+                tracing::debug!("paste_burst: enter not suppressed");
+                false
+            }
         }
     }
 
@@ -240,6 +285,7 @@ impl PasteBurstDetector {
                     let ch = *held_char;
                     self.state = BurstState::Idle;
                     self.push_recent_passthrough(ch, now);
+                    tracing::debug!(ch = %debug_char(ch), "paste_burst: pending timeout emit char");
                     Some(FlushAction::EmitChar(ch))
                 } else {
                     None
@@ -251,7 +297,12 @@ impl PasteBurstDetector {
                     .is_some_and(|last| now.saturating_duration_since(last) > IDLE_TIMEOUT);
                 if idle {
                     let text = self.flush_buffer(now);
-                    if text.is_empty() { None } else { Some(FlushAction::EmitPaste(text)) }
+                    if text.is_empty() {
+                        None
+                    } else {
+                        tracing::debug!(text = %debug_text(&text), "paste_burst: idle timeout emit paste");
+                        Some(FlushAction::EmitPaste(text))
+                    }
                 } else {
                     None
                 }
@@ -275,10 +326,12 @@ impl PasteBurstDetector {
     /// Prevents state from leaking across unrelated input.
     pub fn on_non_char_key(&mut self, now: Instant) {
         if matches!(self.state, BurstState::Buffering) {
-            let _ = self.flush_buffer(now);
+            let dropped = self.flush_buffer(now);
+            tracing::debug!(text = %debug_text(&dropped), "paste_burst: non-char dropped buffered text");
         } else if let BurstState::Pending { .. } = &self.state {
             // Drop the held char -- non-char input breaks any potential burst.
             self.state = BurstState::Idle;
+            tracing::debug!("paste_burst: non-char cleared pending state");
         }
         self.last_char_time = None;
         self.recent_passthrough.clear();
@@ -324,6 +377,26 @@ impl Default for PasteBurstDetector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn debug_char(ch: char) -> String {
+    ch.escape_default().collect()
+}
+
+fn debug_text(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let mut out = String::new();
+    let mut iter = text.chars();
+    for _ in 0..MAX_CHARS {
+        let Some(ch) = iter.next() else {
+            return out;
+        };
+        out.extend(ch.escape_default());
+    }
+    if iter.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -429,8 +502,30 @@ mod tests {
         assert!(d.should_suppress_enter(t_enter));
 
         // Enter after suppression window is not suppressed.
-        let t_late = fast(t_flush, 150);
+        let late_ms =
+            u64::try_from((ENTER_SUPPRESS_WINDOW + Duration::from_millis(1)).as_millis()).unwrap();
+        let t_late = fast(t_flush, late_ms);
         assert!(!d.should_suppress_enter(t_late));
+    }
+
+    #[test]
+    fn suppressed_enter_is_emitted_as_newline_paste() {
+        let mut d = PasteBurstDetector::new();
+        let t0 = Instant::now();
+
+        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
+        assert_eq!(d.on_char('b', fast(t0, 2)), CharAction::Consumed);
+        assert_eq!(d.on_char('c', fast(t0, 4)), CharAction::RetroCapture(1));
+
+        let t_flush = after_idle(t0);
+        assert_eq!(d.tick(t_flush), Some(FlushAction::EmitPaste("abc".to_owned())));
+
+        let t_enter = fast(t_flush, 10);
+        assert!(d.on_enter(t_enter));
+        assert!(d.is_buffering());
+
+        let t_newline_flush = after_idle(t_enter);
+        assert_eq!(d.tick(t_newline_flush), Some(FlushAction::EmitPaste("\n".to_owned())));
     }
 
     #[test]

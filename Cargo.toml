@@ -49,6 +49,26 @@ which = "8.0.2"
 [features]
 perf = []
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test.package."*"]
+debug = false
+
+[profile.test.build-override]
+debug = false
+
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.25.0"

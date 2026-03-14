@@ -259,6 +259,12 @@ impl App {
         if text.is_empty() {
             return;
         }
+        tracing::debug!(
+            text = %debug_paste_text(text),
+            pending_len = self.pending_paste_text.chars().count(),
+            had_pending_submit = self.pending_submit.is_some(),
+            "paste_queue: enqueue"
+        );
         self.pending_submit = None;
         if self.pending_paste_text.is_empty() {
             let continued_session = self.active_paste_session.and_then(|session| {
@@ -279,8 +285,22 @@ impl App {
                     placeholder_index: None,
                 }
             }));
+            if let Some(session) = self.pending_paste_session {
+                tracing::debug!(
+                    session_id = session.id,
+                    start_row = session.start.row,
+                    start_col = session.start.col,
+                    placeholder_index = ?session.placeholder_index,
+                    "paste_queue: opened session"
+                );
+            }
         }
         self.pending_paste_text.push_str(text);
+        tracing::debug!(
+            merged = %debug_paste_text(&self.pending_paste_text),
+            merged_len = self.pending_paste_text.chars().count(),
+            "paste_queue: merged pending text"
+        );
     }
 
     /// Mark one presented frame at `now`, updating smoothed FPS.
@@ -687,6 +707,22 @@ impl App {
         )
         .with_help(self.is_help_active())
     }
+}
+
+fn debug_paste_text(text: &str) -> String {
+    const MAX_CHARS: usize = 60;
+    let mut out = String::new();
+    let mut iter = text.chars();
+    for _ in 0..MAX_CHARS {
+        let Some(ch) = iter.next() else {
+            return out;
+        };
+        out.extend(ch.escape_default());
+    }
+    if iter.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 #[cfg(test)]

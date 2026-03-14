@@ -337,16 +337,19 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
     if app.paste_burst.on_enter(now) {
-        return false;
+        tracing::debug!("paste_enter: enter routed through paste buffer");
+        return true;
     }
 
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
         app.pending_submit = Some(app.input.snapshot());
+        tracing::debug!("paste_enter: armed deferred submit snapshot");
         return false;
     }
     app.pending_submit = None;
+    tracing::debug!("paste_enter: inserted explicit newline");
     app.input.textarea_insert_newline()
 }
 
@@ -520,6 +523,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     match app.paste_burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
+            tracing::debug!(ch = %c.escape_default(), "paste_key: consumed char into burst");
             return false;
         }
         CharAction::RetroCapture(delete_count) => {
@@ -527,12 +531,22 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
             for _ in 0..delete_count {
                 let _ = app.input.textarea_delete_char_before();
             }
+            tracing::debug!(
+                ch = %c.escape_default(),
+                delete_count,
+                "paste_key: retro-captured leaked chars"
+            );
             return true;
         }
         CharAction::Passthrough(ch) => {
             // Normal typing or a previously-held char released.
             // If `ch == c`, single normal insert. Otherwise the detector
             // emitted a held char; insert it first, then the current char.
+            tracing::debug!(
+                input = %c.escape_default(),
+                emitted = %ch.escape_default(),
+                "paste_key: passthrough"
+            );
             if ch == c {
                 let _ = app.input.textarea_insert_char(c);
             } else {
