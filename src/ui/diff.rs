@@ -72,6 +72,73 @@ pub fn render_diff(diff: &model::Diff) -> Vec<Line<'static>> {
     lines
 }
 
+pub fn looks_like_unified_diff(text: &str) -> bool {
+    let mut saw_hunk = false;
+    let mut saw_file_header = false;
+    let mut saw_metadata = false;
+
+    for line in text.lines().take(64) {
+        if line.starts_with("@@") {
+            saw_hunk = true;
+        } else if line.starts_with("--- ") || line.starts_with("+++ ") {
+            saw_file_header = true;
+        } else if line.starts_with("diff --git ")
+            || line.starts_with("index ")
+            || line.starts_with("new file mode ")
+            || line.starts_with("deleted file mode ")
+            || line.starts_with("rename from ")
+            || line.starts_with("rename to ")
+        {
+            saw_metadata = true;
+        }
+    }
+
+    saw_hunk && (saw_file_header || saw_metadata)
+}
+
+pub fn render_raw_unified_diff(text: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    for line in text.split('\n') {
+        lines.push(render_raw_diff_line(line));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+
+    lines
+}
+
+fn render_raw_diff_line(line: &str) -> Line<'static> {
+    let style = if line.starts_with("diff --git ")
+        || line.starts_with("index ")
+        || line.starts_with("new file mode ")
+        || line.starts_with("deleted file mode ")
+        || line.starts_with("similarity index ")
+        || line.starts_with("rename from ")
+        || line.starts_with("rename to ")
+    {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else if line.starts_with("@@") {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else if line.starts_with("+++ ") {
+        Style::default().fg(Color::Green)
+    } else if line.starts_with("--- ") {
+        Style::default().fg(Color::Red)
+    } else if line.starts_with('+') {
+        Style::default().fg(Color::Green)
+    } else if line.starts_with('-') {
+        Style::default().fg(Color::Red)
+    } else if line.starts_with('\\') {
+        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default().fg(theme::DIM)
+    };
+
+    Line::from(Span::styled(line.to_owned(), style))
+}
+
 /// Check if a tool call title references a markdown file.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn is_markdown_file(title: &str) -> bool {
@@ -252,6 +319,22 @@ mod tests {
         let header: String = lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(header.contains("main.rs"));
         assert!(header.contains("[acme/project]"));
+    }
+
+    #[test]
+    fn looks_like_unified_diff_detects_git_style_payload() {
+        let raw = "diff --git a/a.rs b/a.rs\nindex 111..222 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        assert!(looks_like_unified_diff(raw));
+    }
+
+    #[test]
+    fn render_raw_unified_diff_styles_hunks_and_additions() {
+        let raw = "--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let lines = render_raw_unified_diff(raw);
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
+        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
     }
 
     // lang_from_title
