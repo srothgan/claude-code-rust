@@ -38,6 +38,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/skills" => handle_skills_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/login" => handle_login_submit(app, &parsed.args),
         "/logout" => handle_logout_submit(app, &parsed.args),
@@ -87,6 +88,17 @@ fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open settings: {err}"));
     }
+    true
+}
+
+fn handle_skills_submit(app: &mut App, args: &[&str]) -> bool {
+    let _ = args;
+
+    if let Err(err) = crate::app::config::open(app) {
+        push_system_message(app, format!("Failed to open skills: {err}"));
+        return true;
+    }
+    app.config.active_tab = crate::app::ConfigTab::Skills;
     true
 }
 

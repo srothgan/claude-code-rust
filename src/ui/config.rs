@@ -17,6 +17,7 @@
 mod mcp;
 mod overlay;
 mod settings;
+mod skills;
 mod status;
 mod usage;
 
@@ -66,6 +67,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
+        ConfigTab::Skills => skills::render(frame, chunks[1]),
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1]),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
@@ -94,25 +96,39 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
 
-    let help = if app.config.model_and_effort_overlay().is_some()
-        || app.config.output_style_overlay().is_some()
-        || app.config.language_overlay().is_some()
-        || app.config.session_rename_overlay().is_some()
-    {
-        ""
-    } else if app.config.active_tab == ConfigTab::Status {
-        if app.session_id.is_some() {
-            "g generate | r rename | Enter close | Esc close"
-        } else {
-            "Enter close | Esc close"
-        }
-    } else {
-        "Space edit | Enter close | Esc close"
-    };
+    let help = config_help_text(app);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
         chunks[3],
     );
+}
+
+fn config_help_text(app: &App) -> String {
+    if app.config.model_and_effort_overlay().is_some()
+        || app.config.output_style_overlay().is_some()
+        || app.config.language_overlay().is_some()
+        || app.config.session_rename_overlay().is_some()
+    {
+        return String::new();
+    }
+
+    match app.config.active_tab {
+        ConfigTab::Settings => {
+            "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
+                .to_owned()
+        }
+        ConfigTab::Skills | ConfigTab::Usage | ConfigTab::Mcp => {
+            "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+        }
+        ConfigTab::Status => {
+            if app.session_id.is_some() {
+                "g generate | r rename | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
+                    .to_owned()
+            } else {
+                "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+            }
+        }
+    }
 }
 
 fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -1091,7 +1107,68 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
+        assert!(rendered.contains("Tab next tab"), "missing tab navigation hint");
         assert!(rendered.contains("Enter close"), "missing Enter close");
+    }
+
+    #[test]
+    fn settings_tab_help_shows_edit_keys() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Settings;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Left/Right edit"));
+        assert!(rendered.contains("Space edit"));
+        assert!(rendered.contains("Shift+Tab prev tab"));
+    }
+
+    #[test]
+    fn skills_tab_placeholder_renders() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Skills;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Skills placeholder"));
+        assert!(rendered.contains("This tab is wired into Config"));
+        assert!(rendered.contains("Tab next tab"));
     }
 
     #[test]

@@ -84,7 +84,47 @@ pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
             open_model_and_effort_overlay(app, OverlayFocus::Effort);
         }
         SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
-            cycle_static_enum(app, spec);
+            cycle_static_enum(app, spec, 1);
+        }
+    }
+}
+
+pub(super) fn step_setting(app: &mut App, spec: &SettingSpec, delta: isize) {
+    match spec.id {
+        SettingId::AlwaysThinking
+        | SettingId::ShowTips
+        | SettingId::TerminalProgressBar
+        | SettingId::ReduceMotion
+        | SettingId::FastMode
+        | SettingId::RespectGitignore => activate_setting(app, spec),
+        SettingId::DefaultPermissionMode => {
+            let current = match super::resolve::resolve_setting_document(
+                &app.config.committed_settings_document,
+                SettingId::DefaultPermissionMode,
+                &[],
+            )
+            .value
+            {
+                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
+                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+                }
+                ResolvedSettingValue::Bool(_)
+                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
+                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
+            };
+            let next = if delta.is_negative() { current.prev() } else { current.next() };
+            persist_setting_change(app, spec, |document| {
+                store::set_default_permission_mode(document, next);
+            });
+        }
+        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
+            cycle_static_enum(app, spec, delta);
+        }
+        SettingId::Language
+        | SettingId::Model
+        | SettingId::OutputStyle
+        | SettingId::ThinkingEffort => {
+            activate_setting(app, spec);
         }
     }
 }
@@ -226,7 +266,7 @@ where
     }
 }
 
-fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
+fn cycle_static_enum(app: &mut App, spec: &SettingSpec, delta: isize) {
     let current = {
         let document = app.config.document_for(spec.file);
         match store::read_persisted_setting(document, spec) {
@@ -240,7 +280,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
     };
     let current_index =
         options.iter().position(|option| option.stored == current).unwrap_or_default();
-    let next = options[(current_index + 1) % options.len()].stored;
+    let next = options[step_index_wrapped(current_index, delta, options.len())].stored;
 
     persist_setting_change(app, spec, |document| {
         if spec.id == SettingId::Notifications {
@@ -610,6 +650,17 @@ fn step_index_clamped(current: usize, delta: isize, len: usize) -> usize {
         current.saturating_sub(delta.unsigned_abs()).min(len.saturating_sub(1))
     } else {
         (current + delta.cast_unsigned()).min(len.saturating_sub(1))
+    }
+}
+
+fn step_index_wrapped(current: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if delta.is_negative() {
+        (current + len - (delta.unsigned_abs() % len)) % len
+    } else {
+        (current + delta.cast_unsigned()) % len
     }
 }
 

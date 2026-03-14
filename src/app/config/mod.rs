@@ -34,17 +34,19 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
     Settings,
+    Skills,
     Status,
     Usage,
     Mcp,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 4] = [Self::Settings, Self::Status, Self::Usage, Self::Mcp];
+    pub const ALL: [Self; 5] = [Self::Settings, Self::Skills, Self::Status, Self::Usage, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
+            Self::Skills => "Skills",
             Self::Status => "Status",
             Self::Usage => "Usage",
             Self::Mcp => "MCP",
@@ -53,7 +55,8 @@ impl ConfigTab {
 
     const fn next(self) -> Self {
         match self {
-            Self::Settings => Self::Status,
+            Self::Settings => Self::Skills,
+            Self::Skills => Self::Status,
             Self::Status => Self::Usage,
             Self::Usage => Self::Mcp,
             Self::Mcp => Self::Settings,
@@ -63,7 +66,8 @@ impl ConfigTab {
     const fn prev(self) -> Self {
         match self {
             Self::Settings => Self::Mcp,
-            Self::Status => Self::Settings,
+            Self::Skills => Self::Settings,
+            Self::Status => Self::Skills,
             Self::Usage => Self::Status,
             Self::Mcp => Self::Usage,
         }
@@ -228,6 +232,17 @@ impl DefaultPermissionMode {
             Self::Plan => Self::DontAsk,
             Self::DontAsk => Self::BypassPermissions,
             Self::BypassPermissions => Self::Default,
+        }
+    }
+
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Default => Self::BypassPermissions,
+            Self::AcceptEdits => Self::Default,
+            Self::Plan => Self::AcceptEdits,
+            Self::DontAsk => Self::Plan,
+            Self::BypassPermissions => Self::DontAsk,
         }
     }
 }
@@ -1069,6 +1084,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 edit::activate_setting(app, spec);
             }
         }
+        (KeyCode::Left, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            if let Some(spec) = app.config.selected_setting_spec() {
+                edit::step_setting(app, spec, -1);
+            }
+        }
+        (KeyCode::Right, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            if let Some(spec) = app.config.selected_setting_spec() {
+                edit::step_setting(app, spec, 1);
+            }
+        }
         (KeyCode::Char(ch), modifiers)
             if app.config.active_tab == ConfigTab::Status
                 && matches!(ch, 'r' | 'R')
@@ -1086,12 +1111,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
-        (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::BackTab, _) => {
+        (KeyCode::BackTab, _) => {
             app.config.active_tab = app.config.active_tab.prev();
             app.config.status_message = None;
             request_status_snapshot_if_needed(app);
         }
-        (KeyCode::Right | KeyCode::Tab, KeyModifiers::NONE) => {
+        (KeyCode::Tab, KeyModifiers::NONE) => {
             app.config.active_tab = app.config.active_tab.next();
             app.config.status_message = None;
             request_status_snapshot_if_needed(app);

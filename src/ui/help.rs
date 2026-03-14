@@ -360,11 +360,12 @@ fn pending_command_help_label(app: &App) -> String {
     app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
-fn builtin_slash_help_commands() -> [(&'static str, &'static str); 3] {
+fn builtin_slash_help_commands() -> [(&'static str, &'static str); 4] {
     [
         ("/config", "Open settings"),
         ("/login", "Authenticate with Claude"),
         ("/logout", "Sign out of Claude"),
+        ("/skills", "Open skills"),
     ]
 }
 

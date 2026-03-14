@@ -165,15 +165,16 @@ fn tab_navigation_wraps_and_clears_status_message() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.status_message = Some("saved".to_owned());
 
-    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
 
     assert_eq!(app.config.active_tab, ConfigTab::Mcp);
     assert!(app.config.status_message.is_none());
 
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
     assert_eq!(app.config.active_tab, ConfigTab::Mcp);
 }
@@ -181,7 +182,7 @@ fn tab_navigation_wraps_and_clears_status_message() {
 #[test]
 fn placeholder_tabs_ignore_row_navigation_and_edit_activation() {
     let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Status;
+    app.config.active_tab = ConfigTab::Skills;
     app.config.selected_setting_index = 3;
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -189,6 +190,22 @@ fn placeholder_tabs_ignore_row_navigation_and_edit_activation() {
 
     assert_eq!(app.config.selected_setting_index, 3);
     assert!(app.config.overlay.is_none());
+    assert!(!app.config.fast_mode_effective());
+}
+
+#[test]
+fn left_and_right_adjust_selected_setting_without_switching_tabs() {
+    let (_dir, mut app) = open_settings_test_app();
+    select_setting(&mut app, SettingId::FastMode);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+    assert_eq!(app.config.active_tab, ConfigTab::Settings);
+    assert!(app.config.fast_mode_effective());
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+    assert_eq!(app.config.active_tab, ConfigTab::Settings);
     assert!(!app.config.fast_mode_effective());
 }
 
