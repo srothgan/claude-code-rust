@@ -20,9 +20,9 @@
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
+use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
-use ansi_to_tui::IntoText as _;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -138,8 +138,9 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
     // For Execute tool calls, show last non-empty line of terminal output
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
+            let stripped_output = highlight::strip_ansi(output);
             if matches!(tc.status, model::ToolCallStatus::Failed)
-                && let Some(first_line) = failed_execute_first_line(output)
+                && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 return if first_line.chars().count() > 80 {
                     let truncated: String = first_line.chars().take(77).collect();
@@ -148,7 +149,7 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                     first_line
                 };
             }
-            let last = output.lines().rev().find(|l| !l.trim().is_empty());
+            let last = stripped_output.lines().rev().find(|l| !l.trim().is_empty());
             if let Some(line) = last {
                 return if line.chars().count() > 80 {
                     let truncated: String = line.chars().take(77).collect();
@@ -222,26 +223,16 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     // For Execute tool calls with terminal output, render the live output
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
+            let stripped_output = highlight::strip_ansi(output);
             if matches!(tc.status, model::ToolCallStatus::Failed)
-                && let Some(first_line) = failed_execute_first_line(output)
+                && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 lines.push(Line::from(Span::styled(
                     first_line,
                     Style::default().fg(theme::STATUS_ERROR),
                 )));
-            } else if let Ok(ansi_text) = output.as_bytes().into_text() {
-                for line in ansi_text.lines {
-                    let owned: Vec<Span<'static>> = line
-                        .spans
-                        .into_iter()
-                        .map(|s| Span::styled(s.content.into_owned(), s.style))
-                        .collect();
-                    lines.push(Line::from(owned));
-                }
             } else {
-                for text_line in output.lines() {
-                    lines.push(Line::from(text_line.to_owned()));
-                }
+                lines.extend(highlight::render_terminal_output(&stripped_output));
             }
         } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
             lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
@@ -292,7 +283,11 @@ fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'stat
         stripped
     } else {
         let lang = lang_from_title(&tc.title);
-        format!("```{lang}\n{stripped}\n```")
+        lines.extend(highlight::highlight_code(
+            &stripped,
+            (!lang.is_empty()).then_some(lang.as_str()),
+        ));
+        return;
     };
     for line in markdown::render_markdown_safe(&md_source, None) {
         let owned: Vec<Span<'static>> =

@@ -19,8 +19,8 @@
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
+use crate::ui::highlight;
 use crate::ui::theme;
-use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -43,44 +43,32 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     // Command line (no border prefix)
     if let Some(ref cmd) = tc.terminal_command {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "$ ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)),
-        ]));
+        let mut spans = vec![Span::styled(
+            "$ ",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        )];
+        let mut command_spans = highlight::highlight_shell_command(cmd);
+        if command_spans.is_empty() {
+            command_spans.push(Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)));
+        }
+        spans.extend(command_spans);
+        lines.push(Line::from(spans));
     }
 
     // Output lines (capped, no border prefix)
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 
     if let Some(ref output) = tc.terminal_output {
+        let stripped_output = highlight::strip_ansi(output);
         if matches!(tc.status, model::ToolCallStatus::Failed)
-            && let Some(first_line) = failed_execute_first_line(output)
+            && let Some(first_line) = failed_execute_first_line(&stripped_output)
         {
             body_lines.push(Line::from(Span::styled(
                 first_line,
                 Style::default().fg(theme::STATUS_ERROR),
             )));
         } else {
-            let raw_lines: Vec<Line<'static>> = if let Ok(ansi_text) = output.as_bytes().into_text()
-            {
-                ansi_text
-                    .lines
-                    .into_iter()
-                    .map(|line| {
-                        let owned: Vec<Span<'static>> = line
-                            .spans
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style))
-                            .collect();
-                        Line::from(owned)
-                    })
-                    .collect()
-            } else {
-                output.lines().map(|l| Line::from(l.to_owned())).collect()
-            };
+            let raw_lines = highlight::render_terminal_output(&stripped_output);
 
             let total = raw_lines.len();
             if total > TERMINAL_MAX_LINES {
