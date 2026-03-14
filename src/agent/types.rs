@@ -191,6 +191,12 @@ pub enum ToolCallContent {
         new: String,
         repository: Option<String>,
     },
+    McpResource {
+        uri: String,
+        mime_type: Option<String>,
+        text: Option<String>,
+        blob_saved_to: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

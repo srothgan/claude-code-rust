@@ -968,6 +968,82 @@ test("buildToolResultFields adds Bash auto-backgrounded metadata and message", (
   });
 });
 
+test("buildToolResultFields maps structured ReadMcpResource output to typed resource content", () => {
+  const base = createToolCall("tc-mcp", "ReadMcpResource", {
+    server: "docs",
+    uri: "file://manual.pdf",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      contents: [
+        {
+          uri: "file://manual.pdf",
+          mimeType: "application/pdf",
+          text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
+          blobSavedTo: "C:\\tmp\\manual.pdf",
+        },
+      ],
+    },
+    base,
+    {
+      result: {
+        contents: [
+          {
+            uri: "file://manual.pdf",
+            mimeType: "application/pdf",
+            text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
+            blobSavedTo: "C:\\tmp\\manual.pdf",
+          },
+        ],
+      },
+    },
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.deepEqual(fields.content, [
+    {
+      type: "mcp_resource",
+      uri: "file://manual.pdf",
+      mime_type: "application/pdf",
+      text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
+      blob_saved_to: "C:\\tmp\\manual.pdf",
+    },
+  ]);
+});
+
+test("buildToolResultFields restores ReadMcpResource blob paths from transcript JSON text", () => {
+  const base = createToolCall("tc-mcp-history", "ReadMcpResource", {
+    server: "docs",
+    uri: "file://manual.pdf",
+  });
+  const transcriptJson = JSON.stringify({
+    contents: [
+      {
+        uri: "file://manual.pdf",
+        mimeType: "application/pdf",
+        text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
+        blobSavedTo: "C:\\tmp\\manual.pdf",
+      },
+    ],
+  });
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-mcp-history",
+    content: transcriptJson,
+  });
+
+  assert.deepEqual(fields.content, [
+    {
+      type: "mcp_resource",
+      uri: "file://manual.pdf",
+      mime_type: "application/pdf",
+      text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
+      blob_saved_to: "C:\\tmp\\manual.pdf",
+    },
+  ]);
+});
+
 test("unwrapToolUseResult extracts error/content payload", () => {
   const parsed = unwrapToolUseResult({
     is_error: true,

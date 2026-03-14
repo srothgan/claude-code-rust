@@ -22,6 +22,7 @@ export function normalizeToolKind(name: string): string {
     case "Bash":
       return "execute";
     case "Read":
+    case "ReadMcpResource":
       return "read";
     case "Write":
     case "Edit":
@@ -79,6 +80,16 @@ export function toolTitle(name: string, input: Record<string, unknown>): string 
   }
   if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
     return `${name} ${input.file_path}`;
+  }
+  if (name === "ReadMcpResource") {
+    const uri = typeof input.uri === "string" ? input.uri : "";
+    const server = typeof input.server === "string" ? input.server : "";
+    if (server && uri) {
+      return `ReadMcpResource ${server} ${uri}`;
+    }
+    if (uri) {
+      return `ReadMcpResource ${uri}`;
+    }
   }
   return name;
 }
@@ -152,6 +163,95 @@ function resultRecordCandidates(rawResult: unknown, rawContent: unknown): Record
   pushNestedRecords(rawContent);
 
   return candidates;
+}
+
+function parseJsonCandidate(value: unknown): unknown {
+  const text = typeof value === "string" ? value : extractText(value);
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+function pushStructuredRecordCandidates(
+  candidates: Record<string, unknown>[],
+  value: unknown,
+): void {
+  const record = asRecordOrNull(value);
+  if (!record) {
+    return;
+  }
+  candidates.push(record);
+
+  const nestedResult = asRecordOrNull(record.result);
+  if (nestedResult) {
+    candidates.push(nestedResult);
+  }
+  const nestedData = asRecordOrNull(record.data);
+  if (nestedData) {
+    candidates.push(nestedData);
+  }
+  const nestedContent = asRecordOrNull(record.content);
+  if (nestedContent) {
+    candidates.push(nestedContent);
+  }
+}
+
+function mcpResourceContentFromResult(rawResult: unknown, rawContent: unknown): ToolCall["content"] {
+  const candidates: Record<string, unknown>[] = [];
+  for (const candidate of [rawResult, rawContent, parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    pushStructuredRecordCandidates(candidates, candidate);
+  }
+
+  for (const candidate of candidates) {
+    const contents = Array.isArray(candidate.contents) ? candidate.contents : null;
+    if (!contents || contents.length === 0) {
+      continue;
+    }
+
+    const mapped: ToolCall["content"] = [];
+    for (const entry of contents) {
+      const record = asRecordOrNull(entry);
+      if (!record) {
+        continue;
+      }
+      const uri = typeof record.uri === "string" ? record.uri : "";
+      if (!uri) {
+        continue;
+      }
+      const text =
+        typeof record.text === "string" && record.text.length > 0 ? record.text : undefined;
+      const mimeType =
+        typeof record.mimeType === "string" && record.mimeType.trim().length > 0
+          ? record.mimeType.trim()
+          : undefined;
+      const blobSavedTo =
+        typeof record.blobSavedTo === "string" && record.blobSavedTo.trim().length > 0
+          ? record.blobSavedTo.trim()
+          : undefined;
+      if (!text && !blobSavedTo) {
+        continue;
+      }
+      mapped.push({
+        type: "mcp_resource",
+        uri,
+        ...(mimeType ? { mime_type: mimeType } : {}),
+        ...(text ? { text } : {}),
+        ...(blobSavedTo ? { blob_saved_to: blobSavedTo } : {}),
+      });
+    }
+
+    if (mapped.length > 0) {
+      return mapped;
+    }
+  }
+
+  return [];
 }
 
 function extractToolOutputMetadata(
@@ -535,6 +635,14 @@ export function buildToolResultFields(
       return fields;
     }
     if (base?.content.some((entry) => entry.type === "diff")) {
+      return fields;
+    }
+  }
+
+  if (!isError && toolName === "ReadMcpResource") {
+    const structuredResourceContent = mcpResourceContentFromResult(rawResult, rawContent);
+    if (structuredResourceContent.length > 0) {
+      fields.content = structuredResourceContent;
       return fields;
     }
   }

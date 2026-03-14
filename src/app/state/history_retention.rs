@@ -79,6 +79,14 @@ impl super::App {
                 .capacity()
                 .saturating_add(diff.old_text.as_ref().map_or(0, String::capacity))
                 .saturating_add(diff.new_text.capacity()),
+            model::ToolCallContent::McpResource(resource) => resource
+                .uri
+                .capacity()
+                .saturating_add(resource.mime_type.as_ref().map_or(0, String::capacity))
+                .saturating_add(resource.text.as_ref().map_or(0, String::capacity))
+                .saturating_add(
+                    resource.blob_saved_to.as_ref().map_or(0, std::path::PathBuf::capacity),
+                ),
             model::ToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
     }

@@ -70,6 +70,13 @@ export type ToolCallContent =
       old: string;
       new: string;
       repository?: string;
+    }
+  | {
+      type: "mcp_resource";
+      uri: string;
+      mime_type?: string;
+      text?: string;
+      blob_saved_to?: string;
     };
 
 export interface ExitPlanModeOutputMetadata {

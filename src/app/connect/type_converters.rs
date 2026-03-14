@@ -478,6 +478,14 @@ fn convert_tool_call_content(
                 model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
             ))
         }
+        types::ToolCallContent::McpResource { uri, mime_type, text, blob_saved_to } => {
+            Some(model::ToolCallContent::McpResource(
+                model::McpResource::new(uri)
+                    .mime_type(mime_type)
+                    .text(text)
+                    .blob_saved_to(blob_saved_to),
+            ))
+        }
     }
 }
 
@@ -726,6 +734,43 @@ mod tests {
                 model::Diff::new("src/main.rs", "new")
                     .old_text(Some("old"))
                     .repository(Some("acme/project".to_owned())),
+            )]
+        );
+    }
+
+    #[test]
+    fn convert_tool_call_preserves_mcp_resource_blob_path() {
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-2".to_owned(),
+            title: "ReadMcpResource docs file://manual.pdf".to_owned(),
+            kind: "read".to_owned(),
+            status: "completed".to_owned(),
+            content: vec![types::ToolCallContent::McpResource {
+                uri: "file://manual.pdf".to_owned(),
+                mime_type: Some("application/pdf".to_owned()),
+                text: Some(
+                    "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf"
+                        .to_owned(),
+                ),
+                blob_saved_to: Some("C:\\tmp\\manual.pdf".to_owned()),
+            }],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            tool_call.content,
+            vec![model::ToolCallContent::McpResource(
+                model::McpResource::new("file://manual.pdf")
+                    .mime_type(Some("application/pdf".to_owned()))
+                    .text(Some(
+                        "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf"
+                            .to_owned(),
+                    ))
+                    .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
             )]
         );
     }

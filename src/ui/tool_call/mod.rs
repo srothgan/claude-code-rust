@@ -540,6 +540,58 @@ mod tests {
     }
 
     #[test]
+    fn mcp_resource_body_renders_saved_path_hint_when_text_omits_it() {
+        let mut tc =
+            test_tool_call("tc-mcp-resource", "ReadMcpResource", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::McpResource(
+            model::McpResource::new("file://manual.pdf")
+                .mime_type(Some("application/pdf".to_owned()))
+                .text(Some("Binary resource downloaded successfully.".to_owned()))
+                .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
+        )];
+
+        let body = standard::render_tool_call_body(&tc);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            rendered.iter().any(|line| line.contains("Binary resource downloaded successfully."))
+        );
+        assert!(rendered.iter().any(|line| line.contains("Saved to: C:\\tmp\\manual.pdf")));
+    }
+
+    #[test]
+    fn mcp_resource_body_avoids_duplicate_saved_path_hint_when_text_already_mentions_it() {
+        let mut tc = test_tool_call(
+            "tc-mcp-resource-dupe",
+            "ReadMcpResource",
+            model::ToolCallStatus::Completed,
+        );
+        tc.content = vec![model::ToolCallContent::McpResource(
+            model::McpResource::new("file://manual.pdf")
+                .mime_type(Some("application/pdf".to_owned()))
+                .text(Some(
+                    "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf"
+                        .to_owned(),
+                ))
+                .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
+        )];
+
+        let body = standard::render_tool_call_body(&tc);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(
+            rendered.iter().filter(|line| line.contains("Saved to: C:\\tmp\\manual.pdf")).count(),
+            0
+        );
+    }
+
+    #[test]
     fn internal_error_detection_accepts_xml_payload() {
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
