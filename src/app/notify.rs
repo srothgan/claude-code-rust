@@ -156,7 +156,14 @@ fn notification_plan(
         PreferredNotifChannel::TerminalBell => {
             NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
         }
-        PreferredNotifChannel::Iterm2 | PreferredNotifChannel::Ghostty => {
+        // "Auto / iTerm2" replaced the original always-bell-plus-desktop behavior.
+        // Preserve that reliable fallback whenever OSC 9 is unavailable.
+        PreferredNotifChannel::Iterm2 => NotificationPlan {
+            ring_bell: osc9_text.is_none(),
+            send_desktop: osc9_text.is_none(),
+            osc9_text,
+        },
+        PreferredNotifChannel::Ghostty => {
             NotificationPlan { ring_bell: false, send_desktop: osc9_text.is_none(), osc9_text }
         }
         PreferredNotifChannel::Iterm2WithBell => {
@@ -293,14 +300,14 @@ mod tests {
     }
 
     #[test]
-    fn iterm2_falls_back_to_desktop_when_osc9_is_unavailable() {
+    fn iterm2_auto_preserves_bell_and_desktop_fallback_when_osc9_is_unavailable() {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
                 TerminalCapabilities { osc9_notifications: false },
                 NotifyEvent::TurnComplete,
             ),
-            NotificationPlan { ring_bell: false, send_desktop: true, osc9_text: None }
+            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
         );
     }
 
