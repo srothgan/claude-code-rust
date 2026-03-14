@@ -26,7 +26,10 @@ use ratatui::text::{Line, Span};
 
 use super::errors::failed_execute_first_line;
 use super::interactions::{render_permission_lines, render_question_lines};
-use super::{markdown_inline_spans, spans_width, status_icon, truncate_spans_to_width};
+use super::{
+    markdown_inline_spans, spans_width, status_icon, tool_output_badge_spans,
+    truncate_spans_to_width,
+};
 
 /// Max visible output lines for Execute/Bash tool calls.
 /// Total box height = 1 (title) + 1 (command) + this + 1 (bottom border) = 15.
@@ -133,17 +136,20 @@ pub(super) fn render_execute_with_borders(
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
     ];
+    let badge_spans = tool_output_badge_spans(tc);
     let prefix_w = spans_width(&left_prefix);
+    let badges_w = spans_width(&badge_spans);
     let right_border_w = 1; // "right-corner"
     // Reserve at least one fill char so the border looks continuous.
-    let title_max_w = line_budget.saturating_sub(prefix_w + right_border_w + 1);
+    let title_max_w = line_budget.saturating_sub(prefix_w + badges_w + right_border_w + 1);
     let title_spans = truncate_spans_to_width(markdown_inline_spans(&tc.title), title_max_w);
     let title_w = spans_width(&title_spans);
-    let fill_w = line_budget.saturating_sub(prefix_w + title_w + right_border_w);
+    let fill_w = line_budget.saturating_sub(prefix_w + title_w + badges_w + right_border_w);
     let top_fill: String = "\u{2500}".repeat(fill_w);
 
     let mut top = left_prefix;
     top.extend(title_spans);
+    top.extend(badge_spans);
     top.push(Span::styled(format!("{top_fill}\u{256E}"), border));
     out.push(Line::from(top));
 

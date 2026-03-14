@@ -31,7 +31,7 @@ use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::markdown;
 use crate::ui::theme;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -269,6 +269,33 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     out
 }
 
+fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
+    let mut badges = Vec::new();
+
+    if tc.assistant_auto_backgrounded() {
+        badges.push(Span::styled(
+            "  [assistant backgrounded]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if tc.is_ultraplan() {
+        badges.push(Span::styled(
+            "  [ultraplan]",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if tc.verification_nudge_needed() {
+        badges.push(Span::styled(
+            "  [verification needed]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    badges
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -429,6 +456,20 @@ mod tests {
         let rendered = execute::render_execute_with_borders(&tc, &[], 80, 0);
         let top = rendered.first().expect("top border line");
         assert!(spans_width(&top.spans) <= 80);
+    }
+
+    #[test]
+    fn execute_title_renders_assistant_backgrounded_badge() {
+        let mut tc = test_tool_call("tc-bash-bg", "Bash", model::ToolCallStatus::Completed);
+        tc.output_metadata =
+            Some(model::ToolOutputMetadata::new().bash(Some(
+                model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+            )));
+
+        let rendered = execute::render_execute_with_borders(&tc, &[], 100, 0);
+        let top = rendered.first().expect("top border line");
+        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.contains("[assistant backgrounded]"));
     }
 
     #[test]

@@ -431,7 +431,36 @@ impl TodoWriteOutputMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BashOutputMetadata {
+    pub assistant_auto_backgrounded: Option<bool>,
+    pub token_saver_active: Option<bool>,
+}
+
+impl BashOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { assistant_auto_backgrounded: None, token_saver_active: None }
+    }
+
+    #[must_use]
+    pub fn assistant_auto_backgrounded(
+        mut self,
+        assistant_auto_backgrounded: Option<bool>,
+    ) -> Self {
+        self.assistant_auto_backgrounded = assistant_auto_backgrounded;
+        self
+    }
+
+    #[must_use]
+    pub fn token_saver_active(mut self, token_saver_active: Option<bool>) -> Self {
+        self.token_saver_active = token_saver_active;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub bash: Option<BashOutputMetadata>,
     pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
 }
@@ -440,6 +469,12 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
+        self.bash = bash;
+        self
     }
 
     #[must_use]

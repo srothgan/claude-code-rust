@@ -888,6 +888,69 @@ test("buildToolResultFields preserves Edit diff content from input", () => {
   ]);
 });
 
+test("buildToolResultFields prefers structured Bash stdout over token-saver output", () => {
+  const base = createToolCall("tc-bash", "Bash", { command: "npm test" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      stdout: "real stdout",
+      stderr: "",
+      interrupted: false,
+      tokenSaverOutput: "compressed output for model",
+    },
+    base,
+    {
+      result: {
+        stdout: "real stdout",
+        stderr: "",
+        interrupted: false,
+        tokenSaverOutput: "compressed output for model",
+      },
+    },
+  );
+
+  assert.equal(fields.raw_output, "real stdout");
+  assert.deepEqual(fields.output_metadata, {
+    bash: {
+      token_saver_active: true,
+    },
+  });
+});
+
+test("buildToolResultFields adds Bash auto-backgrounded metadata and message", () => {
+  const base = createToolCall("tc-bash-bg", "Bash", { command: "npm run watch" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      stdout: "",
+      stderr: "",
+      interrupted: false,
+      backgroundTaskId: "task-42",
+      assistantAutoBackgrounded: true,
+    },
+    base,
+    {
+      result: {
+        stdout: "",
+        stderr: "",
+        interrupted: false,
+        backgroundTaskId: "task-42",
+        assistantAutoBackgrounded: true,
+      },
+    },
+  );
+
+  assert.equal(
+    fields.raw_output,
+    "Command was auto-backgrounded by assistant mode with ID: task-42.",
+  );
+  assert.deepEqual(fields.output_metadata, {
+    bash: {
+      assistant_auto_backgrounded: true,
+    },
+  });
+});
+
 test("unwrapToolUseResult extracts error/content payload", () => {
   const parsed = unwrapToolUseResult({
     is_error: true,

@@ -161,6 +161,27 @@ function extractToolOutputMetadata(
 ): import("../types.js").ToolOutputMetadata | undefined {
   const candidates = resultRecordCandidates(rawResult, rawContent);
 
+  if (toolName === "Bash") {
+    for (const candidate of candidates) {
+      const hasAssistantAutoBackgrounded = typeof candidate.assistantAutoBackgrounded === "boolean";
+      const hasTokenSaverOutput =
+        typeof candidate.tokenSaverOutput === "string" && candidate.tokenSaverOutput.length > 0;
+      if (hasAssistantAutoBackgrounded || hasTokenSaverOutput) {
+        const bashMetadata: import("../types.js").BashOutputMetadata = {};
+        if (hasAssistantAutoBackgrounded) {
+          bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
+        }
+        if (hasTokenSaverOutput) {
+          bashMetadata.token_saver_active = true;
+        }
+        return {
+          bash: bashMetadata,
+        };
+      }
+    }
+    return undefined;
+  }
+
   if (toolName === "ExitPlanMode") {
     for (const candidate of candidates) {
       if (typeof candidate.isUltraplan === "boolean") {
@@ -355,18 +376,74 @@ function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
   return [];
 }
 
+function findBashResultRecord(
+  rawResult: unknown,
+  rawContent: unknown,
+): Record<string, unknown> | undefined {
+  return resultRecordCandidates(rawResult, rawContent).find(
+    (candidate) =>
+      "stdout" in candidate ||
+      "stderr" in candidate ||
+      "backgroundTaskId" in candidate ||
+      "backgroundedByUser" in candidate ||
+      "assistantAutoBackgrounded" in candidate ||
+      "tokenSaverOutput" in candidate,
+  );
+}
+
+function bashBackgroundMessage(record: Record<string, unknown>): string {
+  const backgroundTaskId =
+    typeof record.backgroundTaskId === "string" ? record.backgroundTaskId : "";
+  if (!backgroundTaskId) {
+    return "";
+  }
+  if (record.assistantAutoBackgrounded === true) {
+    return `Command was auto-backgrounded by assistant mode with ID: ${backgroundTaskId}.`;
+  }
+  if (record.backgroundedByUser === true) {
+    return `Command was backgrounded by user with ID: ${backgroundTaskId}.`;
+  }
+  return `Command is running in background with ID: ${backgroundTaskId}.`;
+}
+
+function buildBashDisplayOutput(record: Record<string, unknown>): string {
+  const segments: string[] = [];
+  const stdout = typeof record.stdout === "string" ? record.stdout : "";
+  const stderr = typeof record.stderr === "string" ? record.stderr : "";
+  if (stdout) {
+    segments.push(stdout);
+  }
+  if (stderr) {
+    segments.push(stderr);
+  }
+  if (record.interrupted === true) {
+    segments.push("Command was aborted before completion.");
+  }
+  const backgroundMessage = bashBackgroundMessage(record);
+  if (backgroundMessage) {
+    segments.push(backgroundMessage);
+  }
+  return segments.join("\n");
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
   base?: ToolCall,
   rawResult?: unknown,
 ): ToolCallUpdateFields {
-  const rawOutput = normalizeToolResultText(rawContent, isError);
   const toolName = resolveToolName(base);
+  const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
+  const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
+  const rawOutput = bashResultRecord
+    ? buildBashDisplayOutput(bashResultRecord)
+    : normalizedRawOutput || JSON.stringify(rawContent);
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
-    raw_output: rawOutput || JSON.stringify(rawContent),
   };
+  if (rawOutput) {
+    fields.raw_output = rawOutput;
+  }
   const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;

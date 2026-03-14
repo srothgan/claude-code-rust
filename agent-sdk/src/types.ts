@@ -73,7 +73,13 @@ export interface TodoWriteOutputMetadata {
   verification_nudge_needed?: boolean;
 }
 
+export interface BashOutputMetadata {
+  assistant_auto_backgrounded?: boolean;
+  token_saver_active?: boolean;
+}
+
 export interface ToolOutputMetadata {
+  bash?: BashOutputMetadata;
   exit_plan_mode?: ExitPlanModeOutputMetadata;
   todo_write?: TodoWriteOutputMetadata;
 }

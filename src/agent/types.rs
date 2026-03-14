@@ -166,7 +166,14 @@ pub struct TodoWriteOutputMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BashOutputMetadata {
+    pub assistant_auto_backgrounded: Option<bool>,
+    pub token_saver_active: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub bash: Option<BashOutputMetadata>,
     pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
 }

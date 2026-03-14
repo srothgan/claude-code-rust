@@ -95,6 +95,24 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn assistant_auto_backgrounded(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.bash.as_ref())
+            .and_then(|metadata| metadata.assistant_auto_backgrounded)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn token_saver_active(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.bash.as_ref())
+            .and_then(|metadata| metadata.token_saver_active)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
     pub fn verification_nudge_needed(&self) -> bool {
         self.output_metadata
             .as_ref()

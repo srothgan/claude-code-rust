@@ -451,6 +451,11 @@ fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
+        .bash(output_metadata.bash.map(|bash| {
+            model::BashOutputMetadata::new()
+                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
+                .token_saver_active(bash.token_saver_active)
+        }))
         .exit_plan_mode(output_metadata.exit_plan_mode.map(|exit_plan_mode| {
             model::ExitPlanModeOutputMetadata::new().ultraplan(exit_plan_mode.is_ultraplan)
         }))
@@ -656,6 +661,10 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
+                bash: Some(types::BashOutputMetadata {
+                    assistant_auto_backgrounded: Some(true),
+                    token_saver_active: Some(true),
+                }),
                 exit_plan_mode: Some(types::ExitPlanModeOutputMetadata {
                     is_ultraplan: Some(true),
                 }),
@@ -670,6 +679,11 @@ mod tests {
             fields.output_metadata,
             Some(
                 model::ToolOutputMetadata::new()
+                    .bash(Some(
+                        model::BashOutputMetadata::new()
+                            .assistant_auto_backgrounded(Some(true))
+                            .token_saver_active(Some(true)),
+                    ))
                     .exit_plan_mode(Some(
                         model::ExitPlanModeOutputMetadata::new().ultraplan(Some(true)),
                     ))
