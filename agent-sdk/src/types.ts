@@ -63,7 +63,14 @@ export type ContentBlock =
 
 export type ToolCallContent =
   | { type: "content"; content: ContentBlock }
-  | { type: "diff"; old_path: string; new_path: string; old: string; new: string };
+  | {
+      type: "diff";
+      old_path: string;
+      new_path: string;
+      old: string;
+      new: string;
+      repository?: string;
+    };
 
 export interface ExitPlanModeOutputMetadata {
   is_ultraplan?: boolean;

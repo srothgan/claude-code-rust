@@ -473,8 +473,10 @@ fn convert_tool_call_content(
             let block = convert_content_block(content)?;
             Some(model::ToolCallContent::Content(model::Content::new(block)))
         }
-        types::ToolCallContent::Diff { old_path: _, new_path, old, new } => {
-            Some(model::ToolCallContent::Diff(model::Diff::new(new_path, new).old_text(Some(old))))
+        types::ToolCallContent::Diff { old_path: _, new_path, old, new, repository } => {
+            Some(model::ToolCallContent::Diff(
+                model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
+            ))
         }
     }
 }
@@ -524,7 +526,10 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_tool_call_update_fields, map_available_models, map_question_request};
+    use super::{
+        convert_tool_call, convert_tool_call_update_fields, map_available_models,
+        map_question_request,
+    };
     use crate::agent::{model, types};
 
     #[test]
@@ -691,6 +696,37 @@ mod tests {
                         model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
                     )),
             )
+        );
+    }
+
+    #[test]
+    fn convert_tool_call_preserves_diff_repository() {
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-1".to_owned(),
+            title: "Write src/main.rs".to_owned(),
+            kind: "edit".to_owned(),
+            status: "completed".to_owned(),
+            content: vec![types::ToolCallContent::Diff {
+                old_path: "src/main.rs".to_owned(),
+                new_path: "src/main.rs".to_owned(),
+                old: "old".to_owned(),
+                new: "new".to_owned(),
+                repository: Some("acme/project".to_owned()),
+            }],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            tool_call.content,
+            vec![model::ToolCallContent::Diff(
+                model::Diff::new("src/main.rs", "new")
+                    .old_text(Some("old"))
+                    .repository(Some("acme/project".to_owned())),
+            )]
         );
     }
 }

@@ -191,17 +191,24 @@ pub struct Diff {
     pub path: PathBuf,
     pub old_text: Option<String>,
     pub new_text: String,
+    pub repository: Option<String>,
 }
 
 impl Diff {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, new_text: impl Into<String>) -> Self {
-        Self { path: path.into(), old_text: None, new_text: new_text.into() }
+        Self { path: path.into(), old_text: None, new_text: new_text.into(), repository: None }
     }
 
     #[must_use]
     pub fn old_text<T: Into<String>>(mut self, old_text: Option<T>) -> Self {
         self.old_text = old_text.map(Into::into);
+        self
+    }
+
+    #[must_use]
+    pub fn repository(mut self, repository: Option<String>) -> Self {
+        self.repository = repository.filter(|repository| !repository.trim().is_empty());
         self
     }
 }

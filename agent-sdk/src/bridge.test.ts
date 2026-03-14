@@ -854,6 +854,9 @@ test("buildToolResultFields maps structured Write output to diff content", () =>
       content: "new",
       originalFile: "old",
       structuredPatch: [],
+      gitDiff: {
+        repository: "acme/project",
+      },
     },
     base,
   );
@@ -865,17 +868,30 @@ test("buildToolResultFields maps structured Write output to diff content", () =>
       new_path: "src/main.ts",
       old: "old",
       new: "new",
+      repository: "acme/project",
     },
   ]);
 });
 
-test("buildToolResultFields preserves Edit diff content from input", () => {
+test("buildToolResultFields preserves Edit diff content from input and structured repository", () => {
   const base = createToolCall("tc-e", "Edit", {
     file_path: "src/main.ts",
     old_string: "old",
     new_string: "new",
   });
-  const fields = buildToolResultFields(false, [{ text: "Updated successfully" }], base);
+  const fields = buildToolResultFields(
+    false,
+    [{ text: "Updated successfully" }],
+    base,
+    {
+      result: {
+        filePath: "src/main.ts",
+        gitDiff: {
+          repository: "acme/project",
+        },
+      },
+    },
+  );
   assert.equal(fields.status, "completed");
   assert.deepEqual(fields.content, [
     {
@@ -884,6 +900,7 @@ test("buildToolResultFields preserves Edit diff content from input", () => {
       new_path: "src/main.ts",
       old: "old",
       new: "new",
+      repository: "acme/project",
     },
   ]);
 });

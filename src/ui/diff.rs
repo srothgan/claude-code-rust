@@ -31,10 +31,13 @@ pub fn render_diff(diff: &model::Diff) -> Vec<Line<'static>> {
         || diff.path.to_string_lossy().into_owned(),
         |f| f.to_string_lossy().into_owned(),
     );
-    lines.push(Line::from(Span::styled(
-        name,
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-    )));
+    let mut header_spans =
+        vec![Span::styled(name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))];
+    if let Some(repository) = diff.repository.as_deref() {
+        header_spans
+            .push(Span::styled(format!("  [{repository}]"), Style::default().fg(theme::DIM)));
+    }
+    lines.push(Line::from(header_spans));
 
     let old = diff.old_text.as_deref().unwrap_or("");
     let new = &diff.new_text;
@@ -237,6 +240,18 @@ mod tests {
         let result = strip_outer_code_fence(input);
         // After trim(), starts with ```, so should strip
         assert_eq!(result, "content");
+    }
+
+    #[test]
+    fn render_diff_includes_repository_label() {
+        let lines = render_diff(
+            &model::Diff::new("src/main.rs", "fn main() {}\n")
+                .old_text(Some("fn old() {}\n"))
+                .repository(Some("acme/project".to_owned())),
+        );
+        let header: String = lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(header.contains("main.rs"));
+        assert!(header.contains("[acme/project]"));
     }
 
     // lang_from_title

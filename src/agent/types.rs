@@ -181,8 +181,16 @@ pub struct ToolOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolCallContent {
-    Content { content: ContentBlock },
-    Diff { old_path: String, new_path: String, old: String, new: String },
+    Content {
+        content: ContentBlock,
+    },
+    Diff {
+        old_path: String,
+        new_path: String,
+        old: String,
+        new: String,
+        repository: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

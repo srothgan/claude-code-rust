@@ -367,13 +367,79 @@ function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
     const content = typeof record.content === "string" ? record.content : "";
     const originalRaw =
       "originalFile" in record ? record.originalFile : "original_file" in record ? record.original_file : undefined;
+    const gitDiff = asRecordOrNull(record.gitDiff);
+    const repository =
+      typeof gitDiff?.repository === "string" && gitDiff.repository.trim().length > 0
+        ? gitDiff.repository.trim()
+        : undefined;
     if (!filePath || !content || originalRaw === undefined) {
       continue;
     }
     const original = typeof originalRaw === "string" ? originalRaw : originalRaw === null ? "" : "";
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: original, new: content }];
+    return [
+      {
+        type: "diff",
+        old_path: filePath,
+        new_path: filePath,
+        old: original,
+        new: content,
+        ...(repository ? { repository } : {}),
+      },
+    ];
   }
   return [];
+}
+
+function editDiffFromResult(rawResult: unknown, rawInput: Json | undefined): ToolCall["content"] {
+  const input = asRecordOrNull(rawInput);
+  const filePath = typeof input?.file_path === "string" ? input.file_path : "";
+  const oldText =
+    typeof input?.old_string === "string"
+      ? input.old_string
+      : typeof input?.oldString === "string"
+        ? input.oldString
+        : "";
+  const newText =
+    typeof input?.new_string === "string"
+      ? input.new_string
+      : typeof input?.newString === "string"
+        ? input.newString
+        : "";
+  if (!filePath || (!oldText && !newText)) {
+    return [];
+  }
+
+  for (const candidate of resultRecordCandidates(rawResult, undefined)) {
+    const candidatePath =
+      typeof candidate.filePath === "string"
+        ? candidate.filePath
+        : typeof candidate.file_path === "string"
+          ? candidate.file_path
+          : "";
+    const gitDiff = asRecordOrNull(candidate.gitDiff);
+    if (!candidatePath && !gitDiff) {
+      continue;
+    }
+    if (candidatePath && candidatePath !== filePath) {
+      continue;
+    }
+    const repository =
+      typeof gitDiff?.repository === "string" && gitDiff.repository.trim().length > 0
+        ? gitDiff.repository.trim()
+        : undefined;
+    return [
+      {
+        type: "diff",
+        old_path: filePath,
+        new_path: filePath,
+        old: oldText,
+        new: newText,
+        ...(repository ? { repository } : {}),
+      },
+    ];
+  }
+
+  return editDiffFromInput(rawInput);
 }
 
 function findBashResultRecord(
@@ -463,9 +529,9 @@ export function buildToolResultFields(
   }
 
   if (!isError && toolName === "Edit") {
-    const inputDiff = editDiffFromInput(base?.raw_input);
-    if (inputDiff.length > 0) {
-      fields.content = inputDiff;
+    const structuredDiff = editDiffFromResult(rawResult, base?.raw_input);
+    if (structuredDiff.length > 0) {
+      fields.content = structuredDiff;
       return fields;
     }
     if (base?.content.some((entry) => entry.type === "diff")) {
