@@ -23,7 +23,7 @@ use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_oute
 use crate::ui::markdown;
 use crate::ui::theme;
 use ansi_to_tui::IntoText as _;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::errors::{
@@ -56,8 +56,29 @@ pub(super) fn render_tool_call_title(
     ];
 
     title_spans.extend(markdown_inline_spans(&tc.title));
+    title_spans.extend(render_tool_output_badges(tc));
 
     Line::from(title_spans)
+}
+
+fn render_tool_output_badges(tc: &ToolCallInfo) -> Vec<Span<'static>> {
+    let mut badges = Vec::new();
+
+    if tc.is_ultraplan() {
+        badges.push(Span::styled(
+            "  [ultraplan]",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if tc.verification_nudge_needed() {
+        badges.push(Span::styled(
+            "  [verification needed]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    badges
 }
 
 /// Render the body lines (everything after the title) for a non-Execute tool call.

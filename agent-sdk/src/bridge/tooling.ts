@@ -126,6 +126,63 @@ export function createToolCall(toolUseId: string, name: string, input: Record<st
   };
 }
 
+function resultRecordCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [];
+
+  const pushRecord = (value: unknown): void => {
+    const record = asRecordOrNull(value);
+    if (record) {
+      candidates.push(record);
+    }
+  };
+
+  const pushNestedRecords = (value: unknown): void => {
+    const record = asRecordOrNull(value);
+    if (!record) {
+      return;
+    }
+    pushRecord(record.result);
+    pushRecord(record.data);
+    pushRecord(record.content);
+  };
+
+  pushRecord(rawResult);
+  pushNestedRecords(rawResult);
+  pushRecord(rawContent);
+  pushNestedRecords(rawContent);
+
+  return candidates;
+}
+
+function extractToolOutputMetadata(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): import("../types.js").ToolOutputMetadata | undefined {
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+
+  if (toolName === "ExitPlanMode") {
+    for (const candidate of candidates) {
+      if (typeof candidate.isUltraplan === "boolean") {
+        return { exit_plan_mode: { is_ultraplan: candidate.isUltraplan } };
+      }
+    }
+    return undefined;
+  }
+
+  if (toolName === "TodoWrite") {
+    for (const candidate of candidates) {
+      if (typeof candidate.verificationNudgeNeeded === "boolean") {
+        return {
+          todo_write: { verification_nudge_needed: candidate.verificationNudgeNeeded },
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export function extractText(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -302,6 +359,7 @@ export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
   base?: ToolCall,
+  rawResult?: unknown,
 ): ToolCallUpdateFields {
   const rawOutput = normalizeToolResultText(rawContent, isError);
   const toolName = resolveToolName(base);
@@ -309,6 +367,10 @@ export function buildToolResultFields(
     status: isError ? "failed" : "completed",
     raw_output: rawOutput || JSON.stringify(rawContent),
   };
+  const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
+  if (outputMetadata) {
+    fields.output_metadata = outputMetadata;
+  }
 
   if (!isError && toolName === "Write") {
     const structuredDiff = writeDiffFromResult(rawContent);

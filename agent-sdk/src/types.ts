@@ -65,6 +65,19 @@ export type ToolCallContent =
   | { type: "content"; content: ContentBlock }
   | { type: "diff"; old_path: string; new_path: string; old: string; new: string };
 
+export interface ExitPlanModeOutputMetadata {
+  is_ultraplan?: boolean;
+}
+
+export interface TodoWriteOutputMetadata {
+  verification_nudge_needed?: boolean;
+}
+
+export interface ToolOutputMetadata {
+  exit_plan_mode?: ExitPlanModeOutputMetadata;
+  todo_write?: TodoWriteOutputMetadata;
+}
+
 export interface ToolLocation {
   path: string;
   line?: number;
@@ -78,6 +91,7 @@ export interface ToolCall {
   content: ToolCallContent[];
   raw_input?: Json;
   raw_output?: string;
+  output_metadata?: ToolOutputMetadata;
   locations: ToolLocation[];
   meta?: Json;
 }
@@ -89,6 +103,7 @@ export interface ToolCallUpdateFields {
   content?: ToolCallContent[];
   raw_input?: Json;
   raw_output?: string;
+  output_metadata?: ToolOutputMetadata;
   locations?: ToolLocation[];
   meta?: Json;
 }

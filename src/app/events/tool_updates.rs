@@ -138,6 +138,7 @@ fn apply_tool_call_update_to_indexed_block(
             terminal_tool_calls,
         );
         changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+        changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         out.pending_todos =
@@ -228,6 +229,20 @@ fn apply_tool_call_raw_input_update(
         return false;
     }
     tc.raw_input = Some(raw_input.clone());
+    true
+}
+
+fn apply_tool_call_output_metadata_update(
+    tc: &mut ToolCallInfo,
+    output_metadata: Option<&model::ToolOutputMetadata>,
+) -> bool {
+    let Some(output_metadata) = output_metadata else {
+        return false;
+    };
+    if tc.output_metadata.as_ref() == Some(output_metadata) {
+        return false;
+    }
+    tc.output_metadata = Some(output_metadata.clone());
     true
 }
 

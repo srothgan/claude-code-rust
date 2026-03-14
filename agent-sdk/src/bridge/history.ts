@@ -64,7 +64,7 @@ function pushResumeToolResult(
   }
   const isError = Boolean(block.is_error);
   const base = toolCalls.get(toolUseId);
-  const fields = buildToolResultFields(isError, block.content, base);
+  const fields = buildToolResultFields(isError, block.content, base, block);
   updates.push({ type: "tool_call_update", tool_call_update: { tool_call_id: toolUseId, fields } });
 
   if (!base) {
@@ -76,6 +76,9 @@ function pushResumeToolResult(
   }
   if (fields.content) {
     base.content = fields.content;
+  }
+  if (fields.output_metadata) {
+    base.output_metadata = fields.output_metadata;
   }
 }
 

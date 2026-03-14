@@ -313,6 +313,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         content,
         raw_input,
         raw_output,
+        output_metadata,
         locations,
         meta,
     } = tool_call;
@@ -340,6 +341,9 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
 
     if let Some(raw_output) = raw_output {
         tc = tc.raw_output(serde_json::Value::String(raw_output));
+    }
+    if let Some(output_metadata) = output_metadata {
+        tc = tc.output_metadata(convert_tool_output_metadata(output_metadata));
     }
     if let Some(meta) = meta {
         tc = tc.meta(meta);
@@ -391,6 +395,9 @@ pub(super) fn convert_tool_call_to_fields(
     if let Some(raw_output) = tool_call.raw_output {
         fields = fields.raw_output(serde_json::Value::String(raw_output));
     }
+    if let Some(output_metadata) = tool_call.output_metadata {
+        fields = fields.output_metadata(convert_tool_output_metadata(output_metadata));
+    }
 
     fields
 }
@@ -419,6 +426,9 @@ pub(super) fn convert_tool_call_update_fields(
     if let Some(raw_output) = fields.raw_output {
         out = out.raw_output(serde_json::Value::String(raw_output));
     }
+    if let Some(output_metadata) = fields.output_metadata {
+        out = out.output_metadata(convert_tool_output_metadata(output_metadata));
+    }
     if let Some(locations) = fields.locations {
         out = out.locations(
             locations
@@ -435,6 +445,19 @@ pub(super) fn convert_tool_call_update_fields(
     }
 
     out
+}
+
+fn convert_tool_output_metadata(
+    output_metadata: types::ToolOutputMetadata,
+) -> model::ToolOutputMetadata {
+    model::ToolOutputMetadata::new()
+        .exit_plan_mode(output_metadata.exit_plan_mode.map(|exit_plan_mode| {
+            model::ExitPlanModeOutputMetadata::new().ultraplan(exit_plan_mode.is_ultraplan)
+        }))
+        .todo_write(output_metadata.todo_write.map(|todo_write| {
+            model::TodoWriteOutputMetadata::new()
+                .verification_nudge_needed(todo_write.verification_nudge_needed)
+        }))
 }
 
 fn convert_tool_call_content(
@@ -496,7 +519,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_available_models, map_question_request};
+    use super::{convert_tool_call_update_fields, map_available_models, map_question_request};
     use crate::agent::{model, types};
 
     #[test]
@@ -563,6 +586,7 @@ mod tests {
                     content: Vec::new(),
                     raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
                     raw_output: None,
+                    output_metadata: None,
                     locations: Vec::new(),
                     meta: Some(
                         serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } }),
@@ -623,6 +647,35 @@ mod tests {
                 ),
                 1,
                 3,
+            )
+        );
+    }
+
+    #[test]
+    fn convert_tool_call_update_fields_preserves_output_metadata() {
+        let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
+            status: Some("completed".to_owned()),
+            output_metadata: Some(types::ToolOutputMetadata {
+                exit_plan_mode: Some(types::ExitPlanModeOutputMetadata {
+                    is_ultraplan: Some(true),
+                }),
+                todo_write: Some(types::TodoWriteOutputMetadata {
+                    verification_nudge_needed: Some(true),
+                }),
+            }),
+            ..types::ToolCallUpdateFields::default()
+        });
+
+        assert_eq!(
+            fields.output_metadata,
+            Some(
+                model::ToolOutputMetadata::new()
+                    .exit_plan_mode(Some(
+                        model::ExitPlanModeOutputMetadata::new().ultraplan(Some(true)),
+                    ))
+                    .todo_write(Some(
+                        model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
+                    )),
             )
         );
     }

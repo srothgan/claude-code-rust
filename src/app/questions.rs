@@ -465,6 +465,7 @@ mod tests {
             title: format!("Tool {id}"),
             sdk_tool_name: "AskUserQuestion".to_owned(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::InProgress,
             content: Vec::new(),
             collapsed: false,

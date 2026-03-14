@@ -407,6 +407,7 @@ mod tests {
             title: id.into(),
             sdk_tool_name: "Read".into(),
             raw_input: None,
+            output_metadata: None,
             status,
             content: vec![],
             collapsed: false,

@@ -157,7 +157,7 @@ export function handleContentBlock(session: SessionState, block: Record<string, 
       return;
     }
     const isError = Boolean(block.is_error);
-    emitToolResultUpdate(session, toolUseId, isError, block.content);
+    emitToolResultUpdate(session, toolUseId, isError, block.content, block);
   }
 }
 
@@ -471,7 +471,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     const toolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
     if (toolUseId && "tool_use_result" in msg) {
       const parsed = unwrapToolUseResult(msg.tool_use_result);
-      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content);
+      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, msg.tool_use_result);
     }
     return;
   }

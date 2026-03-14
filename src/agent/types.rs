@@ -125,6 +125,7 @@ pub struct ToolCall {
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
+    pub output_metadata: Option<ToolOutputMetadata>,
     pub locations: Vec<ToolLocation>,
     pub meta: Option<serde_json::Value>,
 }
@@ -143,6 +144,7 @@ pub struct ToolCallUpdateFields {
     pub content: Option<Vec<ToolCallContent>>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
+    pub output_metadata: Option<ToolOutputMetadata>,
     pub locations: Option<Vec<ToolLocation>>,
     pub meta: Option<serde_json::Value>,
 }
@@ -151,6 +153,22 @@ pub struct ToolCallUpdateFields {
 pub struct ToolLocation {
     pub path: String,
     pub line: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExitPlanModeOutputMetadata {
+    pub is_ultraplan: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TodoWriteOutputMetadata {
+    pub verification_nudge_needed: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToolOutputMetadata {
+    pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
+    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

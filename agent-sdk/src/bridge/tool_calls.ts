@@ -82,9 +82,15 @@ export function emitPlanIfTodoWrite(session: SessionState, name: string, input: 
   }
 }
 
-export function emitToolResultUpdate(session: SessionState, toolUseId: string, isError: boolean, rawContent: unknown): void {
+export function emitToolResultUpdate(
+  session: SessionState,
+  toolUseId: string,
+  isError: boolean,
+  rawContent: unknown,
+  rawResult: unknown = rawContent,
+): void {
   const base = session.toolCalls.get(toolUseId);
-  const fields = buildToolResultFields(isError, rawContent, base);
+  const fields = buildToolResultFields(isError, rawContent, base, rawResult);
   const update = { tool_call_id: toolUseId, fields };
   emitSessionUpdate(session.sessionId, { type: "tool_call_update", tool_call_update: update });
 
@@ -95,6 +101,9 @@ export function emitToolResultUpdate(session: SessionState, toolUseId: string, i
     }
     if (fields.content) {
       base.content = fields.content;
+    }
+    if (fields.output_metadata) {
+      base.output_metadata = fields.output_metadata;
     }
   }
 }

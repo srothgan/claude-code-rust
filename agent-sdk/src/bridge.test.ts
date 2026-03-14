@@ -1200,6 +1200,51 @@ test("mapSdkSessions normalizes and sorts sessions", () => {
   ]);
 });
 
+test("buildToolResultFields extracts ExitPlanMode ultraplan metadata from structured results", () => {
+  const base = createToolCall("tc-plan", "ExitPlanMode", {});
+  const fields = buildToolResultFields(
+    false,
+    [{ text: "Plan ready for approval" }],
+    base,
+    {
+      result: {
+        plan: "Plan contents",
+        isUltraplan: true,
+      },
+    },
+  );
+
+  assert.deepEqual(fields.output_metadata, {
+    exit_plan_mode: {
+      is_ultraplan: true,
+    },
+  });
+});
+
+test("buildToolResultFields extracts TodoWrite verification metadata from structured results", () => {
+  const base = createToolCall("tc-todo", "TodoWrite", {
+    todos: [{ content: "Verify changes", status: "pending", activeForm: "Verifying changes" }],
+  });
+  const fields = buildToolResultFields(
+    false,
+    [{ text: "Todos have been modified successfully." }],
+    base,
+    {
+      data: {
+        oldTodos: [],
+        newTodos: [],
+        verificationNudgeNeeded: true,
+      },
+    },
+  );
+
+  assert.deepEqual(fields.output_metadata, {
+    todo_write: {
+      verification_nudge_needed: true,
+    },
+  });
+});
+
 test("mapAvailableModels preserves optional fast and auto mode metadata", () => {
   const mapped = mapAvailableModels([
     {

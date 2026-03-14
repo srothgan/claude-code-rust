@@ -289,6 +289,7 @@ mod tests {
             title: id.to_owned(),
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: None,
+            output_metadata: None,
             status,
             content: Vec::new(),
             collapsed: false,
@@ -403,6 +404,7 @@ mod tests {
                 .into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::Pending,
             content: Vec::new(),
             collapsed: false,
@@ -472,6 +474,31 @@ mod tests {
     }
 
     #[test]
+    fn exit_plan_mode_title_renders_ultraplan_badge() {
+        let mut tc = test_tool_call("tc-plan", "ExitPlanMode", model::ToolCallStatus::Completed);
+        tc.output_metadata =
+            Some(model::ToolOutputMetadata::new().exit_plan_mode(Some(
+                model::ExitPlanModeOutputMetadata::new().ultraplan(Some(true)),
+            )));
+
+        let rendered = standard::render_tool_call_title(&tc, 80, 0);
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.contains("[ultraplan]"));
+    }
+
+    #[test]
+    fn todo_write_title_renders_verification_badge() {
+        let mut tc = test_tool_call("tc-todo", "TodoWrite", model::ToolCallStatus::Completed);
+        tc.output_metadata = Some(model::ToolOutputMetadata::new().todo_write(Some(
+            model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
+        )));
+
+        let rendered = standard::render_tool_call_title(&tc, 80, 0);
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(text.contains("[verification needed]"));
+    }
+
+    #[test]
     fn internal_error_detection_accepts_xml_payload() {
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
@@ -523,6 +550,7 @@ mod tests {
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::Completed,
             content: Vec::new(),
             collapsed: true,
@@ -553,6 +581,7 @@ mod tests {
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
@@ -583,6 +612,7 @@ mod tests {
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
@@ -615,6 +645,7 @@ mod tests {
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
+            output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: false,

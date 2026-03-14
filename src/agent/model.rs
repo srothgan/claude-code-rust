@@ -235,6 +235,7 @@ pub struct ToolCall {
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
+    pub output_metadata: Option<ToolOutputMetadata>,
     pub locations: Vec<ToolCallLocation>,
     pub meta: Option<serde_json::Value>,
 }
@@ -250,6 +251,7 @@ impl ToolCall {
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
+            output_metadata: None,
             locations: Vec::new(),
             meta: None,
         }
@@ -286,6 +288,12 @@ impl ToolCall {
     }
 
     #[must_use]
+    pub fn output_metadata(mut self, output_metadata: ToolOutputMetadata) -> Self {
+        self.output_metadata = Some(output_metadata);
+        self
+    }
+
+    #[must_use]
     pub fn locations(mut self, locations: Vec<ToolCallLocation>) -> Self {
         self.locations = locations;
         self
@@ -306,6 +314,7 @@ pub struct ToolCallUpdateFields {
     pub content: Option<Vec<ToolCallContent>>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
+    pub output_metadata: Option<ToolOutputMetadata>,
     pub locations: Option<Vec<ToolCallLocation>>,
 }
 
@@ -352,6 +361,12 @@ impl ToolCallUpdateFields {
     }
 
     #[must_use]
+    pub fn output_metadata(mut self, output_metadata: ToolOutputMetadata) -> Self {
+        self.output_metadata = Some(output_metadata);
+        self
+    }
+
+    #[must_use]
     pub fn locations(mut self, locations: Vec<ToolCallLocation>) -> Self {
         self.locations = Some(locations);
         self
@@ -375,6 +390,67 @@ impl ToolCallUpdate {
     #[must_use]
     pub fn meta(mut self, meta: impl Into<serde_json::Value>) -> Self {
         self.meta = Some(meta.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExitPlanModeOutputMetadata {
+    pub is_ultraplan: Option<bool>,
+}
+
+impl ExitPlanModeOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { is_ultraplan: None }
+    }
+
+    #[must_use]
+    pub fn ultraplan(mut self, is_ultraplan: Option<bool>) -> Self {
+        self.is_ultraplan = is_ultraplan;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TodoWriteOutputMetadata {
+    pub verification_nudge_needed: Option<bool>,
+}
+
+impl TodoWriteOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { verification_nudge_needed: None }
+    }
+
+    #[must_use]
+    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
+        self.verification_nudge_needed = verification_nudge_needed;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ToolOutputMetadata {
+    pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
+    pub todo_write: Option<TodoWriteOutputMetadata>,
+}
+
+impl ToolOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn exit_plan_mode(mut self, exit_plan_mode: Option<ExitPlanModeOutputMetadata>) -> Self {
+        self.exit_plan_mode = exit_plan_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
+        self.todo_write = todo_write;
         self
     }
 }

@@ -24,6 +24,7 @@ pub struct ToolCallInfo {
     /// Falls back to a derived name when metadata is absent.
     pub sdk_tool_name: String,
     pub raw_input: Option<serde_json::Value>,
+    pub output_metadata: Option<model::ToolOutputMetadata>,
     pub status: model::ToolCallStatus,
     pub content: Vec<model::ToolCallContent>,
     pub collapsed: bool,
@@ -82,6 +83,24 @@ impl ToolCallInfo {
     #[must_use]
     pub fn is_exit_plan_mode_tool(&self) -> bool {
         is_exit_plan_mode_tool_name(&self.sdk_tool_name)
+    }
+
+    #[must_use]
+    pub fn is_ultraplan(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.exit_plan_mode.as_ref())
+            .and_then(|metadata| metadata.is_ultraplan)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn verification_nudge_needed(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.todo_write.as_ref())
+            .and_then(|metadata| metadata.verification_nudge_needed)
+            .unwrap_or(false)
     }
 
     /// Mark render cache for this tool call as stale.
