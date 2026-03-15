@@ -16,8 +16,8 @@
 
 mod mcp;
 mod overlay;
+mod plugins;
 mod settings;
-mod skills;
 mod status;
 mod usage;
 
@@ -67,7 +67,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
-        ConfigTab::Skills => skills::render(frame, chunks[1], app),
+        ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1]),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
@@ -81,6 +81,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_language_overlay(frame, frame_area, app);
     } else if app.config.session_rename_overlay().is_some() {
         render_session_rename_overlay(frame, frame_area, app);
+    } else if app.config.installed_plugin_actions_overlay().is_some() {
+        render_installed_plugin_actions_overlay(frame, frame_area, app);
+    } else if app.config.plugin_install_overlay().is_some() {
+        render_plugin_install_overlay(frame, frame_area, app);
     }
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
@@ -110,6 +114,8 @@ fn config_help_text(app: &App) -> String {
         || app.config.output_style_overlay().is_some()
         || app.config.language_overlay().is_some()
         || app.config.session_rename_overlay().is_some()
+        || app.config.installed_plugin_actions_overlay().is_some()
+        || app.config.plugin_install_overlay().is_some()
     {
         return String::new();
     }
@@ -119,10 +125,16 @@ fn config_help_text(app: &App) -> String {
             "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
                 .to_owned()
         }
-        ConfigTab::Skills => {
-            if crate::app::skills::search_enabled(app.skills.active_tab) {
-                if app.skills.search_focused {
+        ConfigTab::Plugins => {
+            if crate::app::plugins::search_enabled(app.plugins.active_tab) {
+                if app.plugins.search_focused {
                     "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                } else if matches!(
+                    app.plugins.active_tab,
+                    crate::app::plugins::PluginsViewTab::Installed
+                        | crate::app::plugins::PluginsViewTab::Plugins
+                ) {
+                    "Left/Right switch list | Up search | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
                 } else {
                     "Left/Right switch list | Up search | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
                 }
@@ -389,6 +401,116 @@ fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 14,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Installed plugin",
+            subtitle: None,
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::DIM),
+        )))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    shared_render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(installed_plugin_action_overlay_lines(app)).wrap(Wrap { trim: false }),
+        sections[3],
+    );
+}
+
+fn render_plugin_install_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.plugin_install_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 14,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Install plugin",
+            subtitle: None,
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::DIM),
+        )))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    shared_render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(plugin_install_overlay_lines(app)).wrap(Wrap { trim: false }),
+        sections[3],
+    );
+}
+
 fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
     let cursor_style =
         Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
@@ -442,6 +564,44 @@ fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::DIM),
         )));
         if index + 1 < OutputStyle::ALL.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
+fn installed_plugin_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    for (index, action) in overlay.actions.iter().copied().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < overlay.actions.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
+fn plugin_install_overlay_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(overlay) = app.config.plugin_install_overlay() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    for (index, action) in overlay.actions.iter().copied().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < overlay.actions.len() {
             lines.push(Line::default());
         }
     }
@@ -1155,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_tab_renders_inventory_shell() {
+    fn plugins_tab_renders_inventory_shell() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1170,8 +1330,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Skills;
-        app.skills.installed = vec![crate::app::skills::InstalledPluginEntry {
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
             version: Some("1.0.0".to_owned()),
             scope: "user".to_owned(),
@@ -1179,8 +1339,9 @@ mod tests {
             installed_at: None,
             last_updated: None,
             project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
         }];
-        app.skills.marketplace = vec![crate::app::skills::MarketplaceEntry {
+        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
             plugin_id: "frontend-design@claude-plugins-official".to_owned(),
             name: "frontend-design".to_owned(),
             description: Some("Create distinctive interfaces".to_owned()),
@@ -1189,7 +1350,7 @@ mod tests {
             install_count: Some(42),
             source: None,
         }];
-        app.skills.marketplaces = vec![crate::app::skills::MarketplaceSourceEntry {
+        app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
             name: "claude-plugins-official".to_owned(),
             source: Some("github".to_owned()),
             repo: Some("anthropics/claude-plugins-official".to_owned()),
@@ -1203,16 +1364,17 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("Installed (1)"));
-        assert!(rendered.contains("Skills (1)"));
+        assert!(rendered.contains("Plugins (1)"));
         assert!(rendered.contains("Marketplace (1)"));
         assert!(rendered.contains("Search"));
         assert!(rendered.contains("Type to filter this list"));
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
+        assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
     }
 
     #[test]
-    fn skills_tab_renders_marketplace_skill_title_and_plugin_id() {
+    fn plugins_tab_renders_marketplace_plugin_title_and_plugin_id() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1227,9 +1389,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Skills;
-        app.skills.active_tab = crate::app::skills::SkillsViewTab::Skills;
-        app.skills.marketplace = vec![crate::app::skills::MarketplaceEntry {
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
             plugin_id: "frontend-design@claude-plugins-official".to_owned(),
             name: "frontend-design".to_owned(),
             description: Some("Review UI".to_owned()),
@@ -1251,7 +1413,80 @@ mod tests {
     }
 
     #[test]
-    fn skills_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
+    fn plugins_tab_groups_relevant_installed_plugins_above_other_projects() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.cwd_raw = "C:\\work\\project-b".to_owned();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.installed = vec![
+            crate::app::plugins::InstalledPluginEntry {
+                id: "other-local@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "local".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: Some("C:\\work\\project-a".to_owned()),
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+            crate::app::plugins::InstalledPluginEntry {
+                id: "user-plugin@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+            crate::app::plugins::InstalledPluginEntry {
+                id: "current-local@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "local".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: Some("C:\\work\\project-b".to_owned()),
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+        ];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        let user_index =
+            rendered.find("User Plugin From Claude Plugins Official").expect("user plugin");
+        let current_index = rendered
+            .find("Current Local From Claude Plugins Official")
+            .expect("current project plugin");
+        let other_index = rendered
+            .find("Other Local From Claude Plugins Official")
+            .expect("other project plugin");
+
+        assert!(user_index < other_index);
+        assert!(current_index < other_index);
+        assert!(rendered.contains("Available here"));
+        assert!(rendered.contains("Installed elsewhere"));
+    }
+
+    #[test]
+    fn plugins_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1266,8 +1501,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Skills;
-        app.skills.loading = true;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.loading = true;
 
         terminal
             .draw(|frame| {
@@ -1296,8 +1531,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Skills;
-        app.skills.active_tab = crate::app::skills::SkillsViewTab::Marketplace;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
 
         terminal
             .draw(|frame| {
@@ -1308,6 +1543,99 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("Configured marketplaces"));
         assert!(rendered.contains("Add marketplace"));
+    }
+
+    #[test]
+    fn installed_plugin_overlay_renders_title_description_and_actions() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
+            crate::app::config::InstalledPluginActionOverlayState {
+                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+                title: "Frontend Design From Claude Plugins Official".to_owned(),
+                description: "Create distinctive interfaces".to_owned(),
+                scope: "local".to_owned(),
+                project_path: Some("C:\\work\\project-a".to_owned()),
+                selected_index: 0,
+                actions: vec![
+                    crate::app::config::InstalledPluginActionKind::Disable,
+                    crate::app::config::InstalledPluginActionKind::Update,
+                    crate::app::config::InstalledPluginActionKind::InstallInCurrentProject,
+                    crate::app::config::InstalledPluginActionKind::Uninstall,
+                ],
+            },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Installed plugin"));
+        assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
+        assert!(rendered.contains("Create distinctive interfaces"));
+        assert!(rendered.contains("Install in current project"));
+        assert!(rendered.contains("Up/Down select"));
+    }
+
+    #[test]
+    fn plugin_install_overlay_renders_title_description_and_actions() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
+            crate::app::config::PluginInstallOverlayState {
+                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+                title: "Frontend Design".to_owned(),
+                description: "Create distinctive interfaces".to_owned(),
+                selected_index: 0,
+                actions: vec![
+                    crate::app::config::PluginInstallActionKind::User,
+                    crate::app::config::PluginInstallActionKind::Project,
+                    crate::app::config::PluginInstallActionKind::Local,
+                ],
+            },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Install plugin"));
+        assert!(rendered.contains("Frontend Design"));
+        assert!(rendered.contains("Create distinctive interfaces"));
+        assert!(rendered.contains("Install for project"));
+        assert!(rendered.contains("Up/Down select"));
     }
 
     #[test]

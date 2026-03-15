@@ -365,7 +365,7 @@ fn builtin_slash_help_commands() -> [(&'static str, &'static str); 4] {
         ("/config", "Open settings"),
         ("/login", "Authenticate with Claude"),
         ("/logout", "Sign out of Claude"),
-        ("/skills", "Open skills"),
+        ("/plugins", "Open plugins"),
     ]
 }
 

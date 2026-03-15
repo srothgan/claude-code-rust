@@ -38,7 +38,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
-        "/skills" => handle_skills_submit(app, &parsed.args),
+        "/plugins" => handle_plugins_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/login" => handle_login_submit(app, &parsed.args),
         "/logout" => handle_logout_submit(app, &parsed.args),
@@ -91,15 +91,15 @@ fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_skills_submit(app: &mut App, args: &[&str]) -> bool {
+fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
     let _ = args;
 
     if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open skills: {err}"));
+        push_system_message(app, format!("Failed to open plugins: {err}"));
         return true;
     }
-    app.config.active_tab = crate::app::ConfigTab::Skills;
-    crate::app::skills::request_inventory_refresh_if_needed(app);
+    app.config.active_tab = crate::app::ConfigTab::Plugins;
+    crate::app::plugins::request_inventory_refresh_if_needed(app);
     true
 }
 

@@ -147,6 +147,12 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
             (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
             _ => {}
         },
+        Some(ConfigOverlayState::InstalledPluginActions(_)) => {
+            crate::app::plugins::handle_installed_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::PluginInstallActions(_)) => {
+            crate::app::plugins::handle_plugin_install_overlay_key(app, key);
+        }
         Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
         Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         None => {}

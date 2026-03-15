@@ -1,9 +1,11 @@
 use super::{
-    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, SkillsInventorySnapshot,
+    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
+    PluginsInventorySnapshot,
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Deserialize)]
 struct InstalledPluginJson {
@@ -17,6 +19,8 @@ struct InstalledPluginJson {
     last_updated: Option<String>,
     #[serde(rename = "projectPath")]
     project_path: Option<String>,
+    #[serde(rename = "mcpServers")]
+    mcp_servers: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,27 +49,62 @@ struct MarketplaceSourceJson {
     repo: Option<String>,
 }
 
-pub(super) async fn refresh_inventory(cwd_raw: &str) -> Result<SkillsInventorySnapshot, String> {
-    let claude_path =
-        which::which("claude").map_err(|_| "claude CLI not found in PATH".to_owned())?;
+pub(super) async fn refresh_inventory(
+    cwd_raw: String,
+    cached_claude_path: Option<PathBuf>,
+) -> Result<(PluginsInventorySnapshot, PathBuf), String> {
+    tokio::task::spawn_blocking(move || {
+        let claude_path = resolve_claude_path(cached_claude_path)?;
+        let snapshot = refresh_inventory_blocking(&claude_path, &cwd_raw)?;
+        Ok((snapshot, claude_path))
+    })
+    .await
+    .map_err(|error| format!("Plugin inventory task failed: {error}"))?
+}
+
+pub(super) async fn run_plugin_command_and_refresh(
+    cwd_raw: String,
+    cached_claude_path: Option<PathBuf>,
+    args: Vec<String>,
+) -> Result<(PluginsInventorySnapshot, PathBuf), String> {
+    tokio::task::spawn_blocking(move || {
+        let claude_path = resolve_claude_path(cached_claude_path)?;
+        run_command(&claude_path, &cwd_raw, &args)?;
+        let snapshot = refresh_inventory_blocking(&claude_path, &cwd_raw)?;
+        Ok((snapshot, claude_path))
+    })
+    .await
+    .map_err(|error| format!("Plugin CLI action task failed: {error}"))?
+}
+
+fn resolve_claude_path(cached_claude_path: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = cached_claude_path
+        && path.is_file()
+    {
+        return Ok(path);
+    }
+    which::which("claude").map_err(|_| "claude CLI not found in PATH".to_owned())
+}
+
+fn refresh_inventory_blocking(
+    claude_path: &Path,
+    cwd_raw: &str,
+) -> Result<PluginsInventorySnapshot, String> {
     let installed = parse_json_command::<Vec<InstalledPluginJson>>(
-        &claude_path,
+        claude_path,
         cwd_raw,
         &["plugin", "list", "--json"],
-    )
-    .await?;
+    )?;
     let available = parse_json_command::<MarketplaceListJson>(
-        &claude_path,
+        claude_path,
         cwd_raw,
         &["plugin", "list", "--available", "--json"],
-    )
-    .await?;
+    )?;
     let marketplaces = parse_json_command::<Vec<MarketplaceSourceJson>>(
-        &claude_path,
+        claude_path,
         cwd_raw,
         &["plugin", "marketplace", "list", "--json"],
-    )
-    .await?;
+    )?;
 
     let mut installed_entries = installed
         .into_iter()
@@ -77,6 +116,11 @@ pub(super) async fn refresh_inventory(cwd_raw: &str) -> Result<SkillsInventorySn
             installed_at: entry.installed_at,
             last_updated: entry.last_updated,
             project_path: entry.project_path,
+            capability: if entry.mcp_servers.is_some() {
+                PluginCapability::Mcp
+            } else {
+                PluginCapability::Skill
+            },
         })
         .collect::<Vec<_>>();
     installed_entries.sort_by_cached_key(|entry| entry.id.to_ascii_lowercase());
@@ -111,26 +155,21 @@ pub(super) async fn refresh_inventory(cwd_raw: &str) -> Result<SkillsInventorySn
         .collect::<Vec<_>>();
     marketplace_sources.sort_by_cached_key(|entry| entry.name.to_ascii_lowercase());
 
-    Ok(SkillsInventorySnapshot {
+    Ok(PluginsInventorySnapshot {
         installed: installed_entries,
         marketplace: marketplace_entries,
         marketplaces: marketplace_sources,
     })
 }
 
-async fn parse_json_command<T>(
-    claude_path: &Path,
-    cwd_raw: &str,
-    args: &[&str],
-) -> Result<T, String>
+fn parse_json_command<T>(claude_path: &Path, cwd_raw: &str, args: &[&str]) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let output = tokio::process::Command::new(claude_path)
+    let output = Command::new(claude_path)
         .args(args)
         .current_dir(cwd_raw)
         .output()
-        .await
         .map_err(|error| format!("Failed to run `claude {}`: {error}", args.join(" ")))?;
 
     if !output.status.success() {
@@ -147,6 +186,28 @@ where
 
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("Failed to parse JSON from `claude {}`: {error}", args.join(" ")))
+}
+
+fn run_command(claude_path: &Path, cwd_raw: &str, args: &[String]) -> Result<(), String> {
+    let output = Command::new(claude_path)
+        .args(args)
+        .current_dir(cwd_raw)
+        .output()
+        .map_err(|error| format!("Failed to run `claude {}`: {error}", args.join(" ")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let exit_code =
+        output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
+    let detail = if stderr.is_empty() {
+        format!("exit code {exit_code}")
+    } else {
+        format!("exit code {exit_code}: {stderr}")
+    };
+    Err(format!("`claude {}` failed: {detail}", args.join(" ")))
 }
 
 #[cfg(test)]
@@ -175,6 +236,43 @@ mod tests {
         assert_eq!(parsed[0].scope, "local");
         assert!(!parsed[0].enabled);
         assert_eq!(parsed[0].project_path.as_deref(), Some("C:\\work"));
+    }
+
+    #[test]
+    fn detects_mcp_plugins_from_installed_payload() {
+        let json = r#"
+[
+  {
+    "id": "supabase@claude-plugins-official",
+    "scope": "local",
+    "enabled": true,
+    "mcpServers": {
+      "supabase": {
+        "type": "http",
+        "url": "https://mcp.supabase.com/mcp"
+      }
+    }
+  }
+]
+"#;
+
+        let parsed = serde_json::from_str::<Vec<InstalledPluginJson>>(json).expect("parse json");
+        let entry = InstalledPluginEntry {
+            id: parsed[0].id.clone(),
+            version: parsed[0].version.clone(),
+            scope: parsed[0].scope.clone(),
+            enabled: parsed[0].enabled,
+            installed_at: parsed[0].installed_at.clone(),
+            last_updated: parsed[0].last_updated.clone(),
+            project_path: parsed[0].project_path.clone(),
+            capability: if parsed[0].mcp_servers.is_some() {
+                PluginCapability::Mcp
+            } else {
+                PluginCapability::Skill
+            },
+        };
+
+        assert_eq!(entry.capability, PluginCapability::Mcp);
     }
 
     #[test]

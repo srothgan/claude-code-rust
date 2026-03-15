@@ -34,19 +34,20 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
     Settings,
-    Skills,
+    Plugins,
     Status,
     Usage,
     Mcp,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 5] = [Self::Settings, Self::Skills, Self::Status, Self::Usage, Self::Mcp];
+    pub const ALL: [Self; 5] =
+        [Self::Settings, Self::Plugins, Self::Status, Self::Usage, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
-            Self::Skills => "Skills",
+            Self::Plugins => "Plugins",
             Self::Status => "Status",
             Self::Usage => "Usage",
             Self::Mcp => "MCP",
@@ -55,8 +56,8 @@ impl ConfigTab {
 
     const fn next(self) -> Self {
         match self {
-            Self::Settings => Self::Skills,
-            Self::Skills => Self::Status,
+            Self::Settings => Self::Plugins,
+            Self::Plugins => Self::Status,
             Self::Status => Self::Usage,
             Self::Usage => Self::Mcp,
             Self::Mcp => Self::Settings,
@@ -66,8 +67,8 @@ impl ConfigTab {
     const fn prev(self) -> Self {
         match self {
             Self::Settings => Self::Mcp,
-            Self::Skills => Self::Settings,
-            Self::Status => Self::Skills,
+            Self::Plugins => Self::Settings,
+            Self::Status => Self::Plugins,
             Self::Usage => Self::Status,
             Self::Mcp => Self::Usage,
         }
@@ -650,12 +651,83 @@ pub struct SessionRenameOverlayState {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledPluginActionKind {
+    Enable,
+    Disable,
+    Update,
+    InstallInCurrentProject,
+    Uninstall,
+}
+
+impl InstalledPluginActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Enable => "Enable",
+            Self::Disable => "Disable",
+            Self::Update => "Update",
+            Self::InstallInCurrentProject => "Install in current project",
+            Self::Uninstall => "Uninstall",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginInstallActionKind {
+    User,
+    Project,
+    Local,
+}
+
+impl PluginInstallActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::User => "Install for user",
+            Self::Project => "Install for project",
+            Self::Local => "Install locally",
+        }
+    }
+
+    #[must_use]
+    pub const fn scope(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Local => "local",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPluginActionOverlayState {
+    pub plugin_id: String,
+    pub title: String,
+    pub description: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+    pub selected_index: usize,
+    pub actions: Vec<InstalledPluginActionKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInstallOverlayState {
+    pub plugin_id: String,
+    pub title: String,
+    pub description: String,
+    pub selected_index: usize,
+    pub actions: Vec<PluginInstallActionKind>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
     Language(LanguageOverlayState),
     SessionRename(SessionRenameOverlayState),
+    InstalledPluginActions(InstalledPluginActionOverlayState),
+    PluginInstallActions(PluginInstallOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -802,7 +874,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -814,7 +888,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -827,7 +903,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -839,7 +917,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -852,7 +932,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -864,7 +946,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -877,7 +961,9 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_),
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
             )
             | None => None,
         }
@@ -889,7 +975,69 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_),
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::PluginInstallActions(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn installed_plugin_actions_overlay_mut(
+        &mut self,
+    ) -> Option<&mut InstalledPluginActionOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::PluginInstallActions(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn plugin_install_overlay(&self) -> Option<&PluginInstallOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn plugin_install_overlay_mut(&mut self) -> Option<&mut PluginInstallOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_),
             )
             | None => None,
         }
@@ -1077,7 +1225,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    if app.config.active_tab == ConfigTab::Skills && crate::app::skills::handle_key(app, key) {
+    if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
         return;
     }
 
@@ -1145,8 +1293,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn request_active_tab_side_effects(app: &mut App) {
     request_status_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Skills {
-        crate::app::skills::request_inventory_refresh_if_needed(app);
+    if app.config.active_tab == ConfigTab::Plugins {
+        crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
 }
 
