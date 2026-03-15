@@ -99,6 +99,7 @@ fn handle_skills_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     app.config.active_tab = crate::app::ConfigTab::Skills;
+    crate::app::skills::request_inventory_refresh_if_needed(app);
     true
 }
 

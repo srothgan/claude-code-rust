@@ -1058,6 +1058,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);
     view::set_active_view(app, ActiveView::Config);
+    request_active_tab_side_effects(app);
     Ok(())
 }
 
@@ -1073,6 +1074,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
     if app.config.overlay.is_some() {
         edit::handle_overlay_key(app, key);
+        return;
+    }
+
+    if app.config.active_tab == ConfigTab::Skills && crate::app::skills::handle_key(app, key) {
         return;
     }
 
@@ -1114,12 +1119,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::BackTab, _) => {
             app.config.active_tab = app.config.active_tab.prev();
             app.config.status_message = None;
-            request_status_snapshot_if_needed(app);
+            request_active_tab_side_effects(app);
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
             app.config.active_tab = app.config.active_tab.next();
             app.config.status_message = None;
-            request_status_snapshot_if_needed(app);
+            request_active_tab_side_effects(app);
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
             if app.config.active_tab == ConfigTab::Settings {
@@ -1135,6 +1140,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+fn request_active_tab_side_effects(app: &mut App) {
+    request_status_snapshot_if_needed(app);
+    if app.config.active_tab == ConfigTab::Skills {
+        crate::app::skills::request_inventory_refresh_if_needed(app);
     }
 }
 

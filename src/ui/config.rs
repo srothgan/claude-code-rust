@@ -67,7 +67,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
-        ConfigTab::Skills => skills::render(frame, chunks[1]),
+        ConfigTab::Skills => skills::render(frame, chunks[1], app),
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1]),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
@@ -85,8 +85,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
         (error, true)
+    } else if let Some(status) = app.config.status_message.clone() {
+        (status, false)
     } else {
-        (app.config.status_message.clone().unwrap_or_default(), false)
+        (String::new(), false)
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -117,7 +119,18 @@ fn config_help_text(app: &App) -> String {
             "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
                 .to_owned()
         }
-        ConfigTab::Skills | ConfigTab::Usage | ConfigTab::Mcp => {
+        ConfigTab::Skills => {
+            if crate::app::skills::search_enabled(app.skills.active_tab) {
+                if app.skills.search_focused {
+                    "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                } else {
+                    "Left/Right switch list | Up search | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                }
+            } else {
+                "Left/Right switch list | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+            }
+        }
+        ConfigTab::Usage | ConfigTab::Mcp => {
             "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
         }
         ConfigTab::Status => {
@@ -1142,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_tab_placeholder_renders() {
+    fn skills_tab_renders_inventory_shell() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1158,6 +1171,29 @@ mod tests {
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
         app.config.active_tab = crate::app::ConfigTab::Skills;
+        app.skills.installed = vec![crate::app::skills::InstalledPluginEntry {
+            id: "frontend-design@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+        }];
+        app.skills.marketplace = vec![crate::app::skills::MarketplaceEntry {
+            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+            name: "frontend-design".to_owned(),
+            description: Some("Create distinctive interfaces".to_owned()),
+            marketplace_name: Some("claude-plugins-official".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            install_count: Some(42),
+            source: None,
+        }];
+        app.skills.marketplaces = vec![crate::app::skills::MarketplaceSourceEntry {
+            name: "claude-plugins-official".to_owned(),
+            source: Some("github".to_owned()),
+            repo: Some("anthropics/claude-plugins-official".to_owned()),
+        }];
 
         terminal
             .draw(|frame| {
@@ -1166,9 +1202,112 @@ mod tests {
             .expect("draw");
 
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Skills placeholder"));
-        assert!(rendered.contains("This tab is wired into Config"));
-        assert!(rendered.contains("Tab next tab"));
+        assert!(rendered.contains("Installed (1)"));
+        assert!(rendered.contains("Skills (1)"));
+        assert!(rendered.contains("Marketplace (1)"));
+        assert!(rendered.contains("Search"));
+        assert!(rendered.contains("Type to filter this list"));
+        assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
+        assert!(rendered.contains("Left/Right switch list"));
+    }
+
+    #[test]
+    fn skills_tab_renders_marketplace_skill_title_and_plugin_id() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Skills;
+        app.skills.active_tab = crate::app::skills::SkillsViewTab::Skills;
+        app.skills.marketplace = vec![crate::app::skills::MarketplaceEntry {
+            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+            name: "frontend-design".to_owned(),
+            description: Some("Review UI".to_owned()),
+            marketplace_name: Some("claude-plugins-official".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            install_count: Some(42),
+            source: None,
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Frontend Design"));
+        assert!(rendered.contains("Plugin: frontend-design@claude-plugins-official"));
+    }
+
+    #[test]
+    fn skills_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Skills;
+        app.skills.loading = true;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Loading installed plugins..."));
+        assert!(!rendered.contains("No installed plugins found."));
+    }
+
+    #[test]
+    fn marketplace_tab_renders_configured_heading_and_add_placeholder() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Skills;
+        app.skills.active_tab = crate::app::skills::SkillsViewTab::Marketplace;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Configured marketplaces"));
+        assert!(rendered.contains("Add marketplace"));
     }
 
     #[test]

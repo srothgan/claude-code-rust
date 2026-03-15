@@ -54,6 +54,7 @@ use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
+use super::skills::SkillsState;
 use super::slash;
 use super::subagent;
 use super::trust::TrustState;
@@ -152,6 +153,8 @@ pub struct App {
     pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
+    /// Skills/plugins inventory and UI state for the Config > Skills view.
+    pub skills: SkillsState,
     /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
     pub available_agents: Vec<model::AvailableAgent>,
     /// Models advertised by the agent SDK for the active session.
@@ -599,6 +602,7 @@ impl App {
             todo_selected: 0,
             focus: FocusManager::default(),
             available_commands: Vec::new(),
+            skills: SkillsState::default(),
             available_agents: Vec::new(),
             available_models: Vec::new(),
             recent_sessions: Vec::new(),

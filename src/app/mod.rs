@@ -32,6 +32,7 @@ mod permissions;
 mod questions;
 mod selection;
 mod service_status_check;
+pub(crate) mod skills;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;

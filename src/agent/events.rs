@@ -16,6 +16,7 @@
 
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
+use crate::app::skills::SkillsInventorySnapshot;
 use crate::error::AppError;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -80,6 +81,10 @@ pub enum ClientEvent {
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
     StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
+    /// Claude CLI skills/plugin inventory refresh completed.
+    SkillsInventoryUpdated { snapshot: SkillsInventorySnapshot },
+    /// Claude CLI skills/plugin inventory refresh failed.
+    SkillsInventoryRefreshFailed(String),
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
 }

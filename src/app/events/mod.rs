@@ -189,6 +189,12 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.account_info = Some(account);
             app.needs_redraw = true;
         }
+        ClientEvent::SkillsInventoryUpdated { snapshot } => {
+            crate::app::skills::apply_inventory_refresh_success(app, snapshot);
+        }
+        ClientEvent::SkillsInventoryRefreshFailed(message) => {
+            crate::app::skills::apply_inventory_refresh_failure(app, message);
+        }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
     }
 }
@@ -230,6 +236,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
             app.available_commands = cmds.available_commands;
+            crate::app::skills::clamp_selection(app);
             if app.slash.is_some() {
                 super::slash::update_query(app);
             }

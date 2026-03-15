@@ -180,17 +180,42 @@ fn tab_navigation_wraps_and_clears_status_message() {
 }
 
 #[test]
-fn placeholder_tabs_ignore_row_navigation_and_edit_activation() {
+fn skills_tab_uses_arrow_keys_for_inner_navigation() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Skills;
     app.config.selected_setting_index = 3;
+    app.skills.installed = vec![
+        crate::app::skills::InstalledPluginEntry {
+            id: "frontend-design@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+        },
+        crate::app::skills::InstalledPluginEntry {
+            id: "rust-analyzer-lsp@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+        },
+    ];
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
     assert_eq!(app.config.selected_setting_index, 3);
+    assert_eq!(app.config.active_tab, ConfigTab::Skills);
+    assert_eq!(app.skills.installed_selected_index, 1);
+    assert_eq!(app.skills.active_tab, crate::app::skills::SkillsViewTab::Skills);
+    assert_eq!(app.skills.installed_search_query, "");
+    assert_eq!(app.skills.skills_search_query, "");
     assert!(app.config.overlay.is_none());
-    assert!(!app.config.fast_mode_effective());
 }
 
 #[test]
