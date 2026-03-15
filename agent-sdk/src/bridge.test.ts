@@ -30,6 +30,7 @@ import {
   unwrapToolUseResult,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
+import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 
 function makeSessionState(): SessionState {
@@ -481,6 +482,26 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
     },
   });
   assert.equal(session.taskToolUseIds.has("task-1"), false);
+});
+
+test("emitToolProgressUpdate does not reopen completed tools", () => {
+  const session = makeSessionState();
+  session.toolCalls.set("tool-1", {
+    tool_call_id: "tool-1",
+    title: "Bash",
+    kind: "execute",
+    status: "completed",
+    content: [],
+    locations: [],
+    meta: { claudeCode: { toolName: "Bash" } },
+  });
+
+  const events = captureBridgeEvents(() => {
+    emitToolProgressUpdate(session, "tool-1", "Bash");
+  });
+
+  assert.equal(events.length, 0);
+  assert.equal(session.toolCalls.get("tool-1")?.status, "completed");
 });
 
 test("buildQueryOptions trims language before appending system prompt", () => {

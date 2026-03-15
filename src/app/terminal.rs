@@ -77,6 +77,13 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
             continue;
         };
         let tc = tc.as_mut();
+        if !matches!(
+            tc.status,
+            crate::agent::model::ToolCallStatus::Pending
+                | crate::agent::model::ToolCallStatus::InProgress
+        ) {
+            continue;
+        }
 
         // Copy only the required bytes under lock, then decode outside the
         // critical section to avoid blocking output writers.

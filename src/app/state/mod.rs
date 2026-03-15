@@ -510,6 +510,7 @@ impl App {
         let mut changed = 0usize;
         let mut cleared_interaction = false;
         let mut first_changed_idx: Option<usize> = None;
+        let mut detached_terminal = false;
 
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for block in &mut msg.blocks {
@@ -527,12 +528,19 @@ impl App {
                         if tc.pending_question.take().is_some() {
                             cleared_interaction = true;
                         }
+                        if tc.is_execute_tool() && tc.terminal_id.take().is_some() {
+                            detached_terminal = true;
+                        }
                         first_changed_idx =
                             Some(first_changed_idx.map_or(msg_idx, |prev| prev.min(msg_idx)));
                         changed += 1;
                     }
                 }
             }
+        }
+
+        if detached_terminal {
+            self.rebuild_tool_indices_and_terminal_refs();
         }
 
         if changed > 0 || cleared_interaction {
@@ -1085,6 +1093,43 @@ mod tests {
         }
     }
 
+    fn assistant_bash_tool_message(
+        id: &str,
+        status: model::ToolCallStatus,
+        terminal_id: &str,
+    ) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Bash".to_owned(),
+                raw_input: None,
+                output_metadata: None,
+                status,
+                content: Vec::new(),
+                collapsed: false,
+                hidden: false,
+                terminal_id: Some(terminal_id.to_owned()),
+                terminal_command: Some("echo hi".to_owned()),
+                terminal_output: Some("x".repeat(1024)),
+                terminal_output_len: 1024,
+                terminal_bytes_seen: 1024,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: None,
+                pending_question: None,
+            }))],
+            usage: None,
+        }
+    }
+
     fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         ChatMessage {
@@ -1592,6 +1637,28 @@ mod tests {
         assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
         assert!(app.active_subagent_tool_ids.is_empty());
         assert!(app.subagent_idle_since.is_none());
+    }
+
+    #[test]
+    fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_bash_tool_message(
+            "bash-1",
+            model::ToolCallStatus::InProgress,
+            "term-1",
+        ));
+        app.index_tool_call("bash-1".to_owned(), 0, 0);
+        app.terminal_tool_calls.push(("term-1".to_owned(), 0, 0));
+
+        let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
+
+        assert_eq!(changed, 1);
+        assert!(app.terminal_tool_calls.is_empty());
+        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+            panic!("expected tool call");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Completed);
+        assert_eq!(tc.terminal_id, None);
     }
 
     // IncrementalMarkdown

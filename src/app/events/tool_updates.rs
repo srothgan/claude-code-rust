@@ -144,6 +144,7 @@ fn apply_tool_call_update_to_indexed_block(
         out.pending_todos =
             extract_todo_updates_from_tool_call_update(id_str, tc, tcu.fields.raw_input.as_ref());
         changed |= sync_tool_collapse_state(tc, app.tools_collapsed);
+        detach_terminal_if_final(tc, mi, bi, terminal_tool_calls);
 
         if changed {
             if should_jump_on_large_write(tc) {
@@ -280,6 +281,23 @@ fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::
     true
 }
 
+fn detach_terminal_if_final(
+    tc: &mut ToolCallInfo,
+    mi: usize,
+    bi: usize,
+    terminal_tool_calls: &mut Vec<(String, usize, usize)>,
+) {
+    if !tc.is_execute_tool()
+        || matches!(tc.status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
+        || tc.terminal_id.is_none()
+    {
+        return;
+    }
+
+    tc.terminal_id = None;
+    terminal_tool_calls.retain(|(_, msg_idx, block_idx)| *msg_idx != mi || *block_idx != bi);
+}
+
 fn extract_todo_updates_from_tool_call_update(
     id_str: &str,
     tc: &ToolCallInfo,
@@ -351,4 +369,79 @@ fn internal_failed_tool_content_preview(
         return None;
     }
     Some(summarize_internal_error(&text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{
+        App, BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode,
+    };
+
+    fn make_bash_tool_call(
+        id: &str,
+        status: model::ToolCallStatus,
+        terminal_id: Option<&str>,
+    ) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: format!("tool {id}"),
+            sdk_tool_name: "Bash".to_owned(),
+            raw_input: None,
+            output_metadata: None,
+            status,
+            content: Vec::new(),
+            collapsed: false,
+            hidden: false,
+            terminal_id: terminal_id.map(str::to_owned),
+            terminal_command: Some("echo test".to_owned()),
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+        }
+    }
+
+    #[test]
+    fn completed_execute_update_detaches_terminal_subscription() {
+        let mut app = App::test_default();
+        let tool_id = "tool-1";
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+                tool_id,
+                model::ToolCallStatus::InProgress,
+                Some("term-1"),
+            )))],
+            usage: None,
+        });
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+        app.terminal_tool_calls.push(("term-1".to_owned(), 0, 0));
+
+        let update = model::ToolCallUpdate::new(
+            tool_id,
+            model::ToolCallUpdateFields::new()
+                .status(model::ToolCallStatus::Completed)
+                .raw_output(serde_json::Value::String("done".to_owned())),
+        );
+
+        handle_tool_call_update_session(&mut app, &update);
+
+        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Completed);
+        assert_eq!(tc.terminal_id, None);
+        assert_eq!(tc.terminal_output.as_deref(), Some("done"));
+        assert!(app.terminal_tool_calls.is_empty());
+    }
 }
