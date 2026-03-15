@@ -3,7 +3,8 @@ mod cli;
 use crate::agent::events::ClientEvent;
 use crate::app::App;
 use crate::app::config::{
-    ConfigOverlayState, InstalledPluginActionKind, InstalledPluginActionOverlayState,
+    AddMarketplaceOverlayState, ConfigOverlayState, InstalledPluginActionKind,
+    InstalledPluginActionOverlayState, MarketplaceActionKind, MarketplaceActionsOverlayState,
     PluginInstallActionKind, PluginInstallOverlayState,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -172,6 +173,22 @@ impl PluginsState {
     }
 }
 
+pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
+    if !search_enabled(app.plugins.active_tab) || !app.plugins.search_focused {
+        return false;
+    }
+    let normalized = normalize_single_line_input(text);
+    if normalized.is_empty() {
+        return false;
+    }
+    if let Some(query) = app.plugins.active_search_query_mut() {
+        query.push_str(&normalized);
+        reset_selection_for_active_tab(app);
+        return true;
+    }
+    false
+}
+
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Left, KeyModifiers::NONE) => {
@@ -212,7 +229,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 match app.plugins.active_tab {
                     PluginsViewTab::Installed => open_installed_actions_overlay(app),
                     PluginsViewTab::Plugins => open_plugin_install_overlay(app),
-                    PluginsViewTab::Marketplace => false,
+                    PluginsViewTab::Marketplace => open_marketplace_overlay(app),
                 }
             }
         }
@@ -321,7 +338,7 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
 pub(crate) fn clamp_selection(app: &mut App) {
     let installed_len = filtered_installed(&app.plugins).len();
     let plugin_len = filtered_marketplace_plugins(&app.plugins).len();
-    let marketplace_len = visible_marketplaces(&app.plugins).len();
+    let marketplace_len = marketplace_row_count(&app.plugins);
     app.plugins.installed_selected_index =
         clamp_index(app.plugins.installed_selected_index, installed_len);
     app.plugins.plugins_selected_index =
@@ -431,6 +448,47 @@ pub(crate) fn handle_plugin_install_overlay_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Up, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, -1),
+        (KeyCode::Down, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, 1),
+        (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_marketplace_action(app),
+        _ => {}
+    }
+}
+
+pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Left, KeyModifiers::NONE) => {
+            move_add_marketplace_cursor_left(app);
+        }
+        (KeyCode::Right, KeyModifiers::NONE) => {
+            move_add_marketplace_cursor_right(app);
+        }
+        (KeyCode::Home, KeyModifiers::NONE) => set_add_marketplace_cursor(app, 0),
+        (KeyCode::End, KeyModifiers::NONE) => move_add_marketplace_cursor_to_end(app),
+        (KeyCode::Backspace, KeyModifiers::NONE) => delete_add_marketplace_before_cursor(app),
+        (KeyCode::Delete, KeyModifiers::NONE) => delete_add_marketplace_at_cursor(app),
+        (KeyCode::Char(ch), modifiers)
+            if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
+        {
+            insert_add_marketplace_char(app, ch);
+        }
+        _ => {}
+    }
+}
+
+fn open_marketplace_overlay(app: &mut App) -> bool {
+    if selected_add_marketplace_row(app) {
+        open_add_marketplace_overlay(app)
+    } else {
+        open_marketplace_actions_overlay(app)
+    }
+}
+
 fn open_installed_actions_overlay(app: &mut App) -> bool {
     let selected = selected_installed_entry(app).cloned();
     let Some(entry) = selected else {
@@ -476,6 +534,31 @@ fn open_plugin_install_overlay(app: &mut App) -> bool {
     true
 }
 
+fn open_marketplace_actions_overlay(app: &mut App) -> bool {
+    let selected = selected_marketplace_source(app).cloned();
+    let Some(entry) = selected else {
+        return false;
+    };
+
+    app.config.overlay =
+        Some(ConfigOverlayState::MarketplaceActions(MarketplaceActionsOverlayState {
+            name: entry.name.clone(),
+            title: display_label(&entry.name),
+            description: marketplace_overlay_description(&entry),
+            selected_index: 0,
+            actions: vec![MarketplaceActionKind::Update, MarketplaceActionKind::Remove],
+        }));
+    true
+}
+
+fn open_add_marketplace_overlay(app: &mut App) -> bool {
+    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(
+        AddMarketplaceOverlayState::from_text_input(String::new(), 0),
+    ));
+    app.config.last_error = None;
+    true
+}
+
 fn move_installed_overlay_selection(app: &mut App, delta: isize) {
     let Some(overlay) = app.config.installed_plugin_actions_overlay_mut() else {
         return;
@@ -495,6 +578,23 @@ fn move_installed_overlay_selection(app: &mut App, delta: isize) {
 
 fn move_plugin_install_overlay_selection(app: &mut App, delta: isize) {
     let Some(overlay) = app.config.plugin_install_overlay_mut() else {
+        return;
+    };
+    let len = overlay.actions.len();
+    if len == 0 {
+        overlay.selected_index = 0;
+        return;
+    }
+    let current = overlay.selected_index;
+    overlay.selected_index = if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta.cast_unsigned()).min(len.saturating_sub(1))
+    };
+}
+
+fn move_marketplace_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.config.marketplace_actions_overlay_mut() else {
         return;
     };
     let len = overlay.actions.len();
@@ -536,7 +636,7 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     let event_tx = app.event_tx.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
-        match cli::run_plugin_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message =
                     installed_action_success_message(action, &overlay.title, &overlay.scope);
@@ -594,11 +694,106 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     let cwd_raw = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
-        match cli::run_plugin_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message = plugin_install_success_message(action, &overlay.title);
                 let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
                     result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                });
+            }
+            Err(message) => {
+                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+            }
+        }
+    });
+}
+
+fn execute_selected_marketplace_action(app: &mut App) {
+    let Some(overlay) = app.config.marketplace_actions_overlay().cloned() else {
+        return;
+    };
+    let Some(action) = overlay.actions.get(overlay.selected_index).copied() else {
+        return;
+    };
+
+    if tokio::runtime::Handle::try_current().is_err() {
+        app.config.overlay = None;
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for marketplace action".to_owned());
+        return;
+    }
+
+    let args = marketplace_action_command(&overlay, action);
+    let status_message = marketplace_action_status_message(&overlay.title, action);
+
+    app.config.overlay = None;
+    app.config.last_error = None;
+    app.config.status_message = Some(status_message);
+    app.plugins.loading = true;
+    app.plugins.last_inventory_refresh_at = None;
+    app.needs_redraw = true;
+    let event_tx = app.event_tx.clone();
+    let cwd_raw = app.cwd_raw.clone();
+    let cached_claude_path = app.plugins.claude_path.clone();
+    tokio::task::spawn_local(async move {
+        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+            Ok((snapshot, claude_path)) => {
+                let message = marketplace_action_success_message(&overlay.title, action);
+                let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                });
+            }
+            Err(message) => {
+                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+            }
+        }
+    });
+}
+
+fn confirm_add_marketplace_overlay(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
+        return;
+    };
+    let source = overlay.draft.trim().to_owned();
+    if source.is_empty() {
+        app.config.last_error = Some("Marketplace source cannot be empty".to_owned());
+        app.config.status_message = None;
+        return;
+    }
+    if tokio::runtime::Handle::try_current().is_err() {
+        app.config.overlay = None;
+        app.config.status_message = None;
+        app.config.last_error = Some("No runtime available for marketplace action".to_owned());
+        return;
+    }
+
+    let args = vec![
+        "plugin".to_owned(),
+        "marketplace".to_owned(),
+        "add".to_owned(),
+        source.clone(),
+        "--scope".to_owned(),
+        "user".to_owned(),
+    ];
+
+    app.config.overlay = None;
+    app.config.last_error = None;
+    app.config.status_message = Some(format!("Adding marketplace {source}..."));
+    app.plugins.loading = true;
+    app.plugins.last_inventory_refresh_at = None;
+    app.needs_redraw = true;
+    let event_tx = app.event_tx.clone();
+    let cwd_raw = app.cwd_raw.clone();
+    let cached_claude_path = app.plugins.claude_path.clone();
+    tokio::task::spawn_local(async move {
+        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+            Ok((snapshot, claude_path)) => {
+                let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    result: PluginsCliActionSuccess {
+                        snapshot,
+                        message: format!("Added marketplace {source}"),
+                        claude_path,
+                    },
                 });
             }
             Err(message) => {
@@ -712,6 +907,40 @@ fn plugin_install_success_message(action: PluginInstallActionKind, title: &str) 
     }
 }
 
+fn marketplace_action_command(
+    overlay: &MarketplaceActionsOverlayState,
+    action: MarketplaceActionKind,
+) -> Vec<String> {
+    match action {
+        MarketplaceActionKind::Update => vec![
+            "plugin".to_owned(),
+            "marketplace".to_owned(),
+            "update".to_owned(),
+            overlay.name.clone(),
+        ],
+        MarketplaceActionKind::Remove => vec![
+            "plugin".to_owned(),
+            "marketplace".to_owned(),
+            "remove".to_owned(),
+            overlay.name.clone(),
+        ],
+    }
+}
+
+fn marketplace_action_status_message(title: &str, action: MarketplaceActionKind) -> String {
+    match action {
+        MarketplaceActionKind::Update => format!("Updating {title} marketplace..."),
+        MarketplaceActionKind::Remove => format!("Removing {title} marketplace..."),
+    }
+}
+
+fn marketplace_action_success_message(title: &str, action: MarketplaceActionKind) -> String {
+    match action {
+        MarketplaceActionKind::Update => format!("Updated {title} marketplace"),
+        MarketplaceActionKind::Remove => format!("Removed {title} marketplace"),
+    }
+}
+
 fn action_cwd(app: &App, overlay: &InstalledPluginActionOverlayState) -> String {
     match overlay.scope.as_str() {
         "local" | "project" => overlay.project_path.clone().unwrap_or_else(|| app.cwd_raw.clone()),
@@ -784,8 +1013,106 @@ fn selected_marketplace_plugin(app: &App) -> Option<&MarketplaceEntry> {
     filtered_marketplace_plugins(&app.plugins).get(app.plugins.plugins_selected_index).copied()
 }
 
+fn selected_marketplace_source(app: &App) -> Option<&MarketplaceSourceEntry> {
+    visible_marketplaces(&app.plugins).get(app.plugins.marketplace_selected_index).copied()
+}
+
+fn selected_add_marketplace_row(app: &App) -> bool {
+    app.plugins.marketplace_selected_index >= visible_marketplaces(&app.plugins).len()
+}
+
+fn marketplace_row_count(state: &PluginsState) -> usize {
+    state.marketplaces.len().saturating_add(1)
+}
+
+fn marketplace_overlay_description(entry: &MarketplaceSourceEntry) -> String {
+    let mut parts = Vec::new();
+    if let Some(source) = entry.source.as_deref() {
+        parts.push(format!("Source: {source}"));
+    }
+    if let Some(repo) = entry.repo.as_deref() {
+        parts.push(format!("Repo: {repo}"));
+    }
+    if parts.is_empty() {
+        "Manage this configured marketplace.".to_owned()
+    } else {
+        parts.join("\n")
+    }
+}
+
 fn normalize_project_path(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn normalize_single_line_input(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ")
+}
+
+fn move_add_marketplace_cursor_left(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = overlay.cursor.saturating_sub(1);
+}
+
+fn move_add_marketplace_cursor_right(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = overlay.cursor.saturating_add(1).min(overlay.draft.chars().count());
+}
+
+fn move_add_marketplace_cursor_to_end(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = overlay.draft.chars().count();
+}
+
+fn set_add_marketplace_cursor(app: &mut App, cursor: usize) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    overlay.cursor = cursor.min(overlay.draft.chars().count());
+}
+
+fn insert_add_marketplace_char(app: &mut App, ch: char) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
+    overlay.draft.insert(byte_index, ch);
+    overlay.cursor += 1;
+}
+
+fn delete_add_marketplace_before_cursor(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    if overlay.cursor == 0 {
+        return;
+    }
+    let end = char_to_byte_index(&overlay.draft, overlay.cursor);
+    let start = char_to_byte_index(&overlay.draft, overlay.cursor - 1);
+    overlay.draft.replace_range(start..end, "");
+    overlay.cursor -= 1;
+}
+
+fn delete_add_marketplace_at_cursor(app: &mut App) {
+    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+        return;
+    };
+    let char_count = overlay.draft.chars().count();
+    if overlay.cursor >= char_count {
+        return;
+    }
+    let start = char_to_byte_index(&overlay.draft, overlay.cursor);
+    let end = char_to_byte_index(&overlay.draft, overlay.cursor + 1);
+    overlay.draft.replace_range(start..end, "");
+}
+
+fn char_to_byte_index(text: &str, char_index: usize) -> usize {
+    text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
 }
 
 fn reset_selection_for_active_tab(app: &mut App) {
@@ -798,7 +1125,7 @@ fn move_selection(app: &mut App, delta: isize) {
     let len = match tab {
         PluginsViewTab::Installed => filtered_installed(&app.plugins).len(),
         PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
-        PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
+        PluginsViewTab::Marketplace => marketplace_row_count(&app.plugins),
     };
     if len == 0 {
         app.plugins.set_selected_index_for(tab, 0);

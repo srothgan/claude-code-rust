@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::model::AvailableModel;
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
@@ -365,6 +365,104 @@ fn plugin_install_overlay_uses_up_down_and_escape() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn marketplace_enter_opens_actions_overlay_for_configured_marketplace() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.marketplace_actions_overlay().expect("marketplace actions overlay");
+    assert_eq!(overlay.title, "Claude Plugins Official");
+    assert!(overlay.description.contains("Source: github"));
+    assert!(overlay.description.contains("Repo: anthropics/claude-plugins-official"));
+    assert_eq!(
+        overlay.actions,
+        vec![
+            crate::app::config::MarketplaceActionKind::Update,
+            crate::app::config::MarketplaceActionKind::Remove,
+        ]
+    );
+}
+
+#[test]
+fn marketplace_add_row_opens_text_input_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "");
+    assert_eq!(overlay.cursor, 0);
+}
+
+#[test]
+fn add_marketplace_overlay_supports_editing_and_escape() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "on");
+    assert_eq!(overlay.cursor, 1);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn add_marketplace_overlay_accepts_paste() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    crate::app::events::handle_terminal_event(
+        &mut app,
+        Event::Paste("anthropics/claude-plugins-official".into()),
+    );
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "anthropics/claude-plugins-official");
+}
+
+#[test]
+fn plugins_search_accepts_paste_when_focused() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+    app.plugins.search_focused = true;
+
+    crate::app::events::handle_terminal_event(
+        &mut app,
+        Event::Paste("frontend-design\nsupabase".into()),
+    );
+
+    assert_eq!(app.plugins.plugins_search_query, "frontend-design supabase");
 }
 
 #[test]

@@ -61,8 +61,6 @@ fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
                 "Configured marketplaces",
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("  ", Style::default().fg(theme::DIM)),
-            Span::styled("Add marketplace placeholder below", Style::default().fg(theme::DIM)),
         ])),
         area,
     );
@@ -268,16 +266,12 @@ fn marketplace_list(app: &App, viewport_width: u16, viewport_height: u16) -> Ren
         .collect::<Vec<_>>();
 
     blocks.push(vec![
-        title_line("Add marketplace", false),
-        meta_line("Placeholder only. Add/remove flows come later.", false),
+        title_line("Add marketplace", app.plugins.marketplace_selected_index == entries.len()),
+        meta_line(
+            "Add a marketplace from a GitHub repo, URL, or local path.",
+            app.plugins.marketplace_selected_index == entries.len(),
+        ),
     ]);
-
-    if entries.is_empty() {
-        blocks.push(vec![
-            title_line("No configured marketplaces", false),
-            meta_line("Use Add marketplace when that flow exists.", false),
-        ]);
-    }
 
     RenderedList::from_blocks(
         &blocks,

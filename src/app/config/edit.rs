@@ -1,8 +1,8 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL,
-    DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
-    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
+    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_LABEL, DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState,
+    OutputStyle, OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
     PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
     SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
     resolved_setting, setting_display_value, setting_spec, store,
@@ -153,9 +153,40 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         Some(ConfigOverlayState::PluginInstallActions(_)) => {
             crate::app::plugins::handle_plugin_install_overlay_key(app, key);
         }
+        Some(ConfigOverlayState::MarketplaceActions(_)) => {
+            crate::app::plugins::handle_marketplace_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::AddMarketplace(_)) => {
+            crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
+        }
         Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
         Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         None => {}
+    }
+}
+
+pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
+    match app.config.overlay {
+        Some(ConfigOverlayState::Language(_)) => {
+            insert_text_str(app.config.language_overlay_mut(), text);
+            true
+        }
+        Some(ConfigOverlayState::SessionRename(_)) => {
+            insert_text_str(app.config.session_rename_overlay_mut(), text);
+            true
+        }
+        Some(ConfigOverlayState::AddMarketplace(_)) => {
+            insert_text_str(app.config.add_marketplace_overlay_mut(), text);
+            true
+        }
+        Some(
+            ConfigOverlayState::ModelAndEffort(_)
+            | ConfigOverlayState::OutputStyle(_)
+            | ConfigOverlayState::InstalledPluginActions(_)
+            | ConfigOverlayState::PluginInstallActions(_)
+            | ConfigOverlayState::MarketplaceActions(_),
+        )
+        | None => false,
     }
 }
 
@@ -731,6 +762,16 @@ fn insert_text_char<T: TextInputOverlay>(overlay: Option<&mut T>, ch: char) {
     *overlay.cursor_mut() += 1;
 }
 
+fn insert_text_str<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
+    let Some(overlay) = overlay else {
+        return;
+    };
+    let byte_index = char_to_byte_index(overlay.draft(), overlay.cursor());
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ");
+    overlay.draft_mut().insert_str(byte_index, &normalized);
+    *overlay.cursor_mut() += normalized.chars().count();
+}
+
 fn delete_text_before_cursor<T: TextInputOverlay>(overlay: Option<&mut T>) {
     let Some(overlay) = overlay else {
         return;
@@ -808,6 +849,30 @@ impl TextInputOverlay for SessionRenameOverlayState {
 
 impl SessionRenameOverlayState {
     fn from_text_input(draft: String, cursor: usize) -> Self {
+        Self { draft, cursor }
+    }
+}
+
+impl TextInputOverlay for AddMarketplaceOverlayState {
+    fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    fn draft_mut(&mut self) -> &mut String {
+        &mut self.draft
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn cursor_mut(&mut self) -> &mut usize {
+        &mut self.cursor
+    }
+}
+
+impl AddMarketplaceOverlayState {
+    pub(crate) fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
     }
 }

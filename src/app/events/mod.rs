@@ -96,17 +96,21 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
 }
 
 fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
-    if app.active_view != ActiveView::Chat {
-        return false;
+    match app.active_view {
+        ActiveView::Chat => {
+            if !matches!(
+                app.status,
+                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
+            ) && !app.is_compacting
+            {
+                app.queue_paste_text(text);
+                return true;
+            }
+            false
+        }
+        ActiveView::Config => super::config::handle_paste(app, text),
+        ActiveView::Trusted => false,
     }
-
-    if !matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
-        && !app.is_compacting
-    {
-        app.queue_paste_text(text);
-        return true;
-    }
-    false
 }
 
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {

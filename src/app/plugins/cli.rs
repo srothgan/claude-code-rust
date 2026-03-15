@@ -62,7 +62,7 @@ pub(super) async fn refresh_inventory(
     .map_err(|error| format!("Plugin inventory task failed: {error}"))?
 }
 
-pub(super) async fn run_plugin_command_and_refresh(
+pub(super) async fn run_cli_command_and_refresh(
     cwd_raw: String,
     cached_claude_path: Option<PathBuf>,
     args: Vec<String>,
