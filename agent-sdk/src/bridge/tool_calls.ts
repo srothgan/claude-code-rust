@@ -128,7 +128,11 @@ export function emitToolProgressUpdate(session: SessionState, toolUseId: string,
     emitToolCall(session, toolUseId, toolName, {});
     return;
   }
-  if (existing.status === "in_progress") {
+  if (
+    existing.status === "in_progress" ||
+    existing.status === "completed" ||
+    existing.status === "failed"
+  ) {
     return;
   }
 
