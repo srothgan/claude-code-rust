@@ -14,8 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod input;
 mod mcp;
 mod overlay;
+mod plugins;
 mod settings;
 mod status;
 mod usage;
@@ -33,6 +35,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::theme;
+use input::{add_marketplace_example_lines, render_text_input_field};
 use overlay::{
     OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_header,
     render_overlay_separator as shared_render_overlay_separator, render_overlay_shell,
@@ -66,6 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
+        ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1]),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
@@ -79,12 +83,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_language_overlay(frame, frame_area, app);
     } else if app.config.session_rename_overlay().is_some() {
         render_session_rename_overlay(frame, frame_area, app);
+    } else if app.config.installed_plugin_actions_overlay().is_some() {
+        render_installed_plugin_actions_overlay(frame, frame_area, app);
+    } else if app.config.plugin_install_overlay().is_some() {
+        render_plugin_install_overlay(frame, frame_area, app);
+    } else if app.config.marketplace_actions_overlay().is_some() {
+        render_marketplace_actions_overlay(frame, frame_area, app);
+    } else if app.config.add_marketplace_overlay().is_some() {
+        render_add_marketplace_overlay(frame, frame_area, app);
     }
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
         (error, true)
+    } else if let Some(status) = app.config.status_message.clone() {
+        (status, false)
     } else {
-        (app.config.status_message.clone().unwrap_or_default(), false)
+        (String::new(), false)
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -94,25 +108,65 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
 
-    let help = if app.config.model_and_effort_overlay().is_some()
-        || app.config.output_style_overlay().is_some()
-        || app.config.language_overlay().is_some()
-        || app.config.session_rename_overlay().is_some()
-    {
-        ""
-    } else if app.config.active_tab == ConfigTab::Status {
-        if app.session_id.is_some() {
-            "g generate | r rename | Enter close | Esc close"
-        } else {
-            "Enter close | Esc close"
-        }
-    } else {
-        "Space edit | Enter close | Esc close"
-    };
+    let help = config_help_text(app);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
         chunks[3],
     );
+}
+
+fn config_help_text(app: &App) -> String {
+    if app.config.model_and_effort_overlay().is_some()
+        || app.config.output_style_overlay().is_some()
+        || app.config.language_overlay().is_some()
+        || app.config.session_rename_overlay().is_some()
+        || app.config.installed_plugin_actions_overlay().is_some()
+        || app.config.plugin_install_overlay().is_some()
+        || app.config.marketplace_actions_overlay().is_some()
+        || app.config.add_marketplace_overlay().is_some()
+    {
+        return String::new();
+    }
+
+    match app.config.active_tab {
+        ConfigTab::Settings => {
+            "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
+                .to_owned()
+        }
+        ConfigTab::Plugins => {
+            if crate::app::plugins::search_enabled(app.plugins.active_tab) {
+                if app.plugins.search_focused {
+                    "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                } else if matches!(
+                    app.plugins.active_tab,
+                    crate::app::plugins::PluginsViewTab::Installed
+                        | crate::app::plugins::PluginsViewTab::Plugins
+                ) {
+                    "Left/Right switch list | Up search | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
+                } else {
+                    "Left/Right switch list | Up search | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                }
+            } else if matches!(
+                app.plugins.active_tab,
+                crate::app::plugins::PluginsViewTab::Marketplace
+            ) {
+                "Left/Right switch list | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
+            } else {
+                "Left/Right switch list | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+            }
+        }
+        ConfigTab::Usage | ConfigTab::Mcp => {
+            "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+        }
+        ConfigTab::Status => {
+            if app.session_id.is_some() {
+                "g generate | r rename | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
+                    .to_owned()
+            } else {
+                "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+            }
+        }
+    }
 }
 
 fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -287,21 +341,15 @@ fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(rendered.body_area);
 
-    frame.render_widget(
-        Paragraph::new(text_input_line(
-            &overlay.draft,
-            overlay.cursor,
-            "e.g. en, Greek, Japanese, Pirate",
-        ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::RUST_ORANGE)),
-        ),
+    render_text_input_field(
+        frame,
         sections[0],
+        &overlay.draft,
+        overlay.cursor,
+        "e.g. en, Greek, Japanese, Pirate",
     );
 
     let validation = language_input_validation_message(&overlay.draft);
@@ -339,17 +387,15 @@ fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(rendered.body_area);
 
-    frame.render_widget(
-        Paragraph::new(text_input_line(&overlay.draft, overlay.cursor, "Custom session name"))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::RUST_ORANGE)),
-            ),
+    render_text_input_field(
+        frame,
         sections[0],
+        &overlay.draft,
+        overlay.cursor,
+        "Custom session name",
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -360,39 +406,222 @@ fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(Color::White);
-    let placeholder_style = Style::default().fg(theme::DIM);
+fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 14,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Installed plugin",
+            subtitle: None,
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(rendered.body_area);
 
-    if draft.is_empty() {
-        return Line::from(vec![
-            Span::styled(" ".to_owned(), cursor_style),
-            Span::styled(placeholder.to_owned(), placeholder_style),
-        ]);
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::DIM),
+        )))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    shared_render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(installed_plugin_action_overlay_lines(app)).wrap(Wrap { trim: false }),
+        sections[3],
+    );
+}
 
-    let cursor = cursor.min(draft.chars().count());
-    let chars = draft.chars().collect::<Vec<_>>();
-    let prefix = chars[..cursor].iter().collect::<String>();
-    let mut spans = Vec::new();
+fn render_plugin_install_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.plugin_install_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 14,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Install plugin",
+            subtitle: None,
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(rendered.body_area);
 
-    if !prefix.is_empty() {
-        spans.push(Span::styled(prefix, text_style));
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::DIM),
+        )))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    shared_render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(plugin_install_overlay_lines(app)).wrap(Wrap { trim: false }),
+        sections[3],
+    );
+}
 
-    if cursor < chars.len() {
-        spans.push(Span::styled(chars[cursor].to_string(), cursor_style));
-        let suffix = chars[cursor + 1..].iter().collect::<String>();
-        if !suffix.is_empty() {
-            spans.push(Span::styled(suffix, text_style));
-        }
-    } else {
-        spans.push(Span::styled(" ".to_owned(), cursor_style));
-    }
+fn render_marketplace_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.marketplace_actions_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 10,
+            width_percent: 70,
+            height_percent: 62,
+            preferred_height: 14,
+            fullscreen_below: Some((56, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Marketplace",
+            subtitle: None,
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(rendered.body_area);
 
-    Line::from(spans)
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.title.clone(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            overlay.description.clone(),
+            Style::default().fg(theme::DIM),
+        )))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    shared_render_overlay_separator(frame, sections[2]);
+    frame.render_widget(
+        Paragraph::new(marketplace_action_overlay_lines(app)).wrap(Wrap { trim: false }),
+        sections[3],
+    );
+}
+
+fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.add_marketplace_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 60,
+            min_height: 13,
+            width_percent: 72,
+            height_percent: 66,
+            preferred_height: 15,
+            fullscreen_below: Some((60, 18)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Add Marketplace",
+            subtitle: None,
+            help: Some("Enter add | Esc cancel"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(rendered.body_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Enter marketplace source:",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(add_marketplace_example_lines()).wrap(Wrap { trim: false }),
+        sections[1],
+    );
+    render_text_input_field(
+        frame,
+        sections[3],
+        &overlay.draft,
+        overlay.cursor,
+        "owner/repo or URL",
+    );
 }
 
 fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
@@ -413,6 +642,63 @@ fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::DIM),
         )));
         if index + 1 < OutputStyle::ALL.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
+fn installed_plugin_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    for (index, action) in overlay.actions.iter().copied().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < overlay.actions.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
+fn plugin_install_overlay_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(overlay) = app.config.plugin_install_overlay() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    for (index, action) in overlay.actions.iter().copied().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < overlay.actions.len() {
+            lines.push(Line::default());
+        }
+    }
+    lines
+}
+
+fn marketplace_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(overlay) = app.config.marketplace_actions_overlay() else {
+        return Vec::new();
+    };
+
+    let mut lines = Vec::new();
+    for (index, action) in overlay.actions.iter().copied().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < overlay.actions.len() {
             lines.push(Line::default());
         }
     }
@@ -809,14 +1095,15 @@ mod tests {
 
     #[test]
     fn language_overlay_input_uses_placeholder_when_empty() {
-        let line = super::text_input_line("", 0, "e.g. en, Greek, Japanese, Pirate").to_string();
+        let line =
+            super::input::text_input_line("", 0, "e.g. en, Greek, Japanese, Pirate").to_string();
 
         assert!(line.contains("e.g. en, Greek, Japanese, Pirate"));
     }
 
     #[test]
     fn session_rename_overlay_input_uses_placeholder_when_empty() {
-        let line = super::text_input_line("", 0, "Custom session name").to_string();
+        let line = super::input::text_input_line("", 0, "Custom session name").to_string();
 
         assert!(line.contains("Custom session name"));
     }
@@ -1091,7 +1378,439 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
+        assert!(rendered.contains("Tab next tab"), "missing tab navigation hint");
         assert!(rendered.contains("Enter close"), "missing Enter close");
+    }
+
+    #[test]
+    fn settings_tab_help_shows_edit_keys() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Settings;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Left/Right edit"));
+        assert!(rendered.contains("Space edit"));
+        assert!(rendered.contains("Shift+Tab prev tab"));
+    }
+
+    #[test]
+    fn plugins_tab_renders_inventory_shell() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
+            id: "frontend-design@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        }];
+        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
+            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+            name: "frontend-design".to_owned(),
+            description: Some("Create distinctive interfaces".to_owned()),
+            marketplace_name: Some("claude-plugins-official".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            install_count: Some(42),
+            source: None,
+        }];
+        app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+            name: "claude-plugins-official".to_owned(),
+            source: Some("github".to_owned()),
+            repo: Some("anthropics/claude-plugins-official".to_owned()),
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Installed (1)"));
+        assert!(rendered.contains("Plugins (1)"));
+        assert!(rendered.contains("Marketplace (1)"));
+        assert!(rendered.contains("Search"));
+        assert!(rendered.contains("Type to filter this list"));
+        assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
+        assert!(rendered.contains("SKILL"));
+        assert!(rendered.contains("Left/Right switch list"));
+    }
+
+    #[test]
+    fn plugins_tab_renders_marketplace_plugin_title_and_plugin_id() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+        app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
+            plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+            name: "frontend-design".to_owned(),
+            description: Some("Review UI".to_owned()),
+            marketplace_name: Some("claude-plugins-official".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            install_count: Some(42),
+            source: None,
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Frontend Design"));
+        assert!(rendered.contains("Plugin: frontend-design@claude-plugins-official"));
+    }
+
+    #[test]
+    fn plugins_tab_groups_relevant_installed_plugins_above_other_projects() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.cwd_raw = "C:\\work\\project-b".to_owned();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.installed = vec![
+            crate::app::plugins::InstalledPluginEntry {
+                id: "other-local@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "local".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: Some("C:\\work\\project-a".to_owned()),
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+            crate::app::plugins::InstalledPluginEntry {
+                id: "user-plugin@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+            crate::app::plugins::InstalledPluginEntry {
+                id: "current-local@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "local".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: Some("C:\\work\\project-b".to_owned()),
+                capability: crate::app::plugins::PluginCapability::Skill,
+            },
+        ];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        let user_index =
+            rendered.find("User Plugin From Claude Plugins Official").expect("user plugin");
+        let current_index = rendered
+            .find("Current Local From Claude Plugins Official")
+            .expect("current project plugin");
+        let other_index = rendered
+            .find("Other Local From Claude Plugins Official")
+            .expect("other project plugin");
+
+        assert!(user_index < other_index);
+        assert!(current_index < other_index);
+        assert!(rendered.contains("Available here"));
+        assert!(rendered.contains("Installed elsewhere"));
+    }
+
+    #[test]
+    fn plugins_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.loading = true;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Loading installed plugins..."));
+        assert!(!rendered.contains("No installed plugins found."));
+    }
+
+    #[test]
+    fn marketplace_tab_renders_configured_heading_and_add_placeholder() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Configured marketplaces"));
+        assert!(rendered.contains("Add marketplace"));
+    }
+
+    #[test]
+    fn installed_plugin_overlay_renders_title_description_and_actions() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
+            crate::app::config::InstalledPluginActionOverlayState {
+                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+                title: "Frontend Design From Claude Plugins Official".to_owned(),
+                description: "Create distinctive interfaces".to_owned(),
+                scope: "local".to_owned(),
+                project_path: Some("C:\\work\\project-a".to_owned()),
+                selected_index: 0,
+                actions: vec![
+                    crate::app::config::InstalledPluginActionKind::Disable,
+                    crate::app::config::InstalledPluginActionKind::Update,
+                    crate::app::config::InstalledPluginActionKind::InstallInCurrentProject,
+                    crate::app::config::InstalledPluginActionKind::Uninstall,
+                ],
+            },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Installed plugin"));
+        assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
+        assert!(rendered.contains("Create distinctive interfaces"));
+        assert!(rendered.contains("Install in current project"));
+        assert!(rendered.contains("Up/Down select"));
+    }
+
+    #[test]
+    fn plugin_install_overlay_renders_title_description_and_actions() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
+            crate::app::config::PluginInstallOverlayState {
+                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+                title: "Frontend Design".to_owned(),
+                description: "Create distinctive interfaces".to_owned(),
+                selected_index: 0,
+                actions: vec![
+                    crate::app::config::PluginInstallActionKind::User,
+                    crate::app::config::PluginInstallActionKind::Project,
+                    crate::app::config::PluginInstallActionKind::Local,
+                ],
+            },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Install plugin"));
+        assert!(rendered.contains("Frontend Design"));
+        assert!(rendered.contains("Create distinctive interfaces"));
+        assert!(rendered.contains("Install for project"));
+        assert!(rendered.contains("Up/Down select"));
+    }
+
+    #[test]
+    fn marketplace_actions_overlay_renders_title_description_and_actions() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::MarketplaceActions(
+            crate::app::config::MarketplaceActionsOverlayState {
+                name: "claude-plugins-official".to_owned(),
+                title: "Claude Plugins Official".to_owned(),
+                description: "Source: github\nRepo: anthropics/claude-plugins-official".to_owned(),
+                selected_index: 0,
+                actions: vec![
+                    crate::app::config::MarketplaceActionKind::Update,
+                    crate::app::config::MarketplaceActionKind::Remove,
+                ],
+            },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Marketplace"));
+        assert!(rendered.contains("Claude Plugins Official"));
+        assert!(rendered.contains("Source: github"));
+        assert!(rendered.contains("Remove"));
+    }
+
+    #[test]
+    fn add_marketplace_overlay_renders_examples() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
+            crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
+        ));
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Add Marketplace"));
+        assert!(rendered.contains("Enter marketplace source:"));
+        assert!(rendered.contains("owner/repo (GitHub)"));
+        assert!(rendered.contains("Enter add"));
     }
 
     #[test]

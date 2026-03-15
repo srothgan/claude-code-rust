@@ -29,6 +29,7 @@ pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
+pub(crate) mod plugins;
 mod questions;
 mod selection;
 mod service_status_check;

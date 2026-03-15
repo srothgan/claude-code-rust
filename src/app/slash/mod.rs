@@ -202,6 +202,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
         assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
+        assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
     }
 
     #[test]
@@ -230,6 +231,32 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /config");
+    }
+
+    #[test]
+    fn plugins_without_args_opens_plugins_tab() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        let consumed = try_handle_submit(&mut app, "/plugins");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+    }
+
+    #[test]
+    fn plugins_with_extra_args_still_opens_plugins_tab() {
+        let mut app = App::test_default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        let consumed = try_handle_submit(&mut app, "/plugins extra");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
     }
 
     #[tokio::test(flavor = "current_thread")]

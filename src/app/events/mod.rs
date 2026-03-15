@@ -96,17 +96,21 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
 }
 
 fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
-    if app.active_view != ActiveView::Chat {
-        return false;
+    match app.active_view {
+        ActiveView::Chat => {
+            if !matches!(
+                app.status,
+                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
+            ) && !app.is_compacting
+            {
+                app.queue_paste_text(text);
+                return true;
+            }
+            false
+        }
+        ActiveView::Config => super::config::handle_paste(app, text),
+        ActiveView::Trusted => false,
     }
-
-    if !matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
-        && !app.is_compacting
-    {
-        app.queue_paste_text(text);
-        return true;
-    }
-    false
 }
 
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
@@ -189,6 +193,18 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.account_info = Some(account);
             app.needs_redraw = true;
         }
+        ClientEvent::PluginsInventoryUpdated { snapshot, claude_path } => {
+            crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
+        }
+        ClientEvent::PluginsInventoryRefreshFailed(message) => {
+            crate::app::plugins::apply_inventory_refresh_failure(app, message);
+        }
+        ClientEvent::PluginsCliActionSucceeded { result } => {
+            crate::app::plugins::apply_cli_action_success(app, result);
+        }
+        ClientEvent::PluginsCliActionFailed(message) => {
+            crate::app::plugins::apply_cli_action_failure(app, message);
+        }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
     }
 }
@@ -230,6 +246,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
             app.available_commands = cmds.available_commands;
+            crate::app::plugins::clamp_selection(app);
             if app.slash.is_some() {
                 super::slash::update_query(app);
             }

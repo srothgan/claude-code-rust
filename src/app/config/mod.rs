@@ -34,17 +34,20 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
     Settings,
+    Plugins,
     Status,
     Usage,
     Mcp,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 4] = [Self::Settings, Self::Status, Self::Usage, Self::Mcp];
+    pub const ALL: [Self; 5] =
+        [Self::Settings, Self::Plugins, Self::Status, Self::Usage, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
+            Self::Plugins => "Plugins",
             Self::Status => "Status",
             Self::Usage => "Usage",
             Self::Mcp => "MCP",
@@ -53,7 +56,8 @@ impl ConfigTab {
 
     const fn next(self) -> Self {
         match self {
-            Self::Settings => Self::Status,
+            Self::Settings => Self::Plugins,
+            Self::Plugins => Self::Status,
             Self::Status => Self::Usage,
             Self::Usage => Self::Mcp,
             Self::Mcp => Self::Settings,
@@ -63,7 +67,8 @@ impl ConfigTab {
     const fn prev(self) -> Self {
         match self {
             Self::Settings => Self::Mcp,
-            Self::Status => Self::Settings,
+            Self::Plugins => Self::Settings,
+            Self::Status => Self::Plugins,
             Self::Usage => Self::Status,
             Self::Mcp => Self::Usage,
         }
@@ -228,6 +233,17 @@ impl DefaultPermissionMode {
             Self::Plan => Self::DontAsk,
             Self::DontAsk => Self::BypassPermissions,
             Self::BypassPermissions => Self::Default,
+        }
+    }
+
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Default => Self::BypassPermissions,
+            Self::AcceptEdits => Self::Default,
+            Self::Plan => Self::AcceptEdits,
+            Self::DontAsk => Self::Plan,
+            Self::BypassPermissions => Self::DontAsk,
         }
     }
 }
@@ -635,12 +651,116 @@ pub struct SessionRenameOverlayState {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketplaceActionKind {
+    Update,
+    Remove,
+}
+
+impl MarketplaceActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Update => "Update",
+            Self::Remove => "Remove",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledPluginActionKind {
+    Enable,
+    Disable,
+    Update,
+    InstallInCurrentProject,
+    Uninstall,
+}
+
+impl InstalledPluginActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Enable => "Enable",
+            Self::Disable => "Disable",
+            Self::Update => "Update",
+            Self::InstallInCurrentProject => "Install in current project",
+            Self::Uninstall => "Uninstall",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginInstallActionKind {
+    User,
+    Project,
+    Local,
+}
+
+impl PluginInstallActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::User => "Install for user",
+            Self::Project => "Install for project",
+            Self::Local => "Install locally",
+        }
+    }
+
+    #[must_use]
+    pub const fn scope(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Local => "local",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPluginActionOverlayState {
+    pub plugin_id: String,
+    pub title: String,
+    pub description: String,
+    pub scope: String,
+    pub project_path: Option<String>,
+    pub selected_index: usize,
+    pub actions: Vec<InstalledPluginActionKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInstallOverlayState {
+    pub plugin_id: String,
+    pub title: String,
+    pub description: String,
+    pub selected_index: usize,
+    pub actions: Vec<PluginInstallActionKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketplaceActionsOverlayState {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub selected_index: usize,
+    pub actions: Vec<MarketplaceActionKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddMarketplaceOverlayState {
+    pub draft: String,
+    pub cursor: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
     Language(LanguageOverlayState),
     SessionRename(SessionRenameOverlayState),
+    InstalledPluginActions(InstalledPluginActionOverlayState),
+    PluginInstallActions(PluginInstallOverlayState),
+    MarketplaceActions(MarketplaceActionsOverlayState),
+    AddMarketplace(AddMarketplaceOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,7 +907,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -799,7 +923,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -812,7 +940,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -824,7 +956,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -837,7 +973,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -849,7 +989,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_),
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -862,7 +1006,11 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_),
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -874,7 +1022,147 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_),
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn installed_plugin_actions_overlay_mut(
+        &mut self,
+    ) -> Option<&mut InstalledPluginActionOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn plugin_install_overlay(&self) -> Option<&PluginInstallOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn plugin_install_overlay_mut(&mut self) -> Option<&mut PluginInstallOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn marketplace_actions_overlay(&self) -> Option<&MarketplaceActionsOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn marketplace_actions_overlay_mut(
+        &mut self,
+    ) -> Option<&mut MarketplaceActionsOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_),
             )
             | None => None,
         }
@@ -1043,6 +1331,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);
     view::set_active_view(app, ActiveView::Config);
+    request_active_tab_side_effects(app);
     Ok(())
 }
 
@@ -1061,12 +1350,26 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
+        return;
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Char(' '), KeyModifiers::NONE)
             if app.config.active_tab == ConfigTab::Settings =>
         {
             if let Some(spec) = app.config.selected_setting_spec() {
                 edit::activate_setting(app, spec);
+            }
+        }
+        (KeyCode::Left, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            if let Some(spec) = app.config.selected_setting_spec() {
+                edit::step_setting(app, spec, -1);
+            }
+        }
+        (KeyCode::Right, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            if let Some(spec) = app.config.selected_setting_spec() {
+                edit::step_setting(app, spec, 1);
             }
         }
         (KeyCode::Char(ch), modifiers)
@@ -1086,15 +1389,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
-        (KeyCode::Left, KeyModifiers::NONE) | (KeyCode::BackTab, _) => {
+        (KeyCode::BackTab, _) => {
             app.config.active_tab = app.config.active_tab.prev();
             app.config.status_message = None;
-            request_status_snapshot_if_needed(app);
+            request_active_tab_side_effects(app);
         }
-        (KeyCode::Right | KeyCode::Tab, KeyModifiers::NONE) => {
+        (KeyCode::Tab, KeyModifiers::NONE) => {
             app.config.active_tab = app.config.active_tab.next();
             app.config.status_message = None;
-            request_status_snapshot_if_needed(app);
+            request_active_tab_side_effects(app);
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
             if app.config.active_tab == ConfigTab::Settings {
@@ -1110,6 +1413,23 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+pub fn handle_paste(app: &mut App, text: &str) -> bool {
+    if app.config.overlay.is_some() {
+        return edit::handle_overlay_paste(app, text);
+    }
+    if app.config.active_tab == ConfigTab::Plugins {
+        return crate::app::plugins::handle_paste(app, text);
+    }
+    false
+}
+
+fn request_active_tab_side_effects(app: &mut App) {
+    request_status_snapshot_if_needed(app);
+    if app.config.active_tab == ConfigTab::Plugins {
+        crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
 }
 

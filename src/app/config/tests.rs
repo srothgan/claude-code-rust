@@ -2,7 +2,7 @@ use super::*;
 use crate::agent::model::AvailableModel;
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
@@ -165,30 +165,319 @@ fn tab_navigation_wraps_and_clears_status_message() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.status_message = Some("saved".to_owned());
 
-    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
 
     assert_eq!(app.config.active_tab, ConfigTab::Mcp);
     assert!(app.config.status_message.is_none());
 
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
     assert_eq!(app.config.active_tab, ConfigTab::Mcp);
 }
 
 #[test]
-fn placeholder_tabs_ignore_row_navigation_and_edit_activation() {
+fn plugins_tab_uses_arrow_keys_for_inner_navigation() {
     let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Status;
+    app.config.active_tab = ConfigTab::Plugins;
     app.config.selected_setting_index = 3;
+    app.plugins.installed = vec![
+        crate::app::plugins::InstalledPluginEntry {
+            id: "frontend-design@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        },
+        crate::app::plugins::InstalledPluginEntry {
+            id: "rust-analyzer-lsp@claude-plugins-official".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        },
+    ];
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
     assert_eq!(app.config.selected_setting_index, 3);
+    assert_eq!(app.config.active_tab, ConfigTab::Plugins);
+    assert_eq!(app.plugins.installed_selected_index, 1);
+    assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Plugins);
+    assert_eq!(app.plugins.installed_search_query, "");
+    assert_eq!(app.plugins.plugins_search_query, "");
     assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn plugins_inner_tab_switch_does_not_trigger_refresh() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.loading = false;
+    app.plugins.last_inventory_refresh_at = None;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+    assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Plugins);
+    assert!(!app.plugins.loading);
+}
+
+#[test]
+fn installed_plugin_enter_opens_actions_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
+        id: "frontend-design@claude-plugins-official".to_owned(),
+        version: Some("1.0.0".to_owned()),
+        scope: "local".to_owned(),
+        enabled: true,
+        installed_at: None,
+        last_updated: None,
+        project_path: Some("C:\\work\\project-a".to_owned()),
+        capability: crate::app::plugins::PluginCapability::Skill,
+    }];
+    app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
+        plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+        name: "frontend-design".to_owned(),
+        description: Some("Create distinctive interfaces".to_owned()),
+        marketplace_name: Some("claude-plugins-official".to_owned()),
+        version: Some("1.0.0".to_owned()),
+        install_count: Some(42),
+        source: None,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.installed_plugin_actions_overlay().expect("installed actions overlay");
+    assert_eq!(overlay.title, "Frontend Design From Claude Plugins Official");
+    assert_eq!(overlay.description, "Create distinctive interfaces");
+    assert_eq!(
+        overlay.actions,
+        vec![
+            InstalledPluginActionKind::Disable,
+            InstalledPluginActionKind::Update,
+            InstalledPluginActionKind::InstallInCurrentProject,
+            InstalledPluginActionKind::Uninstall,
+        ]
+    );
+}
+
+#[test]
+fn installed_plugin_overlay_uses_up_down_and_escape() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
+        id: "frontend-design@claude-plugins-official".to_owned(),
+        version: Some("1.0.0".to_owned()),
+        scope: "user".to_owned(),
+        enabled: false,
+        installed_at: None,
+        last_updated: None,
+        project_path: None,
+        capability: crate::app::plugins::PluginCapability::Skill,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.config.installed_plugin_actions_overlay().map(|overlay| overlay.selected_index),
+        Some(1)
+    );
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.config.installed_plugin_actions_overlay().map(|overlay| overlay.selected_index),
+        Some(0)
+    );
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn plugin_enter_opens_install_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+    app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
+        plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+        name: "frontend-design".to_owned(),
+        description: Some("Create distinctive interfaces".to_owned()),
+        marketplace_name: Some("claude-plugins-official".to_owned()),
+        version: Some("1.0.0".to_owned()),
+        install_count: Some(42),
+        source: None,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.plugin_install_overlay().expect("Plugin install overlay");
+    assert_eq!(overlay.title, "Frontend Design");
+    assert_eq!(overlay.description, "Create distinctive interfaces");
+    assert_eq!(
+        overlay.actions,
+        vec![
+            PluginInstallActionKind::User,
+            PluginInstallActionKind::Project,
+            PluginInstallActionKind::Local,
+        ]
+    );
+}
+
+#[test]
+fn plugin_install_overlay_uses_up_down_and_escape() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+    app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
+        plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+        name: "frontend-design".to_owned(),
+        description: Some("Create distinctive interfaces".to_owned()),
+        marketplace_name: Some("claude-plugins-official".to_owned()),
+        version: Some("1.0.0".to_owned()),
+        install_count: Some(42),
+        source: None,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(app.config.plugin_install_overlay().map(|overlay| overlay.selected_index), Some(1));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+    assert_eq!(app.config.plugin_install_overlay().map(|overlay| overlay.selected_index), Some(0));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn marketplace_enter_opens_actions_overlay_for_configured_marketplace() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.marketplace_actions_overlay().expect("marketplace actions overlay");
+    assert_eq!(overlay.title, "Claude Plugins Official");
+    assert!(overlay.description.contains("Source: github"));
+    assert!(overlay.description.contains("Repo: anthropics/claude-plugins-official"));
+    assert_eq!(
+        overlay.actions,
+        vec![
+            crate::app::config::MarketplaceActionKind::Update,
+            crate::app::config::MarketplaceActionKind::Remove,
+        ]
+    );
+}
+
+#[test]
+fn marketplace_add_row_opens_text_input_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "");
+    assert_eq!(overlay.cursor, 0);
+}
+
+#[test]
+fn add_marketplace_overlay_supports_editing_and_escape() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "on");
+    assert_eq!(overlay.cursor, 1);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn add_marketplace_overlay_accepts_paste() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    crate::app::events::handle_terminal_event(
+        &mut app,
+        Event::Paste("anthropics/claude-plugins-official".into()),
+    );
+
+    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    assert_eq!(overlay.draft, "anthropics/claude-plugins-official");
+}
+
+#[test]
+fn plugins_search_accepts_paste_when_focused() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
+    app.plugins.search_focused = true;
+
+    crate::app::events::handle_terminal_event(
+        &mut app,
+        Event::Paste("frontend-design\nsupabase".into()),
+    );
+
+    assert_eq!(app.plugins.plugins_search_query, "frontend-design supabase");
+}
+
+#[test]
+fn left_and_right_adjust_selected_setting_without_switching_tabs() {
+    let (_dir, mut app) = open_settings_test_app();
+    select_setting(&mut app, SettingId::FastMode);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+    assert_eq!(app.config.active_tab, ConfigTab::Settings);
+    assert!(app.config.fast_mode_effective());
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+    assert_eq!(app.config.active_tab, ConfigTab::Settings);
     assert!(!app.config.fast_mode_effective());
 }
 

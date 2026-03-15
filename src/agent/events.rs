@@ -16,9 +16,11 @@
 
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
+use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use crate::error::AppError;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -80,6 +82,14 @@ pub enum ClientEvent {
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
     StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
+    /// Claude CLI plugin inventory refresh completed.
+    PluginsInventoryUpdated { snapshot: PluginsInventorySnapshot, claude_path: PathBuf },
+    /// Claude CLI plugin inventory refresh failed.
+    PluginsInventoryRefreshFailed(String),
+    /// Plugin CLI action completed and returned a refreshed inventory snapshot.
+    PluginsCliActionSucceeded { result: PluginsCliActionSuccess },
+    /// Plugin CLI action failed.
+    PluginsCliActionFailed(String),
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
 }

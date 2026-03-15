@@ -1,8 +1,8 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL,
-    DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
-    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
+    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_LABEL, DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState,
+    OutputStyle, OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
     PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
     SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
     resolved_setting, setting_display_value, setting_spec, store,
@@ -84,7 +84,47 @@ pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
             open_model_and_effort_overlay(app, OverlayFocus::Effort);
         }
         SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
-            cycle_static_enum(app, spec);
+            cycle_static_enum(app, spec, 1);
+        }
+    }
+}
+
+pub(super) fn step_setting(app: &mut App, spec: &SettingSpec, delta: isize) {
+    match spec.id {
+        SettingId::AlwaysThinking
+        | SettingId::ShowTips
+        | SettingId::TerminalProgressBar
+        | SettingId::ReduceMotion
+        | SettingId::FastMode
+        | SettingId::RespectGitignore => activate_setting(app, spec),
+        SettingId::DefaultPermissionMode => {
+            let current = match super::resolve::resolve_setting_document(
+                &app.config.committed_settings_document,
+                SettingId::DefaultPermissionMode,
+                &[],
+            )
+            .value
+            {
+                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
+                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+                }
+                ResolvedSettingValue::Bool(_)
+                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
+                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
+            };
+            let next = if delta.is_negative() { current.prev() } else { current.next() };
+            persist_setting_change(app, spec, |document| {
+                store::set_default_permission_mode(document, next);
+            });
+        }
+        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
+            cycle_static_enum(app, spec, delta);
+        }
+        SettingId::Language
+        | SettingId::Model
+        | SettingId::OutputStyle
+        | SettingId::ThinkingEffort => {
+            activate_setting(app, spec);
         }
     }
 }
@@ -107,9 +147,46 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
             (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
             _ => {}
         },
+        Some(ConfigOverlayState::InstalledPluginActions(_)) => {
+            crate::app::plugins::handle_installed_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::PluginInstallActions(_)) => {
+            crate::app::plugins::handle_plugin_install_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::MarketplaceActions(_)) => {
+            crate::app::plugins::handle_marketplace_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::AddMarketplace(_)) => {
+            crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
+        }
         Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
         Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         None => {}
+    }
+}
+
+pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
+    match app.config.overlay {
+        Some(ConfigOverlayState::Language(_)) => {
+            insert_text_str(app.config.language_overlay_mut(), text);
+            true
+        }
+        Some(ConfigOverlayState::SessionRename(_)) => {
+            insert_text_str(app.config.session_rename_overlay_mut(), text);
+            true
+        }
+        Some(ConfigOverlayState::AddMarketplace(_)) => {
+            insert_text_str(app.config.add_marketplace_overlay_mut(), text);
+            true
+        }
+        Some(
+            ConfigOverlayState::ModelAndEffort(_)
+            | ConfigOverlayState::OutputStyle(_)
+            | ConfigOverlayState::InstalledPluginActions(_)
+            | ConfigOverlayState::PluginInstallActions(_)
+            | ConfigOverlayState::MarketplaceActions(_),
+        )
+        | None => false,
     }
 }
 
@@ -226,7 +303,7 @@ where
     }
 }
 
-fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
+fn cycle_static_enum(app: &mut App, spec: &SettingSpec, delta: isize) {
     let current = {
         let document = app.config.document_for(spec.file);
         match store::read_persisted_setting(document, spec) {
@@ -240,7 +317,7 @@ fn cycle_static_enum(app: &mut App, spec: &SettingSpec) {
     };
     let current_index =
         options.iter().position(|option| option.stored == current).unwrap_or_default();
-    let next = options[(current_index + 1) % options.len()].stored;
+    let next = options[step_index_wrapped(current_index, delta, options.len())].stored;
 
     persist_setting_change(app, spec, |document| {
         if spec.id == SettingId::Notifications {
@@ -613,6 +690,17 @@ fn step_index_clamped(current: usize, delta: isize, len: usize) -> usize {
     }
 }
 
+fn step_index_wrapped(current: usize, delta: isize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    if delta.is_negative() {
+        (current + len - (delta.unsigned_abs() % len)) % len
+    } else {
+        (current + delta.cast_unsigned()) % len
+    }
+}
+
 fn char_to_byte_index(text: &str, char_index: usize) -> usize {
     text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
 }
@@ -672,6 +760,16 @@ fn insert_text_char<T: TextInputOverlay>(overlay: Option<&mut T>, ch: char) {
     let byte_index = char_to_byte_index(overlay.draft(), overlay.cursor());
     overlay.draft_mut().insert(byte_index, ch);
     *overlay.cursor_mut() += 1;
+}
+
+fn insert_text_str<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
+    let Some(overlay) = overlay else {
+        return;
+    };
+    let byte_index = char_to_byte_index(overlay.draft(), overlay.cursor());
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ");
+    overlay.draft_mut().insert_str(byte_index, &normalized);
+    *overlay.cursor_mut() += normalized.chars().count();
 }
 
 fn delete_text_before_cursor<T: TextInputOverlay>(overlay: Option<&mut T>) {
@@ -751,6 +849,30 @@ impl TextInputOverlay for SessionRenameOverlayState {
 
 impl SessionRenameOverlayState {
     fn from_text_input(draft: String, cursor: usize) -> Self {
+        Self { draft, cursor }
+    }
+}
+
+impl TextInputOverlay for AddMarketplaceOverlayState {
+    fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    fn draft_mut(&mut self) -> &mut String {
+        &mut self.draft
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn cursor_mut(&mut self) -> &mut usize {
+        &mut self.cursor
+    }
+}
+
+impl AddMarketplaceOverlayState {
+    pub(crate) fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
     }
 }

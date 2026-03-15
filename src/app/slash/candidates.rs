@@ -148,6 +148,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
     by_name.insert("/resume".into(), "Resume a session by ID".into());
+    by_name.insert("/plugins".into(), "Open plugins".into());
     by_name.insert("/status".into(), "Show session status".into());
 
     for cmd in &app.available_commands {
@@ -349,6 +350,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/model"
             | "/new-session"
             | "/resume"
+            | "/plugins"
             | "/status"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }

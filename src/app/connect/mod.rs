@@ -28,6 +28,7 @@ mod type_converters;
 
 use super::config::ConfigState;
 use super::dialog::DialogState;
+use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
 };
@@ -144,6 +145,7 @@ pub fn create_app(cli: &Cli) -> App {
         todo_selected: 0,
         focus: FocusManager::default(),
         available_commands: Vec::new(),
+        plugins: PluginsState::default(),
         available_agents: Vec::new(),
         available_models: Vec::new(),
         recent_sessions: Vec::new(),
