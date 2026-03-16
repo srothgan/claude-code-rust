@@ -3,6 +3,7 @@ use crate::agent::model::AvailableModel;
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
@@ -1225,6 +1226,49 @@ fn enter_closes_settings_without_editing_selected_row() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert!(!app.config.fast_mode_effective());
+}
+
+#[test]
+fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+        name: "filesystem".to_owned(),
+        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
+            command: "npx".to_owned(),
+            args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
+            env: BTreeMap::new(),
+        }),
+        scope: Some("project".to_owned()),
+        tools: vec![],
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.active_view, ActiveView::Config);
+    assert_eq!(
+        app.config.mcp_details_overlay().map(|overlay| overlay.server_name.as_str()),
+        Some("filesystem")
+    );
+}
+
+#[test]
+fn mcp_details_overlay_enter_closes_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "filesystem".to_owned(),
+        selected_index: 0,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+    assert_eq!(app.active_view, ActiveView::Config);
 }
 
 #[test]

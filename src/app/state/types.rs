@@ -153,6 +153,13 @@ pub struct SessionUsageState {
     pub last_compaction_pre_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct McpState {
+    pub servers: Vec<crate::agent::types::McpServerStatus>,
+    pub in_flight: bool,
+    pub last_error: Option<String>,
+}
+
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const SUBAGENT_THINKING_DEBOUNCE: Duration = Duration::from_millis(1_500);

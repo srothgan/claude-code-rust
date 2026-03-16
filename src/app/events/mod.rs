@@ -147,6 +147,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 mode,
                 &history_updates,
             );
+            crate::app::config::request_mcp_snapshot_if_needed(app);
         }
         ClientEvent::SessionsListed { sessions } => {
             session::handle_sessions_listed_event(app, sessions);
@@ -177,6 +178,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 mode,
                 &history_updates,
             );
+            crate::app::config::request_mcp_snapshot_if_needed(app);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
             session::handle_update_available_event(app, &latest_version, &current_version);
@@ -193,6 +195,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::StatusSnapshotReceived { account } => {
             app.account_info = Some(account);
             app.needs_redraw = true;
+        }
+        ClientEvent::McpSnapshotReceived { servers, error } => {
+            app.mcp.servers = servers;
+            app.mcp.in_flight = false;
+            app.mcp.last_error = error;
+            app.config.mcp_selected_server_index =
+                app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
         }
         ClientEvent::UsageRefreshStarted => {
             crate::app::usage::apply_refresh_started(app);

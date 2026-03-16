@@ -173,6 +173,7 @@ pub fn create_app(cli: &Cli) -> App {
         startup_status_blocking_error: false,
         session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),
+        mcp: super::McpState::default(),
         fast_mode_state: model::FastModeState::Off,
         last_rate_limit_update: None,
         is_compacting: false,

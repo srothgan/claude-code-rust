@@ -3,6 +3,7 @@ import type {
   BridgeCommand,
   BridgeCommandEnvelope,
   Json,
+  McpServerConfig,
   ModeInfo,
   ModeState,
   PermissionOutcome,
@@ -135,6 +136,56 @@ function parsePromptChunks(
   });
 }
 
+function expectBoolean(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): boolean {
+  const value = record[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`${context}.${key} must be a boolean`);
+  }
+  return value;
+}
+
+function parseMcpServerConfig(
+  value: unknown,
+  context: string,
+): McpServerConfig {
+  const record = asRecord(value, context);
+  const type = expectString(record, "type", context);
+  switch (type) {
+    case "stdio":
+      return {
+        type,
+        command: expectString(record, "command", context),
+        ...(record.args === undefined ? {} : { args: expectStringArray(record, "args", context) }),
+        ...(record.env === undefined ? {} : { env: expectStringMap(record, "env", context) }),
+      };
+    case "sse":
+    case "http":
+      return {
+        type,
+        url: expectString(record, "url", context),
+        ...(record.headers === undefined
+          ? {}
+          : { headers: expectStringMap(record, "headers", context) }),
+      };
+    default:
+      throw new Error(`${context}.type must be one of stdio, sse, http`);
+  }
+}
+
+function parseMcpServersRecord(
+  value: unknown,
+  context: string,
+): Record<string, McpServerConfig> {
+  const record = asRecord(value, context);
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, parseMcpServerConfig(entry, `${context}.${key}`)]),
+  );
+}
+
 export function parseCommandEnvelope(line: string): { requestId?: string; command: BridgeCommand } {
   const raw = asRecord(JSON.parse(line) as BridgeCommandEnvelope, "command envelope");
   const requestId = typeof raw.request_id === "string" ? raw.request_id : undefined;
@@ -209,6 +260,31 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "get_status_snapshot",
           session_id: expectString(raw, "session_id", "get_status_snapshot"),
         };
+      case "mcp_status":
+      case "get_mcp_snapshot":
+        return {
+          command: "mcp_status",
+          session_id: expectString(raw, "session_id", commandName),
+        };
+      case "mcp_reconnect":
+        return {
+          command: "mcp_reconnect",
+          session_id: expectString(raw, "session_id", "mcp_reconnect"),
+          server_name: expectString(raw, "server_name", "mcp_reconnect"),
+        };
+      case "mcp_toggle":
+        return {
+          command: "mcp_toggle",
+          session_id: expectString(raw, "session_id", "mcp_toggle"),
+          server_name: expectString(raw, "server_name", "mcp_toggle"),
+          enabled: expectBoolean(raw, "enabled", "mcp_toggle"),
+        };
+      case "mcp_set_servers":
+        return {
+          command: "mcp_set_servers",
+          session_id: expectString(raw, "session_id", "mcp_set_servers"),
+          servers: parseMcpServersRecord(raw.servers ?? {}, "mcp_set_servers.servers"),
+        };
       case "permission_response": {
         const outcome = asRecord(raw.outcome, "permission_response.outcome");
         const outcomeType = expectString(outcome, "outcome", "permission_response.outcome");
@@ -281,6 +357,23 @@ function expectStringArray(
     }
     return entry;
   });
+}
+
+function expectStringMap(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): Record<string, string> {
+  const value = record[key];
+  const parsed = asRecord(value, `${context}.${key}`);
+  return Object.fromEntries(
+    Object.entries(parsed).map(([entryKey, entryValue]) => {
+      if (typeof entryValue !== "string") {
+        throw new Error(`${context}.${key}.${entryKey} must be a string`);
+      }
+      return [entryKey, entryValue];
+    }),
+  );
 }
 
 function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: string } {

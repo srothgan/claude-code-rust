@@ -144,6 +144,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/config".into(), "Open settings".into());
     by_name.insert("/login".into(), "Authenticate with Claude".into());
     by_name.insert("/logout".into(), "Sign out of Claude".into());
+    by_name.insert("/mcp".into(), "Open MCP".into());
     by_name.insert("/mode".into(), "Set session mode".into());
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
@@ -347,6 +348,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
         "/cancel"
             | "/compact"
             | "/config"
+            | "/mcp"
             | "/mode"
             | "/model"
             | "/new-session"

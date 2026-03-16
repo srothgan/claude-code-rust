@@ -72,7 +72,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1], app),
-        ConfigTab::Mcp => mcp::render(frame, chunks[1]),
+        ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
     }
 
     if app.config.model_and_effort_overlay().is_some() {
@@ -91,6 +91,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_marketplace_actions_overlay(frame, frame_area, app);
     } else if app.config.add_marketplace_overlay().is_some() {
         render_add_marketplace_overlay(frame, frame_area, app);
+    } else if app.config.mcp_details_overlay().is_some() {
+        mcp::render_details_overlay(frame, frame_area, app);
     }
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
@@ -116,15 +118,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn config_help_text(app: &App) -> String {
-    if app.config.model_and_effort_overlay().is_some()
-        || app.config.output_style_overlay().is_some()
-        || app.config.language_overlay().is_some()
-        || app.config.session_rename_overlay().is_some()
-        || app.config.installed_plugin_actions_overlay().is_some()
-        || app.config.plugin_install_overlay().is_some()
-        || app.config.marketplace_actions_overlay().is_some()
-        || app.config.add_marketplace_overlay().is_some()
-    {
+    if app.config.overlay.is_some() {
         return String::new();
     }
 
@@ -159,7 +153,8 @@ fn config_help_text(app: &App) -> String {
             "r refresh | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
         }
         ConfigTab::Mcp => {
-            "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+            "Up/Down select | Enter actions | r refresh | Tab next tab | Shift+Tab prev tab | Esc close"
+                .to_owned()
         }
         ConfigTab::Status => {
             if app.session_id.is_some() {
@@ -1123,7 +1118,7 @@ mod tests {
                 .join("\n")
         }
 
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
@@ -1843,6 +1838,71 @@ mod tests {
         assert!(rendered.contains("Enter marketplace source:"));
         assert!(rendered.contains("owner/repo (GitHub)"));
         assert!(rendered.contains("Enter add"));
+    }
+
+    #[test]
+    fn mcp_details_overlay_renders_selected_server_details() {
+        use std::collections::BTreeMap;
+
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Mcp;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
+            crate::app::config::McpDetailsOverlayState {
+                server_name: "filesystem".to_owned(),
+                selected_index: 0,
+            },
+        ));
+        app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+            name: "filesystem".to_owned(),
+            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            server_info: Some(crate::agent::types::McpServerInfo {
+                name: "Filesystem".to_owned(),
+                version: "1.2.3".to_owned(),
+            }),
+            error: None,
+            config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
+                command: "npx".to_owned(),
+                args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
+                env: BTreeMap::new(),
+            }),
+            scope: Some("project".to_owned()),
+            tools: vec![crate::agent::types::McpTool {
+                name: "read_file".to_owned(),
+                description: Some("Read a file".to_owned()),
+                annotations: Some(crate::agent::types::McpToolAnnotations {
+                    read_only: Some(true),
+                    destructive: Some(false),
+                    open_world: Some(false),
+                }),
+            }],
+        }];
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("filesystem"));
+        assert!(rendered.contains("project"));
+        assert!(rendered.contains("stdio"));
+        assert!(rendered.contains("Reconnect server"));
+        assert!(rendered.contains("Disable server"));
+        assert!(rendered.contains("Enter run"));
     }
 
     #[test]

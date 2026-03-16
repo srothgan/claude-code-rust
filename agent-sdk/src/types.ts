@@ -239,6 +239,76 @@ export interface AccountInfo {
   api_key_source?: string;
 }
 
+export type McpServerConnectionStatus =
+  | "connected"
+  | "failed"
+  | "needs-auth"
+  | "pending"
+  | "disabled";
+
+export interface McpServerInfo {
+  name: string;
+  version: string;
+}
+
+export interface McpToolAnnotations {
+  read_only?: boolean;
+  destructive?: boolean;
+  open_world?: boolean;
+}
+
+export interface McpTool {
+  name: string;
+  description?: string;
+  annotations?: McpToolAnnotations;
+}
+
+export type McpServerConfig =
+  | {
+      type: "stdio";
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      type: "sse";
+      url: string;
+      headers?: Record<string, string>;
+    }
+  | {
+      type: "http";
+      url: string;
+      headers?: Record<string, string>;
+    };
+
+export type McpServerStatusConfig =
+  | McpServerConfig
+  | {
+      type: "sdk";
+      name: string;
+    }
+  | {
+      type: "claudeai-proxy";
+      url: string;
+      id: string;
+    };
+
+export interface McpServerStatus {
+  name: string;
+  status: McpServerConnectionStatus;
+  server_info?: McpServerInfo;
+  error?: string;
+  config?: McpServerStatusConfig;
+  scope?: string;
+  tools: McpTool[];
+}
+
+export interface McpSetServersResult {
+  added: string[];
+  removed: string[];
+  errors: Record<string, string>;
+}
+
 export interface SessionLaunchSettings {
   language?: string;
   settings?: { [key: string]: Json };
@@ -328,6 +398,26 @@ export type BridgeCommand =
       session_id: string;
     }
   | {
+      command: "mcp_status";
+      session_id: string;
+    }
+  | {
+      command: "mcp_reconnect";
+      session_id: string;
+      server_name: string;
+    }
+  | {
+      command: "mcp_toggle";
+      session_id: string;
+      server_name: string;
+      enabled: boolean;
+    }
+  | {
+      command: "mcp_set_servers";
+      session_id: string;
+      servers: Record<string, McpServerConfig>;
+    }
+  | {
       command: "shutdown";
     };
 
@@ -388,4 +478,10 @@ export type BridgeEvent =
     }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: SessionListEntry[] }
-  | { event: "status_snapshot"; session_id: string; account: AccountInfo };
+  | { event: "status_snapshot"; session_id: string; account: AccountInfo }
+  | {
+      event: "mcp_snapshot";
+      session_id: string;
+      servers: McpServerStatus[];
+      error?: string;
+    };

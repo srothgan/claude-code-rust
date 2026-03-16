@@ -60,7 +60,7 @@ pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, ExtraUsage,
     HelpView, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LoginHint,
-    MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState, PasteSessionState,
+    McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState, PasteSessionState,
     PendingCommandAck, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
     SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
     TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,

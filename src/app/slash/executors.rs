@@ -38,6 +38,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/usage" => handle_usage_submit(app, &parsed.args),
@@ -100,6 +101,20 @@ fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     crate::app::config::activate_tab(app, crate::app::ConfigTab::Plugins);
+    true
+}
+
+fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /mcp");
+        return true;
+    }
+
+    if let Err(err) = crate::app::config::open(app) {
+        push_system_message(app, format!("Failed to open MCP: {err}"));
+        return true;
+    }
+    crate::app::config::activate_tab(app, crate::app::ConfigTab::Mcp);
     true
 }
 

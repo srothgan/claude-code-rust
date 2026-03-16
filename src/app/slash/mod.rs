@@ -202,6 +202,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
         assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
+        assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
         assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
         assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
     }
@@ -245,6 +246,35 @@ mod tests {
         assert!(consumed);
         assert_eq!(app.active_view, super::super::ActiveView::Config);
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+    }
+
+    #[test]
+    fn mcp_opens_config_at_mcp_tab() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        let consumed = try_handle_submit(&mut app, "/mcp");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(app.config.active_tab, super::super::ConfigTab::Mcp);
+    }
+
+    #[test]
+    fn mcp_with_extra_args_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/mcp extra");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /mcp");
     }
 
     #[test]
@@ -757,5 +787,13 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
+    }
+
+    #[test]
+    fn mcp_appears_in_candidates() {
+        let app = App::test_default();
+        let names: Vec<String> =
+            supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
+        assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
     }
 }

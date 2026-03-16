@@ -109,6 +109,23 @@ pub enum BridgeCommand {
     GetStatusSnapshot {
         session_id: String,
     },
+    GetMcpSnapshot {
+        session_id: String,
+    },
+    McpReconnect {
+        session_id: String,
+        server_name: String,
+    },
+    McpToggle {
+        session_id: String,
+        server_name: String,
+        enabled: bool,
+    },
+    McpSetServers {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        servers: BTreeMap<String, types::McpServerConfig>,
+    },
     Shutdown,
 }
 
@@ -183,6 +200,12 @@ pub enum BridgeEvent {
     StatusSnapshot {
         session_id: String,
         account: types::AccountInfo,
+    },
+    McpSnapshot {
+        session_id: String,
+        #[serde(default)]
+        servers: Vec<types::McpServerStatus>,
+        error: Option<String>,
     },
 }
 

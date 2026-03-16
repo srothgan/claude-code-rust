@@ -751,6 +751,32 @@ pub struct AddMarketplaceOverlayState {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerActionKind {
+    RefreshSnapshot,
+    Reconnect,
+    Enable,
+    Disable,
+}
+
+impl McpServerActionKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RefreshSnapshot => "Refresh snapshot",
+            Self::Reconnect => "Reconnect server",
+            Self::Enable => "Enable server",
+            Self::Disable => "Disable server",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpDetailsOverlayState {
+    pub server_name: String,
+    pub selected_index: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
@@ -761,6 +787,7 @@ pub enum ConfigOverlayState {
     PluginInstallActions(PluginInstallOverlayState),
     MarketplaceActions(MarketplaceActionsOverlayState),
     AddMarketplace(AddMarketplaceOverlayState),
+    McpDetails(McpDetailsOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -780,6 +807,7 @@ pub struct ConfigState {
     pub active_tab: ConfigTab,
     pub selected_setting_index: usize,
     pub settings_scroll_offset: usize,
+    pub mcp_selected_server_index: usize,
     pub overlay: Option<ConfigOverlayState>,
     pub committed_settings_document: Value,
     pub committed_local_settings_document: Value,
@@ -798,6 +826,7 @@ impl Default for ConfigState {
             active_tab: ConfigTab::Settings,
             selected_setting_index: 0,
             settings_scroll_offset: 0,
+            mcp_selected_server_index: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
             committed_local_settings_document: Value::Object(serde_json::Map::new()),
@@ -911,7 +940,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -927,7 +957,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -944,7 +975,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -960,7 +992,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -977,7 +1010,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -993,7 +1027,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1010,7 +1045,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1026,7 +1062,8 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1043,7 +1080,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1061,7 +1099,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1078,7 +1117,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1094,7 +1134,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1111,7 +1152,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1129,7 +1171,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1146,7 +1189,8 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_),
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::McpDetails(_),
             )
             | None => None,
         }
@@ -1162,7 +1206,43 @@ impl ConfigState {
                 | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_),
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::McpDetails(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn mcp_details_overlay(&self) -> Option<&McpDetailsOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::McpDetails(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn mcp_details_overlay_mut(&mut self) -> Option<&mut McpDetailsOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::McpDetails(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_),
             )
             | None => None,
         }
@@ -1210,6 +1290,7 @@ impl ConfigState {
         self.selected_setting_index =
             self.selected_setting_index.min(setting_specs().len().saturating_sub(1));
         self.settings_scroll_offset = self.settings_scroll_offset.min(self.selected_setting_index);
+        self.mcp_selected_server_index = 0;
         if !preserve_status {
             self.status_message = notice;
             self.last_error = None;
@@ -1359,6 +1440,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
         return;
     }
+    if handle_mcp_key(app, key) {
+        return;
+    }
 
     match (key.code, key.modifiers) {
         (KeyCode::Char(' '), KeyModifiers::NONE)
@@ -1437,11 +1521,44 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 
 fn request_active_tab_side_effects(app: &mut App) {
     request_status_snapshot_if_needed(app);
+    request_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
+    }
+}
+
+fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.config.active_tab != ConfigTab::Mcp {
+        return false;
+    }
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(ch), modifiers)
+            if matches!(ch, 'r' | 'R')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
+        {
+            request_mcp_snapshot_if_needed(app);
+            true
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            open_selected_mcp_server_details(app);
+            true
+        }
+        (KeyCode::Up, KeyModifiers::NONE) => {
+            app.config.mcp_selected_server_index =
+                app.config.mcp_selected_server_index.saturating_sub(1);
+            true
+        }
+        (KeyCode::Down, KeyModifiers::NONE) => {
+            let last_index = app.mcp.servers.len().saturating_sub(1);
+            app.config.mcp_selected_server_index =
+                (app.config.mcp_selected_server_index + 1).min(last_index);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1462,6 +1579,75 @@ pub fn request_status_snapshot_if_needed(app: &App) {
         return;
     };
     let _ = conn.get_status_snapshot(sid.to_string());
+}
+
+pub fn request_mcp_snapshot_if_needed(app: &mut App) {
+    if app.config.active_tab != ConfigTab::Mcp {
+        return;
+    }
+    let Some(conn) = app.conn.as_ref() else {
+        app.mcp.in_flight = false;
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        app.mcp.in_flight = false;
+        return;
+    };
+    app.mcp.in_flight = true;
+    app.mcp.last_error = None;
+    if let Err(err) = conn.get_mcp_snapshot(sid.to_string()) {
+        app.mcp.in_flight = false;
+        app.mcp.last_error = Some(err.to_string());
+    }
+}
+
+fn reconnect_mcp_server(app: &mut App, server_name: &str) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn.reconnect_mcp_server(sid.to_string(), server_name.to_owned()).is_ok() {
+        request_mcp_snapshot_if_needed(app);
+    }
+}
+
+fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: bool) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn.toggle_mcp_server(sid.to_string(), server_name.to_owned(), enabled).is_ok() {
+        request_mcp_snapshot_if_needed(app);
+    }
+}
+
+fn open_selected_mcp_server_details(app: &mut App) {
+    let Some(server) = app.mcp.servers.get(app.config.mcp_selected_server_index) else {
+        return;
+    };
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: server.name.clone(),
+        selected_index: 0,
+    }));
+    app.config.last_error = None;
+}
+
+#[must_use]
+pub(crate) fn available_mcp_actions(
+    server: &crate::agent::types::McpServerStatus,
+) -> Vec<McpServerActionKind> {
+    let mut actions = vec![McpServerActionKind::RefreshSnapshot];
+    if matches!(server.status, crate::agent::types::McpServerConnectionStatus::Disabled) {
+        actions.push(McpServerActionKind::Enable);
+    } else {
+        actions.push(McpServerActionKind::Reconnect);
+        actions.push(McpServerActionKind::Disable);
+    }
+    actions
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {

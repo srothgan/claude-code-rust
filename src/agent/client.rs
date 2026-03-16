@@ -178,6 +178,47 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetMcpSnapshot { session_id },
+        })
+    }
+
+    pub fn reconnect_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpReconnect { session_id, server_name },
+        })
+    }
+
+    pub fn toggle_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpToggle { session_id, server_name, enabled },
+        })
+    }
+
+    pub fn set_mcp_servers(
+        &self,
+        session_id: String,
+        servers: std::collections::BTreeMap<String, crate::agent::types::McpServerConfig>,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpSetServers { session_id, servers },
+        })
+    }
+
     pub fn new_session(
         &self,
         cwd: String,
@@ -213,6 +254,7 @@ impl AgentConnection {
 mod tests {
     use super::AgentConnection;
     use crate::agent::wire::BridgeCommand;
+    use std::collections::BTreeMap;
 
     #[test]
     fn generate_session_title_sends_bridge_command() {
@@ -246,6 +288,78 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 title: "Renamed".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn get_mcp_snapshot_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.get_mcp_snapshot("session-1".to_owned()).expect("mcp snapshot");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn reconnect_mcp_server_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.reconnect_mcp_server("session-1".to_owned(), "notion".to_owned())
+            .expect("mcp reconnect");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::McpReconnect {
+                session_id: "session-1".to_owned(),
+                server_name: "notion".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn toggle_mcp_server_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.toggle_mcp_server("session-1".to_owned(), "notion".to_owned(), false)
+            .expect("mcp toggle");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::McpToggle {
+                session_id: "session-1".to_owned(),
+                server_name: "notion".to_owned(),
+                enabled: false,
+            }
+        );
+    }
+
+    #[test]
+    fn set_mcp_servers_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+        let servers = BTreeMap::from([(
+            "notion".to_owned(),
+            crate::agent::types::McpServerConfig::Http {
+                url: "https://mcp.notion.com/mcp".to_owned(),
+                headers: BTreeMap::new(),
+            },
+        )]);
+
+        conn.set_mcp_servers("session-1".to_owned(), servers.clone()).expect("mcp set servers");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::McpSetServers { session_id: "session-1".to_owned(), servers }
         );
     }
 }

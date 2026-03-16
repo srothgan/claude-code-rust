@@ -143,6 +143,9 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::StatusSnapshot { account, .. } => {
             let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { account });
         }
+        crate::agent::wire::BridgeEvent::McpSnapshot { servers, error, .. } => {
+            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { servers, error });
+        }
     }
 }
 

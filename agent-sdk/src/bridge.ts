@@ -356,6 +356,90 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
     }
 
+    case "mcp_status": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        const servers = await session.query.mcpServerStatus();
+        writeEvent(
+          {
+            event: "mcp_snapshot",
+            session_id: session.sessionId,
+            servers: servers.map(mapMcpServerStatus),
+          },
+          requestId,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        writeEvent(
+          {
+            event: "mcp_snapshot",
+            session_id: session.sessionId,
+            servers: [],
+            error: message,
+          },
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "mcp_reconnect": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await session.query.reconnectMcpServer(command.server_name);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(
+          command.session_id,
+          `failed to reconnect MCP server ${command.server_name}: ${message}`,
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "mcp_toggle": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await session.query.toggleMcpServer(command.server_name, command.enabled);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(
+          command.session_id,
+          `failed to toggle MCP server ${command.server_name}: ${message}`,
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "mcp_set_servers": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await session.query.setMcpServers(command.servers);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set MCP servers: ${message}`, requestId);
+      }
+      return;
+    }
+
     case "permission_response":
       handlePermissionResponse(command);
       return;
@@ -412,4 +496,86 @@ function main(): void {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
+}
+
+function mapMcpServerStatus(
+  status: Awaited<ReturnType<import("@anthropic-ai/claude-agent-sdk").Query["mcpServerStatus"]>>[number],
+): import("./types.js").McpServerStatus {
+  return {
+    name: status.name,
+    status: status.status,
+    ...(status.serverInfo
+      ? {
+          server_info: {
+            name: status.serverInfo.name,
+            version: status.serverInfo.version,
+          },
+        }
+      : {}),
+    ...(status.error ? { error: status.error } : {}),
+    ...(status.config ? { config: mapMcpServerStatusConfig(status.config) } : {}),
+    ...(status.scope ? { scope: status.scope } : {}),
+    tools: Array.isArray(status.tools)
+      ? status.tools.map((tool) => ({
+          name: tool.name,
+          ...(tool.description ? { description: tool.description } : {}),
+          ...(tool.annotations
+            ? {
+                annotations: {
+                  ...(typeof tool.annotations.readOnly === "boolean"
+                    ? { read_only: tool.annotations.readOnly }
+                    : {}),
+                  ...(typeof tool.annotations.destructive === "boolean"
+                    ? { destructive: tool.annotations.destructive }
+                    : {}),
+                  ...(typeof tool.annotations.openWorld === "boolean"
+                    ? { open_world: tool.annotations.openWorld }
+                    : {}),
+                },
+              }
+            : {}),
+        }))
+      : [],
+  };
+}
+
+function mapMcpServerStatusConfig(
+  config: NonNullable<
+    Awaited<ReturnType<import("@anthropic-ai/claude-agent-sdk").Query["mcpServerStatus"]>>[number]["config"]
+  >,
+): import("./types.js").McpServerStatusConfig {
+  switch (config.type) {
+    case "stdio":
+      return {
+        type: "stdio",
+        command: config.command,
+        ...(Array.isArray(config.args) && config.args.length > 0 ? { args: config.args } : {}),
+        ...(config.env ? { env: config.env } : {}),
+      };
+    case "sse":
+      return {
+        type: "sse",
+        url: config.url,
+        ...(config.headers ? { headers: config.headers } : {}),
+      };
+    case "http":
+      return {
+        type: "http",
+        url: config.url,
+        ...(config.headers ? { headers: config.headers } : {}),
+      };
+    case "sdk":
+      return {
+        type: "sdk",
+        name: config.name,
+      };
+    case "claudeai-proxy":
+      return {
+        type: "claudeai-proxy",
+        url: config.url,
+        id: config.id,
+      };
+    default:
+      throw new Error(`unsupported MCP status config: ${JSON.stringify(config)}`);
+  }
 }

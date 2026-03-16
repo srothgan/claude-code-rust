@@ -220,6 +220,62 @@ test("parseCommandEnvelope validates generate_session_title command", () => {
   assert.equal(parsed.command.description, "Current custom title");
 });
 
+test("parseCommandEnvelope validates mcp_toggle command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-mcp-toggle",
+      command: "mcp_toggle",
+      session_id: "session-123",
+      server_name: "notion",
+      enabled: false,
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-mcp-toggle");
+  assert.equal(parsed.command.command, "mcp_toggle");
+  if (parsed.command.command !== "mcp_toggle") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.server_name, "notion");
+  assert.equal(parsed.command.enabled, false);
+});
+
+test("parseCommandEnvelope validates mcp_set_servers command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-mcp-set",
+      command: "mcp_set_servers",
+      session_id: "session-123",
+      servers: {
+        notion: {
+          type: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: {
+            "X-Test": "1",
+          },
+        },
+      },
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-mcp-set");
+  assert.equal(parsed.command.command, "mcp_set_servers");
+  if (parsed.command.command !== "mcp_set_servers") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.deepEqual(parsed.command.servers, {
+    notion: {
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: {
+        "X-Test": "1",
+      },
+    },
+  });
+});
+
 test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
   assert.deepEqual(buildSessionMutationOptions("C:/worktree"), { dir: "C:/worktree" });
   assert.equal(buildSessionMutationOptions(undefined), undefined);

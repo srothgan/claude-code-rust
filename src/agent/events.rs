@@ -83,6 +83,11 @@ pub enum ClientEvent {
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
     StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
+    /// MCP server snapshot received from bridge.
+    McpSnapshotReceived {
+        servers: Vec<crate::agent::types::McpServerStatus>,
+        error: Option<String>,
+    },
     /// Usage refresh task started.
     UsageRefreshStarted,
     /// Usage refresh completed successfully.
