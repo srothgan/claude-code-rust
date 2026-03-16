@@ -1,5 +1,5 @@
 import type { BridgeCommand, McpServerConfig, McpServerStatus } from "../types.js";
-import { slashError, writeEvent } from "./events.js";
+import { emitMcpOperationError, slashError, writeEvent } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 type QueryWithMcpAuth = import("@anthropic-ai/claude-agent-sdk").Query & {
@@ -62,6 +62,24 @@ function extractMcpAuthRedirect(
     auth_url: authUrl,
     requires_user_action: requiresUserAction === true,
   };
+}
+
+function emitMcpCommandError(
+  sessionId: string,
+  operation: string,
+  message: string,
+  requestId?: string,
+  serverName?: string,
+): void {
+  emitMcpOperationError(
+    sessionId,
+    {
+      ...(serverName ? { server_name: serverName } : {}),
+      operation,
+      message,
+    },
+    requestId,
+  );
 }
 
 export async function emitMcpSnapshotEvent(
@@ -219,10 +237,12 @@ export async function handleMcpReconnectCommand(
     await session.query.reconnectMcpServer(command.server_name);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(
+    emitMcpCommandError(
       command.session_id,
-      `failed to reconnect MCP server ${command.server_name}: ${message}`,
+      "reconnect",
+      message,
       requestId,
+      command.server_name,
     );
   }
 }
@@ -236,11 +256,7 @@ export async function handleMcpToggleCommand(
     await session.query.toggleMcpServer(command.server_name, command.enabled);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(
-      command.session_id,
-      `failed to toggle MCP server ${command.server_name}: ${message}`,
-      requestId,
-    );
+    emitMcpCommandError(command.session_id, "toggle", message, requestId, command.server_name);
   }
 }
 
@@ -275,10 +291,12 @@ export async function handleMcpAuthenticateCommand(
     scheduleMcpAuthSnapshotMonitor(session, command.server_name);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(
+    emitMcpCommandError(
       command.session_id,
-      `failed to authenticate MCP server ${command.server_name}: ${message}`,
+      "authenticate",
+      message,
       requestId,
+      command.server_name,
     );
   }
 }
@@ -294,10 +312,12 @@ export async function handleMcpClearAuthCommand(
     session.mcpStatusRevalidatedAt.delete(command.server_name);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(
+    emitMcpCommandError(
       command.session_id,
-      `failed to clear MCP auth for ${command.server_name}: ${message}`,
+      "clear-auth",
+      message,
       requestId,
+      command.server_name,
     );
   }
 }
@@ -314,10 +334,12 @@ export async function handleMcpOauthCallbackUrlCommand(
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(
+    emitMcpCommandError(
       command.session_id,
-      `failed to submit MCP callback URL for ${command.server_name}: ${message}`,
+      "submit-callback-url",
+      message,
       requestId,
+      command.server_name,
     );
   }
 }

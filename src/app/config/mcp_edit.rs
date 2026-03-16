@@ -6,9 +6,9 @@ use super::edit::{
 };
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
-    available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, open_mcp_server_details,
-    reconnect_mcp_server, refresh_mcp_snapshot, send_mcp_elicitation_response,
-    set_mcp_server_enabled, submit_mcp_oauth_callback_url,
+    available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, is_mcp_action_available,
+    open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
+    send_mcp_elicitation_response, set_mcp_server_enabled, submit_mcp_oauth_callback_url,
 };
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -87,6 +87,9 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     let Some(action) = actions.get(overlay.selected_index).copied() else {
         return;
     };
+    if !is_mcp_action_available(server, action) {
+        return;
+    }
 
     match action {
         McpServerActionKind::RefreshSnapshot => refresh_mcp_snapshot(app),

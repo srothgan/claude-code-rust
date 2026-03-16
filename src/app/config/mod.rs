@@ -32,7 +32,8 @@ pub(crate) use edit::{
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
     McpElicitationOverlayState, available_mcp_actions, handle_mcp_elicitation_completed,
-    present_mcp_auth_redirect, present_mcp_elicitation_request, refresh_mcp_snapshot,
+    handle_mcp_operation_error, is_mcp_action_available, present_mcp_auth_redirect,
+    present_mcp_elicitation_request, refresh_mcp_snapshot,
 };
 pub(crate) use resolve::language_input_validation_message;
 use resolve::resolve_setting_document;

@@ -9,7 +9,7 @@ use crate::agent::types::{
     McpServerStatusConfig,
 };
 use crate::app::App;
-use crate::app::config::available_mcp_actions;
+use crate::app::config::{available_mcp_actions, is_mcp_action_available};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -368,10 +368,15 @@ fn mcp_action_lines(
     let mut lines = vec![section_heading("Actions"), Line::default()];
     for (index, action) in actions.into_iter().enumerate() {
         let selected = index == overlay.selected_index;
-        lines.push(Line::from(Span::styled(
+        let mut spans = vec![Span::styled(
             format!("{} {}", if selected { ">" } else { " " }, action.label()),
             overlay_line_style(selected, true),
-        )));
+        )];
+        if !is_mcp_action_available(server, action) {
+            spans.push(Span::styled("  ", Style::default()));
+            spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
+        }
+        lines.push(Line::from(spans));
     }
     lines
 }

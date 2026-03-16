@@ -1359,6 +1359,33 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 }
 
 #[test]
+fn claudeai_proxy_server_shows_disabled_authenticate_action() {
+    let server = crate::agent::types::McpServerStatus {
+        name: "claude.ai Google Calendar".to_owned(),
+        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        server_info: None,
+        error: Some(
+            "MCP server requires authentication but no OAuth token is configured.".to_owned(),
+        ),
+        config: Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy {
+            url: "https://mcp-proxy.anthropic.com/v1/mcp/server".to_owned(),
+            id: "mcpsrv_test".to_owned(),
+        }),
+        scope: Some("session".to_owned()),
+        tools: Vec::new(),
+    };
+
+    let actions = available_mcp_actions(&server);
+
+    assert!(actions.contains(&super::mcp::McpServerActionKind::Authenticate));
+    assert!(!super::mcp::is_mcp_action_available(
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+    assert!(actions.contains(&super::mcp::McpServerActionKind::Reconnect));
+}
+
+#[test]
 fn esc_closes_settings_without_editing_selected_row() {
     let (_dir, mut app) = open_settings_test_app();
     select_setting(&mut app, SettingId::FastMode);

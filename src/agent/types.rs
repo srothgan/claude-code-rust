@@ -365,6 +365,13 @@ pub struct McpAuthRedirect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpOperationError {
+    pub server_name: Option<String>,
+    pub operation: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthMethod {
     pub id: String,
     pub name: String,

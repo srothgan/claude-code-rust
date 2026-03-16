@@ -331,6 +331,20 @@ pub(crate) fn available_mcp_actions(
     actions
 }
 
+#[must_use]
+pub(crate) fn is_mcp_action_available(
+    server: &crate::agent::types::McpServerStatus,
+    action: McpServerActionKind,
+) -> bool {
+    !matches!(
+        (action, server.config.as_ref()),
+        (
+            McpServerActionKind::Authenticate,
+            Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy { .. })
+        )
+    )
+}
+
 pub(crate) fn present_mcp_elicitation_request(
     app: &mut App,
     request: crate::agent::types::ElicitationRequest,
@@ -397,6 +411,34 @@ pub(crate) fn handle_mcp_elicitation_completed(
             app.config.overlay = None;
         }
         refresh_mcp_snapshot(app);
+    }
+}
+
+pub(crate) fn handle_mcp_operation_error(
+    app: &mut App,
+    error: &crate::agent::types::McpOperationError,
+) {
+    app.mcp.in_flight = false;
+    let formatted = format_mcp_operation_error(error);
+    app.mcp.last_error = Some(formatted.clone());
+    app.config.last_error = Some(formatted);
+    app.config.status_message = None;
+}
+
+fn format_mcp_operation_error(error: &crate::agent::types::McpOperationError) -> String {
+    let action = match error.operation.as_str() {
+        "authenticate" => "authenticate",
+        "clear-auth" => "clear auth for",
+        "reconnect" => "reconnect",
+        "toggle" => "update",
+        "submit-callback-url" => "submit callback URL for",
+        other => other,
+    };
+    match error.server_name.as_deref() {
+        Some(server_name) => {
+            format!("Failed to {action} MCP server {server_name}: {}", error.message)
+        }
+        None => format!("MCP operation failed ({action}): {}", error.message),
     }
 }
 

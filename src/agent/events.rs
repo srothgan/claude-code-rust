@@ -45,6 +45,8 @@ pub enum ClientEvent {
     McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
     /// MCP auth redirect returned directly by the SDK auth call.
     McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
+    /// MCP operation failed and should be surfaced in the MCP config UI.
+    McpOperationError { error: crate::agent::types::McpOperationError },
     /// A prompt turn completed successfully.
     TurnComplete,
     /// `cancel` notification was accepted by the bridge.

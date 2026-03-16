@@ -201,6 +201,10 @@ pub enum BridgeEvent {
         session_id: String,
         redirect: types::McpAuthRedirect,
     },
+    McpOperationError {
+        session_id: String,
+        error: types::McpOperationError,
+    },
     TurnComplete {
         session_id: String,
     },

@@ -219,6 +219,12 @@ export interface McpAuthRedirect {
   requires_user_action: boolean;
 }
 
+export interface McpOperationError {
+  server_name?: string;
+  operation: string;
+  message: string;
+}
+
 export type PermissionOutcome =
   | { outcome: "selected"; option_id: string }
   | { outcome: "cancelled" };
@@ -486,6 +492,7 @@ export type BridgeEvent =
   | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
   | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
   | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
+  | { event: "mcp_operation_error"; session_id: string; error: McpOperationError }
   | { event: "turn_complete"; session_id: string }
   | {
       event: "turn_error";

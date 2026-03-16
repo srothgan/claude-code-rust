@@ -107,6 +107,15 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::McpAuthRedirect { redirect, .. } => {
             let _ = event_tx.send(ClientEvent::McpAuthRedirect { redirect });
         }
+        crate::agent::wire::BridgeEvent::McpOperationError { error, .. } => {
+            tracing::warn!(
+                "bridge mcp_operation_error: operation={} server={} message={}",
+                error.operation,
+                error.server_name.as_deref().unwrap_or("<none>"),
+                error.message
+            );
+            let _ = event_tx.send(ClientEvent::McpOperationError { error });
+        }
         crate::agent::wire::BridgeEvent::TurnComplete { .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete);
         }

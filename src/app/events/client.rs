@@ -18,6 +18,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::McpAuthRedirect { redirect } => {
             crate::app::config::present_mcp_auth_redirect(app, redirect);
         }
+        ClientEvent::McpOperationError { error } => {
+            crate::app::config::handle_mcp_operation_error(app, &error);
+        }
         ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }

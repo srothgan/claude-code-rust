@@ -1,5 +1,10 @@
 import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeEvent, BridgeEventEnvelope, SessionUpdate } from "../types.js";
+import type {
+  BridgeEvent,
+  BridgeEventEnvelope,
+  McpOperationError,
+  SessionUpdate,
+} from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import type { SessionState } from "./session_lifecycle.js";
@@ -36,6 +41,14 @@ export function failConnection(message: string, requestId?: string): void {
 
 export function slashError(sessionId: string, message: string, requestId?: string): void {
   writeEvent({ event: "slash_error", session_id: sessionId, message }, requestId);
+}
+
+export function emitMcpOperationError(
+  sessionId: string,
+  error: McpOperationError,
+  requestId?: string,
+): void {
+  writeEvent({ event: "mcp_operation_error", session_id: sessionId, error }, requestId);
 }
 
 export function emitSessionUpdate(sessionId: string, update: SessionUpdate): void {

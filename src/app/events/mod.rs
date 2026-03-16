@@ -1435,6 +1435,38 @@ mod tests {
     }
 
     #[test]
+    fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
+        let mut app = make_test_app();
+        app.config.active_tab = crate::app::config::ConfigTab::Mcp;
+        app.config.status_message =
+            Some("Starting MCP auth for claude.ai Google Calendar...".into());
+        app.mcp.in_flight = true;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpOperationError {
+                error: crate::agent::types::McpOperationError {
+                    server_name: Some("claude.ai Google Calendar".into()),
+                    operation: "authenticate".into(),
+                    message: "Server type \"claudeai-proxy\" does not support OAuth authentication"
+                        .into(),
+                },
+            },
+        );
+
+        assert_eq!(
+            app.mcp.last_error.as_deref(),
+            Some(
+                "Failed to authenticate MCP server claude.ai Google Calendar: Server type \"claudeai-proxy\" does not support OAuth authentication"
+            )
+        );
+        assert_eq!(app.config.last_error, app.mcp.last_error);
+        assert!(app.config.status_message.is_none());
+        assert!(!app.mcp.in_flight);
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
     fn sessions_listed_completes_pending_session_title_generation() {
         let mut app = make_test_app();
         app.config.pending_session_title_change =
