@@ -1307,7 +1307,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
-    request_mcp_snapshot(&mut app);
+    super::mcp::request_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(
@@ -1352,7 +1352,7 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
-    refresh_mcp_snapshot_if_needed(&mut app);
+    super::mcp::refresh_mcp_snapshot_if_needed(&mut app);
 
     assert!(rx.try_recv().is_err());
     assert!(!app.mcp.in_flight);
