@@ -124,6 +124,15 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::QuestionRequest { request, response_tx } => {
             turn::handle_question_request_event(app, request, response_tx);
         }
+        ClientEvent::McpElicitationRequest { request } => {
+            crate::app::config::present_mcp_elicitation_request(app, request);
+        }
+        ClientEvent::McpAuthRedirect { redirect } => {
+            crate::app::config::present_mcp_auth_redirect(app, redirect);
+        }
+        ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
+            crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
+        }
         ClientEvent::TurnCancelled => turn::handle_turn_cancelled_event(app),
         ClientEvent::TurnComplete => turn::handle_turn_complete_event(app),
         ClientEvent::TurnError(msg) => turn::handle_turn_error_event(app, &msg, None),
@@ -147,7 +156,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 mode,
                 &history_updates,
             );
-            crate::app::config::request_mcp_snapshot_if_needed(app);
+            crate::app::config::refresh_mcp_snapshot(app);
         }
         ClientEvent::SessionsListed { sessions } => {
             session::handle_sessions_listed_event(app, sessions);
@@ -178,7 +187,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 mode,
                 &history_updates,
             );
-            crate::app::config::request_mcp_snapshot_if_needed(app);
+            crate::app::config::refresh_mcp_snapshot(app);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
             session::handle_update_available_event(app, &latest_version, &current_version);
@@ -197,11 +206,37 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.needs_redraw = true;
         }
         ClientEvent::McpSnapshotReceived { servers, error } => {
+            tracing::debug!(
+                "received MCP snapshot: servers={} error_present={}",
+                servers.len(),
+                error.is_some()
+            );
             app.mcp.servers = servers;
             app.mcp.in_flight = false;
             app.mcp.last_error = error;
             app.config.mcp_selected_server_index =
                 app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
+            if let Some(overlay) = app.config.mcp_auth_redirect_overlay() {
+                let server_name = overlay.redirect.server_name.clone();
+                if let Some(server) =
+                    app.mcp.servers.iter().find(|server| server.name == server_name)
+                    && !matches!(
+                        server.status,
+                        crate::agent::types::McpServerConnectionStatus::NeedsAuth
+                            | crate::agent::types::McpServerConnectionStatus::Pending
+                    )
+                {
+                    if matches!(
+                        server.status,
+                        crate::agent::types::McpServerConnectionStatus::Connected
+                    ) {
+                        app.config.status_message =
+                            Some(format!("{} authenticated successfully.", server.name));
+                        app.config.last_error = None;
+                    }
+                    app.config.overlay = None;
+                }
+            }
         }
         ClientEvent::UsageRefreshStarted => {
             crate::app::usage::apply_refresh_started(app);
@@ -432,6 +467,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
+    use std::rc::Rc;
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
@@ -797,6 +833,14 @@ mod tests {
             mode: None,
             history_updates: Vec::new(),
         }
+    }
+
+    fn app_with_bridge_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+        let mut app = make_test_app();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        (app, rx)
     }
 
     #[test]
@@ -1212,6 +1256,33 @@ mod tests {
     }
 
     #[test]
+    fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+            name: "supabase".into(),
+            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: Vec::new(),
+        });
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        let envelope = rx.try_recv().expect("mcp snapshot command");
+        assert_eq!(
+            envelope.command,
+            crate::agent::wire::BridgeCommand::GetMcpSnapshot {
+                session_id: "test-session".to_owned(),
+            }
+        );
+        assert!(app.mcp.in_flight);
+        assert!(app.mcp.servers.is_empty());
+    }
+
+    #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
@@ -1359,6 +1430,15 @@ mod tests {
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+            name: "supabase".into(),
+            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: Vec::new(),
+        });
 
         handle_client_event(
             &mut app,
@@ -1385,12 +1465,50 @@ mod tests {
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
+        assert!(app.mcp.servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
         assert_eq!(app.cwd, "/replacement");
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.cwd, "/replacement");
+    }
+
+    #[test]
+    fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+            name: "supabase".into(),
+            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: Vec::new(),
+        });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("replacement"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: Vec::new(),
+            },
+        );
+
+        let envelope = rx.try_recv().expect("mcp snapshot command");
+        assert_eq!(
+            envelope.command,
+            crate::agent::wire::BridgeCommand::GetMcpSnapshot {
+                session_id: "replacement".to_owned(),
+            }
+        );
+        assert!(app.mcp.in_flight);
+        assert!(app.mcp.servers.is_empty());
     }
 
     #[test]

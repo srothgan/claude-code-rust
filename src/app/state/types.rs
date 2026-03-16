@@ -158,6 +158,7 @@ pub struct McpState {
     pub servers: Vec<crate::agent::types::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
+    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

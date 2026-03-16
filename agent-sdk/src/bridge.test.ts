@@ -26,6 +26,7 @@ import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
   previewKilobyteLabel,
+  staleMcpAuthCandidates,
   resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
 } from "./bridge.js";
@@ -50,6 +51,8 @@ function makeSessionState(): SessionState {
     taskToolUseIds: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
+    pendingElicitations: new Map(),
+    mcpStatusRevalidatedAt: new Map(),
     authHintSent: false,
   };
 }
@@ -274,6 +277,59 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
       },
     },
   });
+});
+
+test("staleMcpAuthCandidates selects previously connected servers that regressed to needs-auth", () => {
+  const candidates = staleMcpAuthCandidates(
+    [
+      {
+        name: "supabase",
+        status: "needs-auth",
+        server_info: undefined,
+        error: undefined,
+        config: undefined,
+        scope: undefined,
+        tools: [],
+      },
+      {
+        name: "notion",
+        status: "needs-auth",
+        server_info: undefined,
+        error: undefined,
+        config: undefined,
+        scope: undefined,
+        tools: [],
+      },
+    ],
+    new Set(["supabase"]),
+    new Map(),
+    10_000,
+    1_000,
+  );
+
+  assert.deepEqual(candidates, ["supabase"]);
+});
+
+test("staleMcpAuthCandidates respects the revalidation cooldown", () => {
+  const candidates = staleMcpAuthCandidates(
+    [
+      {
+        name: "supabase",
+        status: "needs-auth",
+        server_info: undefined,
+        error: undefined,
+        config: undefined,
+        scope: undefined,
+        tools: [],
+      },
+    ],
+    new Set(["supabase"]),
+    new Map([["supabase", 9_500]]),
+    10_000,
+    1_000,
+  );
+
+  assert.deepEqual(candidates, []);
 });
 
 test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {

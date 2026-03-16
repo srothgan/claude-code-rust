@@ -18,7 +18,10 @@ import type {
   AvailableCommand,
   AvailableModel,
   BridgeCommand,
+  ElicitationAction,
+  ElicitationRequest,
   FastModeState,
+  Json,
   PermissionOutcome,
   PermissionRequest,
   QuestionOutcome,
@@ -71,6 +74,15 @@ export type PendingQuestion = {
   inputData: Record<string, unknown>;
 };
 
+export type PendingElicitation = {
+  resolve: (result: {
+    action: ElicitationAction;
+    content?: Record<string, unknown>;
+  }) => void;
+  serverName: string;
+  elicitationId?: string;
+};
+
 export type SessionState = {
   sessionId: string;
   cwd: string;
@@ -87,6 +99,8 @@ export type SessionState = {
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
+  pendingElicitations: Map<string, PendingElicitation>;
+  mcpStatusRevalidatedAt: Map<string, number>;
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
   lastAssistantError?: string;
@@ -130,6 +144,10 @@ export async function closeSession(session: SessionState): Promise<void> {
     pending.onOutcome({ outcome: "cancelled" });
   }
   session.pendingQuestions.clear();
+  for (const pending of session.pendingElicitations.values()) {
+    pending.resolve({ action: "cancel" });
+  }
+  session.pendingElicitations.clear();
 }
 
 export async function closeAllSessions(): Promise<void> {
@@ -241,6 +259,8 @@ export async function createSession(params: {
     taskToolUseIds: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     pendingQuestions: new Map<string, PendingQuestion>(),
+    pendingElicitations: new Map<string, PendingElicitation>(),
+    mcpStatusRevalidatedAt: new Map<string, number>(),
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
@@ -439,22 +459,58 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       mode?: string;
       serverName?: string;
       message?: string;
+      url?: string;
+      elicitationId?: string;
+      requestedSchema?: Record<string, unknown>;
     }) => {
-      const requestMode = typeof request.mode === "string" ? request.mode : "unknown";
-      const requestServer =
-        typeof request.serverName === "string" && request.serverName.trim().length > 0
-          ? request.serverName
-          : "unknown";
-      const requestMessage =
-        typeof request.message === "string" && request.message.trim().length > 0
-          ? request.message
-          : "<no message>";
-      console.error(
-        `[sdk warn] elicitation unsupported without MCP settings UI; ` +
-          `auto-canceling session_id=${params.sessionIdForLogs()} server=${requestServer} ` +
-          `mode=${requestMode} message=${JSON.stringify(requestMessage)}`,
-      );
-      return { action: "cancel" as const };
+      const requestId = randomUUID();
+      const mode =
+        request.mode === "form" || request.mode === "url"
+          ? request.mode
+          : typeof request.url === "string" && request.url.trim().length > 0
+            ? "url"
+            : "form";
+      const normalized: ElicitationRequest = {
+        request_id: requestId,
+        server_name:
+          typeof request.serverName === "string" && request.serverName.trim().length > 0
+            ? request.serverName
+            : "unknown",
+        message:
+          typeof request.message === "string" && request.message.trim().length > 0
+            ? request.message
+            : "<no message>",
+        mode,
+        ...(typeof request.url === "string" && request.url.trim().length > 0
+          ? { url: request.url }
+          : {}),
+        ...(typeof request.elicitationId === "string" && request.elicitationId.trim().length > 0
+          ? { elicitation_id: request.elicitationId }
+          : {}),
+        ...(request.requestedSchema
+          ? { requested_schema: request.requestedSchema as Record<string, Json> }
+          : {}),
+      };
+      writeEvent({
+        event: "elicitation_request",
+        session_id: params.sessionIdForLogs(),
+        request: normalized,
+      });
+      return await new Promise<{
+        action: ElicitationAction;
+        content?: Record<string, unknown>;
+      }>((resolve) => {
+        const currentSession = sessions.get(params.sessionIdForLogs());
+        if (!currentSession) {
+          resolve({ action: "cancel" });
+          return;
+        }
+        currentSession.pendingElicitations.set(requestId, {
+          resolve,
+          serverName: normalized.server_name,
+          elicitationId: normalized.elicitation_id,
+        });
+      });
     },
   };
 }
@@ -581,4 +637,30 @@ export function handleQuestionResponse(command: Extract<BridgeCommand, { command
   }
   session.pendingQuestions.delete(command.tool_call_id);
   resolver.onOutcome(command.outcome);
+}
+
+export function handleElicitationResponse(
+  command: Extract<BridgeCommand, { command: "elicitation_response" }>,
+): void {
+  const session = sessionById(command.session_id);
+  if (!session) {
+    console.error(
+      `[sdk warn] elicitation response dropped: unknown session ` +
+        `session_id=${command.session_id} request_id=${command.elicitation_request_id}`,
+    );
+    return;
+  }
+  const pending = session.pendingElicitations.get(command.elicitation_request_id);
+  if (!pending) {
+    console.error(
+      `[sdk warn] elicitation response dropped: no pending request ` +
+        `session_id=${command.session_id} request_id=${command.elicitation_request_id}`,
+    );
+    return;
+  }
+  session.pendingElicitations.delete(command.elicitation_request_id);
+  pending.resolve({
+    action: command.action,
+    ...(command.content ? { content: command.content } : {}),
+  });
 }

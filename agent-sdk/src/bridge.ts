@@ -26,6 +26,7 @@ import {
   createSession,
   closeSession,
   closeAllSessions,
+  handleElicitationResponse,
   handlePermissionResponse,
   handleQuestionResponse,
 } from "./bridge/session_lifecycle.js";
@@ -99,6 +100,205 @@ export async function generatePersistedSessionTitle(
     throw new Error("SDK did not return a generated session title");
   }
   return title;
+}
+
+type QueryWithMcpAuth = import("@anthropic-ai/claude-agent-sdk").Query & {
+  mcpAuthenticate?: (serverName: string) => Promise<unknown>;
+  mcpClearAuth?: (serverName: string) => Promise<unknown>;
+  mcpSubmitOAuthCallbackUrl?: (serverName: string, callbackUrl: string) => Promise<unknown>;
+};
+
+type McpAuthMethodName =
+  | "mcpAuthenticate"
+  | "mcpClearAuth"
+  | "mcpSubmitOAuthCallbackUrl";
+
+export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
+const knownConnectedMcpServers = new Set<string>();
+
+function queryWithMcpAuth(session: ReturnType<typeof sessionById>): QueryWithMcpAuth {
+  if (!session) {
+    throw new Error("unknown session");
+  }
+  return session.query as QueryWithMcpAuth;
+}
+
+async function callMcpAuthMethod(
+  session: ReturnType<typeof sessionById>,
+  methodName: McpAuthMethodName,
+  args: string[],
+): Promise<unknown> {
+  const query = queryWithMcpAuth(session);
+  switch (methodName) {
+    case "mcpAuthenticate":
+      if (typeof query.mcpAuthenticate !== "function") {
+        throw new Error("installed SDK does not support mcpAuthenticate");
+      }
+      return await query.mcpAuthenticate(args[0] ?? "");
+    case "mcpClearAuth":
+      if (typeof query.mcpClearAuth !== "function") {
+        throw new Error("installed SDK does not support mcpClearAuth");
+      }
+      return await query.mcpClearAuth(args[0] ?? "");
+    case "mcpSubmitOAuthCallbackUrl":
+      if (typeof query.mcpSubmitOAuthCallbackUrl !== "function") {
+        throw new Error("installed SDK does not support mcpSubmitOAuthCallbackUrl");
+      }
+      return await query.mcpSubmitOAuthCallbackUrl(args[0] ?? "", args[1] ?? "");
+  }
+}
+
+function extractMcpAuthRedirect(
+  serverName: string,
+  value: unknown,
+): import("./types.js").McpAuthRedirect | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const authUrl = Reflect.get(value, "authUrl");
+  if (typeof authUrl !== "string" || authUrl.trim().length === 0) {
+    return null;
+  }
+  const requiresUserAction = Reflect.get(value, "requiresUserAction");
+  return {
+    server_name: serverName,
+    auth_url: authUrl,
+    requires_user_action: requiresUserAction === true,
+  };
+}
+
+async function emitMcpSnapshotEvent(
+  session: NonNullable<ReturnType<typeof sessionById>>,
+  requestId?: string,
+): Promise<import("./types.js").McpServerStatus[]> {
+  const servers = await session.query.mcpServerStatus();
+  let mapped = servers.map(mapMcpServerStatus);
+  mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
+  rememberKnownConnectedMcpServers(mapped);
+  writeEvent(
+    {
+      event: "mcp_snapshot",
+      session_id: session.sessionId,
+      servers: mapped,
+    },
+    requestId,
+  );
+  return mapped;
+}
+
+export function staleMcpAuthCandidates(
+  servers: readonly import("./types.js").McpServerStatus[],
+  knownConnectedServerNames: ReadonlySet<string>,
+  lastRevalidatedAt: ReadonlyMap<string, number>,
+  now = Date.now(),
+  cooldownMs = MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
+): string[] {
+  return servers
+    .filter((server) => {
+      if (server.status !== "needs-auth") {
+        return false;
+      }
+      if (!knownConnectedServerNames.has(server.name)) {
+        return false;
+      }
+      const lastAttempt = lastRevalidatedAt.get(server.name) ?? 0;
+      return now - lastAttempt >= cooldownMs;
+    })
+    .map((server) => server.name);
+}
+
+function rememberKnownConnectedMcpServers(
+  servers: readonly import("./types.js").McpServerStatus[],
+): void {
+  for (const server of servers) {
+    if (server.status === "connected") {
+      knownConnectedMcpServers.add(server.name);
+    }
+  }
+}
+
+function forgetKnownConnectedMcpServer(serverName: string): void {
+  knownConnectedMcpServers.delete(serverName);
+}
+
+async function reconcileSuspiciousMcpStatuses(
+  session: NonNullable<ReturnType<typeof sessionById>>,
+  servers: import("./types.js").McpServerStatus[],
+): Promise<import("./types.js").McpServerStatus[]> {
+  const candidates = staleMcpAuthCandidates(
+    servers,
+    knownConnectedMcpServers,
+    session.mcpStatusRevalidatedAt,
+  );
+  if (candidates.length === 0) {
+    return servers;
+  }
+
+  const now = Date.now();
+  for (const serverName of candidates) {
+    session.mcpStatusRevalidatedAt.set(serverName, now);
+    console.error(
+      `[sdk mcp reconcile] session=${session.sessionId} server=${serverName} ` +
+        `status=needs-auth reason=previously-connected action=reconnect`,
+    );
+    try {
+      await session.query.reconnectMcpServer(serverName);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[sdk mcp reconcile] session=${session.sessionId} server=${serverName} ` +
+          `action=reconnect failed=${message}`,
+      );
+    }
+  }
+
+  return (await session.query.mcpServerStatus()).map(mapMcpServerStatus);
+}
+
+function shouldKeepMonitoringMcpAuth(
+  server: import("./types.js").McpServerStatus | undefined,
+): boolean {
+  return server?.status === "needs-auth" || server?.status === "pending";
+}
+
+function scheduleMcpAuthSnapshotMonitor(
+  sessionId: string,
+  serverName: string,
+  attempt = 0,
+): void {
+  const maxAttempts = 180;
+  const delayMs = 1000;
+  setTimeout(() => {
+    void monitorMcpAuthSnapshot(sessionId, serverName, attempt + 1, maxAttempts, delayMs);
+  }, delayMs);
+}
+
+async function monitorMcpAuthSnapshot(
+  sessionId: string,
+  serverName: string,
+  attempt: number,
+  maxAttempts: number,
+  delayMs: number,
+): Promise<void> {
+  const session = sessionById(sessionId);
+  if (!session) {
+    return;
+  }
+  try {
+    const servers = await emitMcpSnapshotEvent(session);
+    const server = servers.find((candidate) => candidate.name === serverName);
+    if (attempt < maxAttempts && shouldKeepMonitoringMcpAuth(server)) {
+      setTimeout(() => {
+        void monitorMcpAuthSnapshot(sessionId, serverName, attempt + 1, maxAttempts, delayMs);
+      }, delayMs);
+    }
+  } catch {
+    if (attempt < maxAttempts) {
+      setTimeout(() => {
+        void monitorMcpAuthSnapshot(sessionId, serverName, attempt + 1, maxAttempts, delayMs);
+      }, delayMs);
+    }
+  }
 }
 
 const EXPECTED_AGENT_SDK_VERSION = "0.2.74";
@@ -363,15 +563,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         return;
       }
       try {
-        const servers = await session.query.mcpServerStatus();
-        writeEvent(
-          {
-            event: "mcp_snapshot",
-            session_id: session.sessionId,
-            servers: servers.map(mapMcpServerStatus),
-          },
-          requestId,
-        );
+        await emitMcpSnapshotEvent(session, requestId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         writeEvent(
@@ -440,12 +632,89 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
     }
 
+    case "mcp_authenticate": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        const result = await callMcpAuthMethod(session, "mcpAuthenticate", [command.server_name]);
+        const redirect = extractMcpAuthRedirect(command.server_name, result);
+        if (redirect) {
+          writeEvent({
+            event: "mcp_auth_redirect",
+            session_id: command.session_id,
+            redirect,
+          });
+          scheduleMcpAuthSnapshotMonitor(command.session_id, command.server_name);
+        } else {
+          scheduleMcpAuthSnapshotMonitor(command.session_id, command.server_name);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(
+          command.session_id,
+          `failed to authenticate MCP server ${command.server_name}: ${message}`,
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "mcp_clear_auth": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await callMcpAuthMethod(session, "mcpClearAuth", [command.server_name]);
+        forgetKnownConnectedMcpServer(command.server_name);
+        session.mcpStatusRevalidatedAt.delete(command.server_name);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(
+          command.session_id,
+          `failed to clear MCP auth for ${command.server_name}: ${message}`,
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "mcp_oauth_callback_url": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await callMcpAuthMethod(session, "mcpSubmitOAuthCallbackUrl", [
+          command.server_name,
+          command.callback_url,
+        ]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(
+          command.session_id,
+          `failed to submit MCP callback URL for ${command.server_name}: ${message}`,
+          requestId,
+        );
+      }
+      return;
+    }
+
     case "permission_response":
       handlePermissionResponse(command);
       return;
 
     case "question_response":
       handleQuestionResponse(command);
+      return;
+
+    case "elicitation_response":
+      handleElicitationResponse(command);
       return;
 
     case "shutdown":

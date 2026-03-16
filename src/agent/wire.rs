@@ -106,6 +106,13 @@ pub enum BridgeCommand {
         tool_call_id: String,
         outcome: types::QuestionOutcome,
     },
+    ElicitationResponse {
+        session_id: String,
+        elicitation_request_id: String,
+        action: types::ElicitationAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<serde_json::Value>,
+    },
     GetStatusSnapshot {
         session_id: String,
     },
@@ -125,6 +132,19 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         servers: BTreeMap<String, types::McpServerConfig>,
+    },
+    McpAuthenticate {
+        session_id: String,
+        server_name: String,
+    },
+    McpClearAuth {
+        session_id: String,
+        server_name: String,
+    },
+    McpOauthCallbackUrl {
+        session_id: String,
+        server_name: String,
+        callback_url: String,
     },
     Shutdown,
 }
@@ -167,6 +187,19 @@ pub enum BridgeEvent {
     QuestionRequest {
         session_id: String,
         request: types::QuestionRequest,
+    },
+    ElicitationRequest {
+        session_id: String,
+        request: types::ElicitationRequest,
+    },
+    ElicitationComplete {
+        session_id: String,
+        elicitation_id: String,
+        server_name: Option<String>,
+    },
+    McpAuthRedirect {
+        session_id: String,
+        redirect: types::McpAuthRedirect,
     },
     TurnComplete {
         session_id: String,

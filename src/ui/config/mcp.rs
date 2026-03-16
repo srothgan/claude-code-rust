@@ -1,9 +1,13 @@
+use super::input::render_text_input_field;
 use super::overlay::{
     OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,
     render_overlay_shell,
 };
 use super::theme;
-use crate::agent::types::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
+use crate::agent::types::{
+    ElicitationAction, ElicitationMode, McpServerConnectionStatus, McpServerStatus,
+    McpServerStatusConfig,
+};
 use crate::app::App;
 use crate::app::config::available_mcp_actions;
 use ratatui::Frame;
@@ -101,6 +105,134 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
 
     let body = server.map_or_else(server_missing_lines, server_detail_lines);
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), sections[0]);
+    render_overlay_separator(frame, sections[1]);
+    frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
+}
+
+pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.mcp_callback_url_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 68,
+            min_height: 12,
+            width_percent: 72,
+            height_percent: 42,
+            preferred_height: 14,
+            fullscreen_below: Some((80, 18)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Submit callback URL",
+            subtitle: Some(overlay.server_name.as_str()),
+            help: Some("Enter submit | Esc back"),
+        },
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Length(1), Constraint::Min(1)])
+        .split(rendered.body_area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            section_heading("Callback"),
+            Line::from(Span::styled(
+                "Paste the OAuth callback URL returned by the provider.",
+                Style::default().fg(theme::DIM),
+            )),
+            Line::default(),
+            detail_kv("Server", &overlay.server_name, Color::White),
+        ])
+        .wrap(Wrap { trim: false }),
+        sections[0],
+    );
+    render_text_input_field(
+        frame,
+        sections[1],
+        &overlay.draft,
+        overlay.cursor,
+        "https://callback.example/...",
+    );
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(Span::styled(
+            "The URL is sent to the SDK exactly as pasted.",
+            Style::default().fg(theme::DIM),
+        ))])
+        .wrap(Wrap { trim: false }),
+        sections[2],
+    );
+}
+
+pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.mcp_elicitation_overlay() else {
+        return;
+    };
+    let action_lines = elicitation_action_lines(overlay);
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 72,
+            min_height: 16,
+            width_percent: 80,
+            height_percent: 78,
+            preferred_height: 22,
+            fullscreen_below: Some((90, 20)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "MCP authentication",
+            subtitle: Some(overlay.request.server_name.as_str()),
+            help: Some("Up/Down select | Enter respond | Esc cancel"),
+        },
+    );
+    let action_height = u16::try_from(action_lines.len()).unwrap_or(u16::MAX);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
+        .split(rendered.body_area);
+    frame.render_widget(
+        Paragraph::new(elicitation_body_lines(overlay)).wrap(Wrap { trim: false }),
+        sections[0],
+    );
+    render_overlay_separator(frame, sections[1]);
+    frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
+}
+
+pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.mcp_auth_redirect_overlay() else {
+        return;
+    };
+    let action_lines = auth_redirect_action_lines(overlay);
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 72,
+            min_height: 16,
+            width_percent: 80,
+            height_percent: 78,
+            preferred_height: 22,
+            fullscreen_below: Some((90, 20)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "MCP authentication",
+            subtitle: Some(overlay.redirect.server_name.as_str()),
+            help: Some("Up/Down select | Enter run | Esc cancel"),
+        },
+    );
+    let action_height = u16::try_from(action_lines.len()).unwrap_or(u16::MAX);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
+        .split(rendered.body_area);
+    frame.render_widget(
+        Paragraph::new(auth_redirect_body_lines(overlay)).wrap(Wrap { trim: false }),
+        sections[0],
+    );
     render_overlay_separator(frame, sections[1]);
     frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
 }
@@ -234,14 +366,121 @@ fn mcp_action_lines(
     }
 
     let mut lines = vec![section_heading("Actions"), Line::default()];
-    let last_index = actions.len().saturating_sub(1);
     for (index, action) in actions.into_iter().enumerate() {
         let selected = index == overlay.selected_index;
         lines.push(Line::from(Span::styled(
             format!("{} {}", if selected { ">" } else { " " }, action.label()),
             overlay_line_style(selected, true),
         )));
+    }
+    lines
+}
+
+fn elicitation_body_lines(
+    overlay: &crate::app::config::McpElicitationOverlayState,
+) -> Vec<Line<'static>> {
+    let request = &overlay.request;
+    let mut lines = vec![
+        section_heading("Request"),
+        detail_kv("Mode", elicitation_mode_label(request.mode), Color::White),
+        Line::from(Span::styled(request.message.clone(), Style::default().fg(Color::White))),
+    ];
+    if let Some(url) = request.url.as_deref() {
+        lines.push(Line::default());
+        lines.push(section_heading("URL"));
+        lines.push(detail_value(url, Color::White));
+    }
+    if overlay.browser_opened {
+        lines.push(Line::default());
+        lines.push(detail_value(
+            "Opened your browser automatically. Finish auth there, then accept below.",
+            theme::DIM,
+        ));
+    }
+    if let Some(error) = overlay.browser_open_error.as_deref() {
+        lines.push(Line::default());
+        lines.push(detail_value(error, theme::STATUS_ERROR));
+    }
+    if matches!(request.mode, ElicitationMode::Form) {
+        lines.push(Line::default());
+        lines.push(section_heading("Form"));
+        lines.push(detail_value(
+            "Structured MCP forms are not editable yet in claude-rs.",
+            theme::DIM,
+        ));
+        if let Some(schema) = request.requested_schema.as_ref() {
+            let schema_text =
+                serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
+            for line in schema_text.lines() {
+                lines.push(detail_value(line, theme::DIM));
+            }
+        }
+    }
+    lines
+}
+
+fn elicitation_action_lines(
+    overlay: &crate::app::config::McpElicitationOverlayState,
+) -> Vec<Line<'static>> {
+    let actions = elicitation_actions(&overlay.request);
+    let mut lines = vec![section_heading("Actions"), Line::default()];
+    let last_index = actions.len().saturating_sub(1);
+    for (index, action) in actions.iter().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, elicitation_action_label(*action)),
+            overlay_line_style(selected, true),
+        )));
         if index < last_index {
+            lines.push(Line::default());
+        }
+    }
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    lines
+}
+
+fn auth_redirect_body_lines(
+    overlay: &crate::app::config::McpAuthRedirectOverlayState,
+) -> Vec<Line<'static>> {
+    let redirect = &overlay.redirect;
+    let mut lines = vec![
+        section_heading("Request"),
+        detail_value(
+            "Claude Code returned a browser auth redirect for this MCP server.",
+            Color::White,
+        ),
+        Line::default(),
+        section_heading("URL"),
+        detail_value(&redirect.auth_url, Color::White),
+    ];
+    if overlay.browser_opened {
+        lines.push(Line::default());
+        lines.push(detail_value(
+            "Opened your browser automatically. Finish auth there, then refresh.",
+            theme::DIM,
+        ));
+    }
+    if let Some(error) = overlay.browser_open_error.as_deref() {
+        lines.push(Line::default());
+        lines.push(detail_value(error, theme::STATUS_ERROR));
+    }
+    lines
+}
+
+fn auth_redirect_action_lines(
+    overlay: &crate::app::config::McpAuthRedirectOverlayState,
+) -> Vec<Line<'static>> {
+    const ACTIONS: [&str; 3] = ["Refresh", "Copy URL", "Close"];
+    let mut lines = vec![section_heading("Actions"), Line::default()];
+    for (index, label) in ACTIONS.iter().enumerate() {
+        let selected = index == overlay.selected_index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if selected { ">" } else { " " }, label),
+            overlay_line_style(selected, true),
+        )));
+        if index + 1 < ACTIONS.len() {
             lines.push(Line::default());
         }
     }
@@ -413,6 +652,32 @@ fn status_counts(app: &App) -> StatusCounts {
         }
         counts
     })
+}
+
+fn elicitation_actions(
+    request: &crate::agent::types::ElicitationRequest,
+) -> Vec<ElicitationAction> {
+    match request.mode {
+        ElicitationMode::Url => {
+            vec![ElicitationAction::Accept, ElicitationAction::Decline, ElicitationAction::Cancel]
+        }
+        ElicitationMode::Form => vec![ElicitationAction::Decline, ElicitationAction::Cancel],
+    }
+}
+
+fn elicitation_mode_label(mode: ElicitationMode) -> &'static str {
+    match mode {
+        ElicitationMode::Form => "form",
+        ElicitationMode::Url => "url",
+    }
+}
+
+fn elicitation_action_label(action: ElicitationAction) -> &'static str {
+    match action {
+        ElicitationAction::Accept => "Accept",
+        ElicitationAction::Decline => "Decline",
+        ElicitationAction::Cancel => "Cancel",
+    }
 }
 
 #[derive(Default)]

@@ -2,6 +2,7 @@ import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   BridgeCommandEnvelope,
+  ElicitationAction,
   Json,
   McpServerConfig,
   ModeInfo,
@@ -119,6 +120,18 @@ function optionalJsonObject(
     throw new Error(`${context}.${key} must be an object when provided`);
   }
   return value as { [key: string]: Json };
+}
+
+function expectElicitationAction(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): ElicitationAction {
+  const value = expectString(record, key, context);
+  if (value === "accept" || value === "decline" || value === "cancel") {
+    return value;
+  }
+  throw new Error(`${context}.${key} must be one of accept, decline, cancel`);
 }
 
 function parsePromptChunks(
@@ -332,6 +345,39 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           outcome: parsedOutcome,
         };
       }
+      case "elicitation_response":
+        return {
+          command: "elicitation_response",
+          session_id: expectString(raw, "session_id", "elicitation_response"),
+          elicitation_request_id: expectString(
+            raw,
+            "elicitation_request_id",
+            "elicitation_response",
+          ),
+          action: expectElicitationAction(raw, "action", "elicitation_response"),
+          ...(optionalJsonObject(raw, "content", "elicitation_response")
+            ? { content: optionalJsonObject(raw, "content", "elicitation_response") }
+            : {}),
+        };
+      case "mcp_authenticate":
+        return {
+          command: "mcp_authenticate",
+          session_id: expectString(raw, "session_id", "mcp_authenticate"),
+          server_name: expectString(raw, "server_name", "mcp_authenticate"),
+        };
+      case "mcp_clear_auth":
+        return {
+          command: "mcp_clear_auth",
+          session_id: expectString(raw, "session_id", "mcp_clear_auth"),
+          server_name: expectString(raw, "server_name", "mcp_clear_auth"),
+        };
+      case "mcp_oauth_callback_url":
+        return {
+          command: "mcp_oauth_callback_url",
+          session_id: expectString(raw, "session_id", "mcp_oauth_callback_url"),
+          server_name: expectString(raw, "server_name", "mcp_oauth_callback_url"),
+          callback_url: expectString(raw, "callback_url", "mcp_oauth_callback_url"),
+        };
       case "shutdown":
         return { command: "shutdown" };
       default:

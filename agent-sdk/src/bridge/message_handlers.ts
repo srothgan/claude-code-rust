@@ -408,7 +408,18 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     }
 
     if (subtype === "elicitation_complete") {
-      // No-op: elicitation flow is auto-canceled in the onElicitation callback.
+      const elicitationId = typeof msg.elicitation_id === "string" ? msg.elicitation_id : "";
+      if (!elicitationId) {
+        return;
+      }
+      writeEvent({
+        event: "elicitation_complete",
+        session_id: session.sessionId,
+        completion: {
+          elicitation_id: elicitationId,
+          ...(typeof msg.mcp_server_name === "string" ? { server_name: msg.mcp_server_name } : {}),
+        },
+      });
       return;
     }
 

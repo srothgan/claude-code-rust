@@ -208,6 +208,17 @@ export interface ElicitationRequest {
   requested_schema?: Record<string, Json>;
 }
 
+export interface ElicitationComplete {
+  elicitation_id: string;
+  server_name?: string;
+}
+
+export interface McpAuthRedirect {
+  server_name: string;
+  auth_url: string;
+  requires_user_action: boolean;
+}
+
 export type PermissionOutcome =
   | { outcome: "selected"; option_id: string }
   | { outcome: "cancelled" };
@@ -418,6 +429,22 @@ export type BridgeCommand =
       servers: Record<string, McpServerConfig>;
     }
   | {
+      command: "mcp_authenticate";
+      session_id: string;
+      server_name: string;
+    }
+  | {
+      command: "mcp_clear_auth";
+      session_id: string;
+      server_name: string;
+    }
+  | {
+      command: "mcp_oauth_callback_url";
+      session_id: string;
+      server_name: string;
+      callback_url: string;
+    }
+  | {
       command: "shutdown";
     };
 
@@ -457,6 +484,8 @@ export type BridgeEvent =
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
   | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
+  | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
+  | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
   | { event: "turn_complete"; session_id: string }
   | {
       event: "turn_error";

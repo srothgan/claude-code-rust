@@ -1,11 +1,11 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
     AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID,
-    DEFAULT_MODEL_LABEL, DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState,
-    OutputStyle, OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
-    PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
-    SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
-    resolved_setting, setting_display_value, setting_spec, store,
+    DEFAULT_MODEL_LABEL, DefaultPermissionMode, LanguageOverlayState, McpCallbackUrlOverlayState,
+    ModelAndEffortOverlayState, OutputStyle, OutputStyleOverlayState, OverlayFocus,
+    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, PreferredNotifChannel,
+    ResolvedChoice, ResolvedSettingValue, SessionRenameOverlayState, SettingFile, SettingId,
+    SettingOptions, SettingSpec, resolved_setting, setting_display_value, setting_spec, store,
 };
 use crate::agent::model::EffortLevel;
 use crate::app::App;
@@ -160,6 +160,13 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
             crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
         }
         Some(ConfigOverlayState::McpDetails(_)) => handle_mcp_details_overlay_key(app, key),
+        Some(ConfigOverlayState::McpCallbackUrl(_)) => {
+            handle_mcp_callback_url_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::McpAuthRedirect(_)) => {
+            handle_mcp_auth_redirect_overlay_key(app, key);
+        }
+        Some(ConfigOverlayState::McpElicitation(_)) => handle_mcp_elicitation_overlay_key(app, key),
         Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
         Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         None => {}
@@ -180,13 +187,19 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             insert_text_str(app.config.add_marketplace_overlay_mut(), text);
             true
         }
+        Some(ConfigOverlayState::McpCallbackUrl(_)) => {
+            insert_text_str(app.config.mcp_callback_url_overlay_mut(), text);
+            true
+        }
         Some(
             ConfigOverlayState::ModelAndEffort(_)
             | ConfigOverlayState::OutputStyle(_)
             | ConfigOverlayState::InstalledPluginActions(_)
             | ConfigOverlayState::PluginInstallActions(_)
             | ConfigOverlayState::MarketplaceActions(_)
-            | ConfigOverlayState::McpDetails(_),
+            | ConfigOverlayState::McpDetails(_)
+            | ConfigOverlayState::McpAuthRedirect(_)
+            | ConfigOverlayState::McpElicitation(_),
         )
         | None => false,
     }
@@ -691,7 +704,13 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     };
 
     match action {
-        super::McpServerActionKind::RefreshSnapshot => super::request_mcp_snapshot_if_needed(app),
+        super::McpServerActionKind::RefreshSnapshot => super::refresh_mcp_snapshot(app),
+        super::McpServerActionKind::Authenticate => {
+            super::authenticate_mcp_server(app, &overlay.server_name);
+        }
+        super::McpServerActionKind::ClearAuth => {
+            super::clear_mcp_server_auth(app, &overlay.server_name);
+        }
         super::McpServerActionKind::Reconnect => {
             super::reconnect_mcp_server(app, &overlay.server_name);
         }
@@ -704,6 +723,208 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     }
 
     app.config.overlay = None;
+}
+
+fn handle_mcp_callback_url_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_mcp_callback_url_overlay(app),
+        (KeyCode::Esc, KeyModifiers::NONE) => cancel_mcp_callback_url_overlay(app),
+        (KeyCode::Left, KeyModifiers::NONE) => {
+            move_text_cursor_left(app.config.mcp_callback_url_overlay_mut());
+        }
+        (KeyCode::Right, KeyModifiers::NONE) => {
+            move_text_cursor_right(app.config.mcp_callback_url_overlay_mut());
+        }
+        (KeyCode::Home, KeyModifiers::NONE) => {
+            set_text_cursor(app.config.mcp_callback_url_overlay_mut(), 0);
+        }
+        (KeyCode::End, KeyModifiers::NONE) => {
+            move_text_cursor_to_end(app.config.mcp_callback_url_overlay_mut());
+        }
+        (KeyCode::Backspace, KeyModifiers::NONE) => {
+            delete_text_before_cursor(app.config.mcp_callback_url_overlay_mut());
+        }
+        (KeyCode::Delete, KeyModifiers::NONE) => {
+            delete_text_at_cursor(app.config.mcp_callback_url_overlay_mut());
+        }
+        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
+            insert_text_char(app.config.mcp_callback_url_overlay_mut(), ch);
+        }
+        _ => {}
+    }
+}
+
+#[allow(dead_code)]
+fn open_mcp_callback_url_overlay(app: &mut App, server_name: &str) {
+    app.config.overlay = Some(ConfigOverlayState::McpCallbackUrl(text_input_overlay_state(
+        String::new(),
+        |draft, cursor| McpCallbackUrlOverlayState {
+            server_name: server_name.to_owned(),
+            draft,
+            cursor,
+        },
+    )));
+    app.config.last_error = None;
+}
+
+fn cancel_mcp_callback_url_overlay(app: &mut App) {
+    let Some(server_name) =
+        app.config.mcp_callback_url_overlay().map(|overlay| overlay.server_name.clone())
+    else {
+        app.config.overlay = None;
+        return;
+    };
+    super::open_mcp_server_details(
+        app,
+        server_name,
+        Some(super::McpServerActionKind::Authenticate),
+    );
+}
+
+fn confirm_mcp_callback_url_overlay(app: &mut App) {
+    let Some(overlay) = app.config.mcp_callback_url_overlay().cloned() else {
+        return;
+    };
+    let callback_url = overlay.draft.trim().to_owned();
+    if callback_url.is_empty() {
+        app.config.last_error = Some("Callback URL cannot be empty".to_owned());
+        app.config.status_message = None;
+        return;
+    }
+
+    super::submit_mcp_oauth_callback_url(app, &overlay.server_name, callback_url);
+    app.config.overlay = None;
+}
+
+fn handle_mcp_elicitation_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => cancel_mcp_elicitation_overlay(app),
+        (KeyCode::Up, KeyModifiers::NONE) => move_mcp_elicitation_overlay_selection(app, -1),
+        (KeyCode::Down, KeyModifiers::NONE) => move_mcp_elicitation_overlay_selection(app, 1),
+        (KeyCode::Enter, KeyModifiers::NONE) => execute_mcp_elicitation_overlay_action(app),
+        _ => {}
+    }
+}
+
+fn cancel_mcp_elicitation_overlay(app: &mut App) {
+    let Some(request_id) =
+        app.config.mcp_elicitation_overlay().map(|overlay| overlay.request.request_id.clone())
+    else {
+        app.config.overlay = None;
+        return;
+    };
+    super::send_mcp_elicitation_response(
+        app,
+        &request_id,
+        crate::agent::types::ElicitationAction::Cancel,
+        None,
+    );
+    app.config.overlay = None;
+}
+
+#[derive(Clone, Copy)]
+enum McpAuthRedirectAction {
+    Refresh,
+    CopyUrl,
+    Close,
+}
+
+fn mcp_auth_redirect_actions() -> [McpAuthRedirectAction; 3] {
+    [McpAuthRedirectAction::Refresh, McpAuthRedirectAction::CopyUrl, McpAuthRedirectAction::Close]
+}
+
+fn handle_mcp_auth_redirect_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, KeyModifiers::NONE) => move_mcp_auth_redirect_overlay_selection(app, -1),
+        (KeyCode::Down, KeyModifiers::NONE) => move_mcp_auth_redirect_overlay_selection(app, 1),
+        (KeyCode::Enter, KeyModifiers::NONE) => execute_mcp_auth_redirect_overlay_action(app),
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        _ => {}
+    }
+}
+
+fn move_mcp_auth_redirect_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.config.mcp_auth_redirect_overlay().cloned() else {
+        return;
+    };
+    let actions = mcp_auth_redirect_actions();
+    let next_index = step_index_clamped(overlay.selected_index, delta, actions.len());
+    if let Some(state) = app.config.mcp_auth_redirect_overlay_mut() {
+        state.selected_index = next_index;
+    }
+}
+
+fn execute_mcp_auth_redirect_overlay_action(app: &mut App) {
+    let Some(overlay) = app.config.mcp_auth_redirect_overlay().cloned() else {
+        return;
+    };
+    let actions = mcp_auth_redirect_actions();
+    let Some(action) = actions.get(overlay.selected_index).copied() else {
+        return;
+    };
+    match action {
+        McpAuthRedirectAction::Refresh => {
+            super::refresh_mcp_snapshot(app);
+            app.config.overlay = None;
+        }
+        McpAuthRedirectAction::CopyUrl => {
+            match super::copy_text_to_clipboard(&overlay.redirect.auth_url) {
+                Ok(()) => {
+                    app.config.status_message = Some("Copied auth URL to clipboard.".to_owned());
+                    app.config.last_error = None;
+                }
+                Err(error) => {
+                    app.config.last_error = Some(error);
+                    app.config.status_message = None;
+                }
+            }
+        }
+        McpAuthRedirectAction::Close => {
+            app.config.overlay = None;
+        }
+    }
+}
+
+fn move_mcp_elicitation_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.config.mcp_elicitation_overlay().cloned() else {
+        return;
+    };
+    let actions = mcp_elicitation_actions(&overlay.request);
+    if actions.is_empty() {
+        return;
+    }
+    let next_index = step_index_clamped(overlay.selected_index, delta, actions.len());
+    if let Some(state) = app.config.mcp_elicitation_overlay_mut() {
+        state.selected_index = next_index;
+    }
+}
+
+fn execute_mcp_elicitation_overlay_action(app: &mut App) {
+    let Some(overlay) = app.config.mcp_elicitation_overlay().cloned() else {
+        return;
+    };
+    let actions = mcp_elicitation_actions(&overlay.request);
+    let Some(action) = actions.get(overlay.selected_index).copied() else {
+        return;
+    };
+    super::send_mcp_elicitation_response(app, &overlay.request.request_id, action, None);
+    app.config.overlay = None;
+}
+
+pub(crate) fn mcp_elicitation_actions(
+    request: &crate::agent::types::ElicitationRequest,
+) -> Vec<crate::agent::types::ElicitationAction> {
+    match request.mode {
+        crate::agent::types::ElicitationMode::Url => vec![
+            crate::agent::types::ElicitationAction::Accept,
+            crate::agent::types::ElicitationAction::Decline,
+            crate::agent::types::ElicitationAction::Cancel,
+        ],
+        crate::agent::types::ElicitationMode::Form => vec![
+            crate::agent::types::ElicitationAction::Decline,
+            crate::agent::types::ElicitationAction::Cancel,
+        ],
+    }
 }
 
 fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
@@ -935,5 +1156,23 @@ impl TextInputOverlay for AddMarketplaceOverlayState {
 impl AddMarketplaceOverlayState {
     pub(crate) fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
+    }
+}
+
+impl TextInputOverlay for McpCallbackUrlOverlayState {
+    fn draft(&self) -> &str {
+        &self.draft
+    }
+
+    fn draft_mut(&mut self) -> &mut String {
+        &mut self.draft
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn cursor_mut(&mut self) -> &mut usize {
+        &mut self.cursor
     }
 }

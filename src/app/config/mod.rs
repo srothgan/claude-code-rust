@@ -754,6 +754,8 @@ pub struct AddMarketplaceOverlayState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpServerActionKind {
     RefreshSnapshot,
+    Authenticate,
+    ClearAuth,
     Reconnect,
     Enable,
     Disable,
@@ -763,7 +765,9 @@ impl McpServerActionKind {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::RefreshSnapshot => "Refresh snapshot",
+            Self::RefreshSnapshot => "Refresh",
+            Self::Authenticate => "Authenticate",
+            Self::ClearAuth => "Clear auth",
             Self::Reconnect => "Reconnect server",
             Self::Enable => "Enable server",
             Self::Disable => "Disable server",
@@ -778,6 +782,29 @@ pub struct McpDetailsOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpCallbackUrlOverlayState {
+    pub server_name: String,
+    pub draft: String,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpElicitationOverlayState {
+    pub request: crate::agent::types::ElicitationRequest,
+    pub selected_index: usize,
+    pub browser_opened: bool,
+    pub browser_open_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpAuthRedirectOverlayState {
+    pub redirect: crate::agent::types::McpAuthRedirect,
+    pub selected_index: usize,
+    pub browser_opened: bool,
+    pub browser_open_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
@@ -788,6 +815,9 @@ pub enum ConfigOverlayState {
     MarketplaceActions(MarketplaceActionsOverlayState),
     AddMarketplace(AddMarketplaceOverlayState),
     McpDetails(McpDetailsOverlayState),
+    McpCallbackUrl(McpCallbackUrlOverlayState),
+    McpElicitation(McpElicitationOverlayState),
+    McpAuthRedirect(McpAuthRedirectOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -941,7 +971,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -958,7 +991,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -976,7 +1012,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -993,7 +1032,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1011,7 +1053,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1028,7 +1073,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1046,7 +1094,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1063,7 +1114,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1081,7 +1135,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1100,7 +1157,10 @@ impl ConfigState {
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1118,7 +1178,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1135,7 +1198,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1153,7 +1219,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1172,7 +1241,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1190,7 +1262,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1207,7 +1282,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_),
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1225,7 +1303,10 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
             )
             | None => None,
         }
@@ -1242,7 +1323,133 @@ impl ConfigState {
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_),
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn mcp_callback_url_overlay(&self) -> Option<&McpCallbackUrlOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::McpCallbackUrl(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn mcp_callback_url_overlay_mut(&mut self) -> Option<&mut McpCallbackUrlOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::McpCallbackUrl(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpElicitation(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn mcp_elicitation_overlay(&self) -> Option<&McpElicitationOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::McpElicitation(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn mcp_elicitation_overlay_mut(&mut self) -> Option<&mut McpElicitationOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::McpElicitation(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpAuthRedirect(_),
+            )
+            | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn mcp_auth_redirect_overlay(&self) -> Option<&McpAuthRedirectOverlayState> {
+        match &self.overlay {
+            Some(ConfigOverlayState::McpAuthRedirect(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_),
+            )
+            | None => None,
+        }
+    }
+
+    pub fn mcp_auth_redirect_overlay_mut(&mut self) -> Option<&mut McpAuthRedirectOverlayState> {
+        match &mut self.overlay {
+            Some(ConfigOverlayState::McpAuthRedirect(overlay)) => Some(overlay),
+            Some(
+                ConfigOverlayState::ModelAndEffort(_)
+                | ConfigOverlayState::OutputStyle(_)
+                | ConfigOverlayState::Language(_)
+                | ConfigOverlayState::SessionRename(_)
+                | ConfigOverlayState::InstalledPluginActions(_)
+                | ConfigOverlayState::PluginInstallActions(_)
+                | ConfigOverlayState::MarketplaceActions(_)
+                | ConfigOverlayState::AddMarketplace(_)
+                | ConfigOverlayState::McpDetails(_)
+                | ConfigOverlayState::McpCallbackUrl(_)
+                | ConfigOverlayState::McpElicitation(_),
             )
             | None => None,
         }
@@ -1521,7 +1728,7 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 
 fn request_active_tab_side_effects(app: &mut App) {
     request_status_snapshot_if_needed(app);
-    request_mcp_snapshot_if_needed(app);
+    refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);
     }
@@ -1540,7 +1747,7 @@ fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
             if matches!(ch, 'r' | 'R')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
         {
-            request_mcp_snapshot_if_needed(app);
+            refresh_mcp_snapshot(app);
             true
         }
         (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -1581,10 +1788,21 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     let _ = conn.get_status_snapshot(sid.to_string());
 }
 
-pub fn request_mcp_snapshot_if_needed(app: &mut App) {
+pub fn refresh_mcp_snapshot_if_needed(app: &mut App) {
     if app.config.active_tab != ConfigTab::Mcp {
+        tracing::debug!("skipping MCP refresh request: active_tab={:?}", app.config.active_tab);
         return;
     }
+    refresh_mcp_snapshot(app);
+}
+
+pub fn refresh_mcp_snapshot(app: &mut App) {
+    app.mcp.servers.clear();
+    app.mcp.last_error = None;
+    request_mcp_snapshot(app);
+}
+
+pub fn request_mcp_snapshot(app: &mut App) {
     let Some(conn) = app.conn.as_ref() else {
         app.mcp.in_flight = false;
         return;
@@ -1593,11 +1811,13 @@ pub fn request_mcp_snapshot_if_needed(app: &mut App) {
         app.mcp.in_flight = false;
         return;
     };
+    tracing::debug!("requesting MCP snapshot: session_id={sid}");
     app.mcp.in_flight = true;
     app.mcp.last_error = None;
     if let Err(err) = conn.get_mcp_snapshot(sid.to_string()) {
         app.mcp.in_flight = false;
         app.mcp.last_error = Some(err.to_string());
+        tracing::warn!("failed to request MCP snapshot: {err}");
     }
 }
 
@@ -1609,7 +1829,7 @@ fn reconnect_mcp_server(app: &mut App, server_name: &str) {
         return;
     };
     if conn.reconnect_mcp_server(sid.to_string(), server_name.to_owned()).is_ok() {
-        request_mcp_snapshot_if_needed(app);
+        refresh_mcp_snapshot(app);
     }
 }
 
@@ -1621,17 +1841,95 @@ fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: bool) {
         return;
     };
     if conn.toggle_mcp_server(sid.to_string(), server_name.to_owned(), enabled).is_ok() {
-        request_mcp_snapshot_if_needed(app);
+        refresh_mcp_snapshot(app);
+    }
+}
+
+fn authenticate_mcp_server(app: &mut App, server_name: &str) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn.authenticate_mcp_server(sid.to_string(), server_name.to_owned()).is_ok() {
+        app.config.status_message = Some(format!("Starting MCP auth for {server_name}..."));
+        app.config.last_error = None;
+        refresh_mcp_snapshot(app);
+    }
+}
+
+fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn.clear_mcp_auth(sid.to_string(), server_name.to_owned()).is_ok() {
+        refresh_mcp_snapshot(app);
+    }
+}
+
+fn submit_mcp_oauth_callback_url(app: &mut App, server_name: &str, callback_url: String) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn
+        .submit_mcp_oauth_callback_url(sid.to_string(), server_name.to_owned(), callback_url)
+        .is_ok()
+    {
+        refresh_mcp_snapshot(app);
+    }
+}
+
+fn send_mcp_elicitation_response(
+    app: &mut App,
+    request_id: &str,
+    action: crate::agent::types::ElicitationAction,
+    content: Option<serde_json::Value>,
+) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+    if conn.respond_to_elicitation(sid.to_string(), request_id.to_owned(), action, content).is_ok()
+    {
+        app.mcp.pending_elicitation = None;
+        refresh_mcp_snapshot(app);
     }
 }
 
 fn open_selected_mcp_server_details(app: &mut App) {
-    let Some(server) = app.mcp.servers.get(app.config.mcp_selected_server_index) else {
+    let Some(server_name) =
+        app.mcp.servers.get(app.config.mcp_selected_server_index).map(|server| server.name.clone())
+    else {
         return;
     };
+    open_mcp_server_details(app, server_name, None);
+}
+
+pub(crate) fn open_mcp_server_details(
+    app: &mut App,
+    server_name: String,
+    preferred_action: Option<McpServerActionKind>,
+) {
+    let selected_index =
+        app.mcp.servers.iter().find(|server| server.name == server_name).map_or(0, |server| {
+            preferred_action
+                .and_then(|action| {
+                    available_mcp_actions(server).iter().position(|candidate| *candidate == action)
+                })
+                .unwrap_or(0)
+        });
     app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
-        server_name: server.name.clone(),
-        selected_index: 0,
+        server_name,
+        selected_index,
     }));
     app.config.last_error = None;
 }
@@ -1644,10 +1942,122 @@ pub(crate) fn available_mcp_actions(
     if matches!(server.status, crate::agent::types::McpServerConnectionStatus::Disabled) {
         actions.push(McpServerActionKind::Enable);
     } else {
+        if matches!(
+            server.status,
+            crate::agent::types::McpServerConnectionStatus::NeedsAuth
+                | crate::agent::types::McpServerConnectionStatus::Failed
+                | crate::agent::types::McpServerConnectionStatus::Pending
+        ) {
+            actions.push(McpServerActionKind::Authenticate);
+        }
+        actions.push(McpServerActionKind::ClearAuth);
         actions.push(McpServerActionKind::Reconnect);
         actions.push(McpServerActionKind::Disable);
     }
     actions
+}
+
+pub(crate) fn present_mcp_elicitation_request(
+    app: &mut App,
+    request: crate::agent::types::ElicitationRequest,
+) {
+    app.mcp.pending_elicitation = Some(request.clone());
+    crate::app::view::set_active_view(app, ActiveView::Config);
+    app.config.active_tab = ConfigTab::Mcp;
+    refresh_mcp_snapshot(app);
+    let (browser_opened, browser_open_error) =
+        if matches!(request.mode, crate::agent::types::ElicitationMode::Url) {
+            request.url.as_deref().map_or(
+                (false, Some("SDK did not provide an auth URL".to_owned())),
+                |url| match open_url_in_browser(url) {
+                    Ok(()) => (true, None),
+                    Err(error) => (false, Some(error)),
+                },
+            )
+        } else {
+            (false, None)
+        };
+    app.config.overlay = Some(ConfigOverlayState::McpElicitation(McpElicitationOverlayState {
+        request,
+        selected_index: 0,
+        browser_opened,
+        browser_open_error,
+    }));
+    app.config.last_error = None;
+}
+
+pub(crate) fn present_mcp_auth_redirect(
+    app: &mut App,
+    redirect: crate::agent::types::McpAuthRedirect,
+) {
+    crate::app::view::set_active_view(app, ActiveView::Config);
+    app.config.active_tab = ConfigTab::Mcp;
+    refresh_mcp_snapshot(app);
+    let (browser_opened, browser_open_error) = match open_url_in_browser(&redirect.auth_url) {
+        Ok(()) => (true, None),
+        Err(error) => (false, Some(error)),
+    };
+    app.config.overlay = Some(ConfigOverlayState::McpAuthRedirect(McpAuthRedirectOverlayState {
+        redirect,
+        selected_index: 0,
+        browser_opened,
+        browser_open_error,
+    }));
+    app.config.last_error = None;
+}
+
+pub(crate) fn handle_mcp_elicitation_completed(
+    app: &mut App,
+    elicitation_id: &str,
+    _server_name: Option<String>,
+) {
+    let should_clear = app
+        .mcp
+        .pending_elicitation
+        .as_ref()
+        .and_then(|request| request.elicitation_id.as_deref())
+        .is_some_and(|current| current == elicitation_id);
+    if should_clear {
+        app.mcp.pending_elicitation = None;
+        if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
+            app.config.overlay = None;
+        }
+        refresh_mcp_snapshot(app);
+    }
+}
+
+fn open_url_in_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler", url]);
+        cmd
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(url);
+        cmd
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(url);
+        cmd
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Failed to open browser automatically: {error}"))
+}
+
+pub(super) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|error| format!("Failed to access clipboard: {error}"))?;
+    clipboard
+        .set_text(text.to_owned())
+        .map_err(|error| format!("Failed to copy to clipboard: {error}"))
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {

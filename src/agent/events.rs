@@ -39,6 +39,12 @@ pub enum ClientEvent {
         request: model::RequestQuestionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
+    /// MCP elicitation request that needs auth or other MCP input.
+    McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
+    /// MCP elicitation completed in the SDK.
+    McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
+    /// MCP auth redirect returned directly by the SDK auth call.
+    McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
     /// A prompt turn completed successfully.
     TurnComplete,
     /// `cancel` notification was accepted by the bridge.

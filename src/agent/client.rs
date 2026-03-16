@@ -185,6 +185,24 @@ impl AgentConnection {
         })
     }
 
+    pub fn respond_to_elicitation(
+        &self,
+        session_id: String,
+        elicitation_request_id: String,
+        action: crate::agent::types::ElicitationAction,
+        content: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ElicitationResponse {
+                session_id,
+                elicitation_request_id,
+                action,
+                content,
+            },
+        })
+    }
+
     pub fn reconnect_mcp_server(
         &self,
         session_id: String,
@@ -216,6 +234,36 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::McpSetServers { session_id, servers },
+        })
+    }
+
+    pub fn authenticate_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpAuthenticate { session_id, server_name },
+        })
+    }
+
+    pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpClearAuth { session_id, server_name },
+        })
+    }
+
+    pub fn submit_mcp_oauth_callback_url(
+        &self,
+        session_id: String,
+        server_name: String,
+        callback_url: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpOauthCallbackUrl { session_id, server_name, callback_url },
         })
     }
 
@@ -253,6 +301,7 @@ impl AgentConnection {
 #[cfg(test)]
 mod tests {
     use super::AgentConnection;
+    use crate::agent::types::ElicitationAction;
     use crate::agent::wire::BridgeCommand;
     use std::collections::BTreeMap;
 
@@ -360,6 +409,31 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::McpSetServers { session_id: "session-1".to_owned(), servers }
+        );
+    }
+
+    #[test]
+    fn respond_to_elicitation_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.respond_to_elicitation(
+            "session-1".to_owned(),
+            "elicitation-1".to_owned(),
+            ElicitationAction::Accept,
+            None,
+        )
+        .expect("elicitation response");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ElicitationResponse {
+                session_id: "session-1".to_owned(),
+                elicitation_request_id: "elicitation-1".to_owned(),
+                action: ElicitationAction::Accept,
+                content: None,
+            }
         );
     }
 }
