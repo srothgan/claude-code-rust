@@ -34,10 +34,11 @@ pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
 };
 pub use types::{
-    AppStatus, CancelOrigin, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
-    MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
-    RenderCacheBudget, SUBAGENT_THINKING_DEBOUNCE, ScrollbarDragState, SelectionKind,
-    SelectionPoint, SelectionState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
+    AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
+    LoginHint, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
+    RecentSessionInfo, RenderCacheBudget, SUBAGENT_THINKING_DEBOUNCE, ScrollbarDragState,
+    SelectionKind, SelectionPoint, SelectionState, SessionUsageState, TodoItem, TodoStatus,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{ChatViewport, InvalidationLevel};
 
@@ -215,6 +216,8 @@ pub struct App {
     pub startup_status_blocking_error: bool,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
+    /// Config > Usage snapshot and refresh lifecycle.
+    pub usage: UsageState,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
     /// Latest rate-limit telemetry from the SDK.
@@ -637,6 +640,7 @@ impl App {
             update_check_hint: None,
             startup_status_blocking_error: false,
             session_usage: SessionUsageState::default(),
+            usage: UsageState::default(),
             fast_mode_state: model::FastModeState::Off,
             last_rate_limit_update: None,
             is_compacting: false,

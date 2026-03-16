@@ -1339,6 +1339,12 @@ pub fn close(app: &mut App) {
     view::set_active_view(app, ActiveView::Chat);
 }
 
+pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
+    app.config.active_tab = tab;
+    app.config.status_message = None;
+    request_active_tab_side_effects(app);
+}
+
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
         app.should_quit = true;
@@ -1386,18 +1392,21 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         {
             edit::generate_session_title(app);
         }
+        (KeyCode::Char(ch), modifiers)
+            if app.config.active_tab == ConfigTab::Usage
+                && matches!(ch, 'r' | 'R')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
+        {
+            crate::app::usage::request_refresh(app);
+        }
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
         (KeyCode::BackTab, _) => {
-            app.config.active_tab = app.config.active_tab.prev();
-            app.config.status_message = None;
-            request_active_tab_side_effects(app);
+            activate_tab(app, app.config.active_tab.prev());
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
-            app.config.active_tab = app.config.active_tab.next();
-            app.config.status_message = None;
-            request_active_tab_side_effects(app);
+            activate_tab(app, app.config.active_tab.next());
         }
         (KeyCode::Up, KeyModifiers::NONE) => {
             if app.config.active_tab == ConfigTab::Settings {
@@ -1428,6 +1437,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 
 fn request_active_tab_side_effects(app: &mut App) {
     request_status_snapshot_if_needed(app);
+    if app.config.active_tab == ConfigTab::Usage {
+        crate::app::usage::request_refresh_if_needed(app);
+    }
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }

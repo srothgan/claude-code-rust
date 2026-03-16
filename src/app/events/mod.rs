@@ -113,6 +113,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
@@ -192,6 +193,15 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::StatusSnapshotReceived { account } => {
             app.account_info = Some(account);
             app.needs_redraw = true;
+        }
+        ClientEvent::UsageRefreshStarted => {
+            crate::app::usage::apply_refresh_started(app);
+        }
+        ClientEvent::UsageSnapshotReceived { snapshot } => {
+            crate::app::usage::apply_refresh_success(app, snapshot);
+        }
+        ClientEvent::UsageRefreshFailed { message, source } => {
+            crate::app::usage::apply_refresh_failure(app, message, source);
         }
         ClientEvent::PluginsInventoryUpdated { snapshot, claude_path } => {
             crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);

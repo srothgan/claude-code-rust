@@ -40,6 +40,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/config" => handle_config_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
+        "/usage" => handle_usage_submit(app, &parsed.args),
         "/login" => handle_login_submit(app, &parsed.args),
         "/logout" => handle_logout_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
@@ -98,8 +99,7 @@ fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, format!("Failed to open plugins: {err}"));
         return true;
     }
-    app.config.active_tab = crate::app::ConfigTab::Plugins;
-    crate::app::plugins::request_inventory_refresh_if_needed(app);
+    crate::app::config::activate_tab(app, crate::app::ConfigTab::Plugins);
     true
 }
 
@@ -113,8 +113,21 @@ fn handle_status_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, format!("Failed to open status: {err}"));
         return true;
     }
-    app.config.active_tab = crate::app::ConfigTab::Status;
-    crate::app::config::request_status_snapshot_if_needed(app);
+    crate::app::config::activate_tab(app, crate::app::ConfigTab::Status);
+    true
+}
+
+fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /usage");
+        return true;
+    }
+
+    if let Err(err) = crate::app::config::open(app) {
+        push_system_message(app, format!("Failed to open usage: {err}"));
+        return true;
+    }
+    crate::app::config::activate_tab(app, crate::app::ConfigTab::Usage);
     true
 }
 

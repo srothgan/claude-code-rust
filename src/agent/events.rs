@@ -17,6 +17,7 @@
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
 use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
+use crate::app::{UsageSnapshot, UsageSourceKind};
 use crate::error::AppError;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -82,6 +83,12 @@ pub enum ClientEvent {
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
     StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
+    /// Usage refresh task started.
+    UsageRefreshStarted,
+    /// Usage refresh completed successfully.
+    UsageSnapshotReceived { snapshot: UsageSnapshot },
+    /// Usage refresh failed.
+    UsageRefreshFailed { message: String, source: UsageSourceKind },
     /// Claude CLI plugin inventory refresh completed.
     PluginsInventoryUpdated { snapshot: PluginsInventorySnapshot, claude_path: PathBuf },
     /// Claude CLI plugin inventory refresh failed.

@@ -203,6 +203,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
         assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
         assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
+        assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
     }
 
     #[test]
@@ -698,6 +699,19 @@ mod tests {
     }
 
     #[test]
+    fn usage_opens_config_at_usage_tab() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        let consumed = try_handle_submit(&mut app, "/usage");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(app.config.active_tab, super::super::ConfigTab::Usage);
+    }
+
+    #[test]
     fn status_with_extra_args_returns_usage() {
         let mut app = App::test_default();
 
@@ -714,10 +728,34 @@ mod tests {
     }
 
     #[test]
+    fn usage_with_extra_args_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/usage extra");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /usage");
+    }
+
+    #[test]
     fn status_appears_in_candidates() {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/status"), "missing /status");
+    }
+
+    #[test]
+    fn usage_appears_in_candidates() {
+        let app = App::test_default();
+        let names: Vec<String> =
+            supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
+        assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
     }
 }

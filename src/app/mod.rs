@@ -40,6 +40,7 @@ mod terminal;
 mod todos;
 mod trust;
 mod update_check;
+pub(crate) mod usage;
 mod view;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
@@ -57,12 +58,13 @@ pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::cache_metrics;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, HelpView,
-    IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LoginHint,
+    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, ExtraUsage,
+    HelpView, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LoginHint,
     MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState, PasteSessionState,
     PendingCommandAck, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
     SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, WelcomeBlock, is_execute_tool_name,
+    TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,
+    UsageState, UsageWindow, WelcomeBlock, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

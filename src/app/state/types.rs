@@ -87,6 +87,66 @@ pub struct MessageUsage {
     pub cache_write_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageSourceMode {
+    #[default]
+    Auto,
+    Oauth,
+    Cli,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageSourceKind {
+    Oauth,
+    Cli,
+}
+
+impl UsageSourceKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Oauth => "oauth",
+            Self::Cli => "cli",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageWindow {
+    pub label: &'static str,
+    pub utilization: f64,
+    pub resets_at: Option<std::time::SystemTime>,
+    pub reset_description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraUsage {
+    pub monthly_limit: Option<f64>,
+    pub used_credits: Option<f64>,
+    pub utilization: Option<f64>,
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageSnapshot {
+    pub source: UsageSourceKind,
+    pub fetched_at: std::time::SystemTime,
+    pub five_hour: Option<UsageWindow>,
+    pub seven_day: Option<UsageWindow>,
+    pub seven_day_opus: Option<UsageWindow>,
+    pub seven_day_sonnet: Option<UsageWindow>,
+    pub extra_usage: Option<ExtraUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UsageState {
+    pub snapshot: Option<UsageSnapshot>,
+    pub in_flight: bool,
+    pub last_error: Option<String>,
+    pub active_source: UsageSourceMode,
+    pub last_attempted_source: Option<UsageSourceKind>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,

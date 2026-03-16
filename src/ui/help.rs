@@ -360,12 +360,14 @@ fn pending_command_help_label(app: &App) -> String {
     app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
-fn builtin_slash_help_commands() -> [(&'static str, &'static str); 4] {
+fn builtin_slash_help_commands() -> [(&'static str, &'static str); 6] {
     [
         ("/config", "Open settings"),
         ("/login", "Authenticate with Claude"),
         ("/logout", "Sign out of Claude"),
         ("/plugins", "Open plugins"),
+        ("/status", "Show session status"),
+        ("/usage", "Open usage"),
     ]
 }
 
@@ -780,6 +782,7 @@ mod tests {
         assert!(has_item(&items, "/config", "Open settings"));
         assert!(has_item(&items, "/login", "Authenticate with Claude"));
         assert!(has_item(&items, "/logout", "Sign out of Claude"));
+        assert!(has_item(&items, "/usage", "Open usage"));
         assert!(!has_item(
             &items,
             "No slash commands advertised",

@@ -71,7 +71,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
         ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
         ConfigTab::Status => status::render(frame, chunks[1], app),
-        ConfigTab::Usage => usage::render(frame, chunks[1]),
+        ConfigTab::Usage => usage::render(frame, chunks[1], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[1]),
     }
 
@@ -155,7 +155,10 @@ fn config_help_text(app: &App) -> String {
                 "Left/Right switch list | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
             }
         }
-        ConfigTab::Usage | ConfigTab::Mcp => {
+        ConfigTab::Usage => {
+            "r refresh | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+        }
+        ConfigTab::Mcp => {
             "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
         }
         ConfigTab::Status => {
@@ -1380,6 +1383,35 @@ mod tests {
         assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
         assert!(rendered.contains("Tab next tab"), "missing tab navigation hint");
         assert!(rendered.contains("Enter close"), "missing Enter close");
+    }
+
+    #[test]
+    fn usage_tab_help_shows_refresh_hint() {
+        fn buffer_text(buffer: &Buffer) -> String {
+            let width = usize::from(buffer.area.width);
+            buffer
+                .content
+                .chunks(width)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::test_default();
+        app.active_view = crate::app::ActiveView::Config;
+        app.config.active_tab = crate::app::ConfigTab::Usage;
+
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("r refresh"));
+        assert!(rendered.contains("Shift+Tab prev tab"));
     }
 
     #[test]

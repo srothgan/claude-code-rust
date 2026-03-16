@@ -494,6 +494,34 @@ fn status_tab_r_opens_session_rename_overlay() {
     assert_eq!(app.config.session_rename_overlay().map(|overlay| overlay.cursor), Some(20));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn activating_usage_tab_starts_refresh_lifecycle() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (_dir, mut app) = open_settings_test_app();
+
+            activate_tab(&mut app, ConfigTab::Usage);
+
+            assert_eq!(app.config.active_tab, ConfigTab::Usage);
+            assert!(app.usage.in_flight);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn usage_tab_r_triggers_manual_refresh() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (_dir, mut app) = open_settings_test_app();
+            app.config.active_tab = ConfigTab::Usage;
+
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+
+            assert!(app.usage.in_flight);
+        })
+        .await;
+}
+
 #[test]
 fn status_tab_rename_confirm_sends_bridge_command() {
     let (mut app, mut rx) = app_with_status_connection();
