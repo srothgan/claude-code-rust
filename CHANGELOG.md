@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-03-17 [Changes][v0.8.0]
+
+### Features
+
+- **Agent SDK 0.2.74 migration** (#83): Upgrade from SDK 0.2.63 to 0.2.74; inline session settings replace per-flag overrides; agent progress summaries rendered in task tool-call bodies; model capability badges (adaptive thinking, fast mode, auto mode) shown in settings overlay
+- **AskUserQuestion support** (#83): Dedicated question/response bridge path with horizontal and vertical option layouts; multi-select state tracking; inline annotation editing; question progress indicator; shared focus cycling infrastructure with permissions
+- **MCP management tab** (#89): Live MCP server list with connection status indicators and tool counts; `/mcp` slash command; server detail overlay with context-aware actions (reconnect, toggle, authenticate, clear auth); OAuth authentication flow with browser launch and manual callback URL entry; elicitation support for URL-based and form-based modes; stale status revalidation with 30-second cooldown auto-reconnect
+- **Usage tab with quota visualization** (#88, closes #87): Dual-source fetching (OAuth API first, CLI fallback); gauge bars with color-coded utilization (green/yellow/red); 5-hour, 7-day, and per-model quota windows; extra credits panel; `/usage` slash command and `r` manual refresh; 30-second TTL caching; OAuth credential expiry validation
+- **Plugin management** (#85): Three-section Plugins tab (Installed, Marketplace, Marketplace Sources) with CLI-backed operations; install/enable/disable/update/uninstall actions via overlay dialogs; marketplace source add/remove with text input; MCP capability badges; `/plugins` slash command; 5-second inventory cache with background refresh
+- **Status tab and /status command** (#80): Session, account, model, and settings information display; lazy account snapshot fetching via SDK; login method labels (Claude Max, API key variants); session name resolution with custom title/summary/prompt fallback chain; memory path and active setting sources display
+- **Unified syntax highlighting** (#84): Replace `ansi-to-tui` with `syntect` for theme-aware coloring across shell commands, code blocks, and terminal output; ANSI escape stripping state machine; automatic raw unified diff detection and semantic coloring; language-aware code highlighting with extension-based syntax detection
+- **Session management enhancements** (#83): Repository-scoped session discovery with worktree inclusion; session rename and AI-generated title actions in Status tab; text overlay for rename input with immediate visual feedback
+- **Tool output metadata** (#83): Structured metadata for Bash (assistant-backgrounded badge, token-saver state), ExitPlanMode (ultraplan badge), TodoWrite (verification-needed badge), and Write/Edit (git repository labels in diff headers); MCP resource content typing with URI, MIME type, and blob saved-path hints
+
+### Fixes
+
+- **Paste-handled Enter suppression** (#83): Treat paste-handled Enter as fully consumed in key dispatch; prevent suppressed paste newlines from falling through to non-char cleanup; restores inline multiline paste insertion for sub-1000 character payloads
+- **Bell notification fallback** (#83): Restore bell alongside desktop notifications on terminals without OSC 9 support; keep auto notification routing aligned with pre-settings behavior
+
+### UI
+
+- **Config tab activation helper** (#88): Centralized `activate_tab` function for consistent tab-switch behavior across `/plugins`, `/status`, `/usage`, `/mcp`, and keyboard navigation
+- **Shared text input widget** (#85): Reusable `text_input_line()` and `render_text_input_field()` components used by Language, Session Rename, and Add Marketplace overlays
+- **Setting stepping** (#85): Left/Right arrow editing for enum settings (Theme, Notifications, EditorMode, DefaultPermissionMode) in config view
+
+### Performance
+
+- **Progressive resize height recomputation** (#90): Replace synchronous full-remeasure on terminal width change with frame-budgeted progressive convergence; scroll anchor preservation across resize; per-message exactness tracking with expanding measurement frontiers around the visible window; measurement budget of max(12, viewport_height) messages and max(256, viewport_height * 8) wrapped lines per frame
+- **Background file walker for mentions** (#81): Replace synchronous BFS with `ignore` crate `WalkBuilder` on a background thread; query refinement refilters from cache instead of restarting the walk; pre-computed lowercase path variants eliminate per-sort allocation; bounded channel (1024 entries) with 500-entry drain budget per tick
+- **Input redraw and cache optimization** (#82): Split input versioning into cursor-only and content epochs; syntax highlighting and height measurement caches keyed on content version; key handlers return visibility signals to suppress redraws for non-visual events; Windows paste burst jitter tolerance in pending confirmation window
+- **Background bash terminal detachment** (#86): Detach terminal references when Bash tools reach completed or failed state; skip polling for non-running tools; prevent late bridge progress updates from reopening finalized tools; clear execute terminal references during forced tool finalization
+- **Dev/test profile tuning** (#83): Line-tables-only debug info and disabled incremental builds for faster compilation
+
+### Licensing
+
+- **Apache-2.0**: Switch project license from AGPL-3.0-or-later to Apache-2.0; SPDX single-line identifiers replace full header blocks across all source files
+
+### CI and Dependencies
+
+- Bump `@anthropic-ai/claude-agent-sdk` from 0.2.63 to 0.2.74 (#83)
+- Replace `ansi-to-tui` with `syntect` 5.3.0 (#84)
+- Bump `tui-textarea-2` from 0.10.1 to 0.10.2 (#82)
+- Add version comparison to release dry-run workflow to skip unchanged versions (#82)
+
 ## [0.7.1] - 2026-03-12 [Changes][v0.7.1]
 
 ### Fixes
@@ -314,6 +358,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.8.0]: https://github.com/srothgan/claude-code-rust/compare/v0.7.1...v0.8.0
 [v0.7.1]: https://github.com/srothgan/claude-code-rust/compare/v0.7.0...v0.7.1
 [v0.7.0]: https://github.com/srothgan/claude-code-rust/compare/v0.6.0...v0.7.0
 [v0.6.0]: https://github.com/srothgan/claude-code-rust/compare/v0.5.1...v0.6.0

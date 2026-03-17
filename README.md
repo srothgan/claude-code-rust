@@ -59,10 +59,6 @@ Three-layer design:
 
 **Agent Runtime** (Anthropic Agent SDK) - The TypeScript bridge drives `@anthropic-ai/claude-agent-sdk`, which manages authentication, session/query lifecycle, and tool execution.
 
-## Known Limitations
-
-- The config view includes the Settings tab but the Status, Usage, and MCP tabs are not yet implemented.
-
 ## Status
 
 This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
