@@ -78,7 +78,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 - **Naming**: Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.html)
 - **Error handling**: Use `thiserror` for library errors, `anyhow` in main/app
 - **Comments**: Only where the logic isn't self-evident
-- **License headers**: Every new `.rs` file must include the AGPL-3.0 header
+- **License headers**: Every new `.rs` file should include `// SPDX-License-Identifier: Apache-2.0`
 
 ## Architecture
 
@@ -92,4 +92,4 @@ Key architectural decisions:
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
-AGPL-3.0-or-later license, the same license as the project.
+Apache-2.0 license, the same license as the project.
