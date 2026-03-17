@@ -1764,6 +1764,7 @@ mod tests {
         assert_eq!(vp.width, 0);
         assert!(vp.message_heights.is_empty());
         assert!(vp.dirty_from.is_none());
+        assert!(!vp.resize_remeasure_active());
         assert!(vp.height_prefix_sums.is_empty());
     }
 
@@ -1838,6 +1839,82 @@ mod tests {
         assert_eq!(vp.dirty_from, Some(1));
         vp.mark_heights_valid();
         assert!(vp.dirty_from.is_none());
+    }
+
+    #[test]
+    fn viewport_resize_remeasure_tracks_partial_exactness() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.sync_message_count(3);
+        vp.set_message_height(0, 4);
+        vp.set_message_height(1, 5);
+        vp.set_message_height(2, 6);
+        vp.mark_heights_valid();
+
+        vp.on_frame(120);
+        assert!(vp.resize_remeasure_active());
+        assert!(!vp.message_height_is_current(0));
+
+        vp.mark_message_height_measured(1);
+        assert!(vp.message_height_is_current(1));
+        assert!(!vp.message_height_is_current(0));
+
+        vp.mark_heights_valid();
+        assert_eq!(vp.message_heights_width, 120);
+        assert!(vp.message_height_is_current(0));
+        assert!(!vp.resize_remeasure_active());
+    }
+
+    #[test]
+    fn viewport_resize_remeasure_expands_outward_from_anchor() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.sync_message_count(6);
+        vp.mark_heights_valid();
+
+        vp.on_frame(100);
+        vp.ensure_resize_remeasure_anchor(2, 3, 6);
+
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(5));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_resize_remeasure_index(6), None);
+        assert!(!vp.resize_remeasure_active());
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn viewport_restore_resize_anchor_keeps_same_message_visible() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.on_frame(40);
+        let (anchor_idx, anchor_offset) =
+            vp.resize_scroll_anchor().expect("resize should snapshot a scroll anchor");
+        assert_eq!((anchor_idx, anchor_offset), (1, 2));
+
+        vp.set_message_height(0, 12);
+        vp.set_message_height(1, 8);
+        vp.set_message_height(2, 6);
+        vp.set_message_height(3, 6);
+        vp.prefix_sums_width = 0;
+        vp.rebuild_prefix_sums();
+        vp.restore_scroll_anchor(anchor_idx, anchor_offset);
+
+        assert_eq!(vp.scroll_offset, 14);
+        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
     #[test]
