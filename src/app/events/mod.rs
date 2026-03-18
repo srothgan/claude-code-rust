@@ -185,7 +185,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             if let Some(model_name) = model_name {
                 app.model_name = model_name;
                 app.cached_header_line = None;
-                app.update_welcome_model_if_pristine();
+                app.update_welcome_model_once();
             } else if option_id == "model" {
                 tracing::warn!("ConfigOptionUpdate for model carried non-string value");
             }
@@ -1082,6 +1082,7 @@ mod tests {
     #[test]
     fn connected_updates_welcome_model_while_pristine() {
         let mut app = make_test_app();
+        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
@@ -1093,6 +1094,24 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "claude-updated");
+    }
+
+    #[test]
+    fn connected_updates_welcome_to_default_for_provisional_default_model() {
+        let mut app = make_test_app();
+        app.welcome_model_resolved = false;
+        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+
+        handle_client_event(&mut app, connected_event("default"));
+
+        let Some(first) = app.messages.first() else {
+            panic!("missing welcome message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "default");
+        assert!(!app.welcome_model_resolved);
     }
 
     #[test]
@@ -1125,6 +1144,7 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
+        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.resuming_session_id = Some("resume-123".into());
 
@@ -1153,8 +1173,9 @@ mod tests {
     }
 
     #[test]
-    fn connected_does_not_update_welcome_after_chat_started() {
+    fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
+        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.messages.push(user_msg("hello"));
 
@@ -1166,7 +1187,54 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "Connecting...");
+        assert_eq!(welcome.model_name, "claude-updated");
+        assert!(app.welcome_model_resolved);
+    }
+
+    #[test]
+    fn model_config_update_resolves_welcome_once_after_provisional_default() {
+        let mut app = make_test_app();
+        app.model_name = "default".into();
+        app.welcome_model_resolved = false;
+        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(user_msg("hello"));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
+                model::ConfigOptionUpdate {
+                    option_id: "model".into(),
+                    value: serde_json::Value::String("claude-opus-4-6".into()),
+                },
+            )),
+        );
+
+        let Some(first) = app.messages.first() else {
+            panic!("missing first message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "claude-opus-4-6");
+        assert!(app.welcome_model_resolved);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
+                model::ConfigOptionUpdate {
+                    option_id: "model".into(),
+                    value: serde_json::Value::String("claude-sonnet-4-5".into()),
+                },
+            )),
+        );
+
+        let Some(first) = app.messages.first() else {
+            panic!("missing first message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "claude-opus-4-6");
     }
 
     #[test]

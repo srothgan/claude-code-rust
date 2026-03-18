@@ -2,7 +2,7 @@ use super::ConfigOverlayState;
 use super::edit::{
     TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
     insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,
-    move_text_cursor_to_end, set_text_cursor, step_index_clamped, text_input_overlay_state,
+    move_text_cursor_to_end, set_text_cursor, step_index_clamped,
 };
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
@@ -140,19 +140,6 @@ fn handle_mcp_callback_url_overlay_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
-}
-
-#[allow(dead_code)]
-fn open_mcp_callback_url_overlay(app: &mut App, server_name: &str) {
-    app.config.overlay = Some(ConfigOverlayState::McpCallbackUrl(text_input_overlay_state(
-        String::new(),
-        |draft, cursor| McpCallbackUrlOverlayState {
-            server_name: server_name.to_owned(),
-            draft,
-            cursor,
-        },
-    )));
-    app.config.last_error = None;
 }
 
 fn cancel_mcp_callback_url_overlay(app: &mut App) {

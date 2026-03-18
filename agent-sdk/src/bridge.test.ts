@@ -409,8 +409,9 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
       "Always respond to the user in German unless the user explicitly asks for a different language. " +
       "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
   });
-  assert.equal("model" in options, false);
-  assert.equal("permissionMode" in options, false);
+  assert.equal(options.model, "haiku");
+  assert.equal(options.permissionMode, "plan");
+  assert.equal("allowDangerouslySkipPermissions" in options, false);
   assert.equal("thinking" in options, false);
   assert.equal("effort" in options, false);
   assert.equal(options.agentProgressSummaries, true);
@@ -421,7 +422,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   });
 });
 
-test("buildQueryOptions forwards settings without direct model and permission flags", () => {
+test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
     cwd: "C:/work",
@@ -454,9 +455,53 @@ test("buildQueryOptions forwards settings without direct model and permission fl
     terminalProgressBarEnabled: false,
   });
   assert.equal("model" in options, false);
-  assert.equal("permissionMode" in options, false);
+  assert.equal(options.permissionMode, "default");
+  assert.equal("allowDangerouslySkipPermissions" in options, false);
   assert.equal("thinking" in options, false);
   assert.equal("effort" in options, false);
+});
+
+test("buildQueryOptions trims startup model before passing sdk option", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        model: "  claude-opus-4-6  ",
+        permissions: { defaultMode: "plan" },
+      },
+    },
+    provisionalSessionId: "session-model",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-model",
+  });
+
+  assert.equal(options.model, "claude-opus-4-6");
+  assert.equal(options.permissionMode, "plan");
+});
+
+test("buildQueryOptions enables dangerous skip flag for bypass permissions startup mode", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        permissions: { defaultMode: "bypassPermissions" },
+      },
+    },
+    provisionalSessionId: "session-4",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-4",
+  });
+
+  assert.equal(options.permissionMode, "bypassPermissions");
+  assert.equal(options.allowDangerouslySkipPermissions, true);
 });
 
 test("buildQueryOptions omits startup overrides for default logout path", () => {
@@ -474,6 +519,7 @@ test("buildQueryOptions omits startup overrides for default logout path", () => 
 
   assert.equal("model" in options, false);
   assert.equal("permissionMode" in options, false);
+  assert.equal("allowDangerouslySkipPermissions" in options, false);
   assert.equal("systemPrompt" in options, false);
   assert.equal("agentProgressSummaries" in options, false);
 });
