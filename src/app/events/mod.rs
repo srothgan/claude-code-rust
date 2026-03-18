@@ -1291,7 +1291,6 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.startup_status_blocking_error);
         let Some(last) = app.messages.last() else {
             panic!("expected system message");
         };
@@ -1299,8 +1298,9 @@ mod tests {
     }
 
     #[test]
-    fn service_status_error_locks_input_and_survives_connected_event() {
+    fn service_status_error_pushes_system_error_without_locking_input() {
         let mut app = make_test_app();
+        app.input.set_text("draft stays");
 
         handle_client_event(
             &mut app,
@@ -1310,15 +1310,12 @@ mod tests {
             },
         );
 
-        assert!(matches!(app.status, AppStatus::Error));
-        assert!(app.startup_status_blocking_error);
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.input.text(), "draft stays");
         let Some(last) = app.messages.last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
-
-        handle_client_event(&mut app, connected_event("claude-updated"));
-        assert!(matches!(app.status, AppStatus::Error));
     }
 
     #[test]

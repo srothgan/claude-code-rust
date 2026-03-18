@@ -7,7 +7,6 @@ use super::super::{
 };
 use super::clear_compaction_state;
 use super::rate_limit::format_rate_limit_summary;
-use super::session::set_ready_status_unless_startup_blocked;
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use std::collections::BTreeSet;
@@ -175,7 +174,7 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
     }
 
-    set_ready_status_unless_startup_blocked(app);
+    app.status = AppStatus::Ready;
     app.files_accessed = 0;
     app.clear_tool_scope_tracking();
     app.refresh_git_branch();

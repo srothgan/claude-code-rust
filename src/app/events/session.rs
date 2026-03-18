@@ -236,23 +236,11 @@ pub(super) fn handle_service_status_event(
     severity: ServiceStatusSeverity,
     message: &str,
 ) {
-    let mut full_message = message.to_owned();
-    if matches!(severity, ServiceStatusSeverity::Error) {
-        full_message.push_str("\n\n");
-        full_message.push_str(TURN_ERROR_INPUT_LOCK_HINT);
-    }
     let ui_severity = match severity {
         ServiceStatusSeverity::Warning => SystemSeverity::Warning,
         ServiceStatusSeverity::Error => SystemSeverity::Error,
     };
-    push_system_message_with_severity(app, Some(ui_severity), &full_message);
-
-    if matches!(severity, ServiceStatusSeverity::Error) {
-        app.startup_status_blocking_error = true;
-        app.input.clear();
-        app.pending_submit = None;
-        app.status = AppStatus::Error;
-    }
+    push_system_message_with_severity(app, Some(ui_severity), message);
 }
 
 pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
@@ -264,19 +252,11 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.pending_command_ack = None;
 }
 
-pub(super) fn set_ready_status_unless_startup_blocked(app: &mut App) {
-    if app.startup_status_blocking_error {
-        app.status = AppStatus::Error;
-        return;
-    }
-    app.status = AppStatus::Ready;
-}
-
-/// Clear the `CommandPending` state and restore `Ready` (or `Error` if startup-blocked).
+/// Clear the `CommandPending` state and restore `Ready`.
 pub(super) fn clear_pending_command(app: &mut App) {
     app.pending_command_label = None;
     app.pending_command_ack = None;
-    set_ready_status_unless_startup_blocked(app);
+    app.status = AppStatus::Ready;
 }
 
 fn push_connection_error_message(app: &mut App, error: &str) {

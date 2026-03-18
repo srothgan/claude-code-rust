@@ -158,7 +158,6 @@ pub fn create_app(cli: &Cli) -> App {
         cached_header_line: None,
         cached_footer_line: None,
         update_check_hint: None,
-        startup_status_blocking_error: false,
         session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
