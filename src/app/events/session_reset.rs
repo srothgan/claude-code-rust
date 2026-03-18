@@ -51,11 +51,13 @@ fn reset_session_identity_state(
 fn reset_messages_for_new_session(app: &mut App) {
     app.messages.clear();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    app.welcome_model_resolved = false;
     app.messages.push(ChatMessage::welcome_with_recent(
-        &app.model_name,
+        app.model_display_name(),
         &app.cwd,
         &app.recent_sessions,
     ));
+    app.update_welcome_model_once();
     app.viewport = super::super::ChatViewport::new();
 }
 
@@ -148,11 +150,13 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
     app.messages.clear();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    app.welcome_model_resolved = false;
     app.messages.push(ChatMessage::welcome_with_recent(
-        &app.model_name,
+        app.model_display_name(),
         &app.cwd,
         &app.recent_sessions,
     ));
+    app.update_welcome_model_once();
     for update in history_updates {
         match update {
             model::SessionUpdate::UserMessageChunk(chunk) => {

@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             ),
             sep(),
             Span::styled("Model: ", Style::default().fg(theme::DIM)),
-            Span::styled(app.model_name.clone(), white),
+            Span::styled(app.model_display_name().to_owned(), white),
             sep(),
             Span::styled("Loc: ", Style::default().fg(theme::DIM)),
             Span::styled(app.cwd.clone(), white),
@@ -48,5 +48,38 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(line) = &app.cached_header_line {
         frame.render_widget(Paragraph::new(line.clone()), padded);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::model::SessionId;
+
+    #[test]
+    fn model_display_name_stays_connecting_before_session_exists() {
+        let mut app = App::test_default();
+        app.session_id = None;
+        app.model_name = "default".to_owned();
+
+        assert_eq!(app.model_display_name(), "Connecting...");
+    }
+
+    #[test]
+    fn model_display_name_uses_default_for_connected_unknown_model() {
+        let mut app = App::test_default();
+        app.session_id = Some(SessionId::new("session-1"));
+        app.model_name = "default".to_owned();
+
+        assert_eq!(app.model_display_name(), "default");
+    }
+
+    #[test]
+    fn model_display_name_uses_authoritative_model_when_available() {
+        let mut app = App::test_default();
+        app.session_id = Some(SessionId::new("session-1"));
+        app.model_name = "claude-opus-4-6".to_owned();
+
+        assert_eq!(app.model_display_name(), "claude-opus-4-6");
     }
 }

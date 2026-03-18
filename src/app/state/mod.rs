@@ -72,6 +72,8 @@ pub struct App {
     /// Agent connection handle. `None` while connecting (before bridge is ready).
     pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
     pub model_name: String,
+    /// True once the welcome banner has captured its one-time session model label.
+    pub welcome_model_resolved: bool,
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
@@ -331,16 +333,56 @@ impl App {
         }
         self.messages.insert(
             0,
-            ChatMessage::welcome_with_recent(&self.model_name, &self.cwd, &self.recent_sessions),
+            ChatMessage::welcome_with_recent(
+                self.welcome_model_display_name(),
+                &self.cwd,
+                &self.recent_sessions,
+            ),
         );
+        self.welcome_model_resolved = self.model_name_is_authoritative();
         self.invalidate_layout(InvalidationLevel::From(0));
     }
 
-    /// Update the welcome message's model name, but only before chat starts.
-    pub fn update_welcome_model_if_pristine(&mut self) {
-        if self.messages.len() != 1 {
+    fn model_name_is_authoritative(&self) -> bool {
+        let model_name = self.model_name.trim();
+        if model_name.is_empty() || model_name == "Connecting..." {
+            return false;
+        }
+        if model_name != "default" {
+            return true;
+        }
+        matches!(
+            crate::app::config::store::model(&self.config.committed_settings_document),
+            Ok(Some(configured_model)) if configured_model.trim() == "default"
+        )
+    }
+
+    #[must_use]
+    pub fn model_display_name(&self) -> &str {
+        let model_name = self.model_name.trim();
+        if self.session_id.is_none()
+            && (model_name.is_empty() || model_name == "Connecting..." || model_name == "default")
+        {
+            "Connecting..."
+        } else if model_name.is_empty() || model_name == "Connecting..." {
+            "default"
+        } else {
+            &self.model_name
+        }
+    }
+
+    #[must_use]
+    fn welcome_model_display_name(&self) -> &str {
+        self.model_display_name()
+    }
+
+    /// Update the welcome message's model name once, when the session model becomes authoritative.
+    pub fn update_welcome_model_once(&mut self) {
+        if self.welcome_model_resolved {
             return;
         }
+        let welcome_model = self.welcome_model_display_name().to_owned();
+        let model_is_authoritative = self.model_name_is_authoritative();
         let Some(first) = self.messages.first_mut() else {
             return;
         };
@@ -350,9 +392,14 @@ impl App {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
             return;
         };
-        welcome.model_name.clone_from(&self.model_name);
-        welcome.cache.invalidate();
-        self.invalidate_layout(InvalidationLevel::From(0));
+        if welcome.model_name != welcome_model {
+            welcome.model_name = welcome_model;
+            welcome.cache.invalidate();
+            self.invalidate_layout(InvalidationLevel::From(0));
+        }
+        if model_is_authoritative {
+            self.welcome_model_resolved = true;
+        }
     }
 
     /// Update the welcome message with latest discovered recent sessions.
@@ -550,6 +597,7 @@ impl App {
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
@@ -569,6 +617,7 @@ impl App {
             session_id: None,
             conn: None,
             model_name: "test-model".into(),
+            welcome_model_resolved: true,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
             files_accessed: 0,

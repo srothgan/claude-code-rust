@@ -99,6 +99,7 @@ pub fn create_app(cli: &Cli) -> App {
         session_id: None,
         conn: None,
         model_name: initial_model_name,
+        welcome_model_resolved: false,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,

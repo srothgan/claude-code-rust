@@ -367,6 +367,16 @@ function initialSessionModel(launchSettings: SessionLaunchSettings): string {
   return model || DEFAULT_MODEL_NAME;
 }
 
+function startupModelOption(
+  launchSettings: SessionLaunchSettings,
+): {
+  model?: string;
+} {
+  const settings = settingsObjectFromLaunchSettings(launchSettings);
+  const model = typeof settings?.model === "string" ? settings.model.trim() : "";
+  return model ? { model } : {};
+}
+
 function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMode {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
   const permissions =
@@ -374,6 +384,29 @@ function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMo
       ? (settings.permissions as Record<string, unknown>)
       : undefined;
   return permissionModeFromSettingsValue(permissions?.defaultMode) ?? DEFAULT_PERMISSION_MODE;
+}
+
+function startupPermissionModeOptions(
+  launchSettings: SessionLaunchSettings,
+): {
+  permissionMode?: PermissionMode;
+  allowDangerouslySkipPermissions?: boolean;
+} {
+  const settings = settingsObjectFromLaunchSettings(launchSettings);
+  const permissions =
+    settings?.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : undefined;
+  const permissionMode = permissionModeFromSettingsValue(permissions?.defaultMode);
+  if (!permissionMode) {
+    return {};
+  }
+  return permissionMode === "bypassPermissions"
+    ? {
+        permissionMode,
+        allowDangerouslySkipPermissions: true,
+      }
+    : { permissionMode };
 }
 
 function systemPromptFromLaunchSettings(
@@ -401,12 +434,16 @@ function systemPromptFromLaunchSettings(
 
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
+  const modelOption = startupModelOption(params.launchSettings);
+  const permissionModeOptions = startupPermissionModeOptions(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(params.launchSettings.settings ? { settings: params.launchSettings.settings } : {}),
+    ...modelOption,
+    ...permissionModeOptions,
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(params.launchSettings.agent_progress_summaries !== undefined

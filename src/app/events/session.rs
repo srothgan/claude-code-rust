@@ -50,7 +50,7 @@ pub(super) fn handle_connected_client_event(
     app.pending_auto_submit_after_cancel = false;
     app.cached_header_line = None;
     app.cached_footer_line = None;
-    app.update_welcome_model_if_pristine();
+    app.update_welcome_model_once();
     app.sync_welcome_recent_sessions();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);

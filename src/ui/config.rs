@@ -696,43 +696,6 @@ fn marketplace_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-#[allow(dead_code)]
-fn render_overlay_separator_legacy(frame: &mut Frame, area: Rect) {
-    let width = usize::from(area.width.max(1));
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(width),
-            Style::default().fg(theme::DIM),
-        ))),
-        area,
-    );
-}
-
-#[allow(dead_code)]
-fn overlay_rect(area: Rect, spec: OverlayLayoutSpec) -> Rect {
-    if spec
-        .fullscreen_below
-        .is_some_and(|(min_width, min_height)| area.width < min_width || area.height < min_height)
-    {
-        return area;
-    }
-
-    let overlay_width = ((u32::from(area.width) * u32::from(spec.width_percent)) / 100)
-        .try_into()
-        .unwrap_or(area.width)
-        .max(spec.min_width)
-        .clamp(1, area.width);
-    let percent_height = ((u32::from(area.height) * u32::from(spec.height_percent)) / 100)
-        .try_into()
-        .unwrap_or(area.height)
-        .clamp(1, area.height);
-    let overlay_height = percent_height
-        .min(spec.preferred_height.min(area.height))
-        .max(spec.min_height.min(area.height));
-
-    centered_rect_with_size(area, overlay_width, overlay_height)
-}
-
 fn model_and_effort_section_heights(inner_height: u16) -> (u16, u16) {
     const CHROME_HEIGHT: u16 = 3;
     const DEFAULT_EFFORT_HEIGHT: u16 = 8;
@@ -909,18 +872,6 @@ fn centered_line_area(area: Rect, content_width: u16) -> Rect {
 
     let offset = area.width.saturating_sub(content_width) / 2;
     Rect { x: area.x + offset, y: area.y, width: content_width, height: area.height }
-}
-
-#[allow(dead_code)]
-fn centered_rect_with_size(area: Rect, width: u16, height: u16) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
 }
 
 #[cfg(test)]
