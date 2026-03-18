@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] - 2026-03-18 [Changes][v0.8.1]
+
+### Fixes
+
+- **Startup session settings propagation**: Pass configured `model` and `defaultPermissionMode` through the SDK's top-level session startup options so new sessions start with the expected live model and permission mode instead of falling back to provisional defaults
+- **Welcome banner model sync**: Keep the welcome banner and header aligned through `Connecting...`, provisional `default`, and the first authoritative model update; freeze the welcome banner once the session model is resolved while allowing the header to continue tracking live model changes
+- **Claude status relevance filtering**: Query the status summary endpoint and only surface startup warnings for `Claude Code` and `Claude API`, avoiding false-positive outage banners caused by unrelated Anthropic components
+- **Config cleanup**: Remove obsolete MCP callback overlay code and stale config UI expectations left behind by the MCP management changes
+
 ## [0.8.0] - 2026-03-17 [Changes][v0.8.0]
 
 ### Features
@@ -358,6 +367,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.8.1]: https://github.com/srothgan/claude-code-rust/compare/v0.8.0...v0.8.1
 [v0.8.0]: https://github.com/srothgan/claude-code-rust/compare/v0.7.1...v0.8.0
 [v0.7.1]: https://github.com/srothgan/claude-code-rust/compare/v0.7.0...v0.7.1
 [v0.7.0]: https://github.com/srothgan/claude-code-rust/compare/v0.6.0...v0.7.0
