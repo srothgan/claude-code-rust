@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.2] - 2026-03-18 [Changes][v0.8.2]
+
+### Fixes
+
+- **Startup service status handling**: Keep startup Claude service warnings and errors as transcript messages only; status errors no longer clear the draft or block users from trying a request during partial or uneven outages
+
 ## [0.8.1] - 2026-03-18 [Changes][v0.8.1]
 
 ### Fixes
@@ -367,6 +373,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.8.2]: https://github.com/srothgan/claude-code-rust/compare/v0.8.1...v0.8.2
 [v0.8.1]: https://github.com/srothgan/claude-code-rust/compare/v0.8.0...v0.8.1
 [v0.8.0]: https://github.com/srothgan/claude-code-rust/compare/v0.7.1...v0.8.0
 [v0.7.1]: https://github.com/srothgan/claude-code-rust/compare/v0.7.0...v0.7.1
