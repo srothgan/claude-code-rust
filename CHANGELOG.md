@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.3] - 2026-03-23 [Changes][v0.8.3]
+
+### Performance
+
+- **Unified layout invalidation and progressive remeasure** (#98): Replace the `dirty_from` suffix watermark with per-message staleness tracking, separated prefix-sum dirtiness, and a visible-first remeasure plan; preserve scroll anchors across in-flight resize and global remeasure replacement; single-message updates do exact changed-message remeasure plus targeted prefix repair instead of invalidating the entire suffix
+- **Incremental history retention accounting** (#98): Cache per-message retained-byte estimates and maintain a rolling total so retention enforcement stops rescanning the full message list every cycle; cache tool `raw_input` byte estimates to avoid repeated JSON serialization in hot paths
+- **Incremental render cache budget** (#98): Replace per-frame full cache budget scans with incremental slot metadata, rolling byte totals, and a pre-sorted eviction set rebuilt only when over budget
+- **Derive tool collapse state at render time** (#98): Remove per-tool `collapsed` field; `tools_collapsed` is the session-level source of truth read at render time so Ctrl+O no longer walks and mutates every tool-call block
+- **Index terminal tool-call refs** (#98): Replace linear duplicate checks on terminal subscriptions with a `HashSet` membership index; route attach, detach, and rebuild through shared tracking helpers
+
+### Dependencies
+
+- Bump `aws-lc-sys` from 0.38.0 to 0.39.0 and `aws-lc-rs` from 1.16.1 to 1.16.2 (fixes RUSTSEC-2026-0044, RUSTSEC-2026-0048)
+- Bump `rustls-webpki` from 0.103.9 to 0.103.10 (fixes RUSTSEC-2026-0049)
+- Bump `pulldown-cmark` from 0.13.1 to 0.13.3 (#97)
+
 ## [0.8.2] - 2026-03-18 [Changes][v0.8.2]
 
 ### Fixes
