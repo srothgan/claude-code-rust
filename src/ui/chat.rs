@@ -225,6 +225,7 @@ fn measure_message_height_at(
     stats: &mut HeightUpdateStats,
 ) {
     let msg_count = app.messages.len();
+    let is_last_message = idx + 1 == msg_count;
     let sp =
         msg_spinner(base, idx, msg_count, is_thinking, show_subagent_thinking, &app.messages[idx]);
     let (h, rendered_lines) = measure_message_height(
@@ -233,6 +234,7 @@ fn measure_message_height_at(
         width,
         app.viewport.layout_generation,
         app.tools_collapsed,
+        !is_last_message,
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
@@ -255,15 +257,18 @@ fn measure_message_height(
     width: u16,
     layout_generation: u64,
     tools_collapsed: bool,
+    include_trailing_separator: bool,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) = message::measure_message_height_cached_with_tools_collapsed(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        tools_collapsed,
-    );
+    let (h, wrapped_lines) =
+        message::measure_message_height_cached_with_tools_collapsed_and_separator(
+            msg,
+            spinner,
+            width,
+            layout_generation,
+            tools_collapsed,
+            include_trailing_separator,
+        );
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -529,12 +534,15 @@ fn render_culled_messages(
             msg_spinner(base, i, msg_count, is_thinking, show_subagent_thinking, &app.messages[i]);
         let before = out.len();
         if local_scroll > 0 && consume_skip_in_messages {
-            let rem = message::render_message_from_offset_with_tools_collapsed(
+            let rem = message::render_message_from_offset_internal(
                 &mut app.messages[i],
                 &sp,
                 width,
                 app.viewport.layout_generation,
-                app.tools_collapsed,
+                message::MessageRenderOptions {
+                    tools_collapsed: app.tools_collapsed,
+                    include_trailing_separator: i + 1 != msg_count,
+                },
                 local_scroll,
                 out,
             );
@@ -547,11 +555,12 @@ fn render_culled_messages(
             }
             local_scroll = rem;
         } else {
-            message::render_message_with_tools_collapsed(
+            message::render_message_with_tools_collapsed_and_separator(
                 &mut app.messages[i],
                 &sp,
                 width,
                 app.tools_collapsed,
+                i + 1 != msg_count,
                 out,
             );
             app.sync_render_cache_message(i);
@@ -904,6 +913,29 @@ mod tests {
             app.viewport.message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
         );
+    }
+
+    #[test]
+    fn last_message_height_omits_trailing_separator() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        app.messages = vec![assistant_text_message("hello")];
+
+        app.viewport.on_frame(40);
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+
+        update_visual_heights(&mut app, spinner, false, false, 40, 8);
+        app.viewport.rebuild_prefix_sums();
+
+        assert_eq!(app.viewport.message_height(0), 2);
+        assert_eq!(app.viewport.total_message_height(), 2);
     }
 
     #[allow(clippy::cast_precision_loss)]

@@ -78,6 +78,28 @@ pub fn render_message_with_tools_collapsed(
     tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
+    render_message_internal(msg, spinner, width, tools_collapsed, true, out);
+}
+
+pub fn render_message_with_tools_collapsed_and_separator(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    tools_collapsed: bool,
+    include_trailing_separator: bool,
+    out: &mut Vec<Line<'static>>,
+) {
+    render_message_internal(msg, spinner, width, tools_collapsed, include_trailing_separator, out);
+}
+
+fn render_message_internal(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    tools_collapsed: bool,
+    include_trailing_separator: bool,
+    out: &mut Vec<Line<'static>>,
+) {
     match msg.role {
         MessageRole::Welcome => {
             out.push(role_label_line(&msg.role));
@@ -104,7 +126,9 @@ pub fn render_message_with_tools_collapsed(
     }
 
     // Blank separator between messages
-    out.push(Line::default());
+    if include_trailing_separator {
+        out.push(Line::default());
+    }
 }
 
 fn render_user_blocks(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'static>>) {
@@ -254,6 +278,24 @@ pub fn measure_message_height_cached_with_tools_collapsed(
     layout_generation: u64,
     tools_collapsed: bool,
 ) -> (usize, usize) {
+    measure_message_height_cached_with_tools_collapsed_and_separator(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        tools_collapsed,
+        true,
+    )
+}
+
+pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    tools_collapsed: bool,
+    include_trailing_separator: bool,
+) -> (usize, usize) {
     let mut height = 1usize; // role label
     let mut wrapped_lines = 0usize;
 
@@ -300,7 +342,8 @@ pub fn measure_message_height_cached_with_tools_collapsed(
     }
 
     // Blank separator between messages
-    (height + 1, wrapped_lines)
+    let separator_height = usize::from(include_trailing_separator);
+    (height + separator_height, wrapped_lines)
 }
 
 fn measure_text_blocks_height(
@@ -429,6 +472,26 @@ pub fn render_message_from_offset_with_tools_collapsed(
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
+    render_message_from_offset_internal(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        skip_rows,
+        out,
+    )
+}
+
+pub(crate) fn render_message_from_offset_internal(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    options: MessageRenderOptions,
+    skip_rows: usize,
+    out: &mut Vec<Line<'static>>,
+) -> usize {
     let mut remaining_skip = skip_rows;
     let mut can_consume_skip = true;
 
@@ -452,7 +515,7 @@ pub fn render_message_from_offset_with_tools_collapsed(
                 spinner,
                 width,
                 layout_generation,
-                tools_collapsed,
+                options.tools_collapsed,
                 out,
                 &mut remaining_skip,
                 &mut can_consume_skip,
@@ -470,7 +533,9 @@ pub fn render_message_from_offset_with_tools_collapsed(
         }
     }
 
-    emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+    if options.include_trailing_separator {
+        emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+    }
     remaining_skip
 }
 
@@ -709,6 +774,12 @@ fn emit_blank_lines_with_skip(
 struct RenderedTextBlock {
     lines: Vec<Line<'static>>,
     height: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MessageRenderOptions {
+    pub tools_collapsed: bool,
+    pub include_trailing_separator: bool,
 }
 
 fn assistant_text_block_render(
@@ -1450,6 +1521,31 @@ mod tests {
         let truth_h = ground_truth_height(&mut truth, &spinner, 80);
         assert_eq!(h, truth_h);
         assert_eq!(h, 5);
+    }
+
+    #[test]
+    fn assistant_message_can_render_without_trailing_separator() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "hello");
+        let mut lines = Vec::new();
+
+        render_message_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, false, false, &mut lines,
+        );
+
+        assert_eq!(render_lines_to_strings(&lines), vec!["Claude".to_owned(), "hello".to_owned()]);
+
+        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, 1, false, false,
+        );
+        assert_eq!(h, 2);
     }
 
     #[test]

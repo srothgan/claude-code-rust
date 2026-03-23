@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.4] - 2026-03-23 [Changes][v0.8.4]
+
+### Fixes
+
+- **Chat bottom-height drift**: Stop rendering and measuring the trailing separator row after the final chat message so auto-scroll no longer lands on a persistent empty line beneath the last Claude response; add regression tests for last-message rendering and height measurement
+
 ## [0.8.3] - 2026-03-23 [Changes][v0.8.3]
 
 ### Performance
@@ -389,6 +395,8 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.8.4]: https://github.com/srothgan/claude-code-rust/compare/v0.8.3...v0.8.4
+[v0.8.3]: https://github.com/srothgan/claude-code-rust/compare/v0.8.2...v0.8.3
 [v0.8.2]: https://github.com/srothgan/claude-code-rust/compare/v0.8.1...v0.8.2
 [v0.8.1]: https://github.com/srothgan/claude-code-rust/compare/v0.8.0...v0.8.1
 [v0.8.0]: https://github.com/srothgan/claude-code-rust/compare/v0.7.1...v0.8.0
