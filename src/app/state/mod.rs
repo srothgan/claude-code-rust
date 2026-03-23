@@ -34,7 +34,7 @@ pub use viewport::{
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -236,6 +236,16 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block caches (message + tool + welcome).
     pub render_cache_budget: RenderCacheBudget,
+    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`.
+    pub(crate) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
+    /// Rolling total of cached render bytes across all blocks.
+    pub(crate) render_cache_total_bytes: usize,
+    /// Rolling total of cached render bytes currently excluded from the budget.
+    pub(crate) render_cache_protected_bytes: usize,
+    /// Evictable cached blocks ordered by LRU and size tie-breaker.
+    pub(crate) render_cache_evictable: BTreeSet<render_budget::RenderCacheEvictionKey>,
+    /// Last message index currently protected as the streaming tail, if any.
+    pub(crate) render_cache_tail_msg_idx: Option<usize>,
     /// Byte budget for source conversation history retained in memory.
     pub history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
@@ -400,6 +410,7 @@ impl App {
         if welcome.model_name != welcome_model {
             welcome.model_name = welcome_model;
             welcome.cache.invalidate();
+            self.sync_render_cache_slot(0, 0);
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         }
@@ -421,6 +432,7 @@ impl App {
         };
         welcome.recent_sessions.clone_from(&self.recent_sessions);
         welcome.cache.invalidate();
+        self.sync_render_cache_slot(0, 0);
         self.recompute_message_retained_bytes(0);
         self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
@@ -550,10 +562,11 @@ impl App {
         let mut cleared_interaction = false;
         let mut first_changed_idx: Option<usize> = None;
         let mut changed_message_indices = Vec::new();
+        let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
 
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
-            for block in &mut msg.blocks {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
                     if matches!(
@@ -562,6 +575,7 @@ impl App {
                     ) {
                         tc.status = new_status;
                         tc.mark_tool_call_layout_dirty();
+                        changed_slots.push((msg_idx, block_idx));
                         if tc.pending_permission.take().is_some() {
                             cleared_interaction = true;
                         }
@@ -584,6 +598,10 @@ impl App {
 
         if detached_terminal {
             self.rebuild_tool_indices_and_terminal_refs();
+        }
+
+        for (msg_idx, block_idx) in changed_slots {
+            self.sync_render_cache_slot(msg_idx, block_idx);
         }
 
         for msg_idx in changed_message_indices {
@@ -698,6 +716,11 @@ impl App {
             notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
+            render_cache_slots: Vec::new(),
+            render_cache_total_bytes: 0,
+            render_cache_protected_bytes: 0,
+            render_cache_evictable: BTreeSet::new(),
+            render_cache_tail_msg_idx: None,
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),

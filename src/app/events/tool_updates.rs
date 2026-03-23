@@ -139,6 +139,7 @@ fn apply_tool_call_update_to_indexed_block(
                 app.viewport.engage_auto_scroll();
             }
             tc.mark_tool_call_layout_dirty();
+            app.sync_render_cache_slot(mi, bi);
             out.layout_dirty_idx = Some(mi);
         } else {
             crate::perf::mark("tool_update_noop_skips");

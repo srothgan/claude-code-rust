@@ -21,6 +21,8 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     {
         append_agent_stream_text(&mut last.blocks, &text.text);
         let last_idx = app.messages.len().saturating_sub(1);
+        app.note_render_cache_structure_changed();
+        app.sync_render_cache_message(last_idx);
         app.recompute_message_retained_bytes(last_idx);
         return;
     }

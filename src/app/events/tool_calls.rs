@@ -168,6 +168,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+            app.note_render_cache_structure_changed();
             app.recompute_message_retained_bytes(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
@@ -198,6 +199,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         if changed {
             existing.mark_tool_call_layout_dirty();
+            app.sync_render_cache_slot(mi, bi);
             layout_dirty = true;
         } else {
             crate::perf::mark("tool_update_noop_skips");

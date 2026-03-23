@@ -308,6 +308,7 @@ fn respond_question(app: &mut App) {
         invalidated = true;
     }
     if invalidated {
+        app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
@@ -335,6 +336,7 @@ fn respond_question_cancel(app: &mut App) {
             .response_tx
             .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
         tc.mark_tool_call_layout_dirty();
+        app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }

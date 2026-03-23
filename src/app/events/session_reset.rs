@@ -131,6 +131,8 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
             }));
         }
         let last_idx = app.messages.len().saturating_sub(1);
+        app.note_render_cache_structure_changed();
+        app.sync_render_cache_message(last_idx);
         app.recompute_message_retained_bytes(last_idx);
         return;
     }

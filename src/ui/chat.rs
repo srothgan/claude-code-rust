@@ -229,6 +229,7 @@ fn measure_message_height_at(
         msg_spinner(base, idx, msg_count, is_thinking, show_subagent_thinking, &app.messages[idx]);
     let (h, rendered_lines) =
         measure_message_height(&mut app.messages[idx], &sp, width, app.viewport.layout_generation);
+    app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
     app.viewport.set_message_height(idx, h);
@@ -525,6 +526,7 @@ fn render_culled_messages(
                 local_scroll,
                 out,
             );
+            app.sync_render_cache_message(i);
             // If we rendered part of this message and still have remaining rows,
             // the remainder is intra-block and must be applied once via
             // `Paragraph::scroll()`, not consumed again by later messages.
@@ -534,6 +536,7 @@ fn render_culled_messages(
             local_scroll = rem;
         } else {
             message::render_message(&mut app.messages[i], &sp, width, out);
+            app.sync_render_cache_message(i);
         }
         if out.len() > before {
             rendered_msgs += 1;

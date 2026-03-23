@@ -175,6 +175,11 @@ pub fn create_app(cli: &Cli) -> App {
             .as_deref()
             .and_then(|path| crate::perf::PerfLogger::open(path, cli.perf_append)),
         render_cache_budget: RenderCacheBudget::default(),
+        render_cache_slots: Vec::new(),
+        render_cache_total_bytes: 0,
+        render_cache_protected_bytes: 0,
+        render_cache_evictable: std::collections::BTreeSet::new(),
+        render_cache_tail_msg_idx: None,
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
@@ -193,6 +198,7 @@ pub fn create_app(cli: &Cli) -> App {
     }
 
     app.rebuild_history_retention_accounting();
+    app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);
     app.refresh_git_branch();
     app

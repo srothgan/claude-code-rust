@@ -212,6 +212,7 @@ impl super::App {
         self.messages.push(msg);
         self.message_retained_bytes.push(bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+        self.rebuild_render_cache_accounting();
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
@@ -220,6 +221,7 @@ impl super::App {
         self.messages.insert(insert_idx, msg);
         self.message_retained_bytes.insert(insert_idx, bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+        self.rebuild_render_cache_accounting();
     }
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
@@ -230,6 +232,7 @@ impl super::App {
         let removed = self.messages.remove(idx);
         let removed_bytes = self.message_retained_bytes.remove(idx);
         self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
+        self.rebuild_render_cache_accounting();
         Some(removed)
     }
 
@@ -237,6 +240,7 @@ impl super::App {
         self.messages.clear();
         self.message_retained_bytes.clear();
         self.retained_history_bytes = 0;
+        self.rebuild_render_cache_accounting();
     }
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
@@ -350,6 +354,7 @@ impl super::App {
                 block.text.clone_from(&marker_text);
                 block.markdown = IncrementalMarkdown::from_complete(&marker_text);
                 block.cache.invalidate();
+                self.sync_render_cache_slot(idx, 0);
                 self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }
