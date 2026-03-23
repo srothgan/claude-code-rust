@@ -126,7 +126,6 @@ fn build_tool_info_from_tool_call(
         output_metadata: tc.output_metadata,
         status: tc.status,
         content: tc.content,
-        collapsed: app.tools_collapsed,
         hidden: false,
         terminal_id: None,
         terminal_command: None,

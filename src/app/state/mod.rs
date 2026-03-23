@@ -115,8 +115,8 @@ pub struct App {
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
-    /// Session-level default for tool call collapsed state.
-    /// Toggled by Ctrl+O - new tool calls inherit this value.
+    /// Session-level preference for collapsing non-Execute tool call bodies.
+    /// Toggled by Ctrl+O and applied at render/layout time.
     pub tools_collapsed: bool,
     /// IDs of Task/Agent tool calls currently `InProgress` -- their children get hidden.
     /// Use `insert_active_task()`, `remove_active_task()`.
@@ -1147,7 +1147,6 @@ mod tests {
                 output_metadata: None,
                 status,
                 content: Vec::new(),
-                collapsed: false,
                 hidden: false,
                 terminal_id: None,
                 terminal_command: None,
@@ -1185,7 +1184,6 @@ mod tests {
                 output_metadata: None,
                 status,
                 content: Vec::new(),
-                collapsed: false,
                 hidden: false,
                 terminal_id: Some(terminal_id.to_owned()),
                 terminal_command: Some("echo hi".to_owned()),
@@ -1220,7 +1218,6 @@ mod tests {
                 output_metadata: None,
                 status: model::ToolCallStatus::Completed,
                 content: Vec::new(),
-                collapsed: false,
                 hidden: false,
                 terminal_id: None,
                 terminal_command: None,

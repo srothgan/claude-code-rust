@@ -209,7 +209,8 @@ async fn new_tool_call_starts_expanded_when_tools_not_collapsed() {
 
     let (mi, bi) = app.tool_call_index["tc-init-exp"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(!tc.collapsed, "new InProgress tool call should start expanded");
+        assert!(matches!(tc.status, model::ToolCallStatus::InProgress));
+        assert!(!app.tools_collapsed, "session collapse preference should stay expanded");
     } else {
         panic!("expected ToolCall block");
     }
@@ -226,7 +227,8 @@ async fn new_tool_call_starts_collapsed_when_tools_collapsed() {
 
     let (mi, bi) = app.tool_call_index["tc-init-col"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(tc.collapsed, "new InProgress tool call should inherit collapsed=true");
+        assert!(matches!(tc.status, model::ToolCallStatus::InProgress));
+        assert!(app.tools_collapsed, "session collapse preference should stay collapsed");
     } else {
         panic!("expected ToolCall block");
     }
@@ -250,7 +252,8 @@ async fn completed_tool_calls_inherit_collapsed_state() {
 
     let (mi, bi) = app.tool_call_index["tc-col"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(tc.collapsed, "completed tool call should inherit collapsed");
+        assert!(matches!(tc.status, model::ToolCallStatus::Completed));
+        assert!(app.tools_collapsed, "completed tool call should follow session preference");
     } else {
         panic!("expected ToolCall block");
     }
@@ -274,7 +277,8 @@ async fn uncollapsed_tool_calls_stay_expanded() {
 
     let (mi, bi) = app.tool_call_index["tc-exp"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(!tc.collapsed);
+        assert!(matches!(tc.status, model::ToolCallStatus::Completed));
+        assert!(!app.tools_collapsed);
     } else {
         panic!("expected ToolCall block");
     }
@@ -421,13 +425,11 @@ async fn in_progress_status_does_not_collapse_tool_call() {
 
     let (mi, bi) = app.tool_call_index["tc-inprog"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        // collapsed is set at creation time based on tools_collapsed,
-        // but only OVERWRITTEN on Completed/Failed
-        // InProgress update should not change it to collapsed
         assert!(
             matches!(tc.status, model::ToolCallStatus::InProgress),
             "status should be InProgress"
         );
+        assert!(app.tools_collapsed);
     } else {
         panic!("expected ToolCall block");
     }

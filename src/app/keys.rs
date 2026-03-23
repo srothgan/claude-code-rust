@@ -4,8 +4,8 @@
 use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel,
-    MessageBlock, ModeInfo, ModeState,
+    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
+    ModeState,
 };
 use crate::app::inline_interactions::handle_inline_interaction_key;
 use crate::app::selection::clear_selection;
@@ -820,25 +820,9 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Toggle the session-level collapsed preference and apply to all tool calls.
+/// Toggle the session-level collapsed preference for non-Execute tool calls.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.tools_collapsed = !app.tools_collapsed;
-    let mut dirty_slots = Vec::new();
-    for (msg_idx, msg) in app.messages.iter_mut().enumerate() {
-        for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
-            if let MessageBlock::ToolCall(tc) = block {
-                let tc = tc.as_mut();
-                if tc.collapsed != app.tools_collapsed {
-                    tc.collapsed = app.tools_collapsed;
-                    tc.mark_tool_call_layout_dirty();
-                    dirty_slots.push((msg_idx, block_idx));
-                }
-            }
-        }
-    }
-    for (msg_idx, block_idx) in dirty_slots {
-        app.sync_render_cache_slot(msg_idx, block_idx);
-    }
     app.invalidate_layout(InvalidationLevel::Global);
 }
 

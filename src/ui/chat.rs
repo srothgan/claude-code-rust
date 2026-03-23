@@ -227,8 +227,13 @@ fn measure_message_height_at(
     let msg_count = app.messages.len();
     let sp =
         msg_spinner(base, idx, msg_count, is_thinking, show_subagent_thinking, &app.messages[idx]);
-    let (h, rendered_lines) =
-        measure_message_height(&mut app.messages[idx], &sp, width, app.viewport.layout_generation);
+    let (h, rendered_lines) = measure_message_height(
+        &mut app.messages[idx],
+        &sp,
+        width,
+        app.viewport.layout_generation,
+        app.tools_collapsed,
+    );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
@@ -249,10 +254,16 @@ fn measure_message_height(
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
+    tools_collapsed: bool,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) =
-        message::measure_message_height_cached(msg, spinner, width, layout_generation);
+    let (h, wrapped_lines) = message::measure_message_height_cached_with_tools_collapsed(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        tools_collapsed,
+    );
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -518,11 +529,12 @@ fn render_culled_messages(
             msg_spinner(base, i, msg_count, is_thinking, show_subagent_thinking, &app.messages[i]);
         let before = out.len();
         if local_scroll > 0 && consume_skip_in_messages {
-            let rem = message::render_message_from_offset(
+            let rem = message::render_message_from_offset_with_tools_collapsed(
                 &mut app.messages[i],
                 &sp,
                 width,
                 app.viewport.layout_generation,
+                app.tools_collapsed,
                 local_scroll,
                 out,
             );
@@ -535,7 +547,13 @@ fn render_culled_messages(
             }
             local_scroll = rem;
         } else {
-            message::render_message(&mut app.messages[i], &sp, width, out);
+            message::render_message_with_tools_collapsed(
+                &mut app.messages[i],
+                &sp,
+                width,
+                app.tools_collapsed,
+                out,
+            );
             app.sync_render_cache_message(i);
         }
         if out.len() > before {

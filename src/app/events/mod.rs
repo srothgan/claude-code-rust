@@ -323,7 +323,6 @@ mod tests {
             output_metadata: None,
             status,
             content: vec![],
-            collapsed: false,
             hidden: false,
             terminal_id: None,
             terminal_command: None,

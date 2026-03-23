@@ -460,7 +460,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::InProgress,
             content: Vec::new(),
-            collapsed: false,
             hidden: false,
             terminal_id: None,
             terminal_command: None,

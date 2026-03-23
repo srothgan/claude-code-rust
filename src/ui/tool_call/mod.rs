@@ -62,12 +62,24 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
 /// the current width, so they always fill the terminal correctly after resize.
 /// Height for Execute = `content_lines + 2` (title border + bottom border).
 ///
-/// For other tool calls, in-progress calls split title (re-rendered each frame for
-/// spinner) from body (cached). Completed calls cache title + body together.
+/// For other tool calls, the title is rendered live and the expanded body is cached
+/// independently, so session collapse preference can change without invalidating
+/// every completed tool-call cache.
+#[allow(dead_code)]
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    render_tool_call_cached_with_tools_collapsed(tc, width, spinner_frame, false, out);
+}
+
+pub fn render_tool_call_cached_with_tools_collapsed(
+    tc: &mut ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
     let is_execute = tc.is_execute_tool();
@@ -89,32 +101,22 @@ pub fn render_tool_call_cached(
         return;
     }
 
-    // Non-Execute tool calls: existing caching strategy
-    let is_in_progress =
-        matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending);
+    let title = standard::render_tool_call_title(tc, width, spinner_frame);
+    out.push(title);
 
-    // Completed/failed: full cache (title + body together)
-    if !is_in_progress {
-        if let Some(cached_lines) = tc.cache.get() {
-            crate::perf::mark_with("tc::cache_hit", "lines", cached_lines.len());
-            out.extend_from_slice(cached_lines);
-            return;
-        }
-        crate::perf::mark("tc::cache_miss");
-        let _t = crate::perf::start("tc::render");
-        let fresh = standard::render_tool_call(tc, width, spinner_frame);
-        tc.cache.store(fresh);
-        if let Some(stored) = tc.cache.get() {
-            out.extend_from_slice(stored);
-        }
+    let has_body = !(tc.content.is_empty()
+        && tc.pending_permission.is_none()
+        && tc.pending_question.is_none());
+    if !has_body {
         return;
     }
 
-    // In-progress: re-render only the title line (spinner), cache the body.
-    let fresh_title = standard::render_tool_call_title(tc, width, spinner_frame);
-    out.push(fresh_title);
+    if standard::tool_call_effectively_collapsed(tc, tools_collapsed) {
+        standard::render_collapsed_tool_call_summary(tc, out);
+        return;
+    }
 
-    // Body: use cache if valid, otherwise render and cache.
+    // Expanded body: use cache if valid, otherwise render and cache.
     if let Some(cached_body) = tc.cache.get() {
         crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
@@ -131,11 +133,28 @@ pub fn render_tool_call_cached(
 
 /// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.
 /// Returns `(height, lines_wrapped_for_measurement)`.
+#[allow(dead_code)]
 pub fn measure_tool_call_height_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
     layout_generation: u64,
+) -> (usize, usize) {
+    measure_tool_call_height_cached_with_tools_collapsed(
+        tc,
+        width,
+        spinner_frame,
+        layout_generation,
+        false,
+    )
+}
+
+pub fn measure_tool_call_height_cached_with_tools_collapsed(
+    tc: &mut ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+    layout_generation: u64,
+    tools_collapsed: bool,
 ) -> (usize, usize) {
     if tc.cache_measurement_key_matches(width, layout_generation) {
         crate::perf::mark("tc_measure_fast_path_hits");
@@ -162,31 +181,28 @@ pub fn measure_tool_call_height_cached(
         return (0, 0);
     }
 
-    let is_in_progress =
-        matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending);
-
-    if !is_in_progress {
-        if let Some(h) = tc.cache.height_at(width) {
-            tc.record_measured_height(width, h, layout_generation);
-            return (h, 0);
-        }
-        if let Some(h) = tc.cache.measure_and_set_height(width) {
-            tc.record_measured_height(width, h, layout_generation);
-            return (h, tc.cache.get().map_or(0, Vec::len));
-        }
-        let fresh = standard::render_tool_call(tc, width, spinner_frame);
-        let h =
-            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
-        tc.cache.store(fresh);
-        tc.cache.set_height(h, width);
-        tc.record_measured_height(width, h, layout_generation);
-        return (h, tc.cache.get().map_or(0, Vec::len));
-    }
-
-    // In-progress non-execute: title is dynamic, body is cached separately.
     let title = standard::render_tool_call_title(tc, width, spinner_frame);
     let title_h =
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
+    let has_body = !(tc.content.is_empty()
+        && tc.pending_permission.is_none()
+        && tc.pending_question.is_none());
+
+    if !has_body {
+        tc.record_measured_height(width, title_h, layout_generation);
+        return (title_h, 1);
+    }
+
+    if standard::tool_call_effectively_collapsed(tc, tools_collapsed) {
+        let mut summary = Vec::new();
+        standard::render_collapsed_tool_call_summary(tc, &mut summary);
+        let summary_h = Paragraph::new(Text::from(summary.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        let total = title_h + summary_h;
+        tc.record_measured_height(width, total, layout_generation);
+        return (total, 1 + summary.len());
+    }
 
     if let Some(body_h) = tc.cache.height_at(width) {
         let total = title_h + body_h;
@@ -307,7 +323,6 @@ mod tests {
             output_metadata: None,
             status,
             content: Vec::new(),
-            collapsed: false,
             hidden: false,
             terminal_id: None,
             terminal_command: None,
@@ -423,7 +438,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::Pending,
             content: Vec::new(),
-            collapsed: false,
             hidden: false,
             terminal_id: None,
             terminal_command: None,
@@ -581,6 +595,62 @@ mod tests {
     }
 
     #[test]
+    fn completed_non_execute_collapse_uses_session_preference_without_mutating_cache() {
+        let mut tc = test_tool_call("tc-collapse", "Read", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from("alpha\nbeta".to_owned())];
+
+        let mut expanded = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(&mut tc, 80, 0, false, &mut expanded);
+        let expanded_text: Vec<String> = expanded
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(expanded_text.iter().any(|line| line.contains("alpha")));
+        assert!(!expanded_text.iter().any(|line| line.contains("ctrl+o to expand")));
+
+        let mut collapsed = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(&mut tc, 80, 0, true, &mut collapsed);
+        let collapsed_text: Vec<String> = collapsed
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert!(collapsed_text.iter().any(|line| line.contains("ctrl+o to expand")));
+        assert!(!collapsed_text.iter().any(|line| line.contains("beta")));
+    }
+
+    #[test]
+    fn completed_non_execute_measurement_changes_with_session_collapse_preference() {
+        let mut tc =
+            test_tool_call("tc-measure-collapse", "Read", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
+
+        let (expanded_h, _) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 24, 0, 1, false);
+        let (collapsed_h, _) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 24, 0, 2, true);
+
+        assert!(collapsed_h < expanded_h);
+    }
+
+    #[test]
+    fn diff_tool_stays_expanded_when_session_prefers_collapsed() {
+        let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(
+            model::Diff::new("src/main.rs", "new".to_owned()).old_text(Some("old".to_owned())),
+        )];
+
+        let mut rendered = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(&mut tc, 80, 0, true, &mut rendered);
+        let text: Vec<String> = rendered
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(!text.iter().any(|line| line.contains("ctrl+o to expand")));
+        assert!(text.len() > 2, "expanded diff should render more than title plus summary");
+    }
+
+    #[test]
     fn internal_error_detection_accepts_xml_payload() {
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
@@ -636,7 +706,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::Completed,
             content: Vec::new(),
-            collapsed: true,
             hidden: false,
             terminal_id: Some("term-1".into()),
             terminal_command: Some("echo done".into()),
@@ -668,7 +737,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
-            collapsed: true,
             hidden: false,
             terminal_id: Some("term-1".into()),
             terminal_command: Some("echo done".into()),
@@ -700,7 +768,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
-            collapsed: true,
             hidden: false,
             terminal_id: Some("term-2".into()),
             terminal_command: Some("cd path with spaces".into()),
@@ -734,7 +801,6 @@ mod tests {
             output_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
-            collapsed: false,
             hidden: false,
             terminal_id: Some("term-3".into()),
             terminal_command: Some("cd path with spaces".into()),

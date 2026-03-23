@@ -131,7 +131,6 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         out.pending_todos =
             extract_todo_updates_from_tool_call_update(id_str, tc, tcu.fields.raw_input.as_ref());
-        changed |= sync_tool_collapse_state(tc, app.tools_collapsed);
         detach_terminal_if_final(tc, mi, bi, terminal_tool_calls);
 
         if changed {
@@ -303,16 +302,6 @@ fn extract_todo_updates_from_tool_call_update(
     None
 }
 
-fn sync_tool_collapse_state(tc: &mut ToolCallInfo, collapsed: bool) -> bool {
-    if !matches!(tc.status, model::ToolCallStatus::Completed | model::ToolCallStatus::Failed)
-        || tc.collapsed == collapsed
-    {
-        return false;
-    }
-    tc.collapsed = collapsed;
-    true
-}
-
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
     match raw_output {
         serde_json::Value::Null => None,
@@ -377,7 +366,6 @@ mod tests {
             output_metadata: None,
             status,
             content: Vec::new(),
-            collapsed: false,
             hidden: false,
             terminal_id: terminal_id.map(str::to_owned),
             terminal_command: Some("echo test".to_owned()),

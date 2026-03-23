@@ -57,17 +57,24 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
-/// Render a complete non-Execute tool call (title + body).
-/// Execute tool calls are handled separately via `render_execute_with_borders`.
-pub(super) fn render_tool_call(
+#[must_use]
+pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
+    let has_permission = tc.pending_permission.is_some();
+    let has_question = tc.pending_question.is_some();
+    let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
+    tools_collapsed && !has_diff && !has_permission && !has_question
+}
+
+pub(super) fn render_collapsed_tool_call_summary(
     tc: &ToolCallInfo,
-    width: u16,
-    spinner_frame: usize,
-) -> Vec<Line<'static>> {
-    let title = render_tool_call_title(tc, width, spinner_frame);
-    let mut lines = vec![title];
-    render_standard_body(tc, &mut lines);
-    lines
+    lines: &mut Vec<Line<'static>>,
+) {
+    let pipe_style = Style::default().fg(theme::DIM);
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2514}\u{2500} ", pipe_style),
+        Span::styled(content_summary(tc), Style::default().fg(theme::DIM)),
+        Span::styled("  ctrl+o to expand", Style::default().fg(theme::DIM)),
+    ]));
 }
 
 /// Render the body (everything after the title line) of a standard (non-Execute) tool call.
@@ -76,47 +83,31 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();
 
-    // Diffs (Edit tool) are always shown -- user needs to see changes
-    let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
-
     if tc.content.is_empty() && !has_permission && !has_question {
         return;
     }
 
-    // Force expanded when permission is pending (user needs to see context)
-    let effectively_collapsed = tc.collapsed && !has_diff && !has_permission && !has_question;
+    // Expanded: render full content with | prefix on each line
+    let mut content_lines = render_tool_content(tc);
 
-    if effectively_collapsed {
-        // Collapsed: show summary + ctrl+o hint
-        let summary = content_summary(tc);
-        lines.push(Line::from(vec![
-            Span::styled("  \u{2514}\u{2500} ", pipe_style),
-            Span::styled(summary, Style::default().fg(theme::DIM)),
-            Span::styled("  ctrl+o to expand", Style::default().fg(theme::DIM)),
-        ]));
-    } else {
-        // Expanded: render full content with | prefix on each line
-        let mut content_lines = render_tool_content(tc);
+    // Append inline permission controls if pending
+    if let Some(ref perm) = tc.pending_permission {
+        content_lines.extend(render_permission_lines(tc, perm));
+    }
+    if let Some(ref question) = tc.pending_question {
+        content_lines.extend(render_question_lines(question));
+    }
 
-        // Append inline permission controls if pending
-        if let Some(ref perm) = tc.pending_permission {
-            content_lines.extend(render_permission_lines(tc, perm));
-        }
-        if let Some(ref question) = tc.pending_question {
-            content_lines.extend(render_question_lines(question));
-        }
-
-        let last_idx = content_lines.len().saturating_sub(1);
-        for (i, content_line) in content_lines.into_iter().enumerate() {
-            let prefix = if i == last_idx {
-                "  \u{2514}\u{2500} " // corner
-            } else {
-                "  \u{2502}  " // pipe
-            };
-            let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
-            spans.extend(content_line.spans);
-            lines.push(Line::from(spans));
-        }
+    let last_idx = content_lines.len().saturating_sub(1);
+    for (i, content_line) in content_lines.into_iter().enumerate() {
+        let prefix = if i == last_idx {
+            "  \u{2514}\u{2500} " // corner
+        } else {
+            "  \u{2502}  " // pipe
+        };
+        let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
+        spans.extend(content_line.spans);
+        lines.push(Line::from(spans));
     }
 }
 

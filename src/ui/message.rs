@@ -61,10 +61,21 @@ fn assistant_role_label_line() -> Line<'static> {
 /// Render a single chat message into a `Vec<Line>`, using per-block caches.
 /// Takes `&mut` so block caches can be updated.
 /// `spinner` is only used for the "Thinking..." animation on empty assistant messages.
+#[allow(dead_code)]
 pub fn render_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    out: &mut Vec<Line<'static>>,
+) {
+    render_message_with_tools_collapsed(msg, spinner, width, false, out);
+}
+
+pub fn render_message_with_tools_collapsed(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
     match msg.role {
@@ -81,7 +92,7 @@ pub fn render_message(
             render_user_blocks(msg, width, out);
         }
         MessageRole::Assistant => {
-            if render_assistant_message(msg, spinner, width, out) {
+            if render_assistant_message(msg, spinner, width, tools_collapsed, out) {
                 return;
             }
         }
@@ -109,6 +120,7 @@ fn render_assistant_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) -> bool {
     out.push(assistant_role_label_line());
@@ -155,7 +167,13 @@ fn render_assistant_message(
                 if !prev_was_tool && out.len() > 1 {
                     out.push(Line::default());
                 }
-                tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
+                tool_call::render_tool_call_cached_with_tools_collapsed(
+                    tc,
+                    width,
+                    spinner.frame,
+                    tools_collapsed,
+                    out,
+                );
                 has_visible_content = true;
                 prev_was_tool = true;
             }
@@ -220,6 +238,22 @@ pub fn measure_message_height_cached(
     width: u16,
     layout_generation: u64,
 ) -> (usize, usize) {
+    measure_message_height_cached_with_tools_collapsed(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        false,
+    )
+}
+
+pub fn measure_message_height_cached_with_tools_collapsed(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    tools_collapsed: bool,
+) -> (usize, usize) {
     let mut height = 1usize; // role label
     let mut wrapped_lines = 0usize;
 
@@ -248,8 +282,13 @@ pub fn measure_message_height_cached(
             }
         }
         MessageRole::Assistant => {
-            let (h, lines) =
-                measure_assistant_blocks_height(msg, spinner, width, layout_generation);
+            let (h, lines) = measure_assistant_blocks_height(
+                msg,
+                spinner,
+                width,
+                layout_generation,
+                tools_collapsed,
+            );
             height += h;
             wrapped_lines += lines;
         }
@@ -287,6 +326,7 @@ fn measure_assistant_blocks_height(
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
+    tools_collapsed: bool,
 ) -> (usize, usize) {
     let show_compacting = spinner.is_compacting && spinner.is_last_message;
     let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
@@ -328,11 +368,12 @@ fn measure_assistant_blocks_height(
                     height += 1;
                     lines_after_label += 1;
                 }
-                let (h, lines) = tool_call::measure_tool_call_height_cached(
+                let (h, lines) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
                     tc,
                     width,
                     spinner.frame,
                     layout_generation,
+                    tools_collapsed,
                 );
                 height += h;
                 lines_after_label += h;
@@ -359,11 +400,32 @@ fn measure_assistant_blocks_height(
 /// (label/separators/full blocks) without rendering them. If skipping lands inside
 /// a block, that block is rendered in full and the remaining skip is returned so
 /// the caller can apply `Paragraph::scroll()` for exact intra-block offset.
+#[allow(dead_code)]
 pub fn render_message_from_offset(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
+    skip_rows: usize,
+    out: &mut Vec<Line<'static>>,
+) -> usize {
+    render_message_from_offset_with_tools_collapsed(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        false,
+        skip_rows,
+        out,
+    )
+}
+
+pub fn render_message_from_offset_with_tools_collapsed(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    tools_collapsed: bool,
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
@@ -390,6 +452,7 @@ pub fn render_message_from_offset(
                 spinner,
                 width,
                 layout_generation,
+                tools_collapsed,
                 out,
                 &mut remaining_skip,
                 &mut can_consume_skip,
@@ -459,11 +522,13 @@ fn render_user_from_offset(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn render_assistant_from_offset(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
+    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
@@ -535,14 +600,21 @@ fn render_assistant_from_offset(
                     emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
                     lines_after_label += 1;
                 }
-                let (h, _) = tool_call::measure_tool_call_height_cached(
+                let (h, _) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
                     tc,
                     width,
                     spinner.frame,
                     layout_generation,
+                    tools_collapsed,
                 );
                 if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                    tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
+                    tool_call::render_tool_call_cached_with_tools_collapsed(
+                        tc,
+                        width,
+                        spinner.frame,
+                        tools_collapsed,
+                        out,
+                    );
                 }
                 lines_after_label += h;
                 has_visible_content = true;
@@ -1278,7 +1350,6 @@ mod tests {
             } else {
                 vec![crate::agent::model::ToolCallContent::from(text.to_owned())]
             },
-            collapsed: true,
             hidden: false,
             terminal_id: None,
             terminal_command: None,
