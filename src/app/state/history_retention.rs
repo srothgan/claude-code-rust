@@ -260,16 +260,22 @@ impl super::App {
 
     pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
         self.tool_call_index.clear();
-        self.terminal_tool_calls.clear();
+        self.clear_terminal_tool_call_tracking();
 
         let mut pending_permission_ids = Vec::new();
+        let mut terminal_tool_call_membership = HashSet::new();
+        let mut terminal_tool_calls = Vec::new();
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
                     self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
                     if let Some(terminal_id) = tc.terminal_id.clone() {
-                        self.terminal_tool_calls.push((terminal_id, msg_idx, block_idx));
+                        let entry =
+                            super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
+                        if terminal_tool_call_membership.insert(entry.clone()) {
+                            terminal_tool_calls.push(entry);
+                        }
                     }
                     if let Some(permission) = tc.pending_permission.as_mut() {
                         permission.focused = false;
@@ -282,6 +288,8 @@ impl super::App {
                 }
             }
         }
+        self.terminal_tool_calls = terminal_tool_calls;
+        self.terminal_tool_call_membership = terminal_tool_call_membership;
 
         let permission_set: HashSet<&str> =
             pending_permission_ids.iter().map(String::as_str).collect();

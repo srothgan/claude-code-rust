@@ -99,7 +99,7 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     app.cached_todo_compact = None;
     app.cached_header_line = None;
     app.cached_footer_line = None;
-    app.terminal_tool_calls.clear();
+    app.clear_terminal_tool_call_tracking();
     app.mcp = super::super::McpState::default();
     app.force_redraw = true;
     app.needs_redraw = true;

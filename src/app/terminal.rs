@@ -56,12 +56,14 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     let mut dirty_slots = Vec::new();
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
-    for &(ref tid, mi, bi) in &app.terminal_tool_calls {
-        let Some(terminal) = terminals.get(tid.as_str()) else {
+    for terminal_ref in &app.terminal_tool_calls {
+        let Some(terminal) = terminals.get(terminal_ref.terminal_id.as_str()) else {
             continue;
         };
-        let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        let Some(MessageBlock::ToolCall(tc)) = app
+            .messages
+            .get_mut(terminal_ref.msg_idx)
+            .and_then(|m| m.blocks.get_mut(terminal_ref.block_idx))
         else {
             continue;
         };
@@ -97,10 +99,12 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         };
         if apply_terminal_payload(tc, payload) {
             tc.mark_tool_call_layout_dirty();
-            dirty_slots.push((mi, bi));
-            dirty_from = Some(dirty_from.map_or(mi, |oldest| oldest.min(mi)));
-            if dirty_messages.last().copied() != Some(mi) {
-                dirty_messages.push(mi);
+            dirty_slots.push((terminal_ref.msg_idx, terminal_ref.block_idx));
+            dirty_from = Some(
+                dirty_from.map_or(terminal_ref.msg_idx, |oldest| oldest.min(terminal_ref.msg_idx)),
+            );
+            if dirty_messages.last().copied() != Some(terminal_ref.msg_idx) {
+                dirty_messages.push(terminal_ref.msg_idx);
             }
             changed = true;
         }

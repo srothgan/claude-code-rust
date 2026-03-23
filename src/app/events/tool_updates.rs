@@ -108,7 +108,8 @@ fn apply_tool_call_update_to_indexed_block(
         return out;
     };
     let terminals = std::rc::Rc::clone(&app.terminals);
-    let terminal_tool_calls = &mut app.terminal_tool_calls;
+    let mut terminal_subscription: Option<String> = None;
+    let mut detach_terminal = false;
 
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
@@ -119,11 +120,9 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
         changed |= apply_tool_call_content_update(
             tc,
-            mi,
-            bi,
             tcu.fields.content.as_deref(),
             &terminals,
-            terminal_tool_calls,
+            &mut terminal_subscription,
         );
         changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
         changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
@@ -131,7 +130,7 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         out.pending_todos =
             extract_todo_updates_from_tool_call_update(id_str, tc, tcu.fields.raw_input.as_ref());
-        detach_terminal_if_final(tc, mi, bi, terminal_tool_calls);
+        detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
             if should_jump_on_large_write(tc) {
@@ -143,6 +142,12 @@ fn apply_tool_call_update_to_indexed_block(
         } else {
             crate::perf::mark("tool_update_noop_skips");
         }
+    }
+
+    if detach_terminal {
+        app.untrack_terminal_tool_call(mi, bi);
+    } else if let Some(terminal_id) = terminal_subscription {
+        app.sync_terminal_tool_call(terminal_id, mi, bi);
     }
 
     out
@@ -175,11 +180,9 @@ fn apply_tool_call_title_update(tc: &mut ToolCallInfo, title: Option<&str>, cwd_
 
 fn apply_tool_call_content_update(
     tc: &mut ToolCallInfo,
-    mi: usize,
-    bi: usize,
     content: Option<&[model::ToolCallContent]>,
     terminals: &crate::agent::events::TerminalMap,
-    terminal_tool_calls: &mut Vec<(String, usize, usize)>,
+    terminal_subscription: &mut Option<String>,
 ) -> bool {
     let Some(content) = content else {
         return false;
@@ -195,9 +198,7 @@ fn apply_tool_call_content_update(
             if tc.terminal_id.as_deref() != Some(tid.as_str()) {
                 tc.terminal_id = Some(tid.clone());
             }
-            if !terminal_tool_calls.iter().any(|(id, m, b)| id == &tid && *m == mi && *b == bi) {
-                terminal_tool_calls.push((tid, mi, bi));
-            }
+            *terminal_subscription = Some(tid);
         }
     }
     if tc.content == content {
@@ -265,21 +266,16 @@ fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::
     true
 }
 
-fn detach_terminal_if_final(
-    tc: &mut ToolCallInfo,
-    mi: usize,
-    bi: usize,
-    terminal_tool_calls: &mut Vec<(String, usize, usize)>,
-) {
+fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
     if !tc.is_execute_tool()
         || matches!(tc.status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
         || tc.terminal_id.is_none()
     {
-        return;
+        return false;
     }
 
     tc.terminal_id = None;
-    terminal_tool_calls.retain(|(_, msg_idx, block_idx)| *msg_idx != mi || *block_idx != bi);
+    true
 }
 
 fn extract_todo_updates_from_tool_call_update(
@@ -385,6 +381,10 @@ mod tests {
         }
     }
 
+    fn terminal_content(terminal_id: &str) -> Vec<model::ToolCallContent> {
+        vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(terminal_id))]
+    }
+
     #[test]
     fn completed_execute_update_detaches_terminal_subscription() {
         let mut app = App::test_default();
@@ -399,7 +399,7 @@ mod tests {
             usage: None,
         });
         app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.terminal_tool_calls.push(("term-1".to_owned(), 0, 0));
+        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
         let update = model::ToolCallUpdate::new(
             tool_id,
@@ -417,5 +417,66 @@ mod tests {
         assert_eq!(tc.terminal_id, None);
         assert_eq!(tc.terminal_output.as_deref(), Some("done"));
         assert!(app.terminal_tool_calls.is_empty());
+        assert!(app.terminal_tool_call_membership.is_empty());
+    }
+
+    #[test]
+    fn repeated_terminal_updates_do_not_duplicate_subscription() {
+        let mut app = App::test_default();
+        let tool_id = "tool-1";
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+                tool_id,
+                model::ToolCallStatus::InProgress,
+                None,
+            )))],
+            usage: None,
+        });
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+
+        let update = model::ToolCallUpdate::new(
+            tool_id,
+            model::ToolCallUpdateFields::new().content(terminal_content("term-1")),
+        );
+
+        handle_tool_call_update_session(&mut app, &update);
+        handle_tool_call_update_session(&mut app, &update);
+
+        assert_eq!(app.terminal_tool_calls.len(), 1);
+        assert_eq!(app.terminal_tool_call_membership.len(), 1);
+        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
+    }
+
+    #[test]
+    fn terminal_update_replaces_stale_subscription_for_same_tool_call() {
+        let mut app = App::test_default();
+        let tool_id = "tool-1";
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+                tool_id,
+                model::ToolCallStatus::InProgress,
+                Some("term-1"),
+            )))],
+            usage: None,
+        });
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
+
+        let update = model::ToolCallUpdate::new(
+            tool_id,
+            model::ToolCallUpdateFields::new().content(terminal_content("term-2")),
+        );
+
+        handle_tool_call_update_session(&mut app, &update);
+
+        assert_eq!(app.terminal_tool_calls.len(), 1);
+        assert_eq!(app.terminal_tool_call_membership.len(), 1);
+        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-2");
+        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
     }
 }

@@ -51,6 +51,20 @@ use super::subagent;
 use super::trust::TrustState;
 use super::view::ActiveView;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TerminalToolCallRef {
+    pub terminal_id: String,
+    pub msg_idx: usize,
+    pub block_idx: usize,
+}
+
+impl TerminalToolCallRef {
+    #[must_use]
+    pub fn new(terminal_id: String, msg_idx: usize, block_idx: usize) -> Self {
+        Self { terminal_id, msg_idx, block_idx }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
@@ -223,9 +237,11 @@ pub struct App {
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<crate::agent::types::AccountInfo>,
 
-    /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
+    /// Indexed terminal tool calls for per-frame terminal snapshot updates.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
-    pub terminal_tool_calls: Vec<(String, usize, usize)>,
+    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
+    /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
+    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -503,6 +519,43 @@ impl App {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
     }
 
+    pub(crate) fn sync_terminal_tool_call(
+        &mut self,
+        terminal_id: String,
+        msg_idx: usize,
+        block_idx: usize,
+    ) {
+        let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
+        if self.terminal_tool_call_membership.contains(&desired) {
+            return;
+        }
+        self.untrack_terminal_tool_call(msg_idx, block_idx);
+        self.terminal_tool_call_membership.insert(desired.clone());
+        self.terminal_tool_calls.push(desired);
+    }
+
+    pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
+        let removed: Vec<_> = self
+            .terminal_tool_calls
+            .iter()
+            .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
+            .cloned()
+            .collect();
+        if removed.is_empty() {
+            return;
+        }
+        self.terminal_tool_calls
+            .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
+        for entry in removed {
+            self.terminal_tool_call_membership.remove(&entry);
+        }
+    }
+
+    pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
+        self.terminal_tool_calls.clear();
+        self.terminal_tool_call_membership.clear();
+    }
+
     /// Invalidate message layout caches at the given level.
     ///
     /// Single entry point for all layout invalidation. Replaces the former
@@ -712,6 +765,7 @@ impl App {
             is_compacting: false,
             account_info: None,
             terminal_tool_calls: Vec::new(),
+            terminal_tool_call_membership: HashSet::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
@@ -1550,13 +1604,19 @@ mod tests {
         app.messages = vec![
             ChatMessage::welcome("model", "/cwd"),
             user_text_message("drop this"),
-            assistant_tool_message("tool-idx", model::ToolCallStatus::InProgress),
+            assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
         ];
         app.index_tool_call("tool-idx".to_owned(), 99, 99);
+        app.sync_terminal_tool_call("stale-term".to_owned(), 99, 99);
         app.history_retention.max_bytes = 1;
 
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
+        assert_eq!(app.terminal_tool_calls.len(), 1);
+        assert_eq!(app.terminal_tool_call_membership.len(), 1);
+        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
+        assert_eq!(app.terminal_tool_calls[0].msg_idx, 2);
+        assert_eq!(app.terminal_tool_calls[0].block_idx, 0);
     }
 
     #[test]
@@ -1723,12 +1783,13 @@ mod tests {
             "term-1",
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
-        app.terminal_tool_calls.push(("term-1".to_owned(), 0, 0));
+        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 1);
         assert!(app.terminal_tool_calls.is_empty());
+        assert!(app.terminal_tool_call_membership.is_empty());
         let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
             panic!("expected tool call");
         };

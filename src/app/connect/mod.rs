@@ -168,6 +168,7 @@ pub fn create_app(cli: &Cli) -> App {
         is_compacting: false,
         account_info: None,
         terminal_tool_calls: Vec::new(),
+        terminal_tool_call_membership: HashSet::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
         perf: cli
