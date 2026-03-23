@@ -5,12 +5,12 @@ use crate::agent::model;
 use std::collections::HashSet;
 use std::mem::size_of;
 
+use super::LayoutInvalidation as InvalidationLevel;
 use super::messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock, WelcomeBlock,
 };
 use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
 use super::types::{HistoryRetentionStats, MessageUsage, RecentSessionInfo};
-use super::viewport::InvalidationLevel;
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
 
@@ -272,7 +272,7 @@ impl super::App {
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.messages.remove(idx);
-                self.invalidate_layout(InvalidationLevel::From(idx));
+                self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
                 self.rebuild_tool_indices_and_terminal_refs();
             }
             return;
@@ -291,7 +291,7 @@ impl super::App {
                 block.text.clone_from(&marker_text);
                 block.markdown = IncrementalMarkdown::from_complete(&marker_text);
                 block.cache.invalidate();
-                self.invalidate_layout(InvalidationLevel::From(idx));
+                self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }
             return;
         }
@@ -307,7 +307,7 @@ impl super::App {
                 usage: None,
             },
         );
-        self.invalidate_layout(InvalidationLevel::From(insert_idx));
+        self.invalidate_layout(InvalidationLevel::MessagesFrom(insert_idx));
         self.rebuild_tool_indices_and_terminal_refs();
     }
 
@@ -380,7 +380,7 @@ impl super::App {
                     };
                 }
                 self.rebuild_tool_indices_and_terminal_refs();
-                self.invalidate_layout(InvalidationLevel::From(0));
+                self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
                 self.needs_redraw = true;
             }
         }

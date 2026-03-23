@@ -42,7 +42,7 @@ pub(super) fn invalidate_if_changed(
     changed: bool,
 ) {
     if changed && let Some((mi, _)) = dirty_idx {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }
 
@@ -74,7 +74,7 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
         }
     }
     if invalidated {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }
 

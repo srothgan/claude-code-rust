@@ -746,11 +746,11 @@ mod tests {
         );
 
         let (mi, bi) = app.lookup_tool_call("tc-noop").expect("tool call not indexed");
-        let (before_render, before_layout, before_dirty_from) = {
+        let (before_render, before_layout, before_oldest_stale) = {
             let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
                 panic!("tool call block missing");
             };
-            (tc.render_epoch, tc.layout_epoch, app.viewport.dirty_from)
+            (tc.render_epoch, tc.layout_epoch, app.viewport.oldest_stale_index())
         };
 
         let update = model::ToolCallUpdate::new(
@@ -767,7 +767,7 @@ mod tests {
         };
         assert_eq!(tc.render_epoch, before_render);
         assert_eq!(tc.layout_epoch, before_layout);
-        assert_eq!(app.viewport.dirty_from, before_dirty_from);
+        assert_eq!(app.viewport.oldest_stale_index(), before_oldest_stale);
     }
 
     #[test]
@@ -1052,7 +1052,7 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert!(!app.viewport.message_height_is_current(1));
         let Some(last) = app.messages.last() else {
             panic!("expected interruption hint message");
         };
@@ -1072,7 +1072,7 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::TurnComplete);
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert!(!app.viewport.message_height_is_current(1));
         let Some(last) = app.messages.last() else {
             panic!("expected assistant message");
         };
@@ -2092,7 +2092,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert!(!app.viewport.message_height_is_current(1));
         assert_eq!(app.messages.len(), 2);
         let Some(last) = app.messages.last() else {
             panic!("expected assistant message");

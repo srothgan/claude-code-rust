@@ -46,12 +46,12 @@ pub use service_status_check::start_service_status_check;
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, ExtraUsage,
-    HelpView, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LoginHint,
-    McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo, ModeState, PasteSessionState,
-    PendingCommandAck, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
-    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,
-    UsageState, UsageWindow, WelcomeBlock, is_execute_tool_name,
+    HelpView, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
+    LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo,
+    ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionKind,
+    SelectionPoint, SelectionState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

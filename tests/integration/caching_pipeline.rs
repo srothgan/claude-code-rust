@@ -402,8 +402,8 @@ async fn invalidation_from_streaming_preserves_fast_path() {
 
     // The streaming handler should dirty from the new assistant message (index 2),
     // not the earlier messages.
-    if let Some(dirty) = app.viewport.dirty_from {
-        assert!(dirty >= 2, "dirty_from should be >= 2 (new assistant msg), got {dirty}");
+    if let Some(stale) = app.viewport.oldest_stale_index() {
+        assert!(stale >= 2, "oldest stale message should be >= 2 (new assistant msg), got {stale}");
     }
     // The key invariant: msg 0's height cache is not dirtied by streaming msg 2.
 }

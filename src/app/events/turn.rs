@@ -70,7 +70,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     if layout_dirty {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }
 
@@ -131,7 +131,7 @@ pub(super) fn handle_question_request_event(
     }
 
     if layout_dirty {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }
 
@@ -290,7 +290,7 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
         return;
     };
     if app.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
-        app.invalidate_layout(InvalidationLevel::Single(idx));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(idx));
     }
 }
 

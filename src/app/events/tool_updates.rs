@@ -19,7 +19,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, &id_str, tcu);
     if let Some(mi) = update_outcome.layout_dirty_idx {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
     if let Some(todos) = update_outcome.pending_todos {
         set_todos(app, todos);

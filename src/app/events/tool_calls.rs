@@ -200,7 +200,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         }
     }
     if layout_dirty {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }
 

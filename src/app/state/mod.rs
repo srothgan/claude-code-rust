@@ -27,7 +27,10 @@ pub use types::{
     SelectionKind, SelectionPoint, SelectionState, SessionUsageState, TodoItem, TodoStatus,
     ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
-pub use viewport::{ChatViewport, InvalidationLevel};
+pub use viewport::{
+    ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
+    LayoutRemeasureReason,
+};
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -338,7 +341,7 @@ impl App {
             ),
         );
         self.welcome_model_resolved = self.model_name_is_authoritative();
-        self.invalidate_layout(InvalidationLevel::From(0));
+        self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
 
     fn model_name_is_authoritative(&self) -> bool {
@@ -393,7 +396,7 @@ impl App {
         if welcome.model_name != welcome_model {
             welcome.model_name = welcome_model;
             welcome.cache.invalidate();
-            self.invalidate_layout(InvalidationLevel::From(0));
+            self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         }
         if model_is_authoritative {
             self.welcome_model_resolved = true;
@@ -413,7 +416,7 @@ impl App {
         };
         welcome.recent_sessions.clone_from(&self.recent_sessions);
         welcome.cache.invalidate();
-        self.invalidate_layout(InvalidationLevel::From(0));
+        self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
 
     /// Track a Task/Agent tool call as active (in-progress subagent).
@@ -486,29 +489,22 @@ impl App {
     ///
     /// Single entry point for all layout invalidation. Replaces the former
     /// `mark_message_layout_dirty` / `mark_all_message_layout_dirty` methods.
-    pub fn invalidate_layout(&mut self, level: InvalidationLevel) {
+    pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
         match level {
-            InvalidationLevel::Single(idx) => {
-                self.viewport.mark_message_dirty(idx);
-                // Non-tail single change: prefix sums from idx onward shift.
-                if idx + 1 < self.messages.len() {
-                    self.viewport.prefix_sums_width = 0;
-                }
+            LayoutInvalidation::MessageChanged(idx) => {
+                self.viewport.invalidate_message(idx);
             }
-            InvalidationLevel::From(idx) => {
-                self.viewport.mark_message_dirty(idx);
-                // Structural change: always force full prefix-sum rebuild.
-                self.viewport.prefix_sums_width = 0;
+            LayoutInvalidation::MessagesFrom(idx) => {
+                self.viewport.invalidate_messages_from(idx);
             }
-            InvalidationLevel::Global => {
+            LayoutInvalidation::Global => {
                 if self.messages.is_empty() {
                     return;
                 }
-                self.viewport.mark_message_dirty(0);
-                self.viewport.prefix_sums_width = 0;
+                self.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
                 self.viewport.bump_layout_generation();
             }
-            InvalidationLevel::Resize => {
+            LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
                 // for exhaustiveness; production code should not reach it.
                 debug_assert!(false, "Resize should not be dispatched through invalidate_layout");
@@ -582,7 +578,7 @@ impl App {
 
         if changed > 0 || cleared_interaction {
             if let Some(msg_idx) = first_changed_idx {
-                self.invalidate_layout(InvalidationLevel::Single(msg_idx));
+                self.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
             }
             self.pending_permission_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
@@ -1796,7 +1792,7 @@ mod tests {
         assert!(vp.auto_scroll);
         assert_eq!(vp.width, 0);
         assert!(vp.message_heights.is_empty());
-        assert!(vp.dirty_from.is_none());
+        assert!(vp.oldest_stale_index().is_none());
         assert!(!vp.resize_remeasure_active());
         assert!(vp.height_prefix_sums.is_empty());
     }
@@ -1856,22 +1852,26 @@ mod tests {
     }
 
     #[test]
-    fn viewport_mark_message_dirty_tracks_oldest_index() {
+    fn viewport_invalidate_message_tracks_oldest_index() {
         let mut vp = ChatViewport::new();
-        vp.mark_message_dirty(5);
-        vp.mark_message_dirty(2);
-        vp.mark_message_dirty(7);
-        assert_eq!(vp.dirty_from, Some(2));
+        vp.sync_message_count(8);
+        vp.mark_heights_valid();
+        vp.invalidate_message(5);
+        vp.invalidate_message(2);
+        vp.invalidate_message(7);
+        assert_eq!(vp.oldest_stale_index(), Some(2));
     }
 
     #[test]
     fn viewport_mark_heights_valid_clears_dirty_index() {
         let mut vp = ChatViewport::new();
         vp.on_frame(80);
-        vp.mark_message_dirty(1);
-        assert_eq!(vp.dirty_from, Some(1));
+        vp.sync_message_count(2);
         vp.mark_heights_valid();
-        assert!(vp.dirty_from.is_none());
+        vp.invalidate_message(1);
+        assert_eq!(vp.oldest_stale_index(), Some(1));
+        vp.mark_heights_valid();
+        assert!(vp.oldest_stale_index().is_none());
     }
 
     #[test]
@@ -1948,6 +1948,76 @@ mod tests {
 
         assert_eq!(vp.scroll_offset, 14);
         assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn viewport_preserves_resize_anchor_when_followup_remeasure_replaces_plan() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.on_frame(40);
+        let resize_anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
+        assert_eq!(resize_anchor, (1, 2));
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
+
+        vp.invalidate_messages_from(0);
+
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
+        assert_eq!(vp.resize_scroll_anchor(), Some(resize_anchor));
+        assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn viewport_global_remeasure_preserves_anchor_while_prefix_above_converges() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.sync_message_count(6);
+        for idx in 0..6 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 17;
+        vp.scroll_target = 17;
+        vp.scroll_pos = 17.0;
+
+        vp.invalidate_all_messages(LayoutRemeasureReason::Global);
+        let anchor =
+            vp.scroll_anchor_to_restore().expect("global remeasure should preserve an anchor");
+        assert_eq!(anchor, (3, 2));
+
+        vp.invalidate_message(5);
+
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessageChanged));
+        assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
+
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+
+        assert_eq!(vp.find_first_visible(vp.scroll_offset), 3);
+        assert_eq!(vp.scroll_offset, 27);
     }
 
     #[test]
@@ -2158,13 +2228,14 @@ mod tests {
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
+        app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();
-        let prefix_width_before = app.viewport.prefix_sums_width;
 
-        app.invalidate_layout(InvalidationLevel::Single(2)); // tail
+        app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.viewport.dirty_from, Some(2));
-        assert_eq!(app.viewport.prefix_sums_width, prefix_width_before);
+        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport.prefix_sums_width, 0);
     }
 
     #[test]
@@ -2177,11 +2248,13 @@ mod tests {
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
+        app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();
 
-        app.invalidate_layout(InvalidationLevel::Single(1)); // non-tail
+        app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
         assert_eq!(app.viewport.prefix_sums_width, 0);
     }
 
@@ -2195,13 +2268,15 @@ mod tests {
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
+        app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();
         assert_ne!(app.viewport.prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
-        app.invalidate_layout(InvalidationLevel::From(2));
+        app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.viewport.dirty_from, Some(2));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
         assert_eq!(app.viewport.prefix_sums_width, 0);
     }
 
@@ -2215,11 +2290,13 @@ mod tests {
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
+        app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();
 
-        app.invalidate_layout(InvalidationLevel::From(0));
+        app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.viewport.dirty_from, Some(0));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
         assert_eq!(app.viewport.prefix_sums_width, 0);
     }
 
@@ -2230,12 +2307,15 @@ mod tests {
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
         app.viewport.on_frame(80);
+        app.viewport.sync_message_count(3);
+        app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();
         let gen_before = app.viewport.layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.viewport.dirty_from, Some(0));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
         assert_eq!(app.viewport.prefix_sums_width, 0);
         assert_eq!(app.viewport.layout_generation, gen_before + 1);
     }
@@ -2248,33 +2328,35 @@ mod tests {
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.viewport.dirty_from.is_none());
+        assert!(app.viewport.oldest_stale_index().is_none());
         assert_eq!(app.viewport.layout_generation, gen_before);
     }
 
     #[test]
-    fn invalidate_single_watermark_tracks_oldest() {
+    fn invalidate_message_tracks_oldest_stale_index() {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
             app.messages.push(user_text_message("x"));
         }
+        app.viewport.sync_message_count(10);
+        app.viewport.mark_heights_valid();
 
-        app.invalidate_layout(InvalidationLevel::Single(5));
-        app.invalidate_layout(InvalidationLevel::Single(2));
-        app.invalidate_layout(InvalidationLevel::Single(7));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(5));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(2));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.viewport.dirty_from, Some(2));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
     }
 
     #[test]
     fn invalidation_level_eq_and_debug() {
-        assert_eq!(InvalidationLevel::Single(5), InvalidationLevel::Single(5));
-        assert_ne!(InvalidationLevel::Single(5), InvalidationLevel::From(5));
+        assert_eq!(InvalidationLevel::MessageChanged(5), InvalidationLevel::MessageChanged(5));
+        assert_ne!(InvalidationLevel::MessageChanged(5), InvalidationLevel::MessagesFrom(5));
         assert_eq!(InvalidationLevel::Global, InvalidationLevel::Global);
         assert_eq!(InvalidationLevel::Resize, InvalidationLevel::Resize);
         // Debug derive works
-        let dbg = format!("{:?}", InvalidationLevel::From(3));
-        assert!(dbg.contains("From"));
+        let dbg = format!("{:?}", InvalidationLevel::MessagesFrom(3));
+        assert!(dbg.contains("MessagesFrom"));
     }
 }

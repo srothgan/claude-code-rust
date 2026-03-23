@@ -30,12 +30,12 @@ struct HeightUpdateStats {
 }
 
 #[derive(Clone, Copy, Default)]
-struct ResizeMeasureBudget {
+struct RemeasureBudget {
     remaining_msgs: usize,
     remaining_lines: usize,
 }
 
-impl ResizeMeasureBudget {
+impl RemeasureBudget {
     fn new(viewport_height: usize) -> Self {
         let viewport_floor = viewport_height.max(12);
         Self {
@@ -116,42 +116,27 @@ fn update_visual_heights(
         app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
     app.viewport.sync_message_count(app.messages.len());
 
-    if app.viewport.resize_remeasure_active() {
-        return update_visual_heights_resize(
-            app,
-            base,
-            is_thinking,
-            show_subagent_thinking,
-            width,
-            viewport_height,
-        );
-    }
-
-    update_visual_heights_steady(app, base, is_thinking, show_subagent_thinking, width)
-}
-
-fn update_visual_heights_steady(
-    app: &mut App,
-    base: SpinnerState,
-    is_thinking: bool,
-    show_subagent_thinking: bool,
-    width: u16,
-) -> HeightUpdateStats {
     let msg_count = app.messages.len();
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    let width_valid = app.viewport.message_heights_width == width;
-    let dirty_from = app.viewport.dirty_from.filter(|&idx| idx < msg_count);
     let mut stats = HeightUpdateStats::default();
-    for i in (0..msg_count).rev() {
+
+    if msg_count == 0 {
+        app.viewport.finalize_remeasure_if_clean();
+        return stats;
+    }
+
+    let (visible_start, visible_end) = app
+        .viewport
+        .remeasure_anchor_window(viewport_height)
+        .or_else(|| app.viewport.current_visible_window(viewport_height))
+        .unwrap_or((0, 0));
+    app.viewport.ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+
+    while let Some(i) = app.viewport.next_priority_remeasure() {
         let is_last = i + 1 == msg_count;
-        let is_dirty = dirty_from.is_some_and(|idx| i >= idx);
-        if !is_dirty
-            && width_valid
-            && app.viewport.message_height(i) > 0
-            && !(is_last && is_streaming)
-        {
-            stats.reused_msgs = i + 1;
-            break;
+        if !needs_height_measure(app, i, is_last, is_streaming) {
+            stats.reused_msgs += 1;
+            continue;
         }
         measure_message_height_at(
             app,
@@ -163,30 +148,6 @@ fn update_visual_heights_steady(
             &mut stats,
         );
     }
-    app.viewport.mark_heights_valid();
-    stats
-}
-
-fn update_visual_heights_resize(
-    app: &mut App,
-    base: SpinnerState,
-    is_thinking: bool,
-    show_subagent_thinking: bool,
-    width: u16,
-    viewport_height: usize,
-) -> HeightUpdateStats {
-    let msg_count = app.messages.len();
-    let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    let mut stats = HeightUpdateStats::default();
-
-    if msg_count == 0 {
-        app.viewport.mark_heights_valid();
-        return stats;
-    }
-
-    let (visible_start, visible_end) =
-        app.viewport.resize_anchor_window(viewport_height).unwrap_or((0, 0));
-    app.viewport.ensure_resize_remeasure_anchor(visible_start, visible_end, msg_count);
 
     for i in visible_start..=visible_end {
         let is_last = i + 1 == msg_count;
@@ -220,9 +181,9 @@ fn update_visual_heights_resize(
         }
     }
 
-    let mut budget = ResizeMeasureBudget::new(viewport_height);
-    while !budget.exhausted() {
-        let Some(i) = app.viewport.next_resize_remeasure_index(msg_count) else {
+    let mut budget = RemeasureBudget::new(viewport_height);
+    while app.viewport.remeasure_active() && !budget.exhausted() {
+        let Some(i) = app.viewport.next_remeasure_index(msg_count) else {
             break;
         };
         if (visible_start..=visible_end).contains(&i) {
@@ -246,9 +207,7 @@ fn update_visual_heights_resize(
         budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
     }
 
-    if !app.viewport.resize_remeasure_active() {
-        app.viewport.mark_heights_valid();
-    }
+    app.viewport.finalize_remeasure_if_clean();
     stats
 }
 
@@ -274,9 +233,6 @@ fn measure_message_height_at(
     stats.measured_lines += rendered_lines;
     app.viewport.set_message_height(idx, h);
     app.viewport.mark_message_height_measured(idx);
-    if idx + 1 < msg_count {
-        app.viewport.prefix_sums_width = 0;
-    }
 }
 
 /// Measure message height using ground truth: render the message into a scratch
@@ -615,7 +571,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             app.cache_metrics.record_resize();
         }
     }
-    let resize_anchor = app.viewport.resize_scroll_anchor();
+    let remeasure_anchor = app.viewport.scroll_anchor_to_restore();
 
     // Update per-message visual heights
     let height_stats = update_visual_heights(
@@ -643,7 +599,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
         app.viewport.rebuild_prefix_sums();
     }
-    if let Some((anchor_idx, anchor_offset)) = resize_anchor {
+    if let Some((anchor_idx, anchor_offset)) = remeasure_anchor {
         app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
     }
 
@@ -920,7 +876,7 @@ mod tests {
             block.markdown.append(extra);
             block.cache.invalidate();
         }
-        app.invalidate_layout(InvalidationLevel::From(0));
+        app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
         update_visual_heights(&mut app, spinner, false, false, 12, 8);
         assert!(
@@ -1033,7 +989,7 @@ mod tests {
         app.viewport.scroll_pos = app.viewport.scroll_offset as f32;
 
         assert!(app.viewport.on_frame(18));
-        app.invalidate_layout(InvalidationLevel::From(0));
+        app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
         let first =
             update_visual_heights(&mut app, spinner, false, false, 18, per_message_height * 2);

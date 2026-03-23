@@ -286,7 +286,7 @@ fn sync_welcome_cwd(app: &mut App) {
     };
     welcome.cwd.clone_from(&app.cwd);
     welcome.cache.invalidate();
-    app.invalidate_layout(InvalidationLevel::From(0));
+    app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {

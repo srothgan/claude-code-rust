@@ -3,31 +3,45 @@
 
 /// Describes the intent behind a layout invalidation.
 ///
-/// All variants currently reduce to the same `dirty_from` watermark model --
-/// the semantic distinction exists for documentation, tracing, and future
-/// optimization (e.g. O(1) prefix-sum patch for `Single` at non-tail indices).
-///
-/// Do NOT add `Range(start, end)` unless the underlying data structures
-/// support bounded invalidation.
+/// The viewport now tracks per-message staleness, prefix-sum dirtiness, and
+/// queued remeasurement separately. Do not add a bounded range variant unless
+/// the underlying state can represent disjoint stale spans directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InvalidationLevel {
+pub enum LayoutInvalidation {
     /// One message's content changed (tool status, permission UI, terminal output).
-    /// Only that message needs re-measurement.
-    Single(usize),
-    /// Messages from `start` onward may have changed (insert/remove/reindex).
-    From(usize),
+    /// The changed message must be remeasured exactly on the next frame.
+    MessageChanged(usize),
+    /// Messages from `start` onward may have changed structurally (insert/remove/reindex).
+    MessagesFrom(usize),
     /// Terminal width changed. Handled internally by `on_frame()`.
     /// Included for completeness; not dispatched through `App::invalidate_layout()`.
     Resize,
-    /// Global layout change (e.g. tool collapse toggle).
-    /// All messages dirty + `layout_generation` bumped.
+    /// Global layout change (for example, tool collapse toggle).
+    /// All messages become stale and `layout_generation` is bumped.
     Global,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResizeRemeasureState {
+pub enum LayoutRemeasureReason {
+    MessageChanged,
+    MessagesFrom,
+    Resize,
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreservedScrollAnchor {
+    reason: LayoutRemeasureReason,
+    index: usize,
+    offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutRemeasurePlan {
+    reason: LayoutRemeasureReason,
     scroll_anchor_index: usize,
     scroll_anchor_offset: usize,
+    preserved_scroll_anchor: Option<PreservedScrollAnchor>,
     priority_start: usize,
     priority_end: usize,
     next_above: Option<usize>,
@@ -35,10 +49,12 @@ pub struct ResizeRemeasureState {
     prefer_above: bool,
 }
 
-impl ResizeRemeasureState {
+impl LayoutRemeasurePlan {
     fn new(
+        reason: LayoutRemeasureReason,
         scroll_anchor_index: usize,
         scroll_anchor_offset: usize,
+        preserved_scroll_anchor: Option<PreservedScrollAnchor>,
         priority_start: usize,
         priority_end: usize,
         message_count: usize,
@@ -47,9 +63,16 @@ impl ResizeRemeasureState {
         let scroll_anchor_index = scroll_anchor_index.min(last_idx);
         let priority_start = priority_start.min(last_idx);
         let priority_end = priority_end.min(last_idx).max(priority_start);
+        let preserved_scroll_anchor = preserved_scroll_anchor.map(|anchor| PreservedScrollAnchor {
+            reason: anchor.reason,
+            index: anchor.index.min(last_idx),
+            offset: anchor.offset,
+        });
         Self {
+            reason,
             scroll_anchor_index,
             scroll_anchor_offset,
+            preserved_scroll_anchor,
             priority_start,
             priority_end,
             next_above: priority_start.checked_sub(1),
@@ -59,13 +82,17 @@ impl ResizeRemeasureState {
     }
 
     fn from_scroll_anchor(
+        reason: LayoutRemeasureReason,
         scroll_anchor_index: usize,
         scroll_anchor_offset: usize,
+        preserved_scroll_anchor: Option<PreservedScrollAnchor>,
         message_count: usize,
     ) -> Self {
         Self::new(
+            reason,
             scroll_anchor_index,
             scroll_anchor_offset,
+            preserved_scroll_anchor,
             scroll_anchor_index,
             scroll_anchor_index,
             message_count,
@@ -76,11 +103,10 @@ impl ResizeRemeasureState {
 /// Single owner of all chat layout state: scroll, per-message heights, and prefix sums.
 ///
 /// Consolidates state previously scattered across `App` (scroll fields, prefix sums),
-/// `ChatMessage` (`cached_visual_height`/`cached_visual_width`), and `BlockCache` (`wrapped_height`/`wrapped_width`).
-/// Per-block heights remain on `BlockCache` via `set_height()` / `height_at()`, but
-/// the viewport owns the validity width that governs whether those caches are considered
-/// current. On resize, prior heights are retained as temporary estimates while a
-/// resumable re-measurement pass converges back to exact heights at the new width.
+/// `ChatMessage` (`cached_visual_height`/`cached_visual_width`), and `BlockCache`
+/// (`wrapped_height`/`wrapped_width`). Per-block heights remain on `BlockCache`
+/// via `set_height()` / `height_at()`, but the viewport owns the validity width
+/// that governs whether those caches are considered current.
 pub struct ChatViewport {
     // --- Scroll ---
     /// Rendered scroll offset (rounded from `scroll_pos`).
@@ -105,24 +131,28 @@ pub struct ChatViewport {
 
     // --- Per-message heights ---
     /// Visual height (in terminal rows) of each message, indexed by message position.
-    /// Retained across resize as an estimate until re-measured at the new width.
+    /// Retained across resize and large invalidations as a temporary estimate until
+    /// the queued remeasurement converges back to exact heights.
     pub message_heights: Vec<usize>,
-    /// Width at which `message_heights` was last computed.
-    /// Set only when every cached message height is exact at `width`.
+    /// Width at which `message_heights` was last known to be exact for every message.
     pub message_heights_width: u16,
-    /// Per-message exactness marker used while resize re-measurement is in flight.
+    /// Per-message exactness marker used while queued remeasurement is in flight.
     pub measured_message_widths: Vec<u16>,
-    /// Oldest message index whose cached height may be stale.
-    pub dirty_from: Option<usize>,
-    /// Resumable frontiers for progressive resize re-measurement.
-    pub resize_remeasure: Option<ResizeRemeasureState>,
+    /// Per-message stale marker. `true` means the message must be remeasured.
+    pub stale_message_heights: Vec<bool>,
+    /// Messages that must be remeasured exactly before the general queued plan continues.
+    priority_remeasure: Vec<usize>,
+    /// Visible-first queued remeasurement plan.
+    pub remeasure_plan: Option<LayoutRemeasurePlan>,
 
     // --- Prefix sums ---
     /// Cumulative heights: `height_prefix_sums[i]` = sum of heights `0..=i`.
     /// Enables O(log n) binary search for first visible message and O(1) total height.
     pub height_prefix_sums: Vec<usize>,
-    /// Width at which prefix sums were last computed.
+    /// Width at which prefix sums were last rebuilt against `message_heights`.
     pub prefix_sums_width: u16,
+    /// Oldest prefix index whose cumulative values must be rebuilt.
+    pub prefix_dirty_from: Option<usize>,
 }
 
 impl ChatViewport {
@@ -141,10 +171,12 @@ impl ChatViewport {
             message_heights: Vec::new(),
             message_heights_width: 0,
             measured_message_widths: Vec::new(),
-            dirty_from: None,
-            resize_remeasure: None,
+            stale_message_heights: Vec::new(),
+            priority_remeasure: Vec::new(),
+            remeasure_plan: None,
             height_prefix_sums: Vec::new(),
             prefix_sums_width: 0,
+            prefix_dirty_from: None,
         }
     }
 
@@ -171,18 +203,24 @@ impl ChatViewport {
     /// Invalidate height caches on terminal resize.
     ///
     /// Old message heights remain as approximations so the next frame can keep
-    /// using a stable prefix-sum model while resize re-measurement converges.
+    /// using a stable estimated prefix-sum model while queued remeasurement converges.
     fn handle_resize(&mut self) {
+        if self.message_heights.is_empty() {
+            self.message_heights_width = 0;
+            self.prefix_sums_width = 0;
+            self.prefix_dirty_from = None;
+            self.remeasure_plan = None;
+            self.priority_remeasure.clear();
+            self.layout_generation = self.layout_generation.wrapping_add(1);
+            return;
+        }
+
         self.message_heights_width = 0;
-        self.prefix_sums_width = 0;
-        self.resize_remeasure = (!self.message_heights.is_empty()).then(|| {
-            let (anchor_index, anchor_offset) = self.current_scroll_anchor();
-            ResizeRemeasureState::from_scroll_anchor(
-                anchor_index,
-                anchor_offset,
-                self.message_heights.len(),
-            )
-        });
+        self.measured_message_widths.fill(0);
+        self.stale_message_heights.fill(true);
+        self.priority_remeasure.clear();
+        self.mark_prefix_sums_dirty_from(0);
+        self.schedule_remeasure(LayoutRemeasureReason::Resize);
         self.layout_generation = self.layout_generation.wrapping_add(1);
     }
 
@@ -199,158 +237,294 @@ impl ChatViewport {
         self.message_heights.get(idx).copied().unwrap_or(0)
     }
 
+    /// Return the number of stale messages awaiting remeasurement.
+    #[must_use]
+    pub fn stale_message_count(&self) -> usize {
+        self.stale_message_heights.iter().filter(|stale| **stale).count()
+    }
+
+    /// Return the oldest stale message index, if any.
+    #[must_use]
+    pub fn oldest_stale_index(&self) -> Option<usize> {
+        self.stale_message_heights.iter().position(|stale| *stale)
+    }
+
+    /// Return the oldest prefix index whose cumulative values still need repair.
+    #[must_use]
+    pub fn prefix_dirty_from(&self) -> Option<usize> {
+        self.prefix_dirty_from
+    }
+
+    /// Return the active queued remeasurement reason, if any.
+    #[must_use]
+    pub fn remeasure_reason(&self) -> Option<LayoutRemeasureReason> {
+        self.remeasure_plan.map(|plan| plan.reason)
+    }
+
     /// Ensure per-message height state matches the current message count.
     pub fn sync_message_count(&mut self, count: usize) {
-        let heights_len_before = self.message_heights.len();
-        if heights_len_before != count || self.height_prefix_sums.len() != count {
+        let old_len = self.message_heights.len();
+        if old_len != count {
+            self.message_heights.resize(count, 0);
+            self.measured_message_widths.resize(count, 0);
+            self.stale_message_heights.resize(count, false);
+            self.height_prefix_sums.resize(count, 0);
             self.prefix_sums_width = 0;
+            self.message_heights_width = 0;
+
+            if old_len < count {
+                self.stale_message_heights[old_len..].fill(true);
+                self.measured_message_widths[old_len..].fill(0);
+                self.mark_prefix_sums_dirty_from(old_len);
+                self.schedule_remeasure(LayoutRemeasureReason::MessagesFrom);
+                self.queue_priority_remeasure(count.saturating_sub(1));
+            } else {
+                self.priority_remeasure.retain(|&idx| idx < count);
+                self.prefix_dirty_from = self.prefix_dirty_from.map(|idx| idx.min(count));
+            }
         }
-        self.message_heights.resize(count, 0);
-        self.measured_message_widths.resize(count, 0);
-        self.height_prefix_sums.truncate(count);
+
         if count == 0 {
-            self.dirty_from = None;
-            self.resize_remeasure = None;
+            self.priority_remeasure.clear();
+            self.remeasure_plan = None;
+            self.prefix_dirty_from = None;
+            self.height_prefix_sums.clear();
             return;
         }
-        if let Some(state) = self.resize_remeasure
-            && (state.scroll_anchor_index >= count
-                || state.priority_start >= count
-                || state.priority_end >= count
-                || state.next_below > count)
+
+        if let Some(plan) = self.remeasure_plan
+            && (plan.scroll_anchor_index >= count
+                || plan.preserved_scroll_anchor.is_some_and(|anchor| anchor.index >= count)
+                || plan.priority_start >= count
+                || plan.priority_end >= count
+                || plan.next_below > count)
         {
-            self.resize_remeasure = Some(ResizeRemeasureState::new(
-                state.scroll_anchor_index.min(count.saturating_sub(1)),
-                state.scroll_anchor_offset,
-                state.priority_start.min(count.saturating_sub(1)),
-                state.priority_end.min(count.saturating_sub(1)),
+            self.remeasure_plan = Some(LayoutRemeasurePlan::new(
+                plan.reason,
+                plan.scroll_anchor_index.min(count.saturating_sub(1)),
+                plan.scroll_anchor_offset,
+                plan.preserved_scroll_anchor,
+                plan.priority_start.min(count.saturating_sub(1)),
+                plan.priority_end.min(count.saturating_sub(1)),
                 count,
             ));
+        }
+
+        if self.has_stale_message_heights() && self.remeasure_plan.is_none() {
+            self.schedule_remeasure(LayoutRemeasureReason::MessagesFrom);
         }
     }
 
     /// Set the visual height for message `idx`, growing the vec if needed.
-    ///
-    /// Does NOT update `message_heights_width` - the caller must call
-    /// `mark_heights_valid()` after the full re-measurement pass completes.
     pub fn set_message_height(&mut self, idx: usize, h: usize) {
         if idx >= self.message_heights.len() {
-            self.message_heights.resize(idx + 1, 0);
+            self.sync_message_count(idx + 1);
         }
-        self.message_heights[idx] = h;
+        if self.message_heights.get(idx).copied().unwrap_or(0) != h {
+            self.message_heights[idx] = h;
+            self.mark_prefix_sums_dirty_from(idx);
+        }
     }
 
     /// Mark one message height as exact for the current viewport width.
     pub fn mark_message_height_measured(&mut self, idx: usize) {
         if idx >= self.measured_message_widths.len() {
-            self.measured_message_widths.resize(idx + 1, 0);
+            self.sync_message_count(idx + 1);
         }
         self.measured_message_widths[idx] = self.width;
+        self.stale_message_heights[idx] = false;
+        self.priority_remeasure.retain(|&pending| pending != idx);
     }
 
     /// Return whether a message height is exact at the current width.
     #[must_use]
     pub fn message_height_is_current(&self, idx: usize) -> bool {
+        if self.stale_message_heights.get(idx).copied().unwrap_or(false) {
+            return false;
+        }
         if self.message_heights_width == self.width {
             return idx < self.message_heights.len();
         }
         self.measured_message_widths.get(idx).copied().unwrap_or(0) == self.width
     }
 
-    /// Mark all message heights as valid at the current width.
-    /// Call after `update_visual_heights()` finishes re-measuring.
-    pub fn mark_heights_valid(&mut self) {
-        self.message_heights_width = self.width;
-        self.dirty_from = None;
-        self.measured_message_widths.fill(self.width);
-        self.resize_remeasure = None;
-    }
-
-    /// Mark cached heights dirty from `idx` onward.
-    pub fn mark_message_dirty(&mut self, idx: usize) {
-        self.dirty_from = Some(self.dirty_from.map_or(idx, |oldest| oldest.min(idx)));
-        if idx < self.measured_message_widths.len() {
-            self.measured_message_widths[idx..].fill(0);
-        }
-    }
-
-    /// Return whether progressive resize re-measurement is active.
+    /// Return whether any queued remeasurement is still active.
     #[must_use]
-    pub fn resize_remeasure_active(&self) -> bool {
-        self.resize_remeasure.is_some()
+    pub fn remeasure_active(&self) -> bool {
+        self.remeasure_plan.is_some()
+    }
+
+    /// Return whether any message height is still stale.
+    #[must_use]
+    pub fn has_stale_message_heights(&self) -> bool {
+        self.stale_message_heights.iter().any(|stale| *stale)
+    }
+
+    /// Mark one message as stale and queue it for exact remeasurement.
+    pub fn invalidate_message(&mut self, idx: usize) {
+        if idx >= self.message_heights.len() {
+            self.sync_message_count(idx + 1);
+        }
+        self.message_heights_width = 0;
+        self.measured_message_widths[idx] = 0;
+        self.stale_message_heights[idx] = true;
+        self.queue_priority_remeasure(idx);
+        self.mark_prefix_sums_dirty_from(idx);
+        self.schedule_remeasure(LayoutRemeasureReason::MessageChanged);
+    }
+
+    /// Mark every message from `idx` onward as stale and queue visible-first remeasurement.
+    pub fn invalidate_messages_from(&mut self, idx: usize) {
+        if self.message_heights.is_empty() {
+            return;
+        }
+        let start = idx.min(self.message_heights.len().saturating_sub(1));
+        self.message_heights_width = 0;
+        self.measured_message_widths[start..].fill(0);
+        self.stale_message_heights[start..].fill(true);
+        self.mark_prefix_sums_dirty_from(start);
+        self.schedule_remeasure(LayoutRemeasureReason::MessagesFrom);
+    }
+
+    /// Mark all messages stale and queue visible-first remeasurement.
+    pub fn invalidate_all_messages(&mut self, reason: LayoutRemeasureReason) {
+        if self.message_heights.is_empty() {
+            return;
+        }
+        self.message_heights_width = 0;
+        self.measured_message_widths.fill(0);
+        self.stale_message_heights.fill(true);
+        self.priority_remeasure.clear();
+        self.mark_prefix_sums_dirty_from(0);
+        self.schedule_remeasure(reason);
+    }
+
+    fn queue_priority_remeasure(&mut self, idx: usize) {
+        if self.priority_remeasure.contains(&idx) {
+            return;
+        }
+        self.priority_remeasure.push(idx);
+    }
+
+    /// Pop the next message that must be remeasured before the general queue continues.
+    pub fn next_priority_remeasure(&mut self) -> Option<usize> {
+        while let Some(idx) = self.priority_remeasure.pop() {
+            if self.stale_message_heights.get(idx).copied().unwrap_or(false) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn schedule_remeasure(&mut self, reason: LayoutRemeasureReason) {
+        if self.message_heights.is_empty() {
+            self.remeasure_plan = None;
+            return;
+        }
+        let (anchor_index, anchor_offset) = self.current_scroll_anchor();
+        let preserved_scroll_anchor =
+            if matches!(reason, LayoutRemeasureReason::Resize | LayoutRemeasureReason::Global) {
+                Some(PreservedScrollAnchor { reason, index: anchor_index, offset: anchor_offset })
+            } else {
+                self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
+            };
+        self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
+            reason,
+            anchor_index,
+            anchor_offset,
+            preserved_scroll_anchor,
+            self.message_heights.len(),
+        ));
     }
 
     /// Reset the outward expansion frontiers around the current visible window.
-    pub fn ensure_resize_remeasure_anchor(
+    pub fn ensure_remeasure_anchor(
         &mut self,
         visible_start: usize,
         visible_end: usize,
         message_count: usize,
     ) {
-        if message_count == 0 || self.resize_remeasure.is_none() {
+        if message_count == 0 || self.remeasure_plan.is_none() {
             return;
         }
-        let Some(state) = self.resize_remeasure else {
+        let Some(plan) = self.remeasure_plan else {
             return;
         };
-        let next = ResizeRemeasureState::new(
-            state.scroll_anchor_index,
-            state.scroll_anchor_offset,
+        let next = LayoutRemeasurePlan::new(
+            plan.reason,
+            plan.scroll_anchor_index,
+            plan.scroll_anchor_offset,
+            plan.preserved_scroll_anchor,
             visible_start,
             visible_end,
             message_count,
         );
-        let needs_reanchor = self.resize_remeasure.is_some_and(|state| {
-            state.priority_start != next.priority_start || state.priority_end != next.priority_end
+        let needs_reanchor = self.remeasure_plan.is_some_and(|current| {
+            current.priority_start != next.priority_start
+                || current.priority_end != next.priority_end
         });
         if needs_reanchor {
-            self.resize_remeasure = Some(next);
+            self.remeasure_plan = Some(next);
         }
     }
 
-    /// Resume outward resize re-measurement from the current visible anchor.
-    pub fn next_resize_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
-        let state = self.resize_remeasure.as_mut()?;
-        let choose_above = match (state.next_above, state.next_below < message_count) {
+    /// Resume outward remeasurement from the current visible anchor.
+    pub fn next_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
+        let plan = self.remeasure_plan.as_mut()?;
+        let choose_above = match (plan.next_above, plan.next_below < message_count) {
             (Some(_), true) => {
-                let choose = state.prefer_above;
-                state.prefer_above = !state.prefer_above;
+                let choose = plan.prefer_above;
+                plan.prefer_above = !plan.prefer_above;
                 choose
             }
             (Some(_), false) => true,
             (None, true) => false,
             (None, false) => {
-                self.resize_remeasure = None;
+                self.remeasure_plan = None;
                 return None;
             }
         };
         if choose_above {
-            let idx = state.next_above?;
-            state.next_above = idx.checked_sub(1);
+            let idx = plan.next_above?;
+            plan.next_above = idx.checked_sub(1);
             Some(idx)
         } else {
-            let idx = state.next_below;
-            state.next_below = state.next_below.saturating_add(1);
+            let idx = plan.next_below;
+            plan.next_below = plan.next_below.saturating_add(1);
             Some(idx)
         }
+    }
+
+    /// Return the preserved scroll anchor that should be restored while remeasure
+    /// remains in flight.
+    #[must_use]
+    pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
+        self.remeasure_plan.and_then(|plan| {
+            plan.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
+        })
     }
 
     /// Return the preserved pre-resize scroll anchor.
     #[must_use]
     pub fn resize_scroll_anchor(&self) -> Option<(usize, usize)> {
-        self.resize_remeasure.map(|state| (state.scroll_anchor_index, state.scroll_anchor_offset))
+        self.remeasure_plan.and_then(|plan| {
+            plan.preserved_scroll_anchor.and_then(|anchor| {
+                (anchor.reason == LayoutRemeasureReason::Resize)
+                    .then_some((anchor.index, anchor.offset))
+            })
+        })
     }
 
     /// Derive the priority window from the preserved scroll anchor using current estimates.
     #[must_use]
-    pub fn resize_anchor_window(&self, viewport_height: usize) -> Option<(usize, usize)> {
-        let state = self.resize_remeasure?;
+    pub fn remeasure_anchor_window(&self, viewport_height: usize) -> Option<(usize, usize)> {
+        let plan = self.remeasure_plan?;
         if self.message_heights.is_empty() {
             return None;
         }
-        let start = state.scroll_anchor_index.min(self.message_heights.len().saturating_sub(1));
+        let start = plan.scroll_anchor_index.min(self.message_heights.len().saturating_sub(1));
         let mut end = start;
-        let needed_rows = state.scroll_anchor_offset.saturating_add(viewport_height.max(1));
+        let needed_rows = plan.scroll_anchor_offset.saturating_add(viewport_height.max(1));
         let mut covered_rows = self.message_height(start);
         while end + 1 < self.message_heights.len() && covered_rows < needed_rows {
             end += 1;
@@ -375,26 +549,83 @@ impl ChatViewport {
         self.scroll_offset = scroll;
     }
 
-    // --- Prefix sums ---
+    /// Mark prefix sums dirty from `idx` onward.
+    pub fn mark_prefix_sums_dirty_from(&mut self, idx: usize) {
+        self.prefix_dirty_from = Some(self.prefix_dirty_from.map_or(idx, |oldest| oldest.min(idx)));
+        self.prefix_sums_width = 0;
+    }
 
-    /// Rebuild prefix sums from `message_heights`.
-    /// O(1) fast path when width unchanged and only the last message changed (streaming).
-    pub fn rebuild_prefix_sums(&mut self) {
-        let n = self.message_heights.len();
-        if self.prefix_sums_width == self.width && self.height_prefix_sums.len() == n && n > 0 {
-            // Streaming fast path: only last message's height changed.
-            let prev = if n >= 2 { self.height_prefix_sums[n - 2] } else { 0 };
-            self.height_prefix_sums[n - 1] = prev + self.message_heights[n - 1];
+    /// Finalize queued remeasurement when all messages are current again.
+    pub fn finalize_remeasure_if_clean(&mut self) {
+        if self.has_stale_message_heights() {
             return;
         }
-        // Full rebuild (resize or new messages added)
-        self.height_prefix_sums.clear();
-        self.height_prefix_sums.reserve(n);
-        let mut acc = 0;
-        for &h in &self.message_heights {
-            acc += h;
-            self.height_prefix_sums.push(acc);
+        self.message_heights_width = self.width;
+        self.measured_message_widths.fill(self.width);
+        self.priority_remeasure.clear();
+        self.remeasure_plan = None;
+    }
+
+    /// Mark all message heights exact at the current width.
+    ///
+    /// This remains available for tests that seed viewport state directly.
+    pub fn mark_heights_valid(&mut self) {
+        self.stale_message_heights.fill(false);
+        self.finalize_remeasure_if_clean();
+    }
+
+    /// Compatibility helper for tests and metrics.
+    #[must_use]
+    pub fn resize_remeasure_active(&self) -> bool {
+        self.remeasure_active()
+    }
+
+    /// Compatibility helper for tests that seed and advance the queued plan directly.
+    pub fn ensure_resize_remeasure_anchor(
+        &mut self,
+        visible_start: usize,
+        visible_end: usize,
+        message_count: usize,
+    ) {
+        self.ensure_remeasure_anchor(visible_start, visible_end, message_count);
+    }
+
+    /// Compatibility helper for tests that seed and advance the queued plan directly.
+    pub fn next_resize_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
+        self.next_remeasure_index(message_count)
+    }
+
+    // --- Prefix sums ---
+
+    /// Rebuild prefix sums from `message_heights`, starting from the oldest dirty index.
+    pub fn rebuild_prefix_sums(&mut self) {
+        let n = self.message_heights.len();
+        if n == 0 {
+            self.height_prefix_sums.clear();
+            self.prefix_dirty_from = None;
+            self.prefix_sums_width = self.width;
+            return;
         }
+        if self.height_prefix_sums.len() != n {
+            self.height_prefix_sums.resize(n, 0);
+            self.prefix_dirty_from = Some(0);
+        }
+
+        let Some(start) = self.prefix_dirty_from else {
+            if self.prefix_sums_width == self.width {
+                return;
+            }
+            self.prefix_dirty_from = Some(0);
+            return self.rebuild_prefix_sums();
+        };
+
+        let start = start.min(n.saturating_sub(1));
+        let mut acc = if start == 0 { 0 } else { self.height_prefix_sums[start - 1] };
+        for idx in start..n {
+            acc = acc.saturating_add(self.message_heights[idx]);
+            self.height_prefix_sums[idx] = acc;
+        }
+        self.prefix_dirty_from = None;
         self.prefix_sums_width = self.width;
     }
 
@@ -433,6 +664,20 @@ impl ChatViewport {
             .min(self.message_heights.len().saturating_sub(1))
     }
 
+    /// Derive the current visible window from the latest estimated prefix sums.
+    #[must_use]
+    pub fn current_visible_window(&self, viewport_height: usize) -> Option<(usize, usize)> {
+        if self.message_heights.is_empty() {
+            return None;
+        }
+        if self.height_prefix_sums.is_empty() {
+            return Some((0, 0));
+        }
+        let start = self.find_first_visible(self.scroll_offset);
+        let end = self.find_last_visible(self.scroll_offset, viewport_height.max(1));
+        Some((start.min(end), end.max(start)))
+    }
+
     fn current_scroll_anchor(&self) -> (usize, usize) {
         if self.message_heights.is_empty() {
             return (0, 0);
@@ -452,7 +697,7 @@ impl ChatViewport {
                 return idx;
             }
         }
-        self.message_heights.len().saturating_sub(1)
+        if acc == 0 { 0 } else { self.message_heights.len().saturating_sub(1) }
     }
 
     fn cumulative_height_before_in_estimates(&self, idx: usize) -> usize {

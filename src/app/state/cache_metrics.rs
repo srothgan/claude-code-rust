@@ -205,7 +205,9 @@ pub struct CacheMetricsSnapshot {
     pub history_peak_bytes: usize,
 
     // Viewport dirtiness
-    pub viewport_dirty_from: Option<usize>,
+    pub viewport_prefix_dirty_from: Option<usize>,
+    pub viewport_stale_messages: usize,
+    pub viewport_remeasure_active: bool,
     pub viewport_width_valid: bool,
     pub viewport_prefix_sums_valid: bool,
     pub resize_count: u64,
@@ -259,7 +261,9 @@ pub fn build_snapshot(
         history_enforcement_count: metrics.history_enforcement_count,
         history_peak_bytes: metrics.history_peak_bytes,
 
-        viewport_dirty_from: viewport.dirty_from,
+        viewport_prefix_dirty_from: viewport.prefix_dirty_from(),
+        viewport_stale_messages: viewport.stale_message_count(),
+        viewport_remeasure_active: viewport.remeasure_active(),
         viewport_width_valid: viewport.message_heights_width == viewport.width
             && viewport.width > 0,
         viewport_prefix_sums_valid: viewport.prefix_sums_width == viewport.width
@@ -285,7 +289,9 @@ pub fn emit_render_metrics(snap: &CacheMetricsSnapshot) {
         render_evictions_total = snap.render_total_evictions,
         render_peak = snap.render_peak_bytes,
         render_enforcements = snap.render_enforcement_count,
-        viewport_dirty_from = ?snap.viewport_dirty_from,
+        viewport_prefix_dirty_from = ?snap.viewport_prefix_dirty_from,
+        viewport_stale_messages = snap.viewport_stale_messages,
+        viewport_remeasure_active = snap.viewport_remeasure_active,
         viewport_width_valid = snap.viewport_width_valid,
         viewport_prefix_sums_valid = snap.viewport_prefix_sums_valid,
         resize_count = snap.resize_count,

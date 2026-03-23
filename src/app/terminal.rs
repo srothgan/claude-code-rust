@@ -103,7 +103,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     drop(terminals);
 
     if let Some(mi) = dirty_from {
-        app.invalidate_layout(InvalidationLevel::Single(mi));
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 
     changed
