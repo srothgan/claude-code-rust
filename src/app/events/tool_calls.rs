@@ -122,6 +122,7 @@ fn build_tool_info_from_tool_call(
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         sdk_tool_name,
         raw_input: tc.raw_input,
+        raw_input_bytes: 0,
         output_metadata: tc.output_metadata,
         status: tc.status,
         content: tc.content,
@@ -143,6 +144,8 @@ fn build_tool_info_from_tool_call(
         pending_permission: None,
         pending_question: None,
     };
+    tool_info.raw_input_bytes =
+        tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);
     if let Some(output) = initial_execute_output {
         tool_info.terminal_output_len = output.len();
         tool_info.terminal_bytes_seen = output.len();
@@ -165,12 +168,13 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+            app.recompute_message_retained_bytes(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
     } else {
         let tc_id = tool_info.id.clone();
         let new_idx = app.messages.len();
-        app.messages.push(ChatMessage {
+        app.push_message_tracked(ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
             usage: None,
@@ -190,7 +194,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.status, &tool_info.status);
         changed |= sync_if_changed(&mut existing.content, &tool_info.content);
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
-        changed |= sync_if_changed(&mut existing.raw_input, &tool_info.raw_input);
+        changed |= existing.set_raw_input(tool_info.raw_input.clone());
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         if changed {
             existing.mark_tool_call_layout_dirty();
@@ -200,6 +204,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         }
     }
     if layout_dirty {
+        app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }

@@ -58,6 +58,10 @@ pub struct App {
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub messages: Vec<ChatMessage>,
+    /// Cached approximate retained bytes for each message, parallel to `messages`.
+    pub message_retained_bytes: Vec<usize>,
+    /// Rolling total of `message_retained_bytes`.
+    pub retained_history_bytes: usize,
     /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
     pub viewport: ChatViewport,
     pub input: InputState,
@@ -332,7 +336,7 @@ impl App {
         if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
             return;
         }
-        self.messages.insert(
+        self.insert_message_tracked(
             0,
             ChatMessage::welcome_with_recent(
                 self.welcome_model_display_name(),
@@ -396,6 +400,7 @@ impl App {
         if welcome.model_name != welcome_model {
             welcome.model_name = welcome_model;
             welcome.cache.invalidate();
+            self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         }
         if model_is_authoritative {
@@ -416,6 +421,7 @@ impl App {
         };
         welcome.recent_sessions.clone_from(&self.recent_sessions);
         welcome.cache.invalidate();
+        self.recompute_message_retained_bytes(0);
         self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
 
@@ -543,6 +549,7 @@ impl App {
         let mut changed = 0usize;
         let mut cleared_interaction = false;
         let mut first_changed_idx: Option<usize> = None;
+        let mut changed_message_indices = Vec::new();
         let mut detached_terminal = false;
 
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
@@ -564,6 +571,9 @@ impl App {
                         if tc.is_execute_tool() && tc.terminal_id.take().is_some() {
                             detached_terminal = true;
                         }
+                        if changed_message_indices.last().copied() != Some(msg_idx) {
+                            changed_message_indices.push(msg_idx);
+                        }
                         first_changed_idx =
                             Some(first_changed_idx.map_or(msg_idx, |prev| prev.min(msg_idx)));
                         changed += 1;
@@ -574,6 +584,10 @@ impl App {
 
         if detached_terminal {
             self.rebuild_tool_indices_and_terminal_refs();
+        }
+
+        for msg_idx in changed_message_indices {
+            self.recompute_message_retained_bytes(msg_idx);
         }
 
         if changed > 0 || cleared_interaction {
@@ -600,6 +614,8 @@ impl App {
             trust: TrustState::default(),
             settings_home_override: None,
             messages: Vec::new(),
+            message_retained_bytes: Vec::new(),
+            retained_history_bytes: 0,
             viewport: ChatViewport::new(),
             input: InputState::new(),
             status: AppStatus::Ready,
@@ -1104,6 +1120,7 @@ mod tests {
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
                 raw_input: None,
+                raw_input_bytes: 0,
                 output_metadata: None,
                 status,
                 content: Vec::new(),
@@ -1141,6 +1158,7 @@ mod tests {
                 title: format!("tool {id}"),
                 sdk_tool_name: "Bash".to_owned(),
                 raw_input: None,
+                raw_input_bytes: 0,
                 output_metadata: None,
                 status,
                 content: Vec::new(),
@@ -1175,6 +1193,7 @@ mod tests {
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
                 raw_input: None,
+                raw_input_bytes: 0,
                 output_metadata: None,
                 status: model::ToolCallStatus::Completed,
                 content: Vec::new(),

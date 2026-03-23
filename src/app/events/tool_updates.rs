@@ -19,6 +19,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, &id_str, tcu);
     if let Some(mi) = update_outcome.layout_dirty_idx {
+        app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
     if let Some(todos) = update_outcome.pending_todos {
@@ -213,11 +214,7 @@ fn apply_tool_call_raw_input_update(
     let Some(raw_input) = raw_input else {
         return false;
     };
-    if tc.raw_input.as_ref() == Some(raw_input) {
-        return false;
-    }
-    tc.raw_input = Some(raw_input.clone());
-    true
+    tc.set_raw_input(Some(raw_input.clone()))
 }
 
 fn apply_tool_call_output_metadata_update(
@@ -375,6 +372,7 @@ mod tests {
             title: format!("tool {id}"),
             sdk_tool_name: "Bash".to_owned(),
             raw_input: None,
+            raw_input_bytes: 0,
             output_metadata: None,
             status,
             content: Vec::new(),

@@ -117,13 +117,13 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         return;
     };
 
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::Assistant,
         blocks: Vec::new(),
         usage: None,

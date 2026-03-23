@@ -227,7 +227,7 @@ pub(crate) fn push_system_message_with_severity(
     severity: Option<SystemSeverity>,
     message: &str,
 ) {
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::System(severity),
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(message))],
         usage: None,
@@ -319,6 +319,7 @@ mod tests {
             title: id.into(),
             sdk_tool_name: "Read".into(),
             raw_input: None,
+            raw_input_bytes: 0,
             output_metadata: None,
             status,
             content: vec![],

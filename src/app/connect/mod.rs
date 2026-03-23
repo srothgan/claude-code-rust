@@ -88,6 +88,8 @@ pub fn create_app(cli: &Cli) -> App {
             &cwd_display,
             &[],
         )],
+        message_retained_bytes: Vec::new(),
+        retained_history_bytes: 0,
         viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
@@ -190,6 +192,7 @@ pub fn create_app(cli: &Cli) -> App {
         app.config.last_error = Some(err);
     }
 
+    app.rebuild_history_retention_accounting();
     trust::initialize(&mut app);
     app.refresh_git_branch();
     app

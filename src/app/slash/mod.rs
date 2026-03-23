@@ -89,7 +89,7 @@ fn normalize_slash_name(name: &str) -> String {
 
 fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::System(None),
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,
@@ -100,7 +100,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         usage: None,

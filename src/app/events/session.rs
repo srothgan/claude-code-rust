@@ -137,7 +137,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
         app.needs_redraw = true;
         return;
     }
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::System(None),
         blocks: vec![MessageBlock::Text(TextBlock::from_complete(msg))],
         usage: None,
@@ -286,6 +286,7 @@ fn sync_welcome_cwd(app: &mut App) {
     };
     welcome.cwd.clone_from(&app.cwd);
     welcome.cache.invalidate();
+    app.recompute_message_retained_bytes(0);
     app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 }
 

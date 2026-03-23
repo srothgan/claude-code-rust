@@ -42,6 +42,7 @@ pub(super) fn invalidate_if_changed(
     changed: bool,
 ) {
     if changed && let Some((mi, _)) = dirty_idx {
+        app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
 }

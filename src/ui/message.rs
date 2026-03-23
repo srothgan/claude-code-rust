@@ -1270,6 +1270,7 @@ mod tests {
             title: id.to_owned(),
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: None,
+            raw_input_bytes: 0,
             output_metadata: None,
             status,
             content: if text.is_empty() {

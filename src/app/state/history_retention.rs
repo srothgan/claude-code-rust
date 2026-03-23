@@ -79,11 +79,6 @@ impl super::App {
     }
 
     #[must_use]
-    fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
-        serde_json::to_string(value).map_or(0, |json| json.len())
-    }
-
-    #[must_use]
     fn measure_tool_call_bytes(tc: &ToolCallInfo) -> usize {
         let mut total = size_of::<ToolCallInfo>()
             .saturating_add(tc.id.capacity())
@@ -96,9 +91,7 @@ impl super::App {
                 tc.content.capacity().saturating_mul(size_of::<model::ToolCallContent>()),
             );
 
-        if let Some(raw_input) = &tc.raw_input {
-            total = total.saturating_add(Self::estimate_json_value_bytes(raw_input));
-        }
+        total = total.saturating_add(tc.raw_input_bytes);
         for content in &tc.content {
             total = total.saturating_add(Self::measure_tool_content_bytes(content));
         }
@@ -196,6 +189,71 @@ impl super::App {
         self.messages.iter().map(Self::measure_message_bytes).sum()
     }
 
+    pub(crate) fn rebuild_history_retention_accounting(&mut self) {
+        self.message_retained_bytes.clear();
+        self.message_retained_bytes.reserve(self.messages.len());
+        self.retained_history_bytes = 0;
+
+        for msg in &self.messages {
+            let bytes = Self::measure_message_bytes(msg);
+            self.message_retained_bytes.push(bytes);
+            self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+        }
+    }
+
+    pub(crate) fn ensure_history_retention_accounting(&mut self) {
+        if self.message_retained_bytes.len() != self.messages.len() {
+            self.rebuild_history_retention_accounting();
+        }
+    }
+
+    pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
+        let bytes = Self::measure_message_bytes(&msg);
+        self.messages.push(msg);
+        self.message_retained_bytes.push(bytes);
+        self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+    }
+
+    pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
+        let insert_idx = idx.min(self.messages.len());
+        let bytes = Self::measure_message_bytes(&msg);
+        self.messages.insert(insert_idx, msg);
+        self.message_retained_bytes.insert(insert_idx, bytes);
+        self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+    }
+
+    pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
+        self.ensure_history_retention_accounting();
+        if idx >= self.messages.len() {
+            return None;
+        }
+        let removed = self.messages.remove(idx);
+        let removed_bytes = self.message_retained_bytes.remove(idx);
+        self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
+        Some(removed)
+    }
+
+    pub(crate) fn clear_messages_tracked(&mut self) {
+        self.messages.clear();
+        self.message_retained_bytes.clear();
+        self.retained_history_bytes = 0;
+    }
+
+    pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
+        self.ensure_history_retention_accounting();
+        let Some(msg) = self.messages.get(idx) else {
+            return;
+        };
+        let new_bytes = Self::measure_message_bytes(msg);
+        let Some(old_bytes) = self.message_retained_bytes.get_mut(idx) else {
+            self.rebuild_history_retention_accounting();
+            return;
+        };
+        self.retained_history_bytes =
+            self.retained_history_bytes.saturating_sub(*old_bytes).saturating_add(new_bytes);
+        *old_bytes = new_bytes;
+    }
+
     pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
         self.tool_call_index.clear();
         self.terminal_tool_calls.clear();
@@ -268,10 +326,11 @@ impl super::App {
     }
 
     fn upsert_history_hidden_marker(&mut self) {
+        self.ensure_history_retention_accounting();
         let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
-                self.messages.remove(idx);
+                self.remove_message_tracked(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
                 self.rebuild_tool_indices_and_terminal_refs();
             }
@@ -291,6 +350,7 @@ impl super::App {
                 block.text.clone_from(&marker_text);
                 block.markdown = IncrementalMarkdown::from_complete(&marker_text);
                 block.cache.invalidate();
+                self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }
             return;
@@ -299,7 +359,7 @@ impl super::App {
         let insert_idx = usize::from(
             self.messages.first().is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
         );
-        self.messages.insert(
+        self.insert_message_tracked(
             insert_idx,
             ChatMessage {
                 role: MessageRole::System(None),
@@ -313,9 +373,10 @@ impl super::App {
 
     #[allow(clippy::cast_precision_loss)]
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
+        self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
-        stats.total_before_bytes = self.measure_history_bytes();
+        stats.total_before_bytes = self.retained_history_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
         if stats.total_before_bytes > max_bytes {
@@ -326,7 +387,7 @@ impl super::App {
                 {
                     continue;
                 }
-                let bytes = Self::measure_message_bytes(msg);
+                let bytes = self.message_retained_bytes.get(msg_idx).copied().unwrap_or(0);
                 if bytes == 0 {
                     continue;
                 }
@@ -360,12 +421,20 @@ impl super::App {
 
                 let mut retained =
                     Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
-                for (msg_idx, msg) in self.messages.drain(..).enumerate() {
+                let mut retained_bytes = Vec::with_capacity(retained.capacity());
+                let old_messages = std::mem::take(&mut self.messages);
+                let old_bytes = std::mem::take(&mut self.message_retained_bytes);
+                self.retained_history_bytes = 0;
+                for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
                     if !drop_set.contains(&msg_idx) {
+                        self.retained_history_bytes =
+                            self.retained_history_bytes.saturating_add(bytes);
                         retained.push(msg);
+                        retained_bytes.push(bytes);
                     }
                 }
                 self.messages = retained;
+                self.message_retained_bytes = retained_bytes;
 
                 if !self.viewport.auto_scroll && dropped_rows > 0 {
                     self.viewport.scroll_target =
@@ -395,7 +464,7 @@ impl super::App {
 
         self.upsert_history_hidden_marker();
 
-        stats.total_after_bytes = self.measure_history_bytes();
+        stats.total_after_bytes = self.retained_history_bytes;
         self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
         self.history_retention_stats.dropped_messages = stats.dropped_messages;
         self.history_retention_stats.dropped_bytes = stats.dropped_bytes;

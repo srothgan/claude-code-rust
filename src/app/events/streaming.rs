@@ -20,12 +20,14 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         && matches!(last.role, MessageRole::Assistant)
     {
         append_agent_stream_text(&mut last.blocks, &text.text);
+        let last_idx = app.messages.len().saturating_sub(1);
+        app.recompute_message_retained_bytes(last_idx);
         return;
     }
 
     let mut blocks = Vec::new();
     append_agent_stream_text(&mut blocks, &text.text);
-    app.messages.push(ChatMessage { role: MessageRole::Assistant, blocks, usage: None });
+    app.push_message_tracked(ChatMessage { role: MessageRole::Assistant, blocks, usage: None });
 }
 
 pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {

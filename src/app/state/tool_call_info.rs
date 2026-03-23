@@ -11,6 +11,7 @@ pub struct ToolCallInfo {
     /// Falls back to a derived name when metadata is absent.
     pub sdk_tool_name: String,
     pub raw_input: Option<serde_json::Value>,
+    pub raw_input_bytes: usize,
     pub output_metadata: Option<model::ToolOutputMetadata>,
     pub status: model::ToolCallStatus,
     pub content: Vec<model::ToolCallContent>,
@@ -57,6 +58,10 @@ pub enum TerminalSnapshotMode {
 }
 
 impl ToolCallInfo {
+    pub(crate) fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
+        serde_json::to_string(value).map_or(0, |json| json.len())
+    }
+
     #[must_use]
     pub fn is_execute_tool(&self) -> bool {
         is_execute_tool_name(&self.sdk_tool_name)
@@ -138,6 +143,15 @@ impl ToolCallInfo {
         self.last_measured_height = height;
         self.last_measured_layout_epoch = self.layout_epoch;
         self.last_measured_layout_generation = layout_generation;
+    }
+
+    pub fn set_raw_input(&mut self, raw_input: Option<serde_json::Value>) -> bool {
+        if self.raw_input == raw_input {
+            return false;
+        }
+        self.raw_input_bytes = raw_input.as_ref().map_or(0, Self::estimate_json_value_bytes);
+        self.raw_input = raw_input;
+        true
     }
 }
 

@@ -52,6 +52,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
 
     let mut changed = false;
     let mut dirty_from: Option<usize> = None;
+    let mut dirty_messages = Vec::new();
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
     for &(ref tid, mi, bi) in &app.terminal_tool_calls {
@@ -96,12 +97,18 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         if apply_terminal_payload(tc, payload) {
             tc.mark_tool_call_layout_dirty();
             dirty_from = Some(dirty_from.map_or(mi, |oldest| oldest.min(mi)));
+            if dirty_messages.last().copied() != Some(mi) {
+                dirty_messages.push(mi);
+            }
             changed = true;
         }
     }
 
     drop(terminals);
 
+    for mi in dirty_messages {
+        app.recompute_message_retained_bytes(mi);
+    }
     if let Some(mi) = dirty_from {
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }

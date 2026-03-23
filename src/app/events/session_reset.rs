@@ -49,10 +49,10 @@ fn reset_session_identity_state(
 }
 
 fn reset_messages_for_new_session(app: &mut App) {
-    app.messages.clear();
+    app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
     app.welcome_model_resolved = false;
-    app.messages.push(ChatMessage::welcome_with_recent(
+    app.push_message_tracked(ChatMessage::welcome_with_recent(
         app.model_display_name(),
         &app.cwd,
         &app.recent_sessions,
@@ -130,12 +130,14 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
                 trailing_spacing: TextBlockSpacing::default(),
             }));
         }
+        let last_idx = app.messages.len().saturating_sub(1);
+        app.recompute_message_retained_bytes(last_idx);
         return;
     }
 
     let mut incr = IncrementalMarkdown::default();
     incr.append(&text.text);
-    app.messages.push(ChatMessage {
+    app.push_message_tracked(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(TextBlock {
             text: text.text.clone(),
@@ -148,10 +150,10 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 }
 
 pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
-    app.messages.clear();
+    app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
     app.welcome_model_resolved = false;
-    app.messages.push(ChatMessage::welcome_with_recent(
+    app.push_message_tracked(ChatMessage::welcome_with_recent(
         app.model_display_name(),
         &app.cwd,
         &app.recent_sessions,
