@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::{
-    BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity,
-    TextBlock, WelcomeBlock,
+    BlockCache, ChatMessage, IncrementalMarkdown, MarkdownRenderKey, MessageBlock, MessageRole,
+    SystemSeverity, TextBlock, WelcomeBlock,
 };
 use crate::ui::tables;
 use crate::ui::theme;
@@ -942,13 +942,14 @@ pub(super) fn render_text_cached(
         }
         tables::render_markdown_with_tables(&preprocessed, width, bg)
     };
+    let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
     let _ = text;
-    incr.ensure_rendered(&render_fn);
+    incr.ensure_rendered(render_key, &render_fn);
 
     // Render: cached paragraphs + fresh tail
-    let fresh = incr.lines(&render_fn);
+    let fresh = incr.lines(render_key, &render_fn);
 
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,

@@ -43,6 +43,7 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
+pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, ExtraUsage,

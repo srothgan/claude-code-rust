@@ -77,11 +77,14 @@ Use --log-file to enable diagnostics."
         return Ok(());
     };
 
-    let directives = cli
+    let mut directives = cli
         .log_filter
         .clone()
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| "info".to_owned());
+    if !directives.contains("tui_markdown=") {
+        directives.push_str(",tui_markdown=info");
+    }
     let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
         .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
 

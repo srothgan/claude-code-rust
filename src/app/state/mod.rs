@@ -13,6 +13,7 @@ pub mod viewport;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
+pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity, TextBlock,
     TextBlockSpacing, WelcomeBlock,
@@ -2018,6 +2019,10 @@ mod tests {
         src.lines().map(|l| Line::from(l.to_owned())).collect()
     }
 
+    fn test_render_key() -> super::messages::MarkdownRenderKey {
+        super::messages::MarkdownRenderKey { width: 80, bg: None, preserve_newlines: false }
+    }
+
     #[test]
     fn incr_default_empty() {
         let incr = IncrementalMarkdown::default();
@@ -2064,25 +2069,60 @@ mod tests {
     fn incr_lines_renders_all() {
         let mut incr = IncrementalMarkdown::default();
         incr.append("line1\n\nline2\n\nline3");
-        let lines = incr.lines(&test_render);
+        let lines = incr.lines(test_render_key(), &test_render);
         // test_render maps each source line to one output line
         assert_eq!(lines.len(), 5);
     }
 
     #[test]
-    fn incr_ensure_rendered_noop_preserves_text() {
+    fn incr_ensure_rendered_preserves_text() {
         let mut incr = IncrementalMarkdown::default();
         incr.append("p1\n\np2\n\ntail");
-        incr.ensure_rendered(&test_render);
+        incr.ensure_rendered(test_render_key(), &test_render);
         assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
     }
 
     #[test]
-    fn incr_invalidate_renders_noop_preserves_text() {
+    fn incr_invalidate_renders_preserves_text() {
         let mut incr = IncrementalMarkdown::default();
         incr.append("p1\n\np2\n\ntail");
         incr.invalidate_renders();
         assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
+    }
+
+    #[test]
+    fn incr_reuses_rendered_prefix_chunks() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0usize);
+        let render = |src: &str| -> Vec<Line<'static>> {
+            calls.set(calls.get() + 1);
+            test_render(src)
+        };
+
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("p1\n\np2");
+        let _ = incr.lines(test_render_key(), &render);
+        assert_eq!(calls.get(), 2);
+
+        incr.append(" tail");
+        let _ = incr.lines(test_render_key(), &render);
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn incr_does_not_split_inside_fenced_code_blocks() {
+        let calls = std::cell::Cell::new(0usize);
+        let render = |src: &str| -> Vec<Line<'static>> {
+            calls.set(calls.get() + 1);
+            test_render(src)
+        };
+
+        let mut incr = IncrementalMarkdown::default();
+        incr.append("```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\nafter");
+        let _ = incr.lines(test_render_key(), &render);
+
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::time::Instant;
 /// Minimum number of messages to render above/below the visible range as a margin.
 /// Heights are now exact (block-level wrapped heights), so no safety margin is needed.
 const CULLING_MARGIN: usize = 0;
+const CULLING_OVERSCAN_ROWS: usize = 100;
 const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
 const SCROLLBAR_SIZE_EASE: f32 = 0.2;
@@ -338,10 +339,10 @@ fn render_scrolled(
             .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
         Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
     };
-    if tracing::enabled!(tracing::Level::DEBUG) {
+    if tracing::enabled!(tracing::Level::TRACE) {
         let visible_preview =
             render_lines_from_paragraph(&paragraph, area, render_stats.local_scroll);
-        tracing::debug!(
+        tracing::trace!(
             "RENDER_VISIBLE_PREVIEW: bottom_lines={:?}",
             preview_tail_lines(&visible_preview, 5),
         );
@@ -517,29 +518,54 @@ fn render_culled_messages(
     // O(1) cumulative height lookup via prefix sums
     let height_before_start = app.viewport.cumulative_height_before(render_start);
 
-    // Render messages from render_start onward, stopping when we have enough
-    let lines_needed = (scroll - height_before_start) + viewport_height + 100;
-    crate::perf::mark_with("chat::cull_lines_needed", "lines", lines_needed);
+    // Render messages from render_start onward, stopping once the exact wrapped
+    // height in the output buffer covers the viewport plus a small overscan.
+    let mut structural_skip = scroll.saturating_sub(height_before_start);
+    let rows_needed = structural_skip + viewport_height + CULLING_OVERSCAN_ROWS;
+    crate::perf::mark_with("chat::cull_lines_needed", "lines", rows_needed);
     let mut rendered_msgs = 0usize;
-    let local_scroll = scroll.saturating_sub(height_before_start);
+    let mut local_scroll = 0usize;
+    let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
     for i in render_start..msg_count {
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages[i]);
         let before = out.len();
-        message::render_message_with_tools_collapsed_and_separator(
-            &mut app.messages[i],
-            &sp,
-            width,
-            app.tools_collapsed,
-            i + 1 != msg_count,
-            out,
-        );
+        let message_height = app.viewport.message_height(i);
+        if structural_skip > 0 {
+            let remaining_skip = message::render_message_from_offset_internal(
+                &mut app.messages[i],
+                &sp,
+                width,
+                app.viewport.layout_generation,
+                message::MessageRenderOptions {
+                    tools_collapsed: app.tools_collapsed,
+                    include_trailing_separator: i + 1 != msg_count,
+                },
+                structural_skip,
+                out,
+            );
+            let structural_rows_skipped = structural_skip.saturating_sub(remaining_skip);
+            rendered_rows = rendered_rows
+                .saturating_add(message_height.saturating_sub(structural_rows_skipped));
+            local_scroll = remaining_skip;
+            structural_skip = 0;
+        } else {
+            message::render_message_with_tools_collapsed_and_separator(
+                &mut app.messages[i],
+                &sp,
+                width,
+                app.tools_collapsed,
+                i + 1 != msg_count,
+                out,
+            );
+            rendered_rows = rendered_rows.saturating_add(message_height);
+        }
         app.sync_render_cache_message(i);
         if out.len() > before {
             rendered_msgs += 1;
             last_rendered_idx = Some(i);
         }
-        if out.len() > lines_needed {
+        if rendered_rows > rows_needed {
             break;
         }
     }
@@ -560,7 +586,7 @@ fn render_culled_messages(
             scroll,
             viewport_height,
             height_before_start,
-            lines_needed,
+            rows_needed,
             stats.first_visible,
             stats.render_start,
             stats.local_scroll,
@@ -810,13 +836,17 @@ fn preview_tail_lines(lines: &[String], count: usize) -> Vec<String> {
 mod tests {
     use super::{
         SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
-        compute_scrollbar_geometry, smooth_scrollbar_geometry, update_visual_heights,
+        compute_scrollbar_geometry, render_culled_messages, render_lines_from_paragraph,
+        smooth_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
         SystemSeverity, TextBlock,
     };
-    use crate::ui::message::SpinnerState;
+    use crate::ui::message::{self, SpinnerState};
+    use ratatui::layout::Rect;
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
 
     fn assistant_text_message(text: &str) -> ChatMessage {
         ChatMessage {
@@ -1122,6 +1152,90 @@ mod tests {
         assert!(first.measured_msgs >= app.messages.len());
         assert_eq!(second.measured_msgs, 0);
         assert_eq!(app.viewport.message_heights_width, 18);
+    }
+
+    #[test]
+    fn render_culled_messages_matches_full_render_when_scrolled_inside_message() {
+        let mut app = App::test_default();
+        let text = (0..160).map(|i| format!("line {i:03}")).collect::<Vec<_>>().join("\n");
+        app.messages = vec![assistant_text_message(&text)];
+        let width = 24u16;
+        let viewport_height_u16 = 8u16;
+        let viewport_height = usize::from(viewport_height_u16);
+        let area = Rect::new(0, 0, width, viewport_height_u16);
+        let spinner = idle_spinner();
+
+        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        update_visual_heights(&mut app, spinner, width, viewport_height);
+        app.viewport.rebuild_prefix_sums();
+
+        let scroll = 60;
+        let mut full_lines = Vec::new();
+        message::render_message_with_tools_collapsed_and_separator(
+            &mut app.messages[0],
+            &spinner,
+            width,
+            app.tools_collapsed,
+            false,
+            &mut full_lines,
+        );
+        let full_preview = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(full_lines.clone())).wrap(Wrap { trim: false }),
+            area,
+            scroll,
+        );
+
+        let mut culled_lines = Vec::new();
+        let stats = render_culled_messages(
+            &mut app,
+            spinner,
+            width,
+            scroll,
+            viewport_height,
+            &mut culled_lines,
+        );
+        let culled_preview = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(culled_lines.clone())).wrap(Wrap { trim: false }),
+            area,
+            stats.local_scroll,
+        );
+
+        assert_eq!(culled_preview, full_preview);
+        assert!(culled_lines.len() < full_lines.len());
+        assert_eq!(stats.rendered_msgs, 1);
+    }
+
+    #[test]
+    fn render_culled_messages_stops_after_first_wrapped_message_when_viewport_is_covered() {
+        let mut app = App::test_default();
+        let huge_wrapped = "wrap ".repeat(2_000);
+        app.messages = vec![
+            assistant_text_message(&huge_wrapped),
+            assistant_text_message("this should remain offscreen"),
+        ];
+        let width = 20u16;
+        let viewport_height_u16 = 8u16;
+        let viewport_height = usize::from(viewport_height_u16);
+        let spinner = idle_spinner();
+
+        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        update_visual_heights(&mut app, spinner, width, viewport_height);
+        app.viewport.rebuild_prefix_sums();
+
+        assert!(app.viewport.message_height(0) > 200);
+
+        let mut culled_lines = Vec::new();
+        let stats = render_culled_messages(
+            &mut app,
+            spinner,
+            width,
+            40,
+            viewport_height,
+            &mut culled_lines,
+        );
+
+        assert_eq!(stats.rendered_msgs, 1);
+        assert_eq!(stats.last_rendered_idx, Some(0));
     }
 
     #[test]
