@@ -1752,6 +1752,38 @@ mod tests {
         assert_eq!(marker_count, 1);
     }
 
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("drop me first"),
+            user_text_message("keep this anchored"),
+            user_text_message("tail"),
+        ];
+        let _ = app.viewport.on_frame(40, 12);
+        app.viewport.sync_message_count(app.messages.len());
+        for idx in 0..app.messages.len() {
+            app.viewport.set_message_height(idx, 4);
+        }
+        app.viewport.mark_heights_valid();
+        app.viewport.rebuild_prefix_sums();
+
+        app.viewport.auto_scroll = false;
+        app.viewport.scroll_offset = 9;
+        app.viewport.scroll_target = 9;
+        app.viewport.scroll_pos = 9.0;
+        app.history_retention.max_bytes = app
+            .measure_history_bytes()
+            .saturating_sub(App::measure_message_bytes(&app.messages[1]));
+
+        let _ = app.enforce_history_retention();
+
+        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.viewport.scroll_anchor_to_restore(), Some((2, 1)));
+    }
+
     #[test]
     fn lookup_missing_returns_none() {
         let app = make_test_app();
@@ -2285,10 +2317,10 @@ mod tests {
         let _ = vp.on_frame(100, 24);
         vp.ensure_resize_remeasure_anchor(2, 3, 6);
 
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
         assert_eq!(vp.next_resize_remeasure_index(6), Some(1));
-        assert_eq!(vp.next_resize_remeasure_index(6), Some(5));
         assert_eq!(vp.next_resize_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(5));
         assert_eq!(vp.next_resize_remeasure_index(6), None);
         assert!(!vp.resize_remeasure_active());
     }
@@ -2354,6 +2386,67 @@ mod tests {
         assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
         assert_eq!(vp.resize_scroll_anchor(), Some(resize_anchor));
         assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn viewport_delays_anchor_restore_until_prefix_above_is_exact() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 12;
+        vp.scroll_target = 12;
+        vp.scroll_pos = 12.0;
+
+        let _ = vp.on_frame(40, 24);
+        let anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
+        assert_eq!(anchor, (2, 2));
+        assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
+        assert_eq!(vp.ready_scroll_anchor_to_restore(), None);
+
+        vp.set_message_height(2, 9);
+        vp.mark_message_height_measured(2);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.ready_scroll_anchor_to_restore(), None);
+
+        vp.set_message_height(0, 11);
+        vp.mark_message_height_measured(0);
+        vp.set_message_height(1, 8);
+        vp.mark_message_height_measured(1);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(vp.ready_scroll_anchor_to_restore(), Some(anchor));
+    }
+
+    #[test]
+    fn viewport_prioritizes_rows_above_preserved_anchor_until_restore_is_exact() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(6);
+        for idx in 0..6 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 12;
+        vp.scroll_target = 12;
+        vp.scroll_pos = 12.0;
+
+        let _ = vp.on_frame(40, 24);
+        vp.ensure_resize_remeasure_anchor(2, 3, 6);
+
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(1));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(0));
+        assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
     }
 
     #[allow(clippy::cast_precision_loss)]

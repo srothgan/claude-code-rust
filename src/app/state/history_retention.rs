@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::mem::size_of;
 
 use super::LayoutInvalidation as InvalidationLevel;
+use super::LayoutRemeasureReason;
 use super::messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock, WelcomeBlock,
 };
@@ -18,10 +20,38 @@ const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory
 pub(super) struct HistoryDropCandidate {
     pub(super) msg_idx: usize,
     pub(super) bytes: usize,
-    pub(super) approx_rows: usize,
 }
 
 impl super::App {
+    fn remap_anchor_for_insert(
+        anchor: Option<(usize, usize)>,
+        insert_idx: usize,
+    ) -> Option<(usize, usize)> {
+        anchor.map(|(anchor_idx, anchor_offset)| {
+            let next_idx =
+                if anchor_idx >= insert_idx { anchor_idx.saturating_add(1) } else { anchor_idx };
+            (next_idx, anchor_offset)
+        })
+    }
+
+    fn remap_anchor_for_remove(
+        anchor: Option<(usize, usize)>,
+        removed_idx: usize,
+        retained_len: usize,
+    ) -> Option<(usize, usize)> {
+        let (anchor_idx, anchor_offset) = anchor?;
+        if retained_len == 0 {
+            return None;
+        }
+
+        let next_idx = match anchor_idx.cmp(&removed_idx) {
+            Ordering::Less => anchor_idx,
+            Ordering::Greater => anchor_idx.saturating_sub(1),
+            Ordering::Equal => removed_idx.min(retained_len.saturating_sub(1)),
+        };
+        Some((next_idx.min(retained_len.saturating_sub(1)), anchor_offset))
+    }
+
     fn invalidate_tail_transition(
         &mut self,
         previous_tail_after_mutation: Option<usize>,
@@ -391,14 +421,18 @@ impl super::App {
         )
     }
 
-    fn upsert_history_hidden_marker(&mut self) {
+    fn upsert_history_hidden_marker(
+        &mut self,
+        preserved_anchor: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
         self.ensure_history_retention_accounting();
         let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
+                return Self::remap_anchor_for_remove(preserved_anchor, idx, self.messages.len());
             }
-            return;
+            return preserved_anchor;
         }
 
         let marker_text = Self::history_hidden_marker_text(
@@ -418,7 +452,7 @@ impl super::App {
                 self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }
-            return;
+            return preserved_anchor;
         }
 
         let insert_idx = usize::from(
@@ -432,6 +466,7 @@ impl super::App {
                 usage: None,
             },
         );
+        Self::remap_anchor_for_insert(preserved_anchor, insert_idx)
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -440,6 +475,7 @@ impl super::App {
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
         let active_turn_owner = self.active_turn_assistant_idx();
+        let mut preserved_anchor = self.viewport.capture_manual_scroll_anchor();
         stats.total_before_bytes = self.retained_history_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
@@ -456,11 +492,7 @@ impl super::App {
                 if bytes == 0 {
                     continue;
                 }
-                candidates.push(HistoryDropCandidate {
-                    msg_idx,
-                    bytes,
-                    approx_rows: self.viewport.message_height(msg_idx),
-                });
+                candidates.push(HistoryDropCandidate { msg_idx, bytes });
             }
 
             let mut drop_candidates = Vec::new();
@@ -475,21 +507,20 @@ impl super::App {
             }
 
             if !drop_candidates.is_empty() {
-                let dropped_rows =
-                    self.apply_history_retention_drop(&drop_candidates, active_turn_owner);
-                if !self.viewport.auto_scroll && dropped_rows > 0 {
-                    self.viewport.scroll_target =
-                        self.viewport.scroll_target.saturating_sub(dropped_rows);
-                    self.viewport.scroll_offset =
-                        self.viewport.scroll_offset.saturating_sub(dropped_rows);
-                    let dropped_rows_f = dropped_rows as f32;
-                    self.viewport.scroll_pos = if self.viewport.scroll_pos > dropped_rows_f {
-                        self.viewport.scroll_pos - dropped_rows_f
-                    } else {
-                        0.0
-                    };
-                }
+                preserved_anchor = self.apply_history_retention_drop(
+                    &drop_candidates,
+                    active_turn_owner,
+                    preserved_anchor,
+                );
                 self.rebuild_tool_indices_and_terminal_refs();
+                self.viewport.sync_message_count(self.messages.len());
+                if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
+                    self.viewport.preserve_scroll_anchor(
+                        LayoutRemeasureReason::MessagesFrom,
+                        anchor_idx,
+                        anchor_offset,
+                    );
+                }
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
                 self.needs_redraw = true;
             }
@@ -503,7 +534,15 @@ impl super::App {
         self.history_retention_stats.total_dropped_bytes =
             self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
 
-        self.upsert_history_hidden_marker();
+        preserved_anchor = self.upsert_history_hidden_marker(preserved_anchor);
+        self.viewport.sync_message_count(self.messages.len());
+        if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
+            self.viewport.preserve_scroll_anchor(
+                LayoutRemeasureReason::MessagesFrom,
+                anchor_idx,
+                anchor_offset,
+            );
+        }
 
         stats.total_after_bytes = self.retained_history_bytes;
         self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
@@ -526,20 +565,16 @@ impl super::App {
         &mut self,
         drop_candidates: &[HistoryDropCandidate],
         active_turn_owner: Option<usize>,
-    ) -> usize {
-        let mut dropped_rows = 0usize;
-        let drop_set: HashSet<usize> = drop_candidates
-            .iter()
-            .map(|candidate| {
-                dropped_rows = dropped_rows.saturating_add(candidate.approx_rows);
-                candidate.msg_idx
-            })
-            .collect();
+        preserved_anchor: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
+        let drop_set: HashSet<usize> =
+            drop_candidates.iter().map(|candidate| candidate.msg_idx).collect();
 
         let mut retained = Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
         let mut retained_bytes = Vec::with_capacity(retained.capacity());
         let old_messages = std::mem::take(&mut self.messages);
         let old_bytes = std::mem::take(&mut self.message_retained_bytes);
+        let mut old_to_new = vec![None; old_messages.len()];
         let mut remapped_active_turn_owner = None;
         self.retained_history_bytes = 0;
         for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
@@ -547,6 +582,7 @@ impl super::App {
                 if active_turn_owner == Some(msg_idx) {
                     remapped_active_turn_owner = Some(retained.len());
                 }
+                old_to_new[msg_idx] = Some(retained.len());
                 self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
                 retained.push(msg);
                 retained_bytes.push(bytes);
@@ -555,6 +591,15 @@ impl super::App {
         self.messages = retained;
         self.message_retained_bytes = retained_bytes;
         self.active_turn_assistant_message_idx = remapped_active_turn_owner;
-        dropped_rows
+
+        let (anchor_idx, anchor_offset) = preserved_anchor?;
+        if let Some(new_idx) = old_to_new.get(anchor_idx).copied().flatten() {
+            return Some((new_idx, anchor_offset));
+        }
+
+        let fallback_old_idx = ((anchor_idx + 1)..old_to_new.len())
+            .find(|&idx| old_to_new[idx].is_some())
+            .or_else(|| (0..anchor_idx).rev().find(|&idx| old_to_new[idx].is_some()))?;
+        old_to_new[fallback_old_idx].map(|new_idx| (new_idx, 0))
     }
 }

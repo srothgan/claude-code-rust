@@ -462,6 +462,45 @@ impl ChatViewport {
         ));
     }
 
+    /// Capture the current message-local scroll anchor when manual scrolling is active.
+    #[must_use]
+    pub fn capture_manual_scroll_anchor(&self) -> Option<(usize, usize)> {
+        (!self.auto_scroll && !self.message_heights.is_empty())
+            .then(|| self.current_scroll_anchor())
+    }
+
+    /// Preserve a message-local anchor across topology or lifecycle-driven layout changes.
+    pub fn preserve_scroll_anchor(
+        &mut self,
+        reason: LayoutRemeasureReason,
+        anchor_index: usize,
+        anchor_offset: usize,
+    ) {
+        if self.message_heights.is_empty() {
+            self.remeasure_plan = None;
+            return;
+        }
+
+        let anchor = PreservedScrollAnchor {
+            reason,
+            index: anchor_index.min(self.message_heights.len().saturating_sub(1)),
+            offset: anchor_offset,
+        };
+
+        if let Some(plan) = self.remeasure_plan.as_mut() {
+            plan.preserved_scroll_anchor = Some(anchor);
+            return;
+        }
+
+        self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
+            reason,
+            anchor.index,
+            anchor.offset,
+            Some(anchor),
+            self.message_heights.len(),
+        ));
+    }
+
     /// Reset the outward expansion frontiers around the current visible window.
     pub fn ensure_remeasure_anchor(
         &mut self,
@@ -495,8 +534,13 @@ impl ChatViewport {
 
     /// Resume outward remeasurement from the current visible anchor.
     pub fn next_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
+        let prioritize_above_for_anchor = self.remeasure_plan.is_some_and(|plan| {
+            plan.preserved_scroll_anchor
+                .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index))
+        });
         let plan = self.remeasure_plan.as_mut()?;
         let choose_above = match (plan.next_above, plan.next_below < message_count) {
+            (Some(_), true) if prioritize_above_for_anchor => true,
             (Some(_), true) => {
                 let choose = plan.prefer_above;
                 plan.prefer_above = !plan.prefer_above;
@@ -526,6 +570,16 @@ impl ChatViewport {
     pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
             plan.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
+        })
+    }
+
+    /// Return the preserved scroll anchor only once rows above it are exact.
+    #[must_use]
+    pub fn ready_scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
+        self.remeasure_plan.and_then(|plan| {
+            plan.preserved_scroll_anchor.and_then(|anchor| {
+                self.prefix_is_exact_through(anchor.index).then_some((anchor.index, anchor.offset))
+            })
         })
     }
 
@@ -727,6 +781,20 @@ impl ChatViewport {
 
     fn cumulative_height_before_in_estimates(&self, idx: usize) -> usize {
         self.message_heights.iter().take(idx).copied().sum()
+    }
+
+    fn prefix_is_exact_through(&self, idx: usize) -> bool {
+        if self.message_heights.is_empty() {
+            return false;
+        }
+        let end = idx.min(self.message_heights.len().saturating_sub(1));
+        if self.message_heights_width == self.width {
+            return !self.stale_message_heights.iter().take(end + 1).any(|stale| *stale);
+        }
+        !(0..=end).any(|message_idx| {
+            self.stale_message_heights.get(message_idx).copied().unwrap_or(true)
+                || self.measured_message_widths.get(message_idx).copied().unwrap_or(0) != self.width
+        })
     }
 
     // --- Scroll ---

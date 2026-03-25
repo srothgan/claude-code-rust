@@ -339,6 +339,7 @@ fn render_scrolled(
             .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
         Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
     };
+    let paragraph_scroll = paragraph_scroll_offset(render_stats.local_scroll);
     if tracing::enabled!(tracing::Level::TRACE) {
         let visible_preview =
             render_lines_from_paragraph(&paragraph, area, render_stats.local_scroll);
@@ -359,8 +360,20 @@ fn render_scrolled(
             .perf
             .as_ref()
             .map(|p| p.start_with("chat::render_widget", "scroll", render_stats.local_scroll));
-        frame.render_widget(paragraph.scroll((render_stats.local_scroll as u16, 0)), area);
+        frame.render_widget(paragraph.scroll((paragraph_scroll, 0)), area);
     }
+}
+
+#[must_use]
+fn paragraph_scroll_offset(scroll_offset: usize) -> u16 {
+    u16::try_from(scroll_offset).unwrap_or_else(|_| {
+        tracing::warn!(
+            scroll_offset,
+            max_scroll = u16::MAX,
+            "chat paragraph scroll exceeds ratatui u16 boundary; clamping local paragraph scroll"
+        );
+        u16::MAX
+    })
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
@@ -622,8 +635,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             app.cache_metrics.record_resize();
         }
     }
-    let remeasure_anchor = app.viewport.scroll_anchor_to_restore();
-
     // Update per-message visual heights
     let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
     crate::perf::mark_with(
@@ -643,7 +654,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
         app.viewport.rebuild_prefix_sums();
     }
-    if let Some((anchor_idx, anchor_offset)) = remeasure_anchor {
+    if let Some((anchor_idx, anchor_offset)) = app.viewport.ready_scroll_anchor_to_restore() {
         app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
     }
 
@@ -804,7 +815,7 @@ fn render_lines_from_paragraph(
     scroll_offset: usize,
 ) -> Vec<String> {
     let mut buf = Buffer::empty(area);
-    let widget = paragraph.clone().scroll((scroll_offset as u16, 0));
+    let widget = paragraph.clone().scroll((paragraph_scroll_offset(scroll_offset), 0));
     widget.render(area, &mut buf);
     let mut lines = Vec::with_capacity(area.height as usize);
     for y in 0..area.height {
@@ -836,8 +847,8 @@ fn preview_tail_lines(lines: &[String], count: usize) -> Vec<String> {
 mod tests {
     use super::{
         SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
-        compute_scrollbar_geometry, render_culled_messages, render_lines_from_paragraph,
-        smooth_scrollbar_geometry, update_visual_heights,
+        compute_scrollbar_geometry, paragraph_scroll_offset, render_culled_messages,
+        render_lines_from_paragraph, smooth_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -1236,6 +1247,12 @@ mod tests {
 
         assert_eq!(stats.rendered_msgs, 1);
         assert_eq!(stats.last_rendered_idx, Some(0));
+    }
+
+    #[test]
+    fn paragraph_scroll_offset_clamps_large_local_scroll_explicitly() {
+        assert_eq!(paragraph_scroll_offset(42), 42);
+        assert_eq!(paragraph_scroll_offset(usize::from(u16::MAX) + 123), u16::MAX);
     }
 
     #[test]
