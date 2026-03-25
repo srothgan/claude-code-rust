@@ -1742,6 +1742,54 @@ mod tests {
     }
 
     #[test]
+    fn resume_history_clears_active_turn_owner_after_replay() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-790"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: vec![model::SessionUpdate::AgentMessageChunk(
+                    model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                        "assistant reply",
+                    ))),
+                )],
+            },
+        );
+
+        assert_eq!(app.active_turn_assistant_idx(), None);
+    }
+
+    #[test]
+    fn resume_history_clears_tool_scope_tracking_after_replay() {
+        let mut app = make_test_app();
+        let task_tool = model::ToolCall::new("resume-task", "Run subagent")
+            .kind(model::ToolKind::Think)
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-791"),
+                cwd: "/replacement".into(),
+                model_name: "new-model".into(),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
+            },
+        );
+
+        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_subagent_tool_ids.is_empty());
+        assert_eq!(app.tool_call_scope("resume-task"), None);
+    }
+
+    #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
         handle_client_event(&mut app, ClientEvent::TurnComplete);
@@ -1834,8 +1882,18 @@ mod tests {
 
         assert!(!app.pending_compact_clear);
         assert!(matches!(app.status, AppStatus::Error));
-        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages.len(), 3);
         assert!(matches!(app.messages[0].role, MessageRole::User));
+        let Some(ChatMessage {
+            role: MessageRole::System(Some(SystemSeverity::Info)), blocks, ..
+        }) = app.messages.get(1)
+        else {
+            panic!("expected compaction success system message");
+        };
+        let Some(MessageBlock::Text(block)) = blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Session successfully compacted.");
         let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last()
         else {
             panic!("expected system error message");
@@ -1845,6 +1903,40 @@ mod tests {
         };
         assert!(block.text.contains("Turn failed: adapter failed"));
         assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
+    }
+
+    #[test]
+    fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
+        let mut app = make_test_app();
+        app.pending_compact_clear = true;
+        app.is_compacting = true;
+
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+
+        assert!(app.pending_compact_clear);
+        assert!(app.is_compacting);
+    }
+
+    #[test]
+    fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("/compact"));
+        app.pending_compact_clear = true;
+        app.is_compacting = true;
+
+        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        handle_client_event(&mut app, ClientEvent::TurnError("cancelled".into()));
+
+        assert_eq!(app.messages.len(), 3);
+        assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+        let Some(MessageBlock::Text(block)) = app.messages[1].blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Session successfully compacted.");
+        let Some(MessageBlock::Text(block)) = app.messages[2].blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
     }
 
     #[test]
@@ -1911,6 +2003,55 @@ mod tests {
     }
 
     #[test]
+    fn turn_error_clears_tool_scope_tracking() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "task-1",
+            model::ToolCallStatus::InProgress,
+        )))]));
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.insert_active_task("task-1".into());
+
+        handle_client_event(&mut app, ClientEvent::TurnError("boom".into()));
+
+        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_subagent_tool_ids.is_empty());
+        assert_eq!(app.tool_call_scope("task-1"), None);
+    }
+
+    #[test]
+    fn auth_required_clears_active_turn_runtime_tracking() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "task-1",
+            model::ToolCallStatus::InProgress,
+        )))]));
+        app.bind_active_turn_assistant(0);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.insert_active_task("task-1".into());
+        app.pending_interaction_ids.push("task-1".into());
+        app.claim_focus_target(FocusTarget::Permission);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::AuthRequired {
+                method_name: "oauth".into(),
+                method_description: "Open browser".into(),
+            },
+        );
+
+        assert_eq!(app.active_turn_assistant_idx(), None);
+        assert!(app.active_task_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
+        assert_ne!(app.focus_owner(), FocusOwner::Permission);
+        let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Failed);
+    }
+
+    #[test]
     fn fatal_event_sets_exit_error_and_quits() {
         let mut app = make_test_app();
 
@@ -1922,6 +2063,53 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
         assert!(app.should_quit);
         assert_eq!(app.exit_error, Some(crate::error::AppError::ConnectionFailed));
+    }
+
+    #[test]
+    fn connection_failed_clears_active_turn_runtime_tracking() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "task-1",
+            model::ToolCallStatus::InProgress,
+        )))]));
+        app.bind_active_turn_assistant(0);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.insert_active_task("task-1".into());
+
+        handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
+
+        assert_eq!(app.active_turn_assistant_idx(), None);
+        assert!(app.active_task_ids.is_empty());
+        let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Failed);
+    }
+
+    #[test]
+    fn fatal_event_clears_active_turn_runtime_tracking() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "task-1",
+            model::ToolCallStatus::InProgress,
+        )))]));
+        app.bind_active_turn_assistant(0);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.insert_active_task("task-1".into());
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::FatalError(crate::error::AppError::ConnectionFailed),
+        );
+
+        assert_eq!(app.active_turn_assistant_idx(), None);
+        assert!(app.active_task_ids.is_empty());
+        let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Failed);
     }
 
     #[test]

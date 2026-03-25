@@ -169,7 +169,8 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
             _ => super::handle_session_update(app, update.clone()),
         }
     }
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     app.viewport = super::super::ChatViewport::new();
     app.viewport.engage_auto_scroll();

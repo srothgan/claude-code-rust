@@ -21,6 +21,14 @@ const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
 3. Check quota/billing for your account or switch plans.";
 const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
 
+#[derive(Clone, Copy)]
+struct TurnExitState {
+    tail_assistant_idx: Option<usize>,
+    turn_was_active: bool,
+    cancelled_requested: Option<CancelOrigin>,
+    show_interrupted_hint: bool,
+}
+
 pub(super) fn handle_permission_request_event(
     app: &mut App,
     request: model::RequestPermissionRequest,
@@ -153,7 +161,6 @@ fn reject_permission_request(
 }
 
 pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    clear_compaction_state(app, false);
     if app.pending_cancel_origin.is_none() {
         app.pending_cancel_origin = Some(CancelOrigin::Manual);
     }
@@ -162,34 +169,49 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App) {
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 }
 
-pub(super) fn handle_turn_complete_event(app: &mut App) {
-    let tail_assistant_idx =
-        app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
-    let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    clear_compaction_state(app, true);
-    let cancelled_requested = app.pending_cancel_origin.is_some();
-    let show_interrupted_hint = matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
+    let state = TurnExitState {
+        tail_assistant_idx: app
+            .messages
+            .iter()
+            .rposition(|m| matches!(m.role, MessageRole::Assistant)),
+        turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
+        cancelled_requested: app.pending_cancel_origin,
+        show_interrupted_hint: matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual)),
+    };
+    clear_compaction_state(app, emit_manual_compaction_success);
     app.pending_cancel_origin = None;
     app.cancelled_turn_pending_hint = false;
+    state
+}
 
-    if cancelled_requested {
-        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-    } else {
-        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
-    }
-
+fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model::ToolCallStatus) {
+    app.finalize_turn_runtime_artifacts(tool_status);
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
-    app.clear_tool_scope_tracking();
     app.refresh_git_branch();
-    let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
-    if show_interrupted_hint {
+
+    let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
+    if exit.show_interrupted_hint {
         push_interrupted_hint(app);
     }
-    if removed_tail_assistant.is_none() && (turn_was_active || cancelled_requested) {
-        mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
+    if removed_tail_assistant.is_none()
+        && (exit.turn_was_active || exit.cancelled_requested.is_some())
+    {
+        mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.clear_active_turn_assistant();
+}
+
+pub(super) fn handle_turn_complete_event(app: &mut App) {
+    let exit = begin_turn_exit(app, true);
+    let turn_was_active = exit.turn_was_active;
+    let tool_status = if exit.cancelled_requested.is_some() {
+        model::ToolCallStatus::Failed
+    } else {
+        model::ToolCallStatus::Completed
+    };
+    finish_ready_turn_exit(app, exit, tool_status);
     if turn_was_active {
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
@@ -206,35 +228,16 @@ pub(super) fn handle_turn_error_event(
     msg: &str,
     classified: Option<TurnErrorClass>,
 ) {
-    let tail_assistant_idx =
-        app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
-    let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
-    clear_compaction_state(app, false);
-    let cancelled_requested = app.pending_cancel_origin;
-    let show_interrupted_hint = matches!(cancelled_requested, Some(CancelOrigin::Manual));
-    app.pending_cancel_origin = None;
-    app.cancelled_turn_pending_hint = false;
+    let exit = begin_turn_exit(app, true);
 
-    if cancelled_requested.is_some() {
+    if exit.cancelled_requested.is_some() {
         let summary = summarize_internal_error(msg);
         tracing::warn!(
             error_preview = %summary,
             "Turn error suppressed after cancellation request"
         );
-        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         app.pending_submit = None;
-        app.status = AppStatus::Ready;
-        app.files_accessed = 0;
-        app.clear_tool_scope_tracking();
-        app.refresh_git_branch();
-        let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
-        if show_interrupted_hint {
-            push_interrupted_hint(app);
-        }
-        if removed_tail_assistant.is_none() {
-            mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
-        }
-        app.clear_active_turn_assistant();
+        finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
         }
@@ -267,7 +270,7 @@ pub(super) fn handle_turn_error_event(
         }
         TurnErrorClass::Other => {}
     }
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
     app.pending_submit = None;
@@ -279,10 +282,10 @@ pub(super) fn handle_turn_error_event(
     } else {
         None
     };
-    let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
+    let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
     push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
-    if removed_tail_assistant.is_none() && turn_was_active {
-        mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
+    if removed_tail_assistant.is_none() && exit.turn_was_active {
+        mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.clear_active_turn_assistant();
 }

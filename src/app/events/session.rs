@@ -114,6 +114,7 @@ pub(super) fn handle_auth_required_event(
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
 }
 
@@ -126,6 +127,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.resuming_session_id = None;
     app.pending_command_label = None;
     app.pending_command_ack = None;
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
@@ -247,6 +249,8 @@ pub(super) fn handle_service_status_event(
 }
 
 pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.clear_active_turn_assistant();
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;

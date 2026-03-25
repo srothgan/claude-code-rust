@@ -687,6 +687,65 @@ impl App {
         changed
     }
 
+    /// Clear any inline permission/question UI still attached to tool calls.
+    /// Returns the number of tool call blocks that changed.
+    pub fn clear_inline_tool_interactions(&mut self) -> usize {
+        let mut changed = 0usize;
+        let mut changed_message_indices = Vec::new();
+        let mut changed_slots = Vec::new();
+
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                let MessageBlock::ToolCall(tc) = block else {
+                    continue;
+                };
+                let tc = tc.as_mut();
+                let mut block_changed = false;
+                if tc.pending_permission.take().is_some() {
+                    block_changed = true;
+                }
+                if tc.pending_question.take().is_some() {
+                    block_changed = true;
+                }
+                if !block_changed {
+                    continue;
+                }
+                tc.mark_tool_call_layout_dirty();
+                changed_slots.push((msg_idx, block_idx));
+                if changed_message_indices.last().copied() != Some(msg_idx) {
+                    changed_message_indices.push(msg_idx);
+                }
+                changed += 1;
+            }
+        }
+
+        for (msg_idx, block_idx) in changed_slots {
+            self.sync_render_cache_slot(msg_idx, block_idx);
+        }
+
+        for msg_idx in changed_message_indices.iter().copied() {
+            self.recompute_message_retained_bytes(msg_idx);
+        }
+
+        if changed > 0 {
+            self.invalidate_message_set(changed_message_indices.iter().copied());
+        }
+
+        if changed > 0 || !self.pending_interaction_ids.is_empty() {
+            self.pending_interaction_ids.clear();
+            self.release_focus_target(FocusTarget::Permission);
+        }
+
+        changed
+    }
+
+    /// Clear runtime-only turn tracking while preserving the message history itself.
+    pub fn finalize_turn_runtime_artifacts(&mut self, new_status: model::ToolCallStatus) {
+        let _ = self.finalize_in_progress_tool_calls(new_status);
+        let _ = self.clear_inline_tool_interactions();
+        self.clear_tool_scope_tracking();
+    }
+
     /// Build a minimal `App` for unit/integration tests.
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
