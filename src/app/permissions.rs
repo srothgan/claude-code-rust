@@ -255,10 +255,10 @@ pub(super) fn handle_permission_key(
 }
 
 fn respond_permission(app: &mut App, override_index: Option<usize>) {
-    if app.pending_permission_ids.is_empty() {
+    if app.pending_interaction_ids.is_empty() {
         return;
     }
-    let tool_id = app.pending_permission_ids.remove(0);
+    let tool_id = app.pending_interaction_ids.remove(0);
 
     let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
         return;
@@ -307,10 +307,10 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
 
 #[cfg(test)]
 fn respond_permission_cancel(app: &mut App) {
-    if app.pending_permission_ids.is_empty() {
+    if app.pending_interaction_ids.is_empty() {
         return;
     }
-    let tool_id = app.pending_permission_ids.remove(0);
+    let tool_id = app.pending_interaction_ids.remove(0);
 
     let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
         return;
@@ -414,7 +414,7 @@ mod tests {
             tc.pending_permission =
                 Some(InlinePermission { options, response_tx: tx, selected_index: 0, focused });
         }
-        app.pending_permission_ids.push(tool_id.to_owned());
+        app.pending_interaction_ids.push(tool_id.to_owned());
         rx
     }
 
@@ -436,7 +436,7 @@ mod tests {
         let mut rx1 = add_permission(&mut app, "perm-1", allow_options(), true);
         let mut rx2 = add_permission(&mut app, "perm-2", allow_options(), false);
 
-        assert_eq!(app.pending_permission_ids, vec!["perm-1", "perm-2"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
         assert!(permission_focused(&app, "perm-1"));
         assert!(!permission_focused(&app, "perm-2"));
 
@@ -447,7 +447,7 @@ mod tests {
             false,
         );
         assert_eq!(consumed, Some(true));
-        assert_eq!(app.pending_permission_ids, vec!["perm-2", "perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-2", "perm-1"]);
         assert!(permission_focused(&app, "perm-2"));
         assert!(!permission_focused(&app, "perm-1"));
 
@@ -464,7 +464,7 @@ mod tests {
         };
         assert_eq!(sel2.option_id.clone(), "allow-once");
         assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
@@ -479,7 +479,7 @@ mod tests {
         );
 
         assert!(!consumed, "lowercase 'a' should flow to normal typing");
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -522,7 +522,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(sel1.option_id.clone(), "allow-once");
-        assert_eq!(app.pending_permission_ids, vec!["perm-2"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-2"]);
         assert!(matches!(rx2.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -544,7 +544,7 @@ mod tests {
 
         assert!(!consumed_y);
         assert!(!consumed_n);
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -559,7 +559,7 @@ mod tests {
             true,
         );
         assert!(consumed);
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
 
         let resp = rx.try_recv().expect("permission should be answered by ctrl+n");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
@@ -595,7 +595,7 @@ mod tests {
             true,
         );
         assert!(!consumed);
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -691,7 +691,7 @@ mod tests {
         );
 
         assert!(!consumed);
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -723,7 +723,7 @@ mod tests {
 
         assert_eq!(consumed_up, Some(true));
         assert_eq!(consumed_down, Some(true));
-        assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert_eq!(app.viewport.scroll_target, 7);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }

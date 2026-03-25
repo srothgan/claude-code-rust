@@ -305,8 +305,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     // Inline interactions (permissions or questions)
-    if !app.pending_permission_ids.is_empty() && focus_owner == FocusOwner::Permission {
-        if app.pending_permission_ids.len() > 1 {
+    if !app.pending_interaction_ids.is_empty() && focus_owner == FocusOwner::Permission {
+        if app.pending_interaction_ids.len() > 1 {
             items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
         }
         if focused_question_prompt(app) {
@@ -329,7 +329,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_permission_ids.first() else {
+    let Some(tool_id) = app.pending_interaction_ids.first() else {
         return false;
     };
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn permission_navigation_only_shown_when_permission_has_focus() {
         let mut app = App::test_default();
-        app.pending_permission_ids = vec!["perm-1".into(), "perm-2".into()];
+        app.pending_interaction_ids = vec!["perm-1".into(), "perm-2".into()];
 
         // Without permission focus claim, do not show permission-only arrows.
         let items = build_help_items(&app);

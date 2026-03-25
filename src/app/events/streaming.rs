@@ -16,11 +16,22 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     if text.text.is_empty() {
         return;
     }
+    if let Some(owner_idx) = app.active_turn_assistant_idx()
+        && let Some(owner) = app.messages.get_mut(owner_idx)
+    {
+        append_agent_stream_text(&mut owner.blocks, &text.text);
+        app.note_render_cache_structure_changed();
+        app.sync_render_cache_message(owner_idx);
+        app.recompute_message_retained_bytes(owner_idx);
+        return;
+    }
+
     if let Some(last) = app.messages.last_mut()
         && matches!(last.role, MessageRole::Assistant)
     {
         append_agent_stream_text(&mut last.blocks, &text.text);
         let last_idx = app.messages.len().saturating_sub(1);
+        app.bind_active_turn_assistant(last_idx);
         app.note_render_cache_structure_changed();
         app.sync_render_cache_message(last_idx);
         app.recompute_message_retained_bytes(last_idx);
@@ -30,6 +41,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     let mut blocks = Vec::new();
     append_agent_stream_text(&mut blocks, &text.text);
     app.push_message_tracked(ChatMessage { role: MessageRole::Assistant, blocks, usage: None });
+    app.bind_active_turn_assistant_to_tail();
 }
 
 pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {

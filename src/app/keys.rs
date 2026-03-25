@@ -9,6 +9,7 @@ use super::{
 };
 use crate::app::inline_interactions::handle_inline_interaction_key;
 use crate::app::selection::clear_selection;
+use crate::app::state::AutocompleteKind;
 use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
@@ -199,7 +200,7 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // Permission quick shortcuts are global when permissions are pending.
-    if !app.pending_permission_ids.is_empty() && is_permission_ctrl_shortcut(key) {
+    if !app.pending_interaction_ids.is_empty() && is_permission_ctrl_shortcut(key) {
         return handle_inline_interaction_key(app, key);
     }
 
@@ -630,14 +631,11 @@ pub(super) fn move_todo_selection_down(app: &mut App) {
 
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
-    if app.mention.is_some() {
-        return handle_mention_key(app, key);
-    }
-    if app.slash.is_some() {
-        return handle_slash_key(app, key);
-    }
-    if app.subagent.is_some() {
-        return handle_subagent_key(app, key);
+    match app.active_autocomplete_kind() {
+        Some(AutocompleteKind::Mention) => return handle_mention_key(app, key),
+        Some(AutocompleteKind::Slash) => return handle_slash_key(app, key),
+        Some(AutocompleteKind::Subagent) => return handle_subagent_key(app, key),
+        None => {}
     }
     dispatch_key_by_focus(app, key)
 }
@@ -696,10 +694,8 @@ fn set_help_view(app: &mut App, next: HelpView) {
 
 fn sync_help_focus(app: &mut App) {
     if app.is_help_active()
-        && app.pending_permission_ids.is_empty()
-        && app.mention.is_none()
-        && app.slash.is_none()
-        && app.subagent.is_none()
+        && app.pending_interaction_ids.is_empty()
+        && app.active_autocomplete_kind().is_none()
     {
         app.claim_focus_target(FocusTarget::Help);
     } else {

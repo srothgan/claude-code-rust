@@ -155,18 +155,32 @@ fn build_tool_info_from_tool_call(
 }
 
 pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: ToolCallInfo) {
-    let msg_idx = app.messages.len().saturating_sub(1);
     let existing_pos = app.lookup_tool_call(&tool_info.id);
-    let is_assistant =
-        app.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
 
-    if is_assistant {
-        if let Some((mi, bi)) = existing_pos {
-            update_existing_tool_call(app, mi, bi, &tool_info);
-        } else if let Some(last) = app.messages.last_mut() {
+    if let Some((mi, bi)) = existing_pos {
+        update_existing_tool_call(app, mi, bi, &tool_info);
+        return;
+    }
+
+    if let Some(msg_idx) = app.active_turn_assistant_idx()
+        && let Some(owner) = app.messages.get_mut(msg_idx)
+    {
+        let block_idx = owner.blocks.len();
+        let tc_id = tool_info.id.clone();
+        owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+        app.note_render_cache_structure_changed();
+        app.recompute_message_retained_bytes(msg_idx);
+        app.index_tool_call(tc_id, msg_idx, block_idx);
+        return;
+    }
+
+    let msg_idx = app.messages.len().saturating_sub(1);
+    if app.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
+        if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+            app.bind_active_turn_assistant(msg_idx);
             app.note_render_cache_structure_changed();
             app.recompute_message_retained_bytes(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
@@ -179,6 +193,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
             blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
             usage: None,
         });
+        app.bind_active_turn_assistant(new_idx);
         app.index_tool_call(tc_id, new_idx, 0);
     }
 }
@@ -302,10 +317,10 @@ pub(super) fn should_jump_on_large_write(tc: &ToolCallInfo) -> bool {
 
 /// Check if any tool call in the current assistant message is still in-progress.
 pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
-    if let Some(last) = app.messages.last()
-        && matches!(last.role, MessageRole::Assistant)
+    if let Some(owner_idx) = app.active_turn_assistant_idx()
+        && let Some(owner) = app.messages.get(owner_idx)
     {
-        return last.blocks.iter().any(|block| {
+        return owner.blocks.iter().any(|block| {
             matches!(
                 block,
                 MessageBlock::ToolCall(tc)

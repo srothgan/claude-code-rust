@@ -35,7 +35,7 @@ pub(super) fn handle_permission_request_event(
         return;
     };
 
-    if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             "Duplicate permission request for tool call: {tool_id}; auto-rejecting duplicate"
         );
@@ -48,7 +48,7 @@ pub(super) fn handle_permission_request_event(
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
-        let is_first = app.pending_permission_ids.is_empty();
+        let is_first = app.pending_interaction_ids.is_empty();
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
             response_tx,
@@ -57,7 +57,7 @@ pub(super) fn handle_permission_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_permission_ids.push(tool_id);
+        app.pending_interaction_ids.push(tool_id);
         app.claim_focus_target(FocusTarget::Permission);
         app.viewport.engage_auto_scroll();
         app.notifications.notify(
@@ -90,7 +90,7 @@ pub(super) fn handle_question_request_event(
         return;
     };
 
-    if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             "Duplicate inline interaction request for tool call: {tool_id}; auto-cancelling duplicate"
         );
@@ -104,7 +104,7 @@ pub(super) fn handle_question_request_event(
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
-        let is_first = app.pending_permission_ids.is_empty();
+        let is_first = app.pending_interaction_ids.is_empty();
         tc.pending_question = Some(InlineQuestion {
             prompt: request.prompt,
             response_tx,
@@ -119,7 +119,7 @@ pub(super) fn handle_question_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_permission_ids.push(tool_id);
+        app.pending_interaction_ids.push(tool_id);
         app.claim_focus_target(FocusTarget::Permission);
         app.viewport.engage_auto_scroll();
         app.notifications.notify(
@@ -189,6 +189,7 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     if removed_tail_assistant.is_none() && (turn_was_active || cancelled_requested) {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
+    app.clear_active_turn_assistant();
     if turn_was_active {
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
@@ -233,6 +234,7 @@ pub(super) fn handle_turn_error_event(
         if removed_tail_assistant.is_none() {
             mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         }
+        app.clear_active_turn_assistant();
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
         }
@@ -282,6 +284,7 @@ pub(super) fn handle_turn_error_event(
     if removed_tail_assistant.is_none() && turn_was_active {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
+    app.clear_active_turn_assistant();
 }
 
 fn push_interrupted_hint(app: &mut App) {

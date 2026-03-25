@@ -65,6 +65,13 @@ impl TerminalToolCallRef {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutocompleteKind {
+    Mention,
+    Slash,
+    Subagent,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
@@ -113,10 +120,10 @@ pub struct App {
     /// Number of items that currently fit in the help viewport (updated each render).
     /// Used by key handlers for accurate scroll step size.
     pub help_visible_count: usize,
-    /// Tool call IDs with pending permission prompts, ordered by arrival.
-    /// The first entry is the "focused" permission that receives keyboard input.
+    /// Tool call IDs with pending inline interactions, ordered by arrival.
+    /// The first entry is the focused interaction that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
-    pub pending_permission_ids: Vec<String>,
+    pub pending_interaction_ids: Vec<String>,
     /// Set when a cancel notification succeeds; consumed on `TurnComplete`
     /// to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
@@ -129,6 +136,8 @@ pub struct App {
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
+    /// Message index that owns the current main-assistant turn indicators.
+    pub active_turn_assistant_message_idx: Option<usize>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+O and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -670,7 +679,7 @@ impl App {
 
         if changed > 0 || cleared_interaction {
             self.invalidate_message_set(changed_message_indices.iter().copied());
-            self.pending_permission_ids.clear();
+            self.pending_interaction_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -714,7 +723,7 @@ impl App {
             help_view: HelpView::Keys,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
-            pending_permission_ids: Vec::new(),
+            pending_interaction_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             pending_cancel_origin: None,
             pending_auto_submit_after_cancel: false,
@@ -722,6 +731,7 @@ impl App {
             event_rx: rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
+            active_turn_assistant_message_idx: None,
             tools_collapsed: false,
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
@@ -821,6 +831,65 @@ impl App {
     }
 
     #[must_use]
+    pub fn active_turn_assistant_idx(&self) -> Option<usize> {
+        self.active_turn_assistant_message_idx.filter(|&idx| {
+            self.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+        })
+    }
+
+    pub fn bind_active_turn_assistant(&mut self, idx: usize) {
+        self.active_turn_assistant_message_idx = self
+            .messages
+            .get(idx)
+            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+            .then_some(idx);
+    }
+
+    pub fn bind_active_turn_assistant_to_tail(&mut self) {
+        if let Some(idx) = self.messages.len().checked_sub(1) {
+            self.bind_active_turn_assistant(idx);
+        } else {
+            self.clear_active_turn_assistant();
+        }
+    }
+
+    pub fn clear_active_turn_assistant(&mut self) {
+        self.active_turn_assistant_message_idx = None;
+    }
+
+    pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
+        if let Some(owner_idx) = self.active_turn_assistant_message_idx
+            && idx <= owner_idx
+        {
+            self.active_turn_assistant_message_idx = Some(owner_idx.saturating_add(1));
+        }
+    }
+
+    pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
+        let Some(owner_idx) = self.active_turn_assistant_message_idx else {
+            return;
+        };
+        self.active_turn_assistant_message_idx = match idx.cmp(&owner_idx) {
+            std::cmp::Ordering::Less => Some(owner_idx.saturating_sub(1)),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(owner_idx),
+        };
+    }
+
+    #[must_use]
+    pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
+        if self.mention.is_some() {
+            Some(AutocompleteKind::Mention)
+        } else if self.slash.is_some() {
+            Some(AutocompleteKind::Slash)
+        } else if self.subagent.is_some() {
+            Some(AutocompleteKind::Subagent)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
     pub fn is_help_active(&self) -> bool {
         self.input.text().trim() == "?"
     }
@@ -848,8 +917,8 @@ impl App {
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
-            self.mention.is_some() || self.slash.is_some() || self.subagent.is_some(),
-            !self.pending_permission_ids.is_empty(),
+            self.active_autocomplete_kind().is_some(),
+            !self.pending_interaction_ids.is_empty(),
         )
         .with_help(self.is_help_active())
     }
@@ -1625,6 +1694,48 @@ mod tests {
     }
 
     #[test]
+    fn enforce_history_retention_preserves_active_turn_assistant_message() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("drop this"),
+            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None },
+        ];
+        app.bind_active_turn_assistant(2);
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(app.active_turn_assistant_idx(), Some(2));
+        assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages = vec![
+            user_text_message("drop this"),
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("streaming reply")],
+                usage: None,
+            },
+        ];
+        app.bind_active_turn_assistant(1);
+        app.history_retention.max_bytes = App::measure_message_bytes(&app.messages[1]);
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(app.active_turn_assistant_idx(), Some(1));
+        assert!(App::is_history_hidden_marker_message(&app.messages[0]));
+        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+    }
+
+    #[test]
     fn enforce_history_retention_keeps_single_marker_on_repeat() {
         let mut app = make_test_app();
         app.messages = vec![ChatMessage::welcome("model", "/cwd"), user_text_message("drop me")];
@@ -1868,7 +1979,7 @@ mod tests {
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        app.pending_permission_ids.push("bash-1".into());
+        app.pending_interaction_ids.push("bash-1".into());
 
         app.clear_messages_tracked();
 
@@ -1876,7 +1987,7 @@ mod tests {
         assert!(app.tool_call_index.is_empty());
         assert!(app.terminal_tool_calls.is_empty());
         assert!(app.terminal_tool_call_membership.is_empty());
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]
@@ -2383,7 +2494,7 @@ mod tests {
         });
         app.show_todo_panel = true;
         app.claim_focus_target(FocusTarget::TodoList);
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
     }
@@ -2398,7 +2509,7 @@ mod tests {
         });
         app.show_todo_panel = true;
         app.claim_focus_target(FocusTarget::TodoList);
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.claim_focus_target(FocusTarget::Mention);
@@ -2437,7 +2548,7 @@ mod tests {
         });
         app.show_todo_panel = true;
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
 
         app.claim_focus_target(FocusTarget::TodoList);
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);

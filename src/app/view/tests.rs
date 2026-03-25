@@ -53,7 +53,7 @@ fn busy_view_test_app() -> App {
         active_form: "todo".to_owned(),
     }];
     app.claim_focus_target(FocusTarget::TodoList);
-    app.pending_permission_ids.push("perm-1".to_owned());
+    app.pending_interaction_ids.push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
     app
 }

@@ -30,11 +30,11 @@ use crate::helpers::{send_client_event, test_app};
 fn inactive_spinner() -> SpinnerState {
     SpinnerState {
         frame: 0,
-        is_active: false,
         is_active_turn_assistant: false,
-        is_thinking_mid_turn: false,
-        is_subagent_thinking: false,
-        is_compacting: false,
+        show_empty_thinking: false,
+        show_thinking: false,
+        show_subagent_thinking: false,
+        show_compacting: false,
     }
 }
 

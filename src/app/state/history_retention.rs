@@ -245,6 +245,9 @@ impl super::App {
         self.ensure_history_retention_accounting();
         let insert_idx = idx.min(self.messages.len());
         let appended_at_tail = insert_idx == self.messages.len();
+        if !appended_at_tail {
+            self.shift_active_turn_assistant_for_insert(insert_idx);
+        }
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.insert(insert_idx, msg);
         self.message_retained_bytes.insert(insert_idx, bytes);
@@ -268,6 +271,7 @@ impl super::App {
             return None;
         }
         let removed_tail = idx + 1 == old_len;
+        self.shift_active_turn_assistant_for_remove(idx);
         let removed = self.messages.remove(idx);
         let removed_bytes = self.message_retained_bytes.remove(idx);
         self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
@@ -287,6 +291,7 @@ impl super::App {
         self.messages.clear();
         self.message_retained_bytes.clear();
         self.retained_history_bytes = 0;
+        self.clear_active_turn_assistant();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.viewport.sync_message_count(0);
@@ -311,7 +316,7 @@ impl super::App {
         self.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
 
-        let mut pending_permission_ids = Vec::new();
+        let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
@@ -328,11 +333,11 @@ impl super::App {
                     }
                     if let Some(permission) = tc.pending_permission.as_mut() {
                         permission.focused = false;
-                        pending_permission_ids.push(tc.id.clone());
+                        pending_interaction_ids.push(tc.id.clone());
                     }
                     if let Some(question) = tc.pending_question.as_mut() {
                         question.focused = false;
-                        pending_permission_ids.push(tc.id.clone());
+                        pending_interaction_ids.push(tc.id.clone());
                     }
                 }
             }
@@ -340,16 +345,16 @@ impl super::App {
         self.terminal_tool_calls = terminal_tool_calls;
         self.terminal_tool_call_membership = terminal_tool_call_membership;
 
-        let permission_set: HashSet<&str> =
-            pending_permission_ids.iter().map(String::as_str).collect();
-        self.pending_permission_ids.retain(|id| permission_set.contains(id.as_str()));
-        for id in pending_permission_ids {
-            if !self.pending_permission_ids.iter().any(|existing| existing == &id) {
-                self.pending_permission_ids.push(id);
+        let interaction_set: HashSet<&str> =
+            pending_interaction_ids.iter().map(String::as_str).collect();
+        self.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
+        for id in pending_interaction_ids {
+            if !self.pending_interaction_ids.iter().any(|existing| existing == &id) {
+                self.pending_interaction_ids.push(id);
             }
         }
 
-        if let Some(first_id) = self.pending_permission_ids.first().cloned() {
+        if let Some(first_id) = self.pending_interaction_ids.first().cloned() {
             self.claim_focus_target(super::super::focus::FocusTarget::Permission);
             if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
                 && let Some(MessageBlock::ToolCall(tc)) =
@@ -434,6 +439,7 @@ impl super::App {
         self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
+        let active_turn_owner = self.active_turn_assistant_idx();
         stats.total_before_bytes = self.retained_history_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
@@ -442,6 +448,7 @@ impl super::App {
             for (msg_idx, msg) in self.messages.iter().enumerate() {
                 if Self::is_history_hidden_marker_message(msg)
                     || Self::is_history_protected_message(msg)
+                    || active_turn_owner == Some(msg_idx)
                 {
                     continue;
                 }
@@ -468,32 +475,8 @@ impl super::App {
             }
 
             if !drop_candidates.is_empty() {
-                let mut dropped_rows = 0usize;
-                let drop_set: HashSet<usize> = drop_candidates
-                    .iter()
-                    .map(|candidate| {
-                        dropped_rows = dropped_rows.saturating_add(candidate.approx_rows);
-                        candidate.msg_idx
-                    })
-                    .collect();
-
-                let mut retained =
-                    Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
-                let mut retained_bytes = Vec::with_capacity(retained.capacity());
-                let old_messages = std::mem::take(&mut self.messages);
-                let old_bytes = std::mem::take(&mut self.message_retained_bytes);
-                self.retained_history_bytes = 0;
-                for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
-                    if !drop_set.contains(&msg_idx) {
-                        self.retained_history_bytes =
-                            self.retained_history_bytes.saturating_add(bytes);
-                        retained.push(msg);
-                        retained_bytes.push(bytes);
-                    }
-                }
-                self.messages = retained;
-                self.message_retained_bytes = retained_bytes;
-
+                let dropped_rows =
+                    self.apply_history_retention_drop(&drop_candidates, active_turn_owner);
                 if !self.viewport.auto_scroll && dropped_rows > 0 {
                     self.viewport.scroll_target =
                         self.viewport.scroll_target.saturating_sub(dropped_rows);
@@ -537,5 +520,41 @@ impl super::App {
         crate::perf::mark_with("history::total_dropped", "count", stats.total_dropped_messages);
 
         stats
+    }
+
+    fn apply_history_retention_drop(
+        &mut self,
+        drop_candidates: &[HistoryDropCandidate],
+        active_turn_owner: Option<usize>,
+    ) -> usize {
+        let mut dropped_rows = 0usize;
+        let drop_set: HashSet<usize> = drop_candidates
+            .iter()
+            .map(|candidate| {
+                dropped_rows = dropped_rows.saturating_add(candidate.approx_rows);
+                candidate.msg_idx
+            })
+            .collect();
+
+        let mut retained = Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
+        let mut retained_bytes = Vec::with_capacity(retained.capacity());
+        let old_messages = std::mem::take(&mut self.messages);
+        let old_bytes = std::mem::take(&mut self.message_retained_bytes);
+        let mut remapped_active_turn_owner = None;
+        self.retained_history_bytes = 0;
+        for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
+            if !drop_set.contains(&msg_idx) {
+                if active_turn_owner == Some(msg_idx) {
+                    remapped_active_turn_owner = Some(retained.len());
+                }
+                self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+                retained.push(msg);
+                retained_bytes.push(bytes);
+            }
+        }
+        self.messages = retained;
+        self.message_retained_bytes = retained_bytes;
+        self.active_turn_assistant_message_idx = remapped_active_turn_owner;
+        dropped_rows
     }
 }

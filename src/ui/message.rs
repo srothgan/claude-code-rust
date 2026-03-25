@@ -35,17 +35,16 @@ const FERRIS_SAYS: &[&str] = &[
 #[allow(clippy::struct_excessive_bools)]
 pub struct SpinnerState {
     pub frame: usize,
-    pub is_active: bool,
     /// True when this message owns the currently active assistant turn.
     pub is_active_turn_assistant: bool,
-    /// True when the agent is thinking mid-turn (all tool calls finished,
-    /// waiting for next action). Shows a trailing spinner after existing blocks.
-    pub is_thinking_mid_turn: bool,
-    /// True when a subagent task is in an idle pause long enough to show
-    /// a dedicated thinking indicator.
-    pub is_subagent_thinking: bool,
-    /// True while the SDK reports active compaction.
-    pub is_compacting: bool,
+    /// True when this message should show the initial empty-turn thinking indicator.
+    pub show_empty_thinking: bool,
+    /// True when this message should show the thinking indicator.
+    pub show_thinking: bool,
+    /// True when this message should show the subagent-thinking indicator.
+    pub show_subagent_thinking: bool,
+    /// True when this message should show the compaction indicator.
+    pub show_compacting: bool,
 }
 
 struct AssistantLayout {
@@ -197,17 +196,17 @@ fn build_assistant_layout(
 ) -> AssistantLayout {
     let mut layout = AssistantLayout::new();
 
-    if msg.blocks.is_empty() && spinner.is_compacting {
+    if msg.blocks.is_empty() && spinner.show_compacting {
         layout.push_lines(vec![compacting_line(spinner.frame)], 1, 0);
         return layout;
     }
-    if msg.blocks.is_empty() && spinner.is_active {
+    if msg.blocks.is_empty() && spinner.show_empty_thinking {
         layout.push_lines(vec![thinking_line(spinner.frame)], 1, 0);
         return layout;
     }
 
-    let show_compacting = spinner.is_compacting && spinner.is_active_turn_assistant;
-    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
+    let show_compacting = spinner.show_compacting;
+    let show_subagent_thinking = spinner.show_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     let mut has_visible_content = false;
     for block in &mut msg.blocks {
@@ -277,7 +276,7 @@ fn build_assistant_layout(
         }
         layout.push_lines(vec![subagent_thinking_line(spinner.frame)], 1, 0);
     }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
+    if spinner.show_thinking && !show_subagent_thinking && !show_compacting {
         if !layout.is_empty() {
             layout.push_blank();
         }
@@ -1340,6 +1339,17 @@ mod tests {
         ChatMessage::welcome(model_name, cwd)
     }
 
+    fn idle_spinner() -> SpinnerState {
+        SpinnerState {
+            frame: 0,
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_subagent_thinking: false,
+            show_compacting: false,
+        }
+    }
+
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
         let mut lines = Vec::new();
         render_message(msg, spinner, width, &mut lines);
@@ -1349,14 +1359,7 @@ mod tests {
     #[test]
     fn measure_height_matches_ground_truth_for_long_soft_wrap() {
         let text = "A".repeat(500);
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
 
         let mut measured_msg = make_text_message(MessageRole::User, &text);
         let mut truth_msg = make_text_message(MessageRole::User, &text);
@@ -1369,14 +1372,7 @@ mod tests {
 
     #[test]
     fn assistant_split_paragraph_renders_visible_blank_line() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut lines = Vec::new();
         render_message(&mut msg, &spinner, 80, &mut lines);
@@ -1395,14 +1391,7 @@ mod tests {
 
     #[test]
     fn assistant_split_paragraph_height_matches_rendered_gap() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut measured = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut truth = make_assistant_split_message("First paragraph", "Second paragraph");
 
@@ -1414,14 +1403,7 @@ mod tests {
 
     #[test]
     fn assistant_message_can_render_without_trailing_separator() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "hello");
         let mut lines = Vec::new();
 
@@ -1440,12 +1422,9 @@ mod tests {
     #[test]
     fn empty_last_assistant_thinking_omits_trailing_separator() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: true,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
+            show_empty_thinking: true,
+            ..idle_spinner()
         };
         let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
         let mut lines = Vec::new();
@@ -1468,12 +1447,9 @@ mod tests {
     #[test]
     fn empty_last_assistant_compacting_omits_trailing_separator() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: true,
+            show_compacting: true,
+            ..idle_spinner()
         };
         let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
         let mut lines = Vec::new();
@@ -1496,12 +1472,9 @@ mod tests {
     #[test]
     fn empty_last_assistant_thinking_offset_render_omits_trailing_separator() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: true,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
+            show_empty_thinking: true,
+            ..idle_spinner()
         };
         let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
         let mut out = Vec::new();
@@ -1526,12 +1499,9 @@ mod tests {
     #[test]
     fn empty_last_assistant_compacting_offset_render_omits_trailing_separator() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: true,
+            show_compacting: true,
+            ..idle_spinner()
         };
         let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
         let mut out = Vec::new();
@@ -1555,14 +1525,7 @@ mod tests {
 
     #[test]
     fn render_from_offset_handles_paragraph_gap_as_structural_rows() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut out = Vec::new();
 
@@ -1580,14 +1543,7 @@ mod tests {
         let text =
             "This is a single very long line without explicit line breaks to stress soft wrapping."
                 .repeat(20);
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
 
         let mut measured_msg = make_text_message(MessageRole::Assistant, &text);
         let mut truth_wide = make_text_message(MessageRole::Assistant, &text);
@@ -1605,14 +1561,7 @@ mod tests {
 
     #[test]
     fn render_from_offset_can_skip_entire_message() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::User, "hello\nworld");
         let mut truth_msg = make_text_message(MessageRole::User, "hello\nworld");
         let total = ground_truth_height(&mut truth_msg, &spinner, 120);
@@ -1626,14 +1575,7 @@ mod tests {
 
     #[test]
     fn welcome_height_matches_ground_truth() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
         let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
 
@@ -1644,14 +1586,7 @@ mod tests {
 
     #[test]
     fn system_warning_severity_renders_warning_label() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_text_message(
             MessageRole::System(Some(SystemSeverity::Warning)),
             "Rate limit warning",
@@ -1666,14 +1601,7 @@ mod tests {
 
     #[test]
     fn assistant_message_shows_subagent_indicator_when_enabled() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: true,
-            is_compacting: false,
-        };
+        let spinner = SpinnerState { show_subagent_thinking: true, ..idle_spinner() };
         let mut msg = ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![MessageBlock::ToolCall(Box::new(make_tool_call_info(
@@ -1694,14 +1622,7 @@ mod tests {
 
     #[test]
     fn assistant_heading_at_start_does_not_render_blank_line_after_label() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
 
         let mut lines = Vec::new();
@@ -1715,14 +1636,7 @@ mod tests {
 
     #[test]
     fn assistant_heading_at_start_height_matches_rendered_output() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut measured = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
         let mut truth = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
 
@@ -1734,14 +1648,7 @@ mod tests {
 
     #[test]
     fn assistant_heading_at_start_offset_render_omits_leading_blank_row() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
         let mut out = Vec::new();
 
@@ -1756,14 +1663,7 @@ mod tests {
 
     #[test]
     fn assistant_message_hides_subagent_indicator_when_disabled() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: false,
-            is_compacting: false,
-        };
+        let spinner = idle_spinner();
         let mut msg = ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![
@@ -1792,14 +1692,7 @@ mod tests {
 
     #[test]
     fn assistant_message_places_subagent_indicator_after_visible_tool_blocks() {
-        let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
-            is_active_turn_assistant: false,
-            is_thinking_mid_turn: false,
-            is_subagent_thinking: true,
-            is_compacting: false,
-        };
+        let spinner = SpinnerState { show_subagent_thinking: true, ..idle_spinner() };
         let mut msg = ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![
@@ -1833,14 +1726,28 @@ mod tests {
     }
 
     #[test]
+    fn assistant_message_does_not_show_empty_turn_thinking_after_content_exists() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_empty_thinking: true,
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
+
+        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
     fn assistant_message_suppresses_thinking_line_while_compacting() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: true,
-            is_subagent_thinking: false,
-            is_compacting: true,
+            show_thinking: true,
+            show_compacting: true,
+            ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "done");
 
@@ -1855,12 +1762,10 @@ mod tests {
     #[test]
     fn assistant_offset_render_suppresses_thinking_line_while_compacting() {
         let spinner = SpinnerState {
-            frame: 0,
-            is_active: false,
             is_active_turn_assistant: true,
-            is_thinking_mid_turn: true,
-            is_subagent_thinking: false,
-            is_compacting: true,
+            show_thinking: true,
+            show_compacting: true,
+            ..idle_spinner()
         };
         let mut msg = make_text_message(MessageRole::Assistant, "done");
 

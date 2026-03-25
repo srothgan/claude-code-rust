@@ -238,7 +238,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // --- Graceful shutdown ---
 
     // Dismiss all pending inline permissions (reject via last option)
-    for tool_id in std::mem::take(&mut app.pending_permission_ids) {
+    for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
         if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
             && let Some(MessageBlock::ToolCall(tc)) =
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))

@@ -128,6 +128,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         blocks: Vec::new(),
         usage: None,
     });
+    app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
     app.viewport.engage_auto_scroll();

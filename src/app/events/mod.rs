@@ -863,6 +863,7 @@ mod tests {
             "tc1",
             model::ToolCallStatus::Pending,
         )))]));
+        app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -873,6 +874,7 @@ mod tests {
             "tc1",
             model::ToolCallStatus::InProgress,
         )))]));
+        app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -905,23 +907,21 @@ mod tests {
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
-    /// Only the LAST message matters - earlier assistant messages are ignored.
+    /// Without an explicit owner, in-progress tools do not count even if the last assistant has them.
     #[test]
-    fn has_in_progress_only_checks_last_message() {
+    fn has_in_progress_requires_explicit_owner() {
         let mut app = make_test_app();
-        // First assistant message has in-progress tool
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
             model::ToolCallStatus::InProgress,
         )))]));
-        // Last message is user - should be false
         app.messages.push(user_msg("thanks"));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
-    /// Earlier assistant with in-progress, last assistant all completed.
+    /// The owned assistant decides the result even when another assistant trails later.
     #[test]
-    fn has_in_progress_ignores_earlier_assistant() {
+    fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tc1",
@@ -932,7 +932,8 @@ mod tests {
             "tc2",
             model::ToolCallStatus::Completed,
         )))]));
-        assert!(!tool_calls::has_in_progress_tool_calls(&app));
+        app.bind_active_turn_assistant(0);
+        assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
 
     #[test]
@@ -942,6 +943,7 @@ mod tests {
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
         ]));
+        app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -974,6 +976,7 @@ mod tests {
             model::ToolCallStatus::Pending,
         ))));
         app.messages.push(assistant_msg(blocks));
+        app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1025,7 +1028,7 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.session_id.is_none());
         assert_eq!(app.files_accessed, 0);
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos.is_empty());
@@ -1343,7 +1346,7 @@ mod tests {
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.files_accessed = 9;
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
         app.todo_selected = 2;
         app.show_todo_panel = true;
         app.todos.push(TodoItem {
@@ -1383,7 +1386,7 @@ mod tests {
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
@@ -2376,14 +2379,14 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.pending_permission_ids, vec!["perm-b", "perm-a"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
         assert_eq!(app.todo_selected, 0);
     }
 
     #[test]
     fn permission_focus_allows_typing_for_non_permission_keys() {
         let mut app = make_test_app();
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
 
         handle_terminal_event(
@@ -2397,7 +2400,7 @@ mod tests {
     #[test]
     fn permission_focus_allows_ctrl_t_toggle_todos() {
         let mut app = make_test_app();
-        app.pending_permission_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
         app.todos.push(TodoItem {
             content: "Task".into(),
@@ -2465,7 +2468,7 @@ mod tests {
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages.len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
-        app.pending_permission_ids.push(tool_id.into());
+        app.pending_interaction_ids.push(tool_id.into());
         app.claim_focus_target(FocusTarget::Permission);
         response_rx
     }
@@ -2515,7 +2518,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "allow");
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]
@@ -2555,7 +2558,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "allow-always");
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]
@@ -2593,7 +2596,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]

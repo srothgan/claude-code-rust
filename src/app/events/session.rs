@@ -50,6 +50,7 @@ pub(super) fn handle_connected_client_event(
     app.pending_auto_submit_after_cancel = false;
     app.cached_header_line = None;
     app.cached_footer_line = None;
+    app.clear_active_turn_assistant();
     app.update_welcome_model_once();
     app.sync_welcome_recent_sessions();
     if !history_updates.is_empty() {
@@ -113,6 +114,7 @@ pub(super) fn handle_auth_required_event(
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
+    app.clear_active_turn_assistant();
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
@@ -127,6 +129,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
+    app.clear_active_turn_assistant();
     push_connection_error_message(app, msg);
 }
 
