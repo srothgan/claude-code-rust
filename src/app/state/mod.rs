@@ -371,7 +371,6 @@ impl App {
             ),
         );
         self.welcome_model_resolved = self.model_name_is_authoritative();
-        self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
 
     fn model_name_is_authoritative(&self) -> bool {
@@ -583,6 +582,17 @@ impl App {
         }
     }
 
+    pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let unique: BTreeSet<_> =
+            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+        for idx in unique {
+            self.viewport.invalidate_message(idx);
+        }
+    }
+
     /// Enforce history retention and record metrics.
     ///
     /// Wrapper around [`enforce_history_retention`] that feeds the returned stats
@@ -613,7 +623,6 @@ impl App {
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut cleared_interaction = false;
-        let mut first_changed_idx: Option<usize> = None;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
@@ -641,8 +650,6 @@ impl App {
                         if changed_message_indices.last().copied() != Some(msg_idx) {
                             changed_message_indices.push(msg_idx);
                         }
-                        first_changed_idx =
-                            Some(first_changed_idx.map_or(msg_idx, |prev| prev.min(msg_idx)));
                         changed += 1;
                     }
                 }
@@ -657,14 +664,12 @@ impl App {
             self.sync_render_cache_slot(msg_idx, block_idx);
         }
 
-        for msg_idx in changed_message_indices {
+        for msg_idx in changed_message_indices.iter().copied() {
             self.recompute_message_retained_bytes(msg_idx);
         }
 
         if changed > 0 || cleared_interaction {
-            if let Some(msg_idx) = first_changed_idx {
-                self.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
-            }
+            self.invalidate_message_set(changed_message_indices.iter().copied());
             self.pending_permission_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
         }
@@ -1795,6 +1800,104 @@ mod tests {
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
         assert_eq!(tc.terminal_id, None);
+    }
+
+    #[test]
+    fn insert_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("before"));
+        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages.push(user_text_message("after"));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let _ = app.viewport.on_frame(80, 24);
+        app.viewport.sync_message_count(3);
+        app.viewport.mark_heights_valid();
+        app.viewport.rebuild_prefix_sums();
+
+        app.insert_message_tracked(1, user_text_message("inserted"));
+        app.viewport.sync_message_count(app.messages.len());
+
+        assert_eq!(app.lookup_tool_call("tool-1"), Some((2, 0)));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
+    }
+
+    #[test]
+    fn remove_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("before"));
+        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages.push(user_text_message("after"));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let _ = app.viewport.on_frame(80, 24);
+        app.viewport.sync_message_count(3);
+        app.viewport.mark_heights_valid();
+        app.viewport.rebuild_prefix_sums();
+
+        let removed = app.remove_message_tracked(0);
+        app.viewport.sync_message_count(app.messages.len());
+
+        assert!(removed.is_some());
+        assert_eq!(app.lookup_tool_call("tool-1"), Some((0, 0)));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
+    }
+
+    #[test]
+    fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
+        let mut app = make_test_app();
+        app.messages.push(user_text_message("before"));
+        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.index_tool_call("tool-1".to_owned(), 1, 0);
+
+        let removed = app.remove_message_tracked(1);
+
+        assert!(removed.is_some());
+        assert!(app.lookup_tool_call("tool-1").is_none());
+    }
+
+    #[test]
+    fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_bash_tool_message(
+            "bash-1",
+            model::ToolCallStatus::InProgress,
+            "term-1",
+        ));
+        app.index_tool_call("bash-1".to_owned(), 0, 0);
+        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
+        app.pending_permission_ids.push("bash-1".into());
+
+        app.clear_messages_tracked();
+
+        assert!(app.messages.is_empty());
+        assert!(app.tool_call_index.is_empty());
+        assert!(app.terminal_tool_calls.is_empty());
+        assert!(app.terminal_tool_call_membership.is_empty());
+        assert!(app.pending_permission_ids.is_empty());
+    }
+
+    #[test]
+    fn finalize_in_progress_tool_calls_invalidates_all_changed_messages() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
+        app.messages.push(user_text_message("gap"));
+        app.messages.push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
+
+        let _ = app.viewport.on_frame(80, 24);
+        app.viewport.sync_message_count(3);
+        app.viewport.mark_heights_valid();
+        app.viewport.rebuild_prefix_sums();
+
+        let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
+
+        assert_eq!(changed, 2);
+        assert!(!app.viewport.message_height_is_current(0));
+        assert!(app.viewport.message_height_is_current(1));
+        assert!(!app.viewport.message_height_is_current(2));
+        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
     }
 
     // IncrementalMarkdown

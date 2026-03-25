@@ -37,6 +37,15 @@ impl super::App {
         }
     }
 
+    fn sync_after_message_topology_change(&mut self, start_idx: usize) {
+        self.rebuild_tool_indices_and_terminal_refs();
+        if self.messages.is_empty() {
+            self.viewport.sync_message_count(0);
+            return;
+        }
+        self.invalidate_layout(InvalidationLevel::MessagesFrom(start_idx));
+    }
+
     #[must_use]
     pub(super) fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
         if !matches!(msg.role, MessageRole::System(_)) {
@@ -233,6 +242,7 @@ impl super::App {
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
+        self.ensure_history_retention_accounting();
         let insert_idx = idx.min(self.messages.len());
         let appended_at_tail = insert_idx == self.messages.len();
         let bytes = Self::measure_message_bytes(&msg);
@@ -246,6 +256,8 @@ impl super::App {
                 new_tail.and_then(|tail| tail.checked_sub(1)),
                 new_tail,
             );
+        } else {
+            self.sync_after_message_topology_change(insert_idx);
         }
     }
 
@@ -260,8 +272,13 @@ impl super::App {
         let removed_bytes = self.message_retained_bytes.remove(idx);
         self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
         self.rebuild_render_cache_accounting();
+        self.rebuild_tool_indices_and_terminal_refs();
         if removed_tail {
             self.invalidate_tail_transition(None, self.messages.len().checked_sub(1));
+        } else if !self.messages.is_empty() {
+            self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
+        } else {
+            self.viewport.sync_message_count(0);
         }
         Some(removed)
     }
@@ -271,6 +288,8 @@ impl super::App {
         self.message_retained_bytes.clear();
         self.retained_history_bytes = 0;
         self.rebuild_render_cache_accounting();
+        self.rebuild_tool_indices_and_terminal_refs();
+        self.viewport.sync_message_count(0);
     }
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
@@ -373,8 +392,6 @@ impl super::App {
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
-                self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
-                self.rebuild_tool_indices_and_terminal_refs();
             }
             return;
         }
@@ -410,8 +427,6 @@ impl super::App {
                 usage: None,
             },
         );
-        self.invalidate_layout(InvalidationLevel::MessagesFrom(insert_idx));
-        self.rebuild_tool_indices_and_terminal_refs();
     }
 
     #[allow(clippy::cast_precision_loss)]

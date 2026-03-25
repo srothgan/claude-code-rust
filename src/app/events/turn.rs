@@ -304,7 +304,6 @@ fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usiz
         return None;
     }
     app.remove_message_tracked(idx)?;
-    app.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
     Some(idx)
 }
 
