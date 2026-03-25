@@ -56,7 +56,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![Span::styled(
             "Trust this project directory?",
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        )])),
+        )]))
+        .wrap(Wrap { trim: false }),
         chunks[0],
     );
 
@@ -114,24 +115,22 @@ mod tests {
     use crate::app::App;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
 
-    fn buffer_text(buffer: &Buffer) -> String {
-        let mut out = String::new();
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                out.push_str(buffer[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
+    fn draw_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, app)).expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect()
     }
 
     fn draw_text(app: &mut App) -> String {
-        let backend = TestBackend::new(70, 14);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| render(frame, app)).expect("draw");
-        buffer_text(terminal.backend().buffer())
+        draw_rows(app, 70, 14).join("\n")
     }
 
     #[test]
@@ -170,5 +169,14 @@ mod tests {
         let action_idx = text.find("> Yes").expect("yes action");
 
         assert!(action_idx > body_idx);
+    }
+
+    #[test]
+    fn trusted_view_wraps_title_on_narrow_widths() {
+        let mut app = App::test_default();
+        let rows = draw_rows(&mut app, 18, 16);
+
+        assert!(rows.iter().any(|row| row.contains("Trust this")));
+        assert!(rows.iter().any(|row| row.contains("directory?")));
     }
 }

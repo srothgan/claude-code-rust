@@ -156,7 +156,8 @@ fn render_extra_usage(frame: &mut Frame, area: Rect, extra_usage: &ExtraUsage) {
     frame.render_widget(block.clone(), area);
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(detail, Style::default().fg(Color::White)))),
+        Paragraph::new(Line::from(Span::styled(detail, Style::default().fg(Color::White))))
+            .wrap(Wrap { trim: false }),
         inner,
     );
 }
@@ -246,8 +247,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::time::SystemTime;
 
-    fn render_usage(app: &App) -> String {
-        let backend = TestBackend::new(100, 24);
+    fn render_usage_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| {
@@ -259,8 +260,11 @@ mod tests {
             .content
             .chunks(usize::from(buffer.area.width))
             .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect()
+    }
+
+    fn render_usage(app: &App) -> String {
+        render_usage_rows(app, 100, 24).join("\n")
     }
 
     fn usage_app() -> App {
@@ -335,5 +339,34 @@ mod tests {
             .position(|line| line.contains("resets in 2h 14m"))
             .expect("reset line");
         assert!(rendered_lines[first_reset_index + 1].trim().is_empty());
+    }
+
+    #[test]
+    fn extra_usage_wraps_inside_card_on_narrow_widths() {
+        let mut app = usage_app();
+        app.usage.snapshot = Some(UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::now(),
+            five_hour: Some(UsageWindow {
+                label: "5-hour",
+                utilization: 47.0,
+                resets_at: None,
+                reset_description: Some("resets soon".to_owned()),
+            }),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: Some(ExtraUsage {
+                monthly_limit: Some(100.0),
+                used_credits: Some(99.99),
+                utilization: Some(99.0),
+                currency: Some("USD".to_owned()),
+            }),
+        });
+
+        let rows = render_usage_rows(&app, 20, 18);
+        assert!(rows.iter().any(|row| row.contains("Extra credits")));
+        assert!(rows.iter().any(|row| row.contains("99.99")));
+        assert!(rows.iter().any(|row| row.contains("USD used")));
     }
 }

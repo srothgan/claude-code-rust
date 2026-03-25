@@ -1217,6 +1217,58 @@ mod tests {
     }
 
     #[test]
+    fn render_culled_messages_matches_full_render_when_scrolled_inside_wrapped_role_label() {
+        let mut app = App::test_default();
+        app.messages = vec![user_message("ok")];
+        let width = 2u16;
+        let viewport_height_u16 = 4u16;
+        let viewport_height = usize::from(viewport_height_u16);
+        let area = Rect::new(0, 0, width, viewport_height_u16);
+        let spinner = idle_spinner();
+
+        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        update_visual_heights(&mut app, spinner, width, viewport_height);
+        app.viewport.rebuild_prefix_sums();
+
+        assert!(app.viewport.message_height(0) >= 3);
+
+        let scroll = 1;
+        let mut full_lines = Vec::new();
+        message::render_message_with_tools_collapsed_and_separator(
+            &mut app.messages[0],
+            &spinner,
+            width,
+            app.tools_collapsed,
+            false,
+            &mut full_lines,
+        );
+        let full_preview = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(full_lines.clone())).wrap(Wrap { trim: false }),
+            area,
+            scroll,
+        );
+
+        let mut culled_lines = Vec::new();
+        let stats = render_culled_messages(
+            &mut app,
+            spinner,
+            width,
+            scroll,
+            viewport_height,
+            &mut culled_lines,
+        );
+        let culled_preview = render_lines_from_paragraph(
+            &Paragraph::new(Text::from(culled_lines.clone())).wrap(Wrap { trim: false }),
+            area,
+            stats.local_scroll,
+        );
+
+        assert_eq!(culled_preview, full_preview);
+        assert_eq!(stats.rendered_msgs, 1);
+        assert_eq!(stats.local_scroll, 1);
+    }
+
+    #[test]
     fn render_culled_messages_stops_after_first_wrapped_message_when_viewport_is_covered() {
         let mut app = App::test_default();
         let huge_wrapped = "wrap ".repeat(2_000);

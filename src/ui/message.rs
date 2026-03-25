@@ -47,31 +47,36 @@ pub struct SpinnerState {
     pub show_compacting: bool,
 }
 
-struct AssistantLayout {
-    segments: Vec<AssistantLayoutSegment>,
+struct MessageLayout {
+    segments: Vec<MessageLayoutSegment>,
     height: usize,
     wrapped_lines: usize,
 }
 
-impl AssistantLayout {
+impl MessageLayout {
     fn new() -> Self {
         Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
     }
 
-    fn is_empty(&self) -> bool {
-        self.segments.is_empty()
+    fn push_blank(&mut self) {
+        self.segments.push(MessageLayoutSegment::Blank);
+        self.height += 1;
     }
 
-    fn push_blank(&mut self) {
-        self.segments.push(AssistantLayoutSegment::Blank);
-        self.height += 1;
+    fn push_wrapped_line(&mut self, line: Line<'static>, width: u16) {
+        self.push_wrapped_lines(vec![line], width);
+    }
+
+    fn push_wrapped_lines(&mut self, lines: Vec<Line<'static>>, width: u16) {
+        let height = rendered_lines_height(&lines, width);
+        self.push_lines(lines, height, height);
     }
 
     fn push_lines(&mut self, lines: Vec<Line<'static>>, height: usize, wrapped_lines: usize) {
         if height == 0 {
             return;
         }
-        self.segments.push(AssistantLayoutSegment::Lines { lines, height });
+        self.segments.push(MessageLayoutSegment::Lines { lines, height });
         self.height += height;
         self.wrapped_lines += wrapped_lines;
     }
@@ -83,18 +88,24 @@ impl AssistantLayout {
     }
 }
 
-enum AssistantLayoutSegment {
+enum MessageLayoutSegment {
     Blank,
     Lines { lines: Vec<Line<'static>>, height: usize },
 }
 
-impl AssistantLayoutSegment {
+impl MessageLayoutSegment {
     fn render_into(self, out: &mut Vec<Line<'static>>) {
         match self {
             Self::Blank => out.push(Line::default()),
             Self::Lines { lines, .. } => out.extend(lines),
         }
     }
+}
+
+struct RenderedBlockLayout {
+    lines: Vec<Line<'static>>,
+    height: usize,
+    wrapped_lines: usize,
 }
 
 fn assistant_role_label_line() -> Line<'static> {
@@ -148,66 +159,90 @@ fn render_message_internal(
     include_trailing_separator: bool,
     out: &mut Vec<Line<'static>>,
 ) {
+    build_message_layout(
+        msg,
+        spinner,
+        width,
+        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        None,
+    )
+    .render_into(out);
+}
+
+fn build_message_layout(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    options: MessageRenderOptions,
+    layout_generation: Option<u64>,
+) -> MessageLayout {
+    let mut layout = MessageLayout::new();
+    layout.push_wrapped_line(role_label_line(&msg.role), width);
+
     match msg.role {
-        MessageRole::Welcome => {
-            out.push(role_label_line(&msg.role));
-            for block in &mut msg.blocks {
-                if let MessageBlock::Welcome(welcome) = block {
-                    render_welcome_cached(welcome, width, out);
-                }
-            }
-        }
-        MessageRole::User => {
-            out.push(role_label_line(&msg.role));
-            render_user_blocks(msg, width, out);
-        }
-        MessageRole::Assistant => {
-            out.push(assistant_role_label_line());
-            build_assistant_layout(msg, spinner, width, tools_collapsed, None).render_into(out);
-        }
-        MessageRole::System(_) => {
-            let severity = system_severity_from_role(&msg.role);
-            out.push(system_role_label_line(severity));
-            render_system_blocks(msg, width, system_severity_color(severity), out);
-        }
+        MessageRole::Welcome => append_welcome_blocks(msg, width, &mut layout),
+        MessageRole::User => append_user_blocks(msg, width, &mut layout),
+        MessageRole::Assistant => append_assistant_blocks(
+            msg,
+            spinner,
+            width,
+            options.tools_collapsed,
+            layout_generation,
+            &mut layout,
+        ),
+        MessageRole::System(_) => append_system_blocks(msg, width, &mut layout),
     }
 
-    // Blank separator between messages
-    if include_trailing_separator {
-        out.push(Line::default());
+    if options.include_trailing_separator {
+        layout.push_blank();
+    }
+
+    layout
+}
+
+fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+    for block in &mut msg.blocks {
+        if let MessageBlock::Welcome(welcome) = block {
+            let rendered = welcome_block_layout(welcome, width);
+            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+        }
     }
 }
 
-fn render_user_blocks(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'static>>) {
+fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
     for block in &mut msg.blocks {
         if let MessageBlock::Text(block) = block {
-            render_text_block_cached(block, width, Some(theme::USER_MSG_BG), true, out);
-            emit_blank_lines(out, block.trailing_blank_lines());
+            let trailing_gap = block.trailing_blank_lines();
+            let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
+            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            for _ in 0..trailing_gap {
+                layout.push_blank();
+            }
         }
     }
 }
 
-fn build_assistant_layout(
+fn append_assistant_blocks(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     tools_collapsed: bool,
     layout_generation: Option<u64>,
-) -> AssistantLayout {
-    let mut layout = AssistantLayout::new();
-
+    layout: &mut MessageLayout,
+) {
     if msg.blocks.is_empty() && spinner.show_compacting {
-        layout.push_lines(vec![compacting_line(spinner.frame)], 1, 0);
-        return layout;
+        layout.push_wrapped_line(compacting_line(spinner.frame), width);
+        return;
     }
     if msg.blocks.is_empty() && spinner.show_empty_thinking {
-        layout.push_lines(vec![thinking_line(spinner.frame)], 1, 0);
-        return layout;
+        layout.push_wrapped_line(thinking_line(spinner.frame), width);
+        return;
     }
 
     let show_compacting = spinner.show_compacting;
     let show_subagent_thinking = spinner.show_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
+    let mut has_body_content = false;
     let mut has_visible_content = false;
     for block in &mut msg.blocks {
         match block {
@@ -215,17 +250,18 @@ fn build_assistant_layout(
                 if prev_was_tool {
                     layout.push_blank();
                 }
-                let rendered = assistant_text_block_render(block, width, !has_visible_content);
+                let rendered = assistant_text_block_layout(block, width, !has_visible_content);
                 let trailing_gap = if !has_visible_content && rendered.height == 0 {
                     0
                 } else {
                     block.trailing_blank_lines()
                 };
-                layout.push_lines(rendered.lines, rendered.height, rendered.height);
+                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
                     layout.push_blank();
                 }
                 if rendered.height > 0 {
+                    has_body_content = true;
                     has_visible_content = true;
                 }
                 prev_was_tool = false;
@@ -235,7 +271,7 @@ fn build_assistant_layout(
                 if tc.hidden {
                     continue;
                 }
-                if !prev_was_tool && !layout.is_empty() {
+                if !prev_was_tool && has_body_content {
                     layout.push_blank();
                 }
                 let mut lines = Vec::new();
@@ -258,6 +294,9 @@ fn build_assistant_layout(
                     (rendered_lines_height(&lines, width), 0)
                 };
                 layout.push_lines(lines, height, wrapped_lines);
+                if height > 0 {
+                    has_body_content = true;
+                }
                 has_visible_content = true;
                 prev_was_tool = true;
             }
@@ -266,38 +305,35 @@ fn build_assistant_layout(
     }
 
     if show_compacting {
-        if !layout.is_empty() {
+        if has_body_content {
             layout.push_blank();
         }
-        layout.push_lines(vec![compacting_line(spinner.frame)], 1, 0);
+        layout.push_wrapped_line(compacting_line(spinner.frame), width);
     } else if show_subagent_thinking {
-        if !layout.is_empty() {
+        if has_body_content {
             layout.push_blank();
         }
-        layout.push_lines(vec![subagent_thinking_line(spinner.frame)], 1, 0);
+        layout.push_wrapped_line(subagent_thinking_line(spinner.frame), width);
     }
     if spinner.show_thinking && !show_subagent_thinking && !show_compacting {
-        if !layout.is_empty() {
+        if has_body_content {
             layout.push_blank();
         }
-        layout.push_lines(vec![thinking_line(spinner.frame)], 1, 0);
+        layout.push_wrapped_line(thinking_line(spinner.frame), width);
     }
-    layout
 }
 
-fn render_system_blocks(
-    msg: &mut ChatMessage,
-    width: u16,
-    color: Color,
-    out: &mut Vec<Line<'static>>,
-) {
+fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+    let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
         if let MessageBlock::Text(block) = block {
-            let mut lines = Vec::new();
-            render_text_block_cached(block, width, None, false, &mut lines);
-            emit_blank_lines(&mut lines, block.trailing_blank_lines());
-            tint_lines(&mut lines, color);
-            out.extend(lines);
+            let trailing_gap = block.trailing_blank_lines();
+            let mut rendered = text_block_layout(block, width, None, false);
+            tint_lines(&mut rendered.lines, color);
+            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+            for _ in 0..trailing_gap {
+                layout.push_blank();
+            }
         }
     }
 }
@@ -362,63 +398,14 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
     tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
-    let mut height = 1usize; // role label
-    let mut wrapped_lines = 0usize;
-
-    match msg.role {
-        MessageRole::User => {
-            let (h, lines) = measure_text_blocks_height(msg, width, Some(theme::USER_MSG_BG), true);
-            height += h;
-            wrapped_lines += lines;
-        }
-        MessageRole::Welcome => {
-            for block in &mut msg.blocks {
-                if let MessageBlock::Welcome(welcome) = block {
-                    let (h, lines) = welcome_block_height_cached(welcome, width);
-                    height += h;
-                    wrapped_lines += lines;
-                }
-            }
-        }
-        MessageRole::Assistant => {
-            let layout = build_assistant_layout(
-                msg,
-                spinner,
-                width,
-                tools_collapsed,
-                Some(layout_generation),
-            );
-            height += layout.height;
-            wrapped_lines += layout.wrapped_lines;
-        }
-        MessageRole::System(_) => {
-            let (h, lines) = measure_text_blocks_height(msg, width, None, false);
-            height += h;
-            wrapped_lines += lines;
-        }
-    }
-
-    // Blank separator between messages
-    let separator_height = usize::from(include_trailing_separator);
-    (height + separator_height, wrapped_lines)
-}
-
-fn measure_text_blocks_height(
-    msg: &mut ChatMessage,
-    width: u16,
-    bg: Option<Color>,
-    overlay_background: bool,
-) -> (usize, usize) {
-    let mut height = 0usize;
-    let mut wrapped_lines = 0usize;
-    for block in &mut msg.blocks {
-        if let MessageBlock::Text(block) = block {
-            let (h, lines) = text_block_height_cached(block, width, bg, overlay_background);
-            height += h + block.trailing_blank_lines();
-            wrapped_lines += lines;
-        }
-    }
-    (height, wrapped_lines)
+    let layout = build_message_layout(
+        msg,
+        spinner,
+        width,
+        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        Some(layout_generation),
+    );
+    (layout.height, layout.wrapped_lines)
 }
 
 /// Render a message while consuming as many whole leading rows as possible.
@@ -471,7 +458,7 @@ pub(crate) fn render_message_from_offset_internal(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
-    layout_generation: u64,
+    _layout_generation: u64,
     options: MessageRenderOptions,
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
@@ -479,106 +466,27 @@ pub(crate) fn render_message_from_offset_internal(
     let mut remaining_skip = skip_rows;
     let mut can_consume_skip = true;
 
-    let role_line = match msg.role {
-        MessageRole::Assistant => assistant_role_label_line(),
-        MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
-        _ => role_label_line(&msg.role),
-    };
-    emit_line_with_skip(role_line, out, &mut remaining_skip, can_consume_skip);
-
-    match msg.role {
-        MessageRole::Welcome => {
-            render_welcome_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
-        }
-        MessageRole::User => {
-            render_user_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
-        }
-        MessageRole::Assistant => {
-            let layout = build_assistant_layout(
-                msg,
-                spinner,
-                width,
-                options.tools_collapsed,
-                Some(layout_generation),
-            );
-            render_assistant_layout_from_offset(
-                layout,
-                out,
-                &mut remaining_skip,
-                &mut can_consume_skip,
-            );
-        }
-        MessageRole::System(_) => {
-            render_system_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
-        }
-    }
-
-    if options.include_trailing_separator {
-        emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
-    }
+    let layout = build_message_layout(msg, spinner, width, options, None);
+    render_message_layout_from_offset(layout, out, &mut remaining_skip, &mut can_consume_skip);
     remaining_skip
 }
 
-fn render_welcome_from_offset(
-    msg: &mut ChatMessage,
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) {
-    for block in &mut msg.blocks {
-        if let MessageBlock::Welcome(welcome) = block {
-            let (h, _) = welcome_block_height_cached(welcome, width);
-            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                continue;
-            }
-            render_welcome_cached(welcome, width, out);
-        }
-    }
-}
-
-fn render_user_from_offset(
-    msg: &mut ChatMessage,
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) {
-    for block in &mut msg.blocks {
-        if let MessageBlock::Text(block) = block {
-            let trailing_gap = block.trailing_blank_lines();
-            let (h, _) = text_block_height_cached(block, width, Some(theme::USER_MSG_BG), true);
-            let total_h = h + trailing_gap;
-            if *can_consume_skip && *remaining_skip >= total_h {
-                *remaining_skip -= total_h;
-                continue;
-            }
-            if *can_consume_skip && *remaining_skip >= h {
-                *remaining_skip -= h;
-                emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
-                continue;
-            }
-            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                continue;
-            }
-            render_text_block_cached(block, width, Some(theme::USER_MSG_BG), true, out);
-            emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, *can_consume_skip);
-        }
-    }
-}
-
-fn render_assistant_layout_from_offset(
-    layout: AssistantLayout,
+fn render_message_layout_from_offset(
+    layout: MessageLayout,
     out: &mut Vec<Line<'static>>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
     for segment in layout.segments {
         match segment {
-            AssistantLayoutSegment::Blank => {
-                emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
+            MessageLayoutSegment::Blank => {
+                if *can_consume_skip && *remaining_skip > 0 {
+                    *remaining_skip -= 1;
+                } else {
+                    out.push(Line::default());
+                }
             }
-            AssistantLayoutSegment::Lines { lines, height, .. } => {
+            MessageLayoutSegment::Lines { lines, height, .. } => {
                 if should_skip_whole_block(height, remaining_skip, can_consume_skip) {
                     continue;
                 }
@@ -586,75 +494,6 @@ fn render_assistant_layout_from_offset(
             }
         }
     }
-}
-
-fn render_system_from_offset(
-    msg: &mut ChatMessage,
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) {
-    let color = system_severity_color(system_severity_from_role(&msg.role));
-    for block in &mut msg.blocks {
-        if let MessageBlock::Text(block) = block {
-            let trailing_gap = block.trailing_blank_lines();
-            let (h, _) = text_block_height_cached(block, width, None, false);
-            let total_h = h + trailing_gap;
-            if *can_consume_skip && *remaining_skip >= total_h {
-                *remaining_skip -= total_h;
-                continue;
-            }
-            if *can_consume_skip && *remaining_skip >= h {
-                *remaining_skip -= h;
-                emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
-                continue;
-            }
-            if should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                continue;
-            }
-            let mut lines = Vec::new();
-            render_text_block_cached(block, width, None, false, &mut lines);
-            emit_blank_lines(&mut lines, trailing_gap);
-            tint_lines(&mut lines, color);
-            out.extend(lines);
-        }
-    }
-}
-
-fn emit_line_with_skip(
-    line: Line<'static>,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: bool,
-) {
-    if can_consume_skip && *remaining_skip > 0 {
-        *remaining_skip -= 1;
-    } else {
-        out.push(line);
-    }
-}
-
-fn emit_blank_lines(out: &mut Vec<Line<'static>>, count: usize) {
-    for _ in 0..count {
-        out.push(Line::default());
-    }
-}
-
-fn emit_blank_lines_with_skip(
-    count: usize,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: bool,
-) {
-    for _ in 0..count {
-        emit_line_with_skip(Line::default(), out, remaining_skip, can_consume_skip);
-    }
-}
-
-struct RenderedTextBlock {
-    lines: Vec<Line<'static>>,
-    height: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -670,27 +509,54 @@ fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
     Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
 }
 
-fn assistant_text_block_render(
+fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLayout {
+    let had_height = block.cache.height_at(width).is_some();
+    let mut lines = Vec::new();
+    render_welcome_cached(block, width, &mut lines);
+    let height = block.cache.height_at(width).unwrap_or_else(|| {
+        let height = rendered_lines_height(&lines, width);
+        block.cache.set_height(height, width);
+        height
+    });
+    let wrapped_lines = if had_height { 0 } else { lines.len() };
+    RenderedBlockLayout { lines, height, wrapped_lines }
+}
+
+fn text_block_layout(
+    block: &mut TextBlock,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+) -> RenderedBlockLayout {
+    let had_height = block.cache.height_at(width).is_some();
+    let mut lines = Vec::new();
+    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
+    let height = block.cache.height_at(width).unwrap_or_else(|| {
+        let height = rendered_lines_height(&lines, width);
+        block.cache.set_height(height, width);
+        height
+    });
+    let wrapped_lines = if had_height { 0 } else { lines.len() };
+    RenderedBlockLayout { lines, height, wrapped_lines }
+}
+
+fn assistant_text_block_layout(
     block: &mut TextBlock,
     width: u16,
     trim_leading_blank_lines: bool,
-) -> RenderedTextBlock {
-    let mut lines = Vec::new();
-    render_text_block_cached(block, width, None, false, &mut lines);
-
-    let mut height = block.cache.height_at(width).unwrap_or_else(|| {
-        Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width)
-    });
+) -> RenderedBlockLayout {
+    let mut rendered = text_block_layout(block, width, None, false);
 
     if trim_leading_blank_lines {
-        let leading_blank_lines = count_leading_blank_lines(&lines);
+        let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
         if leading_blank_lines > 0 {
-            lines.drain(..leading_blank_lines);
-            height = height.saturating_sub(leading_blank_lines);
+            rendered.lines.drain(..leading_blank_lines);
+            rendered.height = rendered.height.saturating_sub(leading_blank_lines);
+            rendered.wrapped_lines = rendered.wrapped_lines.saturating_sub(leading_blank_lines);
         }
     }
 
-    RenderedTextBlock { lines, height }
+    rendered
 }
 
 fn count_leading_blank_lines(lines: &[Line<'static>]) -> usize {
@@ -731,11 +597,8 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
             "User",
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )),
-        MessageRole::Assistant => Line::from(Span::styled(
-            "Claude",
-            Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
-        )),
-        MessageRole::System(_) => system_role_label_line(SystemSeverity::Error),
+        MessageRole::Assistant => assistant_role_label_line(),
+        MessageRole::System(_) => system_role_label_line(system_severity_from_role(role)),
     }
 }
 
@@ -822,50 +685,6 @@ fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Lin
     if let Some(stored) = block.cache.get() {
         out.extend_from_slice(stored);
     }
-}
-
-fn welcome_block_height_cached(block: &mut WelcomeBlock, width: u16) -> (usize, usize) {
-    if let Some(h) = block.cache.height_at(width) {
-        return (h, 0);
-    }
-
-    if let Some(h) = block.cache.measure_and_set_height(width) {
-        return (h, block.cache.get().map_or(0, Vec::len));
-    }
-
-    let fresh = welcome_lines(block, width);
-    let lines = fresh.len();
-    let h = Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
-    block.cache.store(fresh);
-    block.cache.set_height(h, width);
-    (h, lines)
-}
-
-fn text_block_height_cached(
-    block: &mut TextBlock,
-    width: u16,
-    bg: Option<Color>,
-    preserve_newlines: bool,
-) -> (usize, usize) {
-    if let Some(h) = block.cache.height_at(width) {
-        return (h, 0);
-    }
-
-    if let Some(h) = block.cache.measure_and_set_height(width) {
-        return (h, block.cache.get().map_or(0, Vec::len));
-    }
-
-    let mut scratch = Vec::new();
-    render_text_block_cached(block, width, bg, preserve_newlines, &mut scratch);
-
-    if let Some(h) = block.cache.height_at(width) {
-        return (h, scratch.len());
-    }
-
-    let h =
-        Paragraph::new(Text::from(scratch.clone())).wrap(Wrap { trim: false }).line_count(width);
-    block.cache.set_height(h, width);
-    (h, scratch.len())
 }
 
 fn tint_lines(lines: &mut [Line<'static>], color: Color) {
@@ -1372,6 +1191,46 @@ mod tests {
     }
 
     #[test]
+    fn user_role_label_wrap_height_matches_ground_truth() {
+        let spinner = idle_spinner();
+        let mut measured_msg = make_text_message(MessageRole::User, "ok");
+        let mut truth_msg = make_text_message(MessageRole::User, "ok");
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 2, 1);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 2);
+
+        assert_eq!(h, truth);
+        assert!(h >= 3);
+    }
+
+    #[test]
+    fn system_role_label_wrap_height_matches_ground_truth() {
+        let spinner = idle_spinner();
+        let mut measured_msg =
+            make_text_message(MessageRole::System(Some(SystemSeverity::Warning)), "rate limit");
+        let mut truth_msg =
+            make_text_message(MessageRole::System(Some(SystemSeverity::Warning)), "rate limit");
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 4, 1);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
+
+        assert_eq!(h, truth);
+        assert!(h >= 4);
+    }
+
+    #[test]
+    fn welcome_role_label_wrap_height_matches_ground_truth() {
+        let spinner = idle_spinner();
+        let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+        let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 4, 1);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
+
+        assert_eq!(h, truth);
+    }
+
+    #[test]
     fn assistant_split_paragraph_renders_visible_blank_line() {
         let spinner = idle_spinner();
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
@@ -1443,6 +1302,32 @@ mod tests {
             &mut msg, &spinner, 80, 1, false, false,
         );
         assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn empty_last_assistant_thinking_wrap_height_matches_ground_truth() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_empty_thinking: true,
+            ..idle_spinner()
+        };
+        let mut measured_msg =
+            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut truth_msg =
+            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+
+        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
+            &mut measured_msg,
+            &spinner,
+            6,
+            1,
+            false,
+            false,
+        );
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 6);
+
+        assert_eq!(h, truth);
+        assert!(h > 2);
     }
 
     #[test]

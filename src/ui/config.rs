@@ -18,7 +18,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::theme;
@@ -220,12 +220,12 @@ fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
         .flat_map(|option| {
             let selected = option.id == overlay.selected_model;
             let marker = if selected { ">" } else { " " };
-            let mut lines = vec![Line::from(model_overlay_title_spans(
+            let mut lines = vec![model_overlay_title_line(
                 &option,
                 marker,
                 selected,
                 overlay.focus == OverlayFocus::Model,
-            ))];
+            )];
             if let Some(description) = option.description {
                 lines.push(Line::from(Span::styled(
                     format!("  {description}"),
@@ -750,10 +750,16 @@ fn model_overlay_option_height(
     is_last: bool,
     viewport_width: u16,
 ) -> usize {
-    let title = model_overlay_title_text(option, " ");
-    let mut height = wrapped_line_count(&title, viewport_width);
+    let title = model_overlay_title_line(option, " ", false, false);
+    let mut height = wrapped_text_height(Text::from(vec![title]), viewport_width);
     if let Some(description) = option.description.as_deref() {
-        height += wrapped_line_count(&format!("  {description}"), viewport_width);
+        height += wrapped_text_height(
+            Text::from(vec![Line::from(Span::styled(
+                format!("  {description}"),
+                Style::default().fg(theme::DIM),
+            ))]),
+            viewport_width,
+        );
     }
     height + usize::from(!is_last)
 }
@@ -764,17 +770,21 @@ struct CapabilityBadge {
     fg: Color,
 }
 
+#[cfg(test)]
 fn model_overlay_title_text(
     option: &crate::app::config::OverlayModelOption,
     marker: &str,
 ) -> String {
-    let badges = model_capability_badges(option);
-    let mut title = format!("{marker} {}", option.display_name);
-    if !badges.is_empty() {
-        title.push_str("  ");
-        title.push_str(&badges.into_iter().map(|badge| badge.label).collect::<Vec<_>>().join("  "));
-    }
-    title
+    model_overlay_title_line(option, marker, false, false).to_string()
+}
+
+fn model_overlay_title_line(
+    option: &crate::app::config::OverlayModelOption,
+    marker: &str,
+    selected: bool,
+    focused: bool,
+) -> Line<'static> {
+    Line::from(model_overlay_title_spans(option, marker, selected, focused))
 }
 
 fn model_overlay_title_spans(
@@ -839,9 +849,8 @@ fn model_capability_badges(
     badges
 }
 
-fn wrapped_line_count(text: &str, viewport_width: u16) -> usize {
-    let width = Line::raw(text).width().max(1);
-    width.div_ceil(usize::from(viewport_width.max(1)))
+fn wrapped_text_height(text: Text<'static>, viewport_width: u16) -> usize {
+    Paragraph::new(text).wrap(Wrap { trim: false }).line_count(viewport_width.max(1)).max(1)
 }
 
 fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
@@ -878,7 +887,7 @@ fn centered_line_area(area: Rect, content_width: u16) -> Rect {
 mod tests {
     use super::{
         SETTINGS_LIMITATION_HINT, model_overlay_lines, model_overlay_scroll,
-        model_overlay_title_text,
+        model_overlay_title_line, model_overlay_title_text,
     };
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
@@ -890,6 +899,27 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span, Text};
+    use ratatui::widgets::{Paragraph, Wrap};
+
+    fn rendered_model_option_height(
+        option: &crate::app::config::OverlayModelOption,
+        is_last: bool,
+        viewport_width: u16,
+    ) -> usize {
+        let mut lines = vec![model_overlay_title_line(option, " ", false, false)];
+        if let Some(description) = option.description.as_deref() {
+            lines.push(Line::from(Span::styled(
+                format!("  {description}"),
+                Style::default().fg(super::theme::DIM),
+            )));
+        }
+        if !is_last {
+            lines.push(Line::default());
+        }
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(viewport_width)
+    }
 
     #[test]
     fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
@@ -951,6 +981,53 @@ mod tests {
         }));
 
         assert_eq!(model_overlay_scroll(&app, 4, 10), 2);
+    }
+
+    #[test]
+    fn model_overlay_scroll_accounts_for_badge_padding_width() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            AvailableModel::new("sonnet", "Sonnet")
+                .description("Everyday tasks")
+                .supports_effort(true)
+                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
+                .supports_adaptive_thinking(Some(true))
+                .supports_fast_mode(Some(true))
+                .supports_auto_mode(Some(true)),
+            AvailableModel::new("haiku", "Haiku")
+                .description("Fastest")
+                .supports_effort(false)
+                .supports_fast_mode(Some(true)),
+        ];
+        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+            focus: OverlayFocus::Model,
+            selected_model: "haiku".to_owned(),
+            selected_effort: EffortLevel::Medium,
+        }));
+
+        let options = crate::app::config::model_overlay_options(&app);
+        let selected_index =
+            options.iter().position(|option| option.id == "haiku").expect("selected model index");
+        let selected_start = options
+            .iter()
+            .take(selected_index)
+            .enumerate()
+            .map(|(index, option)| {
+                rendered_model_option_height(option, index + 1 == options.len(), 18)
+            })
+            .sum::<usize>();
+        let selected_height = rendered_model_option_height(
+            &options[selected_index],
+            selected_index + 1 == options.len(),
+            18,
+        );
+        let expected_scroll = selected_start.saturating_add(selected_height).saturating_sub(4);
+
+        assert_eq!(
+            model_overlay_scroll(&app, 4, 18),
+            u16::try_from(expected_scroll).unwrap_or(u16::MAX)
+        );
+        assert!(expected_scroll > 0);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let body = area.inner(Margin { vertical: 1, horizontal: 1 });
-    let top_height = if search_enabled(app.plugins.active_tab) { 3 } else { 1 };
+    let top_height = top_region_height(app, body.width);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -78,6 +78,17 @@ fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(rendered.lines).scroll((rendered.scroll, 0)).wrap(Wrap { trim: false }),
         list_area,
     );
+}
+
+fn top_region_height(app: &App, width: u16) -> u16 {
+    if !search_enabled(app.plugins.active_tab) {
+        return 1;
+    }
+
+    let content_height = Paragraph::new(search_field_line(app))
+        .wrap(Wrap { trim: false })
+        .line_count(width.saturating_sub(2).max(1));
+    u16::try_from(content_height).unwrap_or(u16::MAX).max(1).saturating_add(2)
 }
 
 fn tab_header_line(app: &App) -> Line<'static> {
@@ -452,4 +463,30 @@ fn divider_line(viewport_width: u16, label: &str) -> Line<'static> {
         Span::styled(label_text, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled("─".repeat(right_width), Style::default().fg(theme::DIM)),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{search_field_line, top_region_height};
+    use crate::app::App;
+    use crate::app::plugins::PluginsViewTab;
+    use ratatui::widgets::{Paragraph, Wrap};
+
+    #[test]
+    fn top_region_height_grows_for_wrapped_search_query() {
+        let mut app = App::test_default();
+        app.plugins.active_tab = PluginsViewTab::Installed;
+        app.plugins.search_focused = true;
+        app.plugins.installed_search_query =
+            "search query that should wrap across multiple lines".to_owned();
+
+        let expected = Paragraph::new(search_field_line(&app))
+            .wrap(Wrap { trim: false })
+            .line_count(10)
+            .max(1)
+            .saturating_add(2);
+
+        assert_eq!(usize::from(top_region_height(&app, 12)), expected);
+        assert!(top_region_height(&app, 12) > 3);
+    }
 }
