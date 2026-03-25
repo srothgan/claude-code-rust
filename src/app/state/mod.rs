@@ -1900,21 +1900,22 @@ mod tests {
     #[test]
     fn viewport_on_frame_sets_width() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         assert_eq!(vp.width, 80);
+        assert_eq!(vp.height, 24);
     }
 
     #[test]
     fn viewport_on_frame_resize_invalidates() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 10);
         vp.set_message_height(1, 20);
         vp.rebuild_prefix_sums();
 
         // Resize: old heights are kept as approximations,
         // but width markers are invalidated so re-measurement happens.
-        vp.on_frame(120);
+        let _ = vp.on_frame(120, 24);
         assert_eq!(vp.message_height(0), 10); // kept, not zeroed
         assert_eq!(vp.message_height(1), 20); // kept, not zeroed
         assert_eq!(vp.message_heights_width, 0); // forces re-measure
@@ -1924,16 +1925,38 @@ mod tests {
     #[test]
     fn viewport_on_frame_same_width_no_invalidation() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 10);
-        vp.on_frame(80); // same width
+        let _ = vp.on_frame(80, 24); // same width
         assert_eq!(vp.message_height(0), 10); // not zeroed
+    }
+
+    #[test]
+    fn viewport_on_frame_height_change_preserves_message_measurements() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(2);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 20);
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        let change = vp.on_frame(80, 12);
+
+        assert!(!change.width_changed);
+        assert!(change.height_changed);
+        assert_eq!(vp.height, 12);
+        assert_eq!(vp.message_heights_width, 80);
+        assert_eq!(vp.prefix_sums_width, 80);
+        assert!(!vp.resize_remeasure_active());
+        assert!(vp.message_height_is_current(0));
+        assert!(vp.message_height_is_current(1));
     }
 
     #[test]
     fn viewport_message_height_set_and_get() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 5);
         vp.set_message_height(1, 10);
         assert_eq!(vp.message_height(0), 5);
@@ -1944,7 +1967,7 @@ mod tests {
     #[test]
     fn viewport_message_height_grows_vec() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(5, 42);
         assert_eq!(vp.message_heights.len(), 6);
         assert_eq!(vp.message_height(5), 42);
@@ -1965,7 +1988,7 @@ mod tests {
     #[test]
     fn viewport_mark_heights_valid_clears_dirty_index() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(2);
         vp.mark_heights_valid();
         vp.invalidate_message(1);
@@ -1977,14 +2000,14 @@ mod tests {
     #[test]
     fn viewport_resize_remeasure_tracks_partial_exactness() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(3);
         vp.set_message_height(0, 4);
         vp.set_message_height(1, 5);
         vp.set_message_height(2, 6);
         vp.mark_heights_valid();
 
-        vp.on_frame(120);
+        let _ = vp.on_frame(120, 24);
         assert!(vp.resize_remeasure_active());
         assert!(!vp.message_height_is_current(0));
 
@@ -2001,11 +2024,11 @@ mod tests {
     #[test]
     fn viewport_resize_remeasure_expands_outward_from_anchor() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(6);
         vp.mark_heights_valid();
 
-        vp.on_frame(100);
+        let _ = vp.on_frame(100, 24);
         vp.ensure_resize_remeasure_anchor(2, 3, 6);
 
         assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
@@ -2020,7 +2043,7 @@ mod tests {
     #[test]
     fn viewport_restore_resize_anchor_keeps_same_message_visible() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(4);
         for idx in 0..4 {
             vp.set_message_height(idx, 5);
@@ -2033,7 +2056,7 @@ mod tests {
         vp.scroll_target = 7;
         vp.scroll_pos = 7.0;
 
-        vp.on_frame(40);
+        let _ = vp.on_frame(40, 24);
         let (anchor_idx, anchor_offset) =
             vp.resize_scroll_anchor().expect("resize should snapshot a scroll anchor");
         assert_eq!((anchor_idx, anchor_offset), (1, 2));
@@ -2054,7 +2077,7 @@ mod tests {
     #[test]
     fn viewport_preserves_resize_anchor_when_followup_remeasure_replaces_plan() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(4);
         for idx in 0..4 {
             vp.set_message_height(idx, 5);
@@ -2067,7 +2090,7 @@ mod tests {
         vp.scroll_target = 7;
         vp.scroll_pos = 7.0;
 
-        vp.on_frame(40);
+        let _ = vp.on_frame(40, 24);
         let resize_anchor = vp.resize_scroll_anchor().expect("resize should preserve an anchor");
         assert_eq!(resize_anchor, (1, 2));
         assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
@@ -2083,7 +2106,7 @@ mod tests {
     #[test]
     fn viewport_global_remeasure_preserves_anchor_while_prefix_above_converges() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.sync_message_count(6);
         for idx in 0..6 {
             vp.set_message_height(idx, 5);
@@ -2123,7 +2146,7 @@ mod tests {
     #[test]
     fn viewport_prefix_sums_basic() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 5);
         vp.set_message_height(1, 10);
         vp.set_message_height(2, 3);
@@ -2137,7 +2160,7 @@ mod tests {
     #[test]
     fn viewport_prefix_sums_streaming_fast_path() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 5);
         vp.set_message_height(1, 10);
         vp.rebuild_prefix_sums();
@@ -2153,7 +2176,7 @@ mod tests {
     #[test]
     fn viewport_find_first_visible() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 10);
         vp.set_message_height(1, 10);
         vp.set_message_height(2, 10);
@@ -2168,7 +2191,7 @@ mod tests {
     #[test]
     fn viewport_find_first_visible_handles_offsets_before_first_boundary() {
         let mut vp = ChatViewport::new();
-        vp.on_frame(80);
+        let _ = vp.on_frame(80, 24);
         vp.set_message_height(0, 10);
         vp.set_message_height(1, 10);
         vp.rebuild_prefix_sums();
@@ -2182,14 +2205,20 @@ mod tests {
     fn viewport_scroll_up_down() {
         let mut vp = ChatViewport::new();
         vp.scroll_target = 20;
+        vp.scroll_pos = 20.0;
+        vp.scroll_offset = 20;
         vp.auto_scroll = true;
 
         vp.scroll_up(5);
         assert_eq!(vp.scroll_target, 15);
+        assert!((vp.scroll_pos - 15.0).abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 15);
         assert!(!vp.auto_scroll); // disabled on manual scroll
 
         vp.scroll_down(3);
         assert_eq!(vp.scroll_target, 18);
+        assert!((vp.scroll_pos - 18.0).abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 18);
         assert!(!vp.auto_scroll); // not re-engaged by scroll_down
     }
 
@@ -2197,8 +2226,12 @@ mod tests {
     fn viewport_scroll_up_saturates() {
         let mut vp = ChatViewport::new();
         vp.scroll_target = 2;
+        vp.scroll_pos = 2.0;
+        vp.scroll_offset = 2;
         vp.scroll_up(10);
         assert_eq!(vp.scroll_target, 0);
+        assert!(vp.scroll_pos.abs() < f32::EPSILON);
+        assert_eq!(vp.scroll_offset, 0);
     }
 
     #[test]
@@ -2324,7 +2357,7 @@ mod tests {
         app.messages.push(user_text_message("a"));
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
-        app.viewport.on_frame(80);
+        let _ = app.viewport.on_frame(80, 24);
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
@@ -2344,7 +2377,7 @@ mod tests {
         app.messages.push(user_text_message("a"));
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
-        app.viewport.on_frame(80);
+        let _ = app.viewport.on_frame(80, 24);
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
@@ -2364,7 +2397,7 @@ mod tests {
         app.messages.push(user_text_message("a"));
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
-        app.viewport.on_frame(80);
+        let _ = app.viewport.on_frame(80, 24);
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
@@ -2386,7 +2419,7 @@ mod tests {
         app.messages.push(user_text_message("a"));
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
-        app.viewport.on_frame(80);
+        let _ = app.viewport.on_frame(80, 24);
         app.viewport.set_message_height(0, 5);
         app.viewport.set_message_height(1, 10);
         app.viewport.set_message_height(2, 3);
@@ -2406,7 +2439,7 @@ mod tests {
         app.messages.push(user_text_message("a"));
         app.messages.push(user_text_message("b"));
         app.messages.push(user_text_message("c"));
-        app.viewport.on_frame(80);
+        let _ = app.viewport.on_frame(80, 24);
         app.viewport.sync_message_count(3);
         app.viewport.mark_heights_valid();
         app.viewport.rebuild_prefix_sums();

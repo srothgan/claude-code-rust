@@ -31,7 +31,7 @@ fn inactive_spinner() -> SpinnerState {
     SpinnerState {
         frame: 0,
         is_active: false,
-        is_last_message: false,
+        is_active_turn_assistant: false,
         is_thinking_mid_turn: false,
         is_subagent_thinking: false,
         is_compacting: false,
@@ -354,7 +354,7 @@ async fn full_pipeline_stream_split_measure_scroll() {
     }
 
     // Set viewport width.
-    app.viewport.on_frame(80);
+    let _ = app.viewport.on_frame(80, 24);
 
     // Measure height.
     let spinner = inactive_spinner();
@@ -386,7 +386,7 @@ async fn invalidation_from_streaming_preserves_fast_path() {
     assert_eq!(app.messages.len(), 1);
 
     // Set up viewport with valid heights and prefix sums.
-    app.viewport.on_frame(80);
+    let _ = app.viewport.on_frame(80, 24);
     app.viewport.set_message_height(0, 5);
     app.viewport.mark_heights_valid();
     app.viewport.rebuild_prefix_sums();
@@ -400,10 +400,14 @@ async fn invalidation_from_streaming_preserves_fast_path() {
     stream_text(&mut app, "Second message content.");
     assert_eq!(app.messages.len(), 3); // msg 0: assistant, msg 1: user, msg 2: assistant
 
-    // The streaming handler should dirty from the new assistant message (index 2),
-    // not the earlier messages.
+    // The new assistant message dirties itself, and the previous tail user message
+    // may also be dirtied because it stops being the last message and regains its
+    // trailing separator row. Earlier non-tail messages should remain untouched.
     if let Some(stale) = app.viewport.oldest_stale_index() {
-        assert!(stale >= 2, "oldest stale message should be >= 2 (new assistant msg), got {stale}");
+        assert!(
+            stale >= 1,
+            "oldest stale message should be >= 1 (previous tail or new assistant), got {stale}"
+        );
     }
     // The key invariant: msg 0's height cache is not dirtied by streaming msg 2.
 }
@@ -421,7 +425,7 @@ async fn resize_invalidates_all_heights() {
     assert_eq!(app.messages.len(), 3); // assistant, user, assistant
 
     // Set up viewport at width 80 with valid caches.
-    app.viewport.on_frame(80);
+    let _ = app.viewport.on_frame(80, 24);
     app.viewport.set_message_height(0, 5);
     app.viewport.set_message_height(1, 3);
     app.viewport.set_message_height(2, 10);
@@ -431,8 +435,8 @@ async fn resize_invalidates_all_heights() {
     assert_eq!(app.viewport.prefix_sums_width, 80);
 
     // Resize to 120.
-    let resized = app.viewport.on_frame(120);
-    assert!(resized, "should detect resize");
+    let resized = app.viewport.on_frame(120, 24);
+    assert!(resized.width_changed, "should detect resize");
     assert_eq!(
         app.viewport.message_heights_width, 0,
         "resize should invalidate message heights width"
@@ -458,7 +462,7 @@ async fn multi_turn_message_accumulation() {
     assert_eq!(app.messages.len(), 3); // assistant, user, assistant
 
     // Set viewport and measure all 3 messages.
-    app.viewport.on_frame(80);
+    let _ = app.viewport.on_frame(80, 24);
     let spinner = inactive_spinner();
     let (h0, _) = measure_message_height_cached(
         &mut app.messages[0],

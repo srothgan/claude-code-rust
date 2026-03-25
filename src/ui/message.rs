@@ -36,9 +36,8 @@ const FERRIS_SAYS: &[&str] = &[
 pub struct SpinnerState {
     pub frame: usize,
     pub is_active: bool,
-    /// True when this is the last message in the conversation.
-    /// Thinking spinners only render on the last assistant message.
-    pub is_last_message: bool,
+    /// True when this message owns the currently active assistant turn.
+    pub is_active_turn_assistant: bool,
     /// True when the agent is thinking mid-turn (all tool calls finished,
     /// waiting for next action). Shows a trailing spinner after existing blocks.
     pub is_thinking_mid_turn: bool,
@@ -47,6 +46,56 @@ pub struct SpinnerState {
     pub is_subagent_thinking: bool,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
+}
+
+struct AssistantLayout {
+    segments: Vec<AssistantLayoutSegment>,
+    height: usize,
+    wrapped_lines: usize,
+}
+
+impl AssistantLayout {
+    fn new() -> Self {
+        Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    fn push_blank(&mut self) {
+        self.segments.push(AssistantLayoutSegment::Blank);
+        self.height += 1;
+    }
+
+    fn push_lines(&mut self, lines: Vec<Line<'static>>, height: usize, wrapped_lines: usize) {
+        if height == 0 {
+            return;
+        }
+        self.segments.push(AssistantLayoutSegment::Lines { lines, height });
+        self.height += height;
+        self.wrapped_lines += wrapped_lines;
+    }
+
+    fn render_into(self, out: &mut Vec<Line<'static>>) {
+        for segment in self.segments {
+            segment.render_into(out);
+        }
+    }
+}
+
+enum AssistantLayoutSegment {
+    Blank,
+    Lines { lines: Vec<Line<'static>>, height: usize },
+}
+
+impl AssistantLayoutSegment {
+    fn render_into(self, out: &mut Vec<Line<'static>>) {
+        match self {
+            Self::Blank => out.push(Line::default()),
+            Self::Lines { lines, .. } => out.extend(lines),
+        }
+    }
 }
 
 fn assistant_role_label_line() -> Line<'static> {
@@ -114,9 +163,8 @@ fn render_message_internal(
             render_user_blocks(msg, width, out);
         }
         MessageRole::Assistant => {
-            if render_assistant_message(msg, spinner, width, tools_collapsed, out) {
-                return;
-            }
+            out.push(assistant_role_label_line());
+            build_assistant_layout(msg, spinner, width, tools_collapsed, None).render_into(out);
         }
         MessageRole::System(_) => {
             let severity = system_severity_from_role(&msg.role);
@@ -140,27 +188,25 @@ fn render_user_blocks(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'sta
     }
 }
 
-fn render_assistant_message(
+fn build_assistant_layout(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     tools_collapsed: bool,
-    out: &mut Vec<Line<'static>>,
-) -> bool {
-    out.push(assistant_role_label_line());
-    let show_compacting = spinner.is_compacting && spinner.is_last_message;
+    layout_generation: Option<u64>,
+) -> AssistantLayout {
+    let mut layout = AssistantLayout::new();
 
-    if msg.blocks.is_empty() && show_compacting {
-        out.push(compacting_line(spinner.frame));
-        out.push(Line::default());
-        return true;
+    if msg.blocks.is_empty() && spinner.is_compacting {
+        layout.push_lines(vec![compacting_line(spinner.frame)], 1, 0);
+        return layout;
     }
-    if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-        out.push(thinking_line(spinner.frame));
-        out.push(Line::default());
-        return true;
+    if msg.blocks.is_empty() && spinner.is_active {
+        layout.push_lines(vec![thinking_line(spinner.frame)], 1, 0);
+        return layout;
     }
 
+    let show_compacting = spinner.is_compacting && spinner.is_active_turn_assistant;
     let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
     let mut prev_was_tool = false;
     let mut has_visible_content = false;
@@ -168,7 +214,7 @@ fn render_assistant_message(
         match block {
             MessageBlock::Text(block) => {
                 if prev_was_tool {
-                    out.push(Line::default());
+                    layout.push_blank();
                 }
                 let rendered = assistant_text_block_render(block, width, !has_visible_content);
                 let trailing_gap = if !has_visible_content && rendered.height == 0 {
@@ -176,8 +222,10 @@ fn render_assistant_message(
                 } else {
                     block.trailing_blank_lines()
                 };
-                out.extend(rendered.lines);
-                emit_blank_lines(out, trailing_gap);
+                layout.push_lines(rendered.lines, rendered.height, rendered.height);
+                for _ in 0..trailing_gap {
+                    layout.push_blank();
+                }
                 if rendered.height > 0 {
                     has_visible_content = true;
                 }
@@ -188,16 +236,29 @@ fn render_assistant_message(
                 if tc.hidden {
                     continue;
                 }
-                if !prev_was_tool && out.len() > 1 {
-                    out.push(Line::default());
+                if !prev_was_tool && !layout.is_empty() {
+                    layout.push_blank();
                 }
+                let mut lines = Vec::new();
                 tool_call::render_tool_call_cached_with_tools_collapsed(
                     tc,
                     width,
                     spinner.frame,
                     tools_collapsed,
-                    out,
+                    &mut lines,
                 );
+                let (height, wrapped_lines) = if let Some(layout_generation) = layout_generation {
+                    tool_call::measure_tool_call_height_cached_with_tools_collapsed(
+                        tc,
+                        width,
+                        spinner.frame,
+                        layout_generation,
+                        tools_collapsed,
+                    )
+                } else {
+                    (rendered_lines_height(&lines, width), 0)
+                };
+                layout.push_lines(lines, height, wrapped_lines);
                 has_visible_content = true;
                 prev_was_tool = true;
             }
@@ -206,17 +267,23 @@ fn render_assistant_message(
     }
 
     if show_compacting {
-        out.push(Line::default());
-        out.push(compacting_line(spinner.frame));
+        if !layout.is_empty() {
+            layout.push_blank();
+        }
+        layout.push_lines(vec![compacting_line(spinner.frame)], 1, 0);
     } else if show_subagent_thinking {
-        out.push(Line::default());
-        out.push(subagent_thinking_line(spinner.frame));
+        if !layout.is_empty() {
+            layout.push_blank();
+        }
+        layout.push_lines(vec![subagent_thinking_line(spinner.frame)], 1, 0);
     }
     if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
-        out.push(Line::default());
-        out.push(thinking_line(spinner.frame));
+        if !layout.is_empty() {
+            layout.push_blank();
+        }
+        layout.push_lines(vec![thinking_line(spinner.frame)], 1, 0);
     }
-    false
+    layout
 }
 
 fn render_system_blocks(
@@ -299,15 +366,6 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
     let mut height = 1usize; // role label
     let mut wrapped_lines = 0usize;
 
-    if matches!(msg.role, MessageRole::Assistant)
-        && msg.blocks.is_empty()
-        && (spinner.is_active || spinner.is_compacting)
-        && spinner.is_last_message
-    {
-        // role label + indicator line + trailing separator
-        return (3, 0);
-    }
-
     match msg.role {
         MessageRole::User => {
             let (h, lines) = measure_text_blocks_height(msg, width, Some(theme::USER_MSG_BG), true);
@@ -324,15 +382,15 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
             }
         }
         MessageRole::Assistant => {
-            let (h, lines) = measure_assistant_blocks_height(
+            let layout = build_assistant_layout(
                 msg,
                 spinner,
                 width,
-                layout_generation,
                 tools_collapsed,
+                Some(layout_generation),
             );
-            height += h;
-            wrapped_lines += lines;
+            height += layout.height;
+            wrapped_lines += layout.wrapped_lines;
         }
         MessageRole::System(_) => {
             let (h, lines) = measure_text_blocks_height(msg, width, None, false);
@@ -360,79 +418,6 @@ fn measure_text_blocks_height(
             height += h + block.trailing_blank_lines();
             wrapped_lines += lines;
         }
-    }
-    (height, wrapped_lines)
-}
-
-fn measure_assistant_blocks_height(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
-) -> (usize, usize) {
-    let show_compacting = spinner.is_compacting && spinner.is_last_message;
-    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
-    let mut prev_was_tool = false;
-    let mut lines_after_label = 0usize;
-    let mut height = 0usize;
-    let mut wrapped_lines = 0usize;
-    let mut has_visible_content = false;
-
-    for block in &mut msg.blocks {
-        match block {
-            MessageBlock::Text(block) => {
-                if prev_was_tool {
-                    height += 1;
-                    lines_after_label += 1;
-                }
-                let rendered = assistant_text_block_render(block, width, !has_visible_content);
-                let trailing_gap = if !has_visible_content && rendered.height == 0 {
-                    0
-                } else {
-                    block.trailing_blank_lines()
-                };
-                let h = rendered.height;
-                let lines = rendered.lines.len();
-                height += h + trailing_gap;
-                lines_after_label += h + trailing_gap;
-                wrapped_lines += lines;
-                if h > 0 {
-                    has_visible_content = true;
-                }
-                prev_was_tool = false;
-            }
-            MessageBlock::ToolCall(tc) => {
-                let tc = tc.as_mut();
-                if tc.hidden {
-                    continue;
-                }
-                if !prev_was_tool && lines_after_label > 0 {
-                    height += 1;
-                    lines_after_label += 1;
-                }
-                let (h, lines) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
-                    tc,
-                    width,
-                    spinner.frame,
-                    layout_generation,
-                    tools_collapsed,
-                );
-                height += h;
-                lines_after_label += h;
-                wrapped_lines += lines;
-                has_visible_content = true;
-                prev_was_tool = true;
-            }
-            MessageBlock::Welcome(_) => {}
-        }
-    }
-
-    if show_compacting || show_subagent_thinking {
-        height += 2;
-    }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
-        height += 2;
     }
     (height, wrapped_lines)
 }
@@ -510,23 +495,19 @@ pub(crate) fn render_message_from_offset_internal(
             render_user_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
         }
         MessageRole::Assistant => {
-            render_assistant_from_offset(
+            let layout = build_assistant_layout(
                 msg,
                 spinner,
                 width,
-                layout_generation,
                 options.tools_collapsed,
+                Some(layout_generation),
+            );
+            render_assistant_layout_from_offset(
+                layout,
                 out,
                 &mut remaining_skip,
                 &mut can_consume_skip,
             );
-            if msg.blocks.is_empty()
-                && (spinner.is_active || spinner.is_compacting)
-                && spinner.is_last_message
-            {
-                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
-                return remaining_skip;
-            }
         }
         MessageRole::System(_) => {
             render_system_from_offset(msg, width, out, &mut remaining_skip, &mut can_consume_skip);
@@ -587,123 +568,24 @@ fn render_user_from_offset(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn render_assistant_from_offset(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
+fn render_assistant_layout_from_offset(
+    layout: AssistantLayout,
     out: &mut Vec<Line<'static>>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
-    let show_compacting = spinner.is_compacting && spinner.is_last_message;
-    if msg.blocks.is_empty() && show_compacting {
-        emit_line_with_skip(compacting_line(spinner.frame), out, remaining_skip, *can_consume_skip);
-        return;
-    }
-    if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-        emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
-        return;
-    }
-
-    let show_subagent_thinking = spinner.is_subagent_thinking && !show_compacting;
-    let mut prev_was_tool = false;
-    let mut lines_after_label = 0usize;
-    let mut has_visible_content = false;
-    for block in &mut msg.blocks {
-        match block {
-            MessageBlock::Text(block) => {
-                if prev_was_tool {
-                    emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
-                    lines_after_label += 1;
-                }
-                let rendered = assistant_text_block_render(block, width, !has_visible_content);
-                let trailing_gap = if !has_visible_content && rendered.height == 0 {
-                    0
-                } else {
-                    block.trailing_blank_lines()
-                };
-                let h = rendered.height;
-                let total_h = h + trailing_gap;
-                if h == 0 {
-                    emit_blank_lines_with_skip(
-                        trailing_gap,
-                        out,
-                        remaining_skip,
-                        *can_consume_skip,
-                    );
-                } else if *can_consume_skip && *remaining_skip >= total_h {
-                    *remaining_skip -= total_h;
-                } else if *can_consume_skip && *remaining_skip >= h {
-                    *remaining_skip -= h;
-                    emit_blank_lines_with_skip(trailing_gap, out, remaining_skip, true);
-                } else {
-                    if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                        out.extend(rendered.lines);
-                    }
-                    emit_blank_lines_with_skip(
-                        trailing_gap,
-                        out,
-                        remaining_skip,
-                        *can_consume_skip,
-                    );
-                }
-                lines_after_label += h + trailing_gap;
-                if h > 0 {
-                    has_visible_content = true;
-                }
-                prev_was_tool = false;
+    for segment in layout.segments {
+        match segment {
+            AssistantLayoutSegment::Blank => {
+                emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
             }
-            MessageBlock::ToolCall(tc) => {
-                let tc = tc.as_mut();
-                if tc.hidden {
+            AssistantLayoutSegment::Lines { lines, height, .. } => {
+                if should_skip_whole_block(height, remaining_skip, can_consume_skip) {
                     continue;
                 }
-                if !prev_was_tool && lines_after_label > 0 {
-                    emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
-                    lines_after_label += 1;
-                }
-                let (h, _) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
-                    tc,
-                    width,
-                    spinner.frame,
-                    layout_generation,
-                    tools_collapsed,
-                );
-                if !should_skip_whole_block(h, remaining_skip, can_consume_skip) {
-                    tool_call::render_tool_call_cached_with_tools_collapsed(
-                        tc,
-                        width,
-                        spinner.frame,
-                        tools_collapsed,
-                        out,
-                    );
-                }
-                lines_after_label += h;
-                has_visible_content = true;
-                prev_was_tool = true;
+                out.extend(lines);
             }
-            MessageBlock::Welcome(_) => {}
         }
-    }
-
-    if show_compacting {
-        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
-        emit_line_with_skip(compacting_line(spinner.frame), out, remaining_skip, *can_consume_skip);
-    } else if show_subagent_thinking {
-        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
-        emit_line_with_skip(
-            subagent_thinking_line(spinner.frame),
-            out,
-            remaining_skip,
-            *can_consume_skip,
-        );
-    }
-    if spinner.is_thinking_mid_turn && !show_subagent_thinking && !show_compacting {
-        emit_line_with_skip(Line::default(), out, remaining_skip, *can_consume_skip);
-        emit_line_with_skip(thinking_line(spinner.frame), out, remaining_skip, *can_consume_skip);
     }
 }
 
@@ -780,6 +662,13 @@ struct RenderedTextBlock {
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
+}
+
+fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
 }
 
 fn assistant_text_block_render(
@@ -1463,7 +1352,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1483,7 +1372,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1509,7 +1398,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1528,7 +1417,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1549,11 +1438,127 @@ mod tests {
     }
 
     #[test]
+    fn empty_last_assistant_thinking_omits_trailing_separator() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: true,
+            is_active_turn_assistant: true,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut lines = Vec::new();
+
+        render_message_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, false, false, &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Thinking..."));
+
+        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, 1, false, false,
+        );
+        assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn empty_last_assistant_compacting_omits_trailing_separator() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_active_turn_assistant: true,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: true,
+        };
+        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut lines = Vec::new();
+
+        render_message_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, false, false, &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Compacting context..."));
+
+        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
+            &mut msg, &spinner, 80, 1, false, false,
+        );
+        assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn empty_last_assistant_thinking_offset_render_omits_trailing_separator() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: true,
+            is_active_turn_assistant: true,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: false,
+        };
+        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut out = Vec::new();
+
+        let remaining = render_message_from_offset_internal(
+            &mut msg,
+            &spinner,
+            80,
+            1,
+            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            0,
+            &mut out,
+        );
+
+        assert_eq!(remaining, 0);
+        let rendered = render_lines_to_strings(&out);
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Thinking..."));
+    }
+
+    #[test]
+    fn empty_last_assistant_compacting_offset_render_omits_trailing_separator() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_active_turn_assistant: true,
+            is_thinking_mid_turn: false,
+            is_subagent_thinking: false,
+            is_compacting: true,
+        };
+        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut out = Vec::new();
+
+        let remaining = render_message_from_offset_internal(
+            &mut msg,
+            &spinner,
+            80,
+            1,
+            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            0,
+            &mut out,
+        );
+
+        assert_eq!(remaining, 0);
+        let rendered = render_lines_to_strings(&out);
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0], "Claude");
+        assert!(rendered[1].contains("Compacting context..."));
+    }
+
+    #[test]
     fn render_from_offset_handles_paragraph_gap_as_structural_rows() {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1578,7 +1583,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1603,7 +1608,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1624,7 +1629,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1642,7 +1647,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1664,7 +1669,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: true,
             is_compacting: false,
@@ -1692,7 +1697,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1713,7 +1718,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1732,7 +1737,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1754,7 +1759,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: false,
             is_compacting: false,
@@ -1790,7 +1795,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: false,
+            is_active_turn_assistant: false,
             is_thinking_mid_turn: false,
             is_subagent_thinking: true,
             is_compacting: false,
@@ -1832,7 +1837,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: true,
+            is_active_turn_assistant: true,
             is_thinking_mid_turn: true,
             is_subagent_thinking: false,
             is_compacting: true,
@@ -1852,7 +1857,7 @@ mod tests {
         let spinner = SpinnerState {
             frame: 0,
             is_active: false,
-            is_last_message: true,
+            is_active_turn_assistant: true,
             is_thinking_mid_turn: true,
             is_subagent_thinking: false,
             is_compacting: true,

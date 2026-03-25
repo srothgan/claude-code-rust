@@ -22,6 +22,21 @@ pub(super) struct HistoryDropCandidate {
 }
 
 impl super::App {
+    fn invalidate_tail_transition(
+        &mut self,
+        previous_tail_after_mutation: Option<usize>,
+        new_tail: Option<usize>,
+    ) {
+        if let Some(idx) = previous_tail_after_mutation {
+            self.viewport.invalidate_message(idx);
+        }
+        if let Some(idx) = new_tail
+            && Some(idx) != previous_tail_after_mutation
+        {
+            self.viewport.invalidate_message(idx);
+        }
+    }
+
     #[must_use]
     pub(super) fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
         if !matches!(msg.role, MessageRole::System(_)) {
@@ -208,31 +223,46 @@ impl super::App {
     }
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
+        let previous_tail = self.messages.len().checked_sub(1);
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.push(msg);
         self.message_retained_bytes.push(bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
+        self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
         let insert_idx = idx.min(self.messages.len());
+        let appended_at_tail = insert_idx == self.messages.len();
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.insert(insert_idx, msg);
         self.message_retained_bytes.insert(insert_idx, bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
+        if appended_at_tail {
+            let new_tail = self.messages.len().checked_sub(1);
+            self.invalidate_tail_transition(
+                new_tail.and_then(|tail| tail.checked_sub(1)),
+                new_tail,
+            );
+        }
     }
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
         self.ensure_history_retention_accounting();
-        if idx >= self.messages.len() {
+        let old_len = self.messages.len();
+        if idx >= old_len {
             return None;
         }
+        let removed_tail = idx + 1 == old_len;
         let removed = self.messages.remove(idx);
         let removed_bytes = self.message_retained_bytes.remove(idx);
         self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
         self.rebuild_render_cache_accounting();
+        if removed_tail {
+            self.invalidate_tail_transition(None, self.messages.len().checked_sub(1));
+        }
         Some(removed)
     }
 

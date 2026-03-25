@@ -182,10 +182,11 @@ pub(super) fn handle_turn_complete_event(app: &mut App) {
     app.files_accessed = 0;
     app.clear_tool_scope_tracking();
     app.refresh_git_branch();
+    let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
     if show_interrupted_hint {
         push_interrupted_hint(app);
     }
-    if turn_was_active || cancelled_requested {
+    if removed_tail_assistant.is_none() && (turn_was_active || cancelled_requested) {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
     if turn_was_active {
@@ -219,15 +220,18 @@ pub(super) fn handle_turn_error_event(
             error_preview = %summary,
             "Turn error suppressed after cancellation request"
         );
-        mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         app.pending_submit = None;
         app.status = AppStatus::Ready;
         app.files_accessed = 0;
         app.clear_tool_scope_tracking();
         app.refresh_git_branch();
+        let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
         if show_interrupted_hint {
             push_interrupted_hint(app);
+        }
+        if removed_tail_assistant.is_none() {
+            mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
         }
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
@@ -273,8 +277,9 @@ pub(super) fn handle_turn_error_event(
     } else {
         None
     };
+    let removed_tail_assistant = remove_empty_tail_assistant(app, tail_assistant_idx);
     push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
-    if turn_was_active {
+    if removed_tail_assistant.is_none() && turn_was_active {
         mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
     }
 }
@@ -287,6 +292,20 @@ fn push_interrupted_hint(app: &mut App) {
     });
     app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
+}
+
+fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
+    let idx = idx?;
+    let should_remove = app
+        .messages
+        .get(idx)
+        .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
+    if !should_remove {
+        return None;
+    }
+    app.remove_message_tracked(idx)?;
+    app.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
+    Some(idx)
 }
 
 fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
@@ -331,4 +350,64 @@ fn push_turn_error_message(
         (None, base_message)
     };
     super::push_system_message_with_severity(app, severity, &message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+
+    fn empty_assistant_message() -> ChatMessage {
+        ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None }
+    }
+
+    fn user_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn turn_complete_removes_empty_tail_assistant() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_message("hello"));
+        app.messages.push(empty_assistant_message());
+
+        handle_turn_complete_event(&mut app);
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+    }
+
+    #[test]
+    fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+        app.messages.push(user_message("hello"));
+        app.messages.push(empty_assistant_message());
+
+        handle_turn_error_event(&mut app, "cancelled", None);
+
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+    }
+
+    #[test]
+    fn turn_error_removes_empty_tail_assistant_before_error_message() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_message("hello"));
+        app.messages.push(empty_assistant_message());
+
+        handle_turn_error_event(&mut app, "boom", None);
+
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(app.messages[1].role, MessageRole::System(None)));
+    }
 }
