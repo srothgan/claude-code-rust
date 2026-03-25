@@ -3,7 +3,7 @@ use crate::app::TrustSelection;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::theme;
@@ -19,12 +19,35 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let body_intro = vec![
+        Line::from("Claude Rust will wait here until you choose whether to trust this workspace."),
+        Line::default(),
+        Line::from("Review the project before continuing if you are unsure."),
+    ];
+    let message = app
+        .trust
+        .last_error
+        .clone()
+        .unwrap_or_else(|| "Choose Yes to continue or No to close Claude Rust.".to_owned());
+    let title_height = wrapped_line_count(
+        Text::from(vec![Line::from(vec![Span::styled(
+            "Trust this project directory?",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        )])]),
+        inner.width,
+    );
+    let body_height = wrapped_line_count(Text::from(body_intro.clone()), inner.width);
+    let message_height = wrapped_line_count(
+        Text::from(vec![Line::from(Span::styled(message.clone(), Style::default()))]),
+        inner.width,
+    );
+    let actions_height = wrapped_line_count(Text::from(action_lines(app)), inner.width);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(title_height),
+            Constraint::Length(body_height),
+            Constraint::Length(message_height),
             Constraint::Min(3),
         ])
         .split(inner);
@@ -37,23 +60,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[0],
     );
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(
-                "Claude Rust will wait here until you choose whether to trust this workspace.",
-            ),
-            Line::default(),
-            Line::from("Review the project before continuing if you are unsure."),
-        ])
-        .wrap(Wrap { trim: false }),
-        chunks[1],
-    );
+    frame.render_widget(Paragraph::new(body_intro).wrap(Wrap { trim: false }), chunks[1]);
 
-    let message = app
-        .trust
-        .last_error
-        .clone()
-        .unwrap_or_else(|| "Choose Yes to continue or No to close Claude Rust.".to_owned());
     let message_style = if app.trust.last_error.is_some() {
         Style::default().fg(theme::STATUS_ERROR)
     } else {
@@ -64,7 +72,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
 
-    frame.render_widget(Paragraph::new(action_lines(app)).wrap(Wrap { trim: false }), chunks[3]);
+    let action_constraints = [Constraint::Length(actions_height), Constraint::Min(0)];
+    let action_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(action_constraints)
+        .split(chunks[3]);
+    frame.render_widget(
+        Paragraph::new(action_lines(app)).wrap(Wrap { trim: false }),
+        action_chunks[0],
+    );
+}
+
+fn wrapped_line_count(text: Text<'static>, width: u16) -> u16 {
+    u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width))
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 fn action_lines(app: &App) -> Vec<Line<'static>> {

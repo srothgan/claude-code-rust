@@ -22,6 +22,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("ui::todo_height"));
         todo::compute_height(app)
     };
+    help::sync_geometry_state(app, frame_area.width);
     let help_height = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::help_height"));
         help::compute_height(app, frame_area.width)

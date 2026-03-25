@@ -4,20 +4,15 @@
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
 use crate::app::{mention, slash, subagent};
+use crate::ui::input;
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthChar;
 
-/// Horizontal padding to match input inset.
-const INPUT_PAD: u16 = 2;
-/// Extra right-side breathing room -- keep in sync with `ui/input.rs`.
-const INPUT_RIGHT_PAD: u16 = 1;
-/// Prompt column width: prompt plus trailing space = 2 columns.
-const PROMPT_WIDTH: u16 = 2;
 /// Max dropdown width (characters).
 const MAX_WIDTH: u16 = 60;
 /// Min dropdown width so list entries stay readable.
@@ -76,7 +71,7 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         return;
     }
 
-    let text_area = compute_text_area(input_area, crate::ui::input::hint_line_count(app));
+    let text_area = input::compute_render_geometry(input_area, input::hint_line_count(app)).text;
     if text_area.width == 0 || text_area.height == 0 {
         return;
     }
@@ -368,26 +363,6 @@ fn push_highlighted_text(
     if !after.is_empty() {
         spans.push(Span::raw(after.to_owned()));
     }
-}
-
-fn compute_text_area(input_area: Rect, hint_lines: u16) -> Rect {
-    let input_main_area = if hint_lines > 0 {
-        let [_hint, main] = Layout::vertical([Constraint::Length(hint_lines), Constraint::Min(1)])
-            .areas(input_area);
-        main
-    } else {
-        input_area
-    };
-
-    let padded = Rect {
-        x: input_main_area.x.saturating_add(INPUT_PAD),
-        y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-        height: input_main_area.height,
-    };
-    let [_prompt_area, text_area] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
-    text_area
 }
 
 fn choose_dropdown_x(

@@ -40,19 +40,36 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             app.notifications.on_focus_lost();
             true
         }
-        Event::Resize(_, _) => {
-            // Force a full terminal clear on resize. Without this, terminal
-            // emulators (especially on Windows) corrupt their scrollback buffer
-            // when the alternate screen is resized, causing the visible area to
-            // shift even though ratatui paints the correct content. The clear
-            // resets the terminal's internal state.
-            app.force_redraw = true;
+        Event::Resize(width, height) => {
+            handle_resize(app, width, height);
             true
         }
         // Non-press key events (Release, Repeat) -- ignored.
         Event::Key(_) => false,
     };
     app.needs_redraw |= changed;
+}
+
+fn handle_resize(app: &mut App, width: u16, height: u16) {
+    // Force a full terminal clear on resize. Without this, terminal
+    // emulators (especially on Windows) corrupt their scrollback buffer
+    // when the alternate screen is resized, causing the visible area to
+    // shift even though ratatui paints the correct content. The clear
+    // resets the terminal's internal state.
+    app.force_redraw = true;
+
+    // Interaction-facing geometry is stale until the next frame computes the
+    // new layout. Invalidate it immediately so mouse/selection logic cannot
+    // keep using old hitboxes after a resize event.
+    app.cached_frame_area = ratatui::layout::Rect::new(0, 0, width, height);
+    app.rendered_chat_area = ratatui::layout::Rect::default();
+    app.rendered_input_area = ratatui::layout::Rect::default();
+    app.rendered_chat_lines.clear();
+    app.rendered_input_lines.clear();
+    app.selection = None;
+    app.scrollbar_drag = None;
+
+    crate::ui::help::sync_geometry_state(app, width);
 }
 
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {

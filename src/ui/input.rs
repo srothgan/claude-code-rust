@@ -43,6 +43,14 @@ const SPINNER_FRAMES: &[char] = &[
 const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
 
+#[derive(Clone, Copy)]
+pub(crate) struct InputRenderGeometry {
+    pub hint_pad: Option<Rect>,
+    pub padded: Rect,
+    pub prompt: Rect,
+    pub text: Rect,
+}
+
 /// Whether a login hint banner is active.
 fn has_login_hint(app: &App) -> bool {
     app.login_hint.is_some()
@@ -58,9 +66,7 @@ pub(crate) fn hint_line_count(app: &App) -> u16 {
     login + cancel
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let hint_lines = hint_line_count(app);
+pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
     let (hint_area, input_main_area) = if hint_lines > 0 {
         let [hint, main] =
             Layout::vertical([Constraint::Length(hint_lines), Constraint::Min(1)]).areas(area);
@@ -69,13 +75,31 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         (None, area)
     };
 
-    if let Some(hint_area) = hint_area {
-        let hint_pad = Rect {
-            x: hint_area.x.saturating_add(INPUT_PAD),
-            y: hint_area.y,
-            width: hint_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-            height: hint_area.height,
-        };
+    let hint_pad = hint_area.map(|hint| Rect {
+        x: hint.x.saturating_add(INPUT_PAD),
+        y: hint.y,
+        width: hint.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
+        height: hint.height,
+    });
+
+    let padded = Rect {
+        x: input_main_area.x.saturating_add(INPUT_PAD),
+        y: input_main_area.y,
+        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
+        height: input_main_area.height,
+    };
+    let [prompt, text] =
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
+
+    InputRenderGeometry { hint_pad, padded, prompt, text }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    let hint_lines = hint_line_count(app);
+    let geometry = compute_render_geometry(area, hint_lines);
+
+    if let Some(hint_pad) = geometry.hint_pad {
         let mut next_hint_row = hint_pad.y;
 
         if let Some(hint) = &app.login_hint {
@@ -121,13 +145,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    let padded = Rect {
-        x: input_main_area.x.saturating_add(INPUT_PAD),
-        y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-        height: input_main_area.height,
-    };
-
     // During Connecting state, show a spinner with static text
     if app.status == AppStatus::Connecting {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
@@ -135,7 +152,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
         ]);
-        frame.render_widget(Paragraph::new(line), padded);
+        frame.render_widget(Paragraph::new(line), geometry.padded);
         return;
     }
 
@@ -146,7 +163,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
         ]);
-        frame.render_widget(Paragraph::new(line), padded);
+        frame.render_widget(Paragraph::new(line), geometry.padded);
         return;
     }
 
@@ -161,37 +178,33 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(theme::DIM),
             )),
         ];
-        frame.render_widget(Paragraph::new(lines), padded);
+        frame.render_widget(Paragraph::new(lines), geometry.padded);
         return;
     }
-
-    // Split into prompt icon column (fixed) and input column (remaining)
-    let [prompt_area, input_area] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
     // Render prompt icon
     let prompt = Line::from(Span::styled(
         format!("{} ", theme::PROMPT_CHAR),
         Style::default().fg(theme::RUST_ORANGE),
     ));
-    frame.render_widget(Paragraph::new(prompt), prompt_area);
+    frame.render_widget(Paragraph::new(prompt), geometry.prompt);
 
-    if input_area.width == 0 {
+    if geometry.text.width == 0 {
         return;
     }
 
     configure_input_textarea(app);
-    app.rendered_input_area = input_area;
+    app.rendered_input_area = geometry.text;
     if app.selection.is_some() {
-        let rendered = render_lines_from_textarea(app.input.editor(), input_area);
+        let rendered = render_lines_from_textarea(app.input.editor(), geometry.text);
         app.rendered_input_lines = rendered;
     }
-    frame.render_widget(app.input.editor(), input_area);
+    frame.render_widget(app.input.editor(), geometry.text);
 
     if let Some(sel) = app.selection
         && sel.kind == crate::app::SelectionKind::Input
     {
-        frame.render_widget(SelectionOverlay { selection: sel }, input_area);
+        frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
     }
 }
 

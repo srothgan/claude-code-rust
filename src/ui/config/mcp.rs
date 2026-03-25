@@ -13,7 +13,7 @@ use crate::app::config::{available_mcp_actions, is_mcp_action_available};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -23,7 +23,8 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let summary = summary_lines(app);
-    let summary_height = u16::try_from(summary.len()).unwrap_or(u16::MAX).min(content_area.height);
+    let summary_height =
+        wrapped_height(Text::from(summary.clone()), content_area.width).min(content_area.height);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(summary_height), Constraint::Min(1)])
@@ -93,14 +94,10 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let action_height = u16::try_from(action_lines.len()).unwrap_or(u16::MAX);
+    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(action_height.saturating_add(1)),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
         .split(rendered.body_area);
 
     let body = server.map_or_else(server_missing_lines, server_detail_lines);
@@ -131,23 +128,35 @@ pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &A
             help: Some("Enter submit | Esc back"),
         },
     );
+    let header_lines = vec![
+        section_heading("Callback"),
+        Line::from(Span::styled(
+            "Paste the OAuth callback URL returned by the provider.",
+            Style::default().fg(theme::DIM),
+        )),
+        Line::default(),
+        detail_kv("Server", &overlay.server_name, Color::White),
+    ];
+    let footer_lines = vec![Line::from(Span::styled(
+        "The URL is sent to the SDK exactly as pasted.",
+        Style::default().fg(theme::DIM),
+    ))];
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Length(1), Constraint::Min(1)])
-        .split(rendered.body_area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            section_heading("Callback"),
-            Line::from(Span::styled(
-                "Paste the OAuth callback URL returned by the provider.",
-                Style::default().fg(theme::DIM),
+        .constraints([
+            Constraint::Length(wrapped_height(
+                Text::from(header_lines.clone()),
+                rendered.body_area.width,
             )),
-            Line::default(),
-            detail_kv("Server", &overlay.server_name, Color::White),
+            Constraint::Length(1),
+            Constraint::Length(wrapped_height(
+                Text::from(footer_lines.clone()),
+                rendered.body_area.width,
+            )),
+            Constraint::Min(0),
         ])
-        .wrap(Wrap { trim: false }),
-        sections[0],
-    );
+        .split(rendered.body_area);
+    frame.render_widget(Paragraph::new(header_lines).wrap(Wrap { trim: false }), sections[0]);
     render_text_input_field(
         frame,
         sections[1],
@@ -155,14 +164,7 @@ pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &A
         overlay.cursor,
         "https://callback.example/...",
     );
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(Span::styled(
-            "The URL is sent to the SDK exactly as pasted.",
-            Style::default().fg(theme::DIM),
-        ))])
-        .wrap(Wrap { trim: false }),
-        sections[2],
-    );
+    frame.render_widget(Paragraph::new(footer_lines).wrap(Wrap { trim: false }), sections[2]);
 }
 
 pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -188,7 +190,7 @@ pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &Ap
             help: Some("Up/Down select | Enter respond | Esc cancel"),
         },
     );
-    let action_height = u16::try_from(action_lines.len()).unwrap_or(u16::MAX);
+    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
@@ -224,7 +226,7 @@ pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &
             help: Some("Up/Down select | Enter run | Esc cancel"),
         },
     );
-    let action_height = u16::try_from(action_lines.len()).unwrap_or(u16::MAX);
+    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
@@ -550,6 +552,12 @@ fn section_heading(title: &str) -> Line<'static> {
 
 fn badge_span(label: &str, fg: Color, bg: Color) -> Span<'static> {
     Span::styled(format!(" {label} "), Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))
+}
+
+fn wrapped_height(text: Text<'static>, width: u16) -> u16 {
+    u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width))
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 fn list_title_style(selected: bool) -> Style {

@@ -708,7 +708,7 @@ impl App {
             pending_compact_clear: false,
             help_view: HelpView::Keys,
             help_dialog: dialog::DialogState::default(),
-            help_visible_count: 5,
+            help_visible_count: 0,
             pending_permission_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             pending_cancel_origin: None,
