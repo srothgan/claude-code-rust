@@ -485,6 +485,17 @@ impl App {
         self.tool_call_scopes.get(id).copied()
     }
 
+    #[must_use]
+    pub(crate) fn tracked_terminal_id_for_tool(tc: &ToolCallInfo) -> Option<String> {
+        (tc.is_execute_tool()
+            && matches!(
+                tc.status,
+                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+            ))
+        .then(|| tc.terminal_id.clone())
+        .flatten()
+    }
+
     pub fn mark_subagent_tool_started(&mut self, id: &str) {
         self.active_subagent_tool_ids.insert(id.to_owned());
         self.subagent_idle_since = None;
@@ -567,6 +578,12 @@ impl App {
     pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
         self.terminal_tool_calls.clear();
         self.terminal_tool_call_membership.clear();
+    }
+
+    pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
+        self.note_render_cache_structure_changed();
+        self.sync_render_cache_message(msg_idx);
+        self.recompute_message_retained_bytes(msg_idx);
     }
 
     /// Invalidate message layout caches at the given level.
@@ -2189,6 +2206,19 @@ mod tests {
     }
 
     #[test]
+    fn remove_message_tracked_prunes_tool_scope_entries() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.index_tool_call("tool-1".to_owned(), 0, 0);
+        app.register_tool_call_scope("tool-1".to_owned(), ToolCallScope::Subagent);
+
+        let removed = app.remove_message_tracked(0);
+
+        assert!(removed.is_some());
+        assert_eq!(app.tool_call_scope("tool-1"), None);
+    }
+
+    #[test]
     fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
         let mut app = make_test_app();
         app.messages.push(assistant_bash_tool_message(
@@ -2207,6 +2237,23 @@ mod tests {
         assert!(app.terminal_tool_calls.is_empty());
         assert!(app.terminal_tool_call_membership.is_empty());
         assert!(app.pending_interaction_ids.is_empty());
+    }
+
+    #[test]
+    fn rebuild_tool_indices_skips_completed_terminal_refs() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_bash_tool_message(
+            "bash-1",
+            model::ToolCallStatus::Completed,
+            "term-1",
+        ));
+        app.index_tool_call("bash-1".to_owned(), 0, 0);
+        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
+
+        app.rebuild_tool_indices_and_terminal_refs();
+
+        assert!(app.terminal_tool_calls.is_empty());
+        assert!(app.terminal_tool_call_membership.is_empty());
     }
 
     #[test]

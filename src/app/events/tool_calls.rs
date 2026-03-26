@@ -174,15 +174,9 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
-        let terminal_id = matches!(
-            tool_info.status,
-            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-        )
-        .then(|| tool_info.terminal_id.clone())
-        .flatten();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-        app.note_render_cache_structure_changed();
-        app.recompute_message_retained_bytes(msg_idx);
+        app.sync_after_message_blocks_changed(msg_idx);
         app.index_tool_call(tc_id, msg_idx, block_idx);
         sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         return;
@@ -193,27 +187,16 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
-            let terminal_id = matches!(
-                tool_info.status,
-                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-            )
-            .then(|| tool_info.terminal_id.clone())
-            .flatten();
+            let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.bind_active_turn_assistant(msg_idx);
-            app.note_render_cache_structure_changed();
-            app.recompute_message_retained_bytes(msg_idx);
+            app.sync_after_message_blocks_changed(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
             sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         }
     } else {
         let tc_id = tool_info.id.clone();
-        let terminal_id = matches!(
-            tool_info.status,
-            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-        )
-        .then(|| tool_info.terminal_id.clone())
-        .flatten();
+        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         let new_idx = app.messages.len();
         app.push_message_tracked(ChatMessage {
             role: MessageRole::Assistant,
@@ -263,14 +246,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         } else {
             crate::perf::mark("tool_update_noop_skips");
         }
-        terminal_tracking = Some(
-            matches!(
-                existing.status,
-                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-            )
-            .then(|| existing.terminal_id.clone())
-            .flatten(),
-        );
+        terminal_tracking = Some(App::tracked_terminal_id_for_tool(existing));
     }
     sync_tool_call_terminal_tracking(app, mi, bi, terminal_tracking.flatten());
     if layout_dirty {

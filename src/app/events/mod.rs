@@ -803,6 +803,33 @@ mod tests {
     }
 
     #[test]
+    fn late_tool_update_for_removed_tool_does_not_corrupt_active_subagent_set() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tool-stale",
+            model::ToolCallStatus::Completed,
+        )))]));
+        app.index_tool_call("tool-stale".into(), 0, 0);
+        app.register_tool_call_scope("tool-stale".into(), ToolCallScope::Subagent);
+
+        let removed = app.remove_message_tracked(0);
+        assert!(removed.is_some());
+        assert_eq!(app.tool_call_scope("tool-stale"), None);
+
+        let update = model::ToolCallUpdate::new(
+            "tool-stale",
+            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        assert!(app.active_subagent_tool_ids.is_empty());
+        assert!(app.active_task_ids.is_empty());
+    }
+
+    #[test]
     fn repeated_tool_call_updates_existing_execute_snapshot_state() {
         let mut app = make_test_app();
         app.terminals.borrow_mut().insert(
@@ -3045,6 +3072,38 @@ mod tests {
 
         assert!(app.show_todo_panel);
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+    }
+
+    #[test]
+    fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
+        let mut app = make_test_app();
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            false,
+        );
+        app.pending_interaction_ids.insert(0, "stale-id".into());
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        let response = response_rx.try_recv().expect("permission response");
+        assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]

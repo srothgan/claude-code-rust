@@ -12,12 +12,16 @@ use std::time::Instant;
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
-    let tool_scope = app.tool_call_scope(&id_str);
     log_tool_call_update_received(&id_str, tcu);
     maybe_log_internal_failed_tool_update(&id_str, tcu);
+    let Some((mi, bi)) = app.lookup_tool_call(&id_str) else {
+        tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
+        return;
+    };
+    let tool_scope = app.tool_call_scope(&id_str);
     apply_tool_scope_status_update(app, &id_str, tool_scope, tcu.fields.status);
 
-    let update_outcome = apply_tool_call_update_to_indexed_block(app, &id_str, tcu);
+    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
     if let Some(mi) = update_outcome.layout_dirty_idx {
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -99,14 +103,12 @@ struct ToolCallUpdateApplyOutcome {
 
 fn apply_tool_call_update_to_indexed_block(
     app: &mut App,
+    mi: usize,
+    bi: usize,
     id_str: &str,
     tcu: &model::ToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
     let mut out = ToolCallUpdateApplyOutcome { layout_dirty_idx: None, pending_todos: None };
-    let Some((mi, bi)) = app.lookup_tool_call(id_str) else {
-        tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
-        return out;
-    };
     let terminals = std::rc::Rc::clone(&app.terminals);
     let mut terminal_subscription: Option<String> = None;
     let mut detach_terminal = false;

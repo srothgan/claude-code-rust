@@ -20,9 +20,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         && let Some(owner) = app.messages.get_mut(owner_idx)
     {
         append_agent_stream_text(&mut owner.blocks, &text.text);
-        app.note_render_cache_structure_changed();
-        app.sync_render_cache_message(owner_idx);
-        app.recompute_message_retained_bytes(owner_idx);
+        app.sync_after_message_blocks_changed(owner_idx);
         return;
     }
 
@@ -32,9 +30,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         append_agent_stream_text(&mut last.blocks, &text.text);
         let last_idx = app.messages.len().saturating_sub(1);
         app.bind_active_turn_assistant(last_idx);
-        app.note_render_cache_structure_changed();
-        app.sync_render_cache_message(last_idx);
-        app.recompute_message_retained_bytes(last_idx);
+        app.sync_after_message_blocks_changed(last_idx);
         return;
     }
 

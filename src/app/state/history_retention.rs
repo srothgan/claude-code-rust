@@ -345,16 +345,19 @@ impl super::App {
     pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
         self.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
+        self.active_task_ids.clear();
+        self.active_subagent_tool_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
+        let previous_idle_since = self.subagent_idle_since;
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
                     self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
-                    if let Some(terminal_id) = tc.terminal_id.clone() {
+                    if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
                         let entry =
                             super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
                         if terminal_tool_call_membership.insert(entry.clone()) {
@@ -374,6 +377,35 @@ impl super::App {
         }
         self.terminal_tool_calls = terminal_tool_calls;
         self.terminal_tool_call_membership = terminal_tool_call_membership;
+        self.tool_call_scopes.retain(|id, _| self.tool_call_index.contains_key(id));
+        for msg in &self.messages {
+            for block in &msg.blocks {
+                let MessageBlock::ToolCall(tc) = block else {
+                    continue;
+                };
+                if !matches!(
+                    tc.status,
+                    model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                ) {
+                    continue;
+                }
+                match self.tool_call_scopes.get(&tc.id).copied() {
+                    Some(super::ToolCallScope::Task) => {
+                        self.active_task_ids.insert(tc.id.clone());
+                    }
+                    Some(super::ToolCallScope::Subagent) => {
+                        self.active_subagent_tool_ids.insert(tc.id.clone());
+                    }
+                    Some(super::ToolCallScope::MainAgent) | None => {}
+                }
+            }
+        }
+        self.subagent_idle_since =
+            if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
+                None
+            } else {
+                previous_idle_since
+            };
 
         let interaction_set: HashSet<&str> =
             pending_interaction_ids.iter().map(String::as_str).collect();
