@@ -775,7 +775,13 @@ fn model_overlay_title_text(
     option: &crate::app::config::OverlayModelOption,
     marker: &str,
 ) -> String {
-    model_overlay_title_line(option, marker, false, false).to_string()
+    let badges = model_capability_badges(option);
+    let mut title = format!("{marker} {}", option.display_name);
+    if !badges.is_empty() {
+        title.push_str("  ");
+        title.push_str(&badges.into_iter().map(|badge| badge.label).collect::<Vec<_>>().join("  "));
+    }
+    title
 }
 
 fn model_overlay_title_line(

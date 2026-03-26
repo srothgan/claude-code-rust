@@ -1324,7 +1324,17 @@ mod tests {
             false,
             false,
         );
-        let truth = ground_truth_height(&mut truth_msg, &spinner, 6);
+        let mut truth_lines = Vec::new();
+        render_message_with_tools_collapsed_and_separator(
+            &mut truth_msg,
+            &spinner,
+            6,
+            false,
+            false,
+            &mut truth_lines,
+        );
+        let truth =
+            Paragraph::new(Text::from(truth_lines)).wrap(Wrap { trim: false }).line_count(6);
 
         assert_eq!(h, truth);
         assert!(h > 2);

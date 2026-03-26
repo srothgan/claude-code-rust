@@ -36,7 +36,7 @@ pub use viewport::{
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -925,6 +925,41 @@ impl App {
 
     pub fn bump_session_scope_epoch(&mut self) {
         self.session_scope_epoch = self.session_scope_epoch.saturating_add(1);
+    }
+
+    pub fn clear_session_runtime_identity(&mut self) {
+        self.session_id = None;
+        "Connecting...".clone_into(&mut self.model_name);
+        self.mode = None;
+        self.fast_mode_state = model::FastModeState::Off;
+        self.welcome_model_resolved = false;
+        self.cached_header_line = None;
+        self.cached_footer_line = None;
+    }
+
+    pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
+        let lookup = crate::app::trust::store::read_status(
+            &self.config.committed_preferences_document,
+            Path::new(&self.cwd_raw),
+        );
+        self.trust.project_key = lookup.project_key;
+        self.trust.status = if lookup.trusted {
+            crate::app::trust::TrustStatus::Trusted
+        } else {
+            crate::app::trust::TrustStatus::Untrusted
+        };
+        self.trust.selection = crate::app::trust::TrustSelection::Yes;
+        self.trust.last_error = self
+            .config
+            .preferences_path
+            .is_none()
+            .then(|| "Trust preferences path is not available".to_owned());
+    }
+
+    pub fn reconcile_runtime_from_persisted_settings_change(&mut self) {
+        self.welcome_model_resolved = false;
+        self.reconcile_trust_state_from_preferences_and_cwd();
+        self.update_welcome_model_once();
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {

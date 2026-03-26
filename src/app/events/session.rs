@@ -44,6 +44,7 @@ pub(super) fn handle_connected_client_event(
     clear_pending_command(app);
     app.resuming_session_id = None;
     app.rebuild_chat_focus_from_state();
+    crate::app::config::refresh_runtime_tabs_for_session_change(app);
 }
 
 pub(super) fn handle_sessions_listed_event(
@@ -96,6 +97,7 @@ pub(super) fn handle_auth_required_event(
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
+    app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.last_rate_limit_update = None;
     app.cancelled_turn_pending_hint = false;
@@ -111,6 +113,7 @@ pub(super) fn handle_auth_required_event(
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.bump_session_scope_epoch();
+    app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
@@ -176,7 +179,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     // Clear the session and start a new one. The bridge now checks auth
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();
-    app.session_id = None;
+    app.clear_session_runtime_identity();
     app.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -225,6 +228,7 @@ pub(super) fn handle_session_replaced_event(
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
+    crate::app::config::refresh_runtime_tabs_for_session_change(app);
 }
 
 pub(super) fn handle_update_available_event(
@@ -306,4 +310,5 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cached_footer_line = None;
     app.refresh_git_branch();
     sync_welcome_cwd(app);
+    app.reconcile_trust_state_from_preferences_and_cwd();
 }

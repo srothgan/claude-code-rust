@@ -1385,6 +1385,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);
+    app.reconcile_runtime_from_persisted_settings_change();
     Ok(())
 }
 
@@ -1396,9 +1397,23 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);
+    app.reconcile_runtime_from_persisted_settings_change();
     view::set_active_view(app, ActiveView::Config);
     request_active_tab_side_effects(app);
     Ok(())
+}
+
+pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
+    if app.active_view != ActiveView::Config {
+        return;
+    }
+    request_status_snapshot_if_needed(app);
+    if app.config.active_tab == ConfigTab::Usage {
+        crate::app::usage::request_refresh_if_needed(app);
+    }
+    if app.config.active_tab == ConfigTab::Plugins {
+        crate::app::plugins::request_inventory_refresh_if_needed(app);
+    }
 }
 
 pub fn close(app: &mut App) {

@@ -1293,6 +1293,33 @@ mod tests {
     }
 
     #[test]
+    fn connected_reconciles_trust_for_new_cwd() {
+        let mut app = make_test_app();
+        app.trust.status = crate::app::trust::TrustStatus::Trusted;
+        app.config.committed_preferences_document = serde_json::json!({
+            "projects": {}
+        });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("session-trust"),
+                cwd: "/untrusted".into(),
+                model_name: "claude-updated".into(),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: Vec::new(),
+            },
+        );
+
+        assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
+        assert_eq!(
+            app.trust.project_key,
+            crate::app::trust::store::normalize_project_key(std::path::Path::new("/untrusted"))
+        );
+    }
+
+    #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
         app.welcome_model_resolved = false;
@@ -1308,6 +1335,44 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "claude-updated");
+        assert!(app.welcome_model_resolved);
+    }
+
+    #[test]
+    fn persisted_model_change_reopens_welcome_model_reconciliation() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.model_name = "default".into();
+        app.messages = vec![ChatMessage::welcome("default", "/test")];
+        crate::app::config::store::set_model(
+            &mut app.config.committed_settings_document,
+            Some("default"),
+        );
+
+        app.update_welcome_model_once();
+        assert!(app.welcome_model_resolved);
+
+        crate::app::config::store::set_model(
+            &mut app.config.committed_settings_document,
+            Some("haiku"),
+        );
+        app.reconcile_runtime_from_persisted_settings_change();
+        assert!(!app.welcome_model_resolved);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
+                model::ConfigOptionUpdate {
+                    option_id: "model".into(),
+                    value: serde_json::Value::String("claude-opus-4-6".into()),
+                },
+            )),
+        );
+
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "claude-opus-4-6");
         assert!(app.welcome_model_resolved);
     }
 
@@ -1586,6 +1651,45 @@ mod tests {
         );
         assert!(app.mcp.in_flight);
         assert!(app.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn connected_requests_status_snapshot_when_status_tab_is_open() {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        app.active_view = ActiveView::Config;
+        app.config.active_tab = crate::app::config::ConfigTab::Status;
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        let status = rx.try_recv().expect("status snapshot command");
+        assert_eq!(
+            status.command,
+            crate::agent::wire::BridgeCommand::GetStatusSnapshot {
+                session_id: "test-session".to_owned(),
+            }
+        );
+        let mcp = rx.try_recv().expect("mcp snapshot command");
+        assert_eq!(
+            mcp.command,
+            crate::agent::wire::BridgeCommand::GetMcpSnapshot {
+                session_id: "test-session".to_owned(),
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn connected_requests_usage_refresh_when_usage_tab_is_open() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = make_test_app();
+                app.active_view = ActiveView::Config;
+                app.config.active_tab = crate::app::ConfigTab::Usage;
+
+                handle_client_event(&mut app, connected_event("claude-updated"));
+
+                assert!(app.usage.in_flight);
+            })
+            .await;
     }
 
     #[test]
@@ -2286,6 +2390,16 @@ mod tests {
     fn auth_required_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
+        app.session_id = Some(model::SessionId::new("session-auth"));
+        app.model_name = "claude-old".into();
+        app.mode = Some(crate::app::ModeState {
+            current_mode_id: "plan".into(),
+            current_mode_name: "Plan".into(),
+            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
+        });
+        app.fast_mode_state = model::FastModeState::On;
+        app.cached_header_line = Some(ratatui::text::Line::from("cached header"));
+        app.cached_footer_line = Some(ratatui::text::Line::from("cached footer"));
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "task-1",
             model::ToolCallStatus::InProgress,
@@ -2312,6 +2426,36 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
+        assert!(app.session_id.is_none());
+        assert_eq!(app.model_name, "Connecting...");
+        assert!(app.mode.is_none());
+        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+        assert!(app.cached_header_line.is_none());
+        assert!(app.cached_footer_line.is_none());
+    }
+
+    #[test]
+    fn logout_completed_clears_session_runtime_identity_caches() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("session-x"));
+        app.model_name = "claude-old".into();
+        app.mode = Some(crate::app::ModeState {
+            current_mode_id: "plan".into(),
+            current_mode_name: "Plan".into(),
+            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
+        });
+        app.fast_mode_state = model::FastModeState::On;
+        app.cached_header_line = Some(ratatui::text::Line::from("cached header"));
+        app.cached_footer_line = Some(ratatui::text::Line::from("cached footer"));
+
+        handle_client_event(&mut app, ClientEvent::LogoutCompleted);
+
+        assert!(app.session_id.is_none());
+        assert_eq!(app.model_name, "Connecting...");
+        assert!(app.mode.is_none());
+        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+        assert!(app.cached_header_line.is_none());
+        assert!(app.cached_footer_line.is_none());
     }
 
     #[test]

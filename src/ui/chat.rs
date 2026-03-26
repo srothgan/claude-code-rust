@@ -1129,7 +1129,7 @@ mod tests {
         assert!(app.viewport.resize_remeasure_active());
         assert!(app.viewport.message_height_is_current(15));
         assert!(app.viewport.message_height_is_current(16));
-        assert!(!app.viewport.message_height_is_current(0));
+        assert!(!app.viewport.message_height_is_current(31));
     }
 
     #[allow(clippy::cast_precision_loss)]

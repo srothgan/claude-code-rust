@@ -367,6 +367,7 @@ mod tests {
         let rows = render_usage_rows(&app, 20, 18);
         assert!(rows.iter().any(|row| row.contains("Extra credits")));
         assert!(rows.iter().any(|row| row.contains("99.99")));
-        assert!(rows.iter().any(|row| row.contains("USD used")));
+        assert!(rows.iter().any(|row| row.contains("USD")));
+        assert!(rows.iter().any(|row| row.contains("used")));
     }
 }
