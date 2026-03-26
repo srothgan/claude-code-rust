@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-03-26 [Changes][v0.9.0]
+
+### Features
+
+- **Two-line footer replaces header** (#102): Remove the header and consolidate location, branch, mode badges, permission counts, and MCP auth hints into a two-row adaptive footer
+
+### Fixes
+
+- **Unified viewport geometry handling** (#101): Single geometry entry point with separate width/height semantics and tail invalidation on topology changes
+- **Centralized geometry state and wrapped panel measurement** (#101): Immediate resize geometry refresh and wrapped-text measurement replacing fixed-height panel assumptions
+- **Topology invalidation and batch message dirtiness** (#101): Tracked insert/remove/clear paths own tool index and terminal ref repair
+- **Active turn ownership across history pruning** (#101): Keep active assistant turn out of retention drop candidates and remap ownership after pruning
+- **Scroll anchor preservation** (#101): Delay anchor restore until heights are exact and preserve anchors across pruning and marker operations
+- **Unified message layout model** (#101): Shared `MessageLayout` replaces split role-specific render/measure branches
+- **Turn cleanup normalization** (#101): Single cleanup boundary for resume, cancel, auth-required, connection-failure, and fatal exits
+- **Chat focus ownership** (#101): Rebuild focus from surviving state on transitions and render selected prompt choices in rust orange
+- **Streaming invalidation and selection snapshots** (#101): Refresh selection snapshots on redraw and protect active streaming assistant in cache budgeting
+- **Session state reset at authority boundaries** (#101): Scope async responses to the active session epoch and discard stale results
+- **Persisted authority reconciliation** (#101): Rederive trust state from current cwd on reconnect and clear stale session identity on failure boundaries
+- **Tool index rebuilds and multi-index sync** (#101): Gate scope updates on successful lookup and normalize interaction queues to prevent stale prompt drops
+- **Display-width-aware copy** (#101): Slice copied text by display columns so emoji, CJK, and combining marks match visual selection
+- **Esc cancel and queued submit lifecycle** (#101): Clear deferred submit on Esc and let manual cancel override auto-resubmit
+
+### Performance
+
+- **Offscreen row skip and wrapped-height culling** (#101): Render from the first visible message's structural offset and use exact wrapped row coverage for culling
+
 ## [0.8.4] - 2026-03-23 [Changes][v0.8.4]
 
 ### Fixes
@@ -395,6 +422,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.9.0]: https://github.com/srothgan/claude-code-rust/compare/v0.8.4...v0.9.0
 [v0.8.4]: https://github.com/srothgan/claude-code-rust/compare/v0.8.3...v0.8.4
 [v0.8.3]: https://github.com/srothgan/claude-code-rust/compare/v0.8.2...v0.8.3
 [v0.8.2]: https://github.com/srothgan/claude-code-rust/compare/v0.8.1...v0.8.2
