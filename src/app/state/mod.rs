@@ -100,6 +100,8 @@ pub struct App {
     pub session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
     pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
+    /// Monotonic session authority epoch used to ignore stale async view data.
+    pub session_scope_epoch: u64,
     pub model_name: String,
     /// True once the welcome banner has captured its one-time session model label.
     pub welcome_model_resolved: bool,
@@ -773,6 +775,7 @@ impl App {
             exit_error: None,
             session_id: None,
             conn: None,
+            session_scope_epoch: 0,
             model_name: "test-model".into(),
             welcome_model_resolved: true,
             cwd: "/test".into(),
@@ -918,6 +921,10 @@ impl App {
 
     pub fn clear_active_turn_assistant(&mut self) {
         self.active_turn_assistant_message_idx = None;
+    }
+
+    pub fn bump_session_scope_epoch(&mut self) {
+        self.session_scope_epoch = self.session_scope_epoch.saturating_add(1);
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {

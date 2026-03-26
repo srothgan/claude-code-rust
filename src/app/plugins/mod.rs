@@ -294,19 +294,24 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     app.plugins.status_message = Some("Refreshing plugin inventory...".to_owned());
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
+    let cwd_context = app.cwd_raw.clone();
     let cwd_raw = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
             Ok((snapshot, claude_path)) => {
                 let _ = event_tx.send(crate::agent::events::ClientEvent::PluginsInventoryUpdated {
+                    cwd_raw: cwd_context,
                     snapshot,
                     claude_path,
                 });
             }
             Err(message) => {
                 let _ = event_tx.send(
-                    crate::agent::events::ClientEvent::PluginsInventoryRefreshFailed(message),
+                    crate::agent::events::ClientEvent::PluginsInventoryRefreshFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    },
                 );
             }
         }
@@ -333,6 +338,18 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     app.plugins.loading = false;
     app.plugins.status_message = None;
     app.plugins.last_error = Some(message);
+}
+
+pub(crate) fn reset_for_session_change(app: &mut App) {
+    app.plugins.loading = false;
+    app.plugins.status_message = None;
+    app.plugins.last_error = None;
+    app.plugins.last_inventory_refresh_at = None;
+    app.plugins.installed.clear();
+    app.plugins.marketplace.clear();
+    app.plugins.marketplaces.clear();
+    app.plugins.claude_path = None;
+    clamp_selection(app);
 }
 
 pub(crate) fn clamp_selection(app: &mut App) {
@@ -634,6 +651,7 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
+    let cwd_context = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
@@ -641,11 +659,13 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
                 let message =
                     installed_action_success_message(action, &overlay.title, &overlay.scope);
                 let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    cwd_raw: cwd_context,
                     result: PluginsCliActionSuccess { snapshot, message, claude_path },
                 });
             }
             Err(message) => {
-                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
             }
         }
     });
@@ -692,17 +712,20 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
+    let cwd_context = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message = plugin_install_success_message(action, &overlay.title);
                 let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    cwd_raw: cwd_context,
                     result: PluginsCliActionSuccess { snapshot, message, claude_path },
                 });
             }
             Err(message) => {
-                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
             }
         }
     });
@@ -734,17 +757,20 @@ fn execute_selected_marketplace_action(app: &mut App) {
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
+    let cwd_context = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message = marketplace_action_success_message(&overlay.title, action);
                 let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    cwd_raw: cwd_context,
                     result: PluginsCliActionSuccess { snapshot, message, claude_path },
                 });
             }
             Err(message) => {
-                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
             }
         }
     });
@@ -784,11 +810,13 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
+    let cwd_context = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
+                    cwd_raw: cwd_context,
                     result: PluginsCliActionSuccess {
                         snapshot,
                         message: format!("Added marketplace {source}"),
@@ -797,7 +825,8 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
                 });
             }
             Err(message) => {
-                let _ = event_tx.send(ClientEvent::PluginsCliActionFailed(message));
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
             }
         }
     });

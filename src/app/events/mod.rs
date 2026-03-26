@@ -321,7 +321,7 @@ mod tests {
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
         SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem, TodoStatus,
-        ToolCallInfo, ToolCallScope, mention,
+        ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
@@ -1312,6 +1312,58 @@ mod tests {
     }
 
     #[test]
+    fn connected_resets_session_scoped_view_data() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("hello"));
+        app.status = AppStatus::Running;
+        app.files_accessed = 9;
+        app.usage.snapshot = Some(UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::now(),
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        });
+        app.account_info = Some(crate::agent::types::AccountInfo {
+            email: Some("old@example.com".into()),
+            organization: None,
+            subscription_type: None,
+            token_source: None,
+            api_key_source: None,
+        });
+        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
+            id: "old-plugin".into(),
+            version: None,
+            scope: "user".into(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            capability: crate::app::plugins::PluginCapability::Skill,
+        });
+        app.plugins.last_inventory_refresh_at = Some(Instant::now());
+        app.config.pending_session_title_change =
+            Some(crate::app::config::PendingSessionTitleChangeState {
+                session_id: "old-session".into(),
+                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+            });
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert_eq!(app.files_accessed, 0);
+        assert!(app.usage.snapshot.is_none());
+        assert!(app.account_info.is_none());
+        assert!(app.plugins.installed.is_empty());
+        assert!(app.plugins.last_inventory_refresh_at.is_none());
+        assert!(app.config.pending_session_title_change.is_none());
+    }
+
+    #[test]
     fn model_config_update_resolves_welcome_once_after_provisional_default() {
         let mut app = make_test_app();
         app.model_name = "default".into();
@@ -1534,6 +1586,117 @@ mod tests {
         );
         assert!(app.mcp.in_flight);
         assert!(app.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn stale_status_snapshot_for_old_session_is_ignored() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "old-session".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: Some("old@example.com".into()),
+                    organization: None,
+                    subscription_type: None,
+                    token_source: None,
+                    api_key_source: None,
+                },
+            },
+        );
+
+        assert!(app.account_info.is_none());
+    }
+
+    #[test]
+    fn stale_mcp_snapshot_for_old_session_is_ignored() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+            name: "current".into(),
+            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: Vec::new(),
+        });
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "old-session".into(),
+                servers: vec![crate::agent::types::McpServerStatus {
+                    name: "stale".into(),
+                    status: crate::agent::types::McpServerConnectionStatus::Connected,
+                    server_info: None,
+                    error: None,
+                    config: None,
+                    scope: None,
+                    tools: Vec::new(),
+                }],
+                error: None,
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "current");
+    }
+
+    #[test]
+    fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
+        let mut app = make_test_app();
+        app.session_scope_epoch = 5;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::UsageSnapshotReceived {
+                epoch: 4,
+                snapshot: UsageSnapshot {
+                    source: UsageSourceKind::Oauth,
+                    fetched_at: std::time::SystemTime::now(),
+                    five_hour: None,
+                    seven_day: None,
+                    seven_day_opus: None,
+                    seven_day_sonnet: None,
+                    extra_usage: None,
+                },
+            },
+        );
+
+        assert!(app.usage.snapshot.is_none());
+    }
+
+    #[test]
+    fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
+        let mut app = make_test_app();
+        app.cwd_raw = "/current".into();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::PluginsInventoryUpdated {
+                cwd_raw: "/old".into(),
+                snapshot: crate::app::plugins::PluginsInventorySnapshot {
+                    installed: vec![crate::app::plugins::InstalledPluginEntry {
+                        id: "stale-plugin".into(),
+                        version: None,
+                        scope: "user".into(),
+                        enabled: true,
+                        installed_at: None,
+                        last_updated: None,
+                        project_path: None,
+                        capability: crate::app::plugins::PluginCapability::Skill,
+                    }],
+                    marketplace: Vec::new(),
+                    marketplaces: Vec::new(),
+                },
+                claude_path: std::path::PathBuf::from("claude"),
+            },
+        );
+
+        assert!(app.plugins.installed.is_empty());
     }
 
     #[test]

@@ -1408,6 +1408,7 @@ pub fn close(app: &mut App) {
 pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
     app.config.active_tab = tab;
     app.config.status_message = None;
+    app.config.last_error = None;
     request_active_tab_side_effects(app);
 }
 

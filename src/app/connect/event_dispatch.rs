@@ -151,11 +151,11 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
-        crate::agent::wire::BridgeEvent::StatusSnapshot { account, .. } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { account });
+        crate::agent::wire::BridgeEvent::StatusSnapshot { session_id, account } => {
+            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
         }
-        crate::agent::wire::BridgeEvent::McpSnapshot { servers, error, .. } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { servers, error });
+        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
+            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
         }
     }
 }

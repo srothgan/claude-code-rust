@@ -81,6 +81,18 @@ fn open_does_not_force_stop_active_turn() {
 }
 
 #[test]
+fn activate_tab_clears_status_and_error_feedback() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.status_message = Some("saved".into());
+    app.config.last_error = Some("failed".into());
+
+    activate_tab(&mut app, ConfigTab::Plugins);
+
+    assert!(app.config.status_message.is_none());
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
 fn reopen_reload_picks_up_external_settings_changes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(".claude").join("settings.json");

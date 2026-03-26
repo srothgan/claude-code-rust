@@ -92,11 +92,21 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
         }
-        ClientEvent::StatusSnapshotReceived { account } => {
+        ClientEvent::StatusSnapshotReceived { session_id, account } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
             app.account_info = Some(account);
             app.needs_redraw = true;
         }
-        ClientEvent::McpSnapshotReceived { servers, error } => {
+        ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
             tracing::debug!(
                 "received MCP snapshot: servers={} error_present={}",
                 servers.len(),
@@ -129,25 +139,46 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 }
             }
         }
-        ClientEvent::UsageRefreshStarted => {
+        ClientEvent::UsageRefreshStarted { epoch } => {
+            if app.session_scope_epoch != epoch {
+                return;
+            }
             crate::app::usage::apply_refresh_started(app);
         }
-        ClientEvent::UsageSnapshotReceived { snapshot } => {
+        ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
+            if app.session_scope_epoch != epoch {
+                return;
+            }
             crate::app::usage::apply_refresh_success(app, snapshot);
         }
-        ClientEvent::UsageRefreshFailed { message, source } => {
+        ClientEvent::UsageRefreshFailed { epoch, message, source } => {
+            if app.session_scope_epoch != epoch {
+                return;
+            }
             crate::app::usage::apply_refresh_failure(app, message, source);
         }
-        ClientEvent::PluginsInventoryUpdated { snapshot, claude_path } => {
+        ClientEvent::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
             crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
         }
-        ClientEvent::PluginsInventoryRefreshFailed(message) => {
+        ClientEvent::PluginsInventoryRefreshFailed { cwd_raw, message } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
             crate::app::plugins::apply_inventory_refresh_failure(app, message);
         }
-        ClientEvent::PluginsCliActionSucceeded { result } => {
+        ClientEvent::PluginsCliActionSucceeded { cwd_raw, result } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
             crate::app::plugins::apply_cli_action_success(app, result);
         }
-        ClientEvent::PluginsCliActionFailed(message) => {
+        ClientEvent::PluginsCliActionFailed { cwd_raw, message } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
             crate::app::plugins::apply_cli_action_failure(app, message);
         }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),

@@ -100,6 +100,7 @@ pub fn create_app(cli: &Cli) -> App {
         exit_error: None,
         session_id: None,
         conn: None,
+        session_scope_epoch: 0,
         model_name: initial_model_name,
         welcome_model_resolved: false,
         cwd_raw: cwd.to_string_lossy().to_string(),

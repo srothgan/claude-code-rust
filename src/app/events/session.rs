@@ -32,25 +32,10 @@ pub(super) fn handle_connected_client_event(
         app.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
-    app.session_id = Some(session_id);
-    app.model_name = model_name;
+    reset_for_new_session(app, session_id, model_name, mode);
     app.available_models = available_models;
-    app.mode = mode;
-    app.config_options.clear();
-    app.config_options
-        .insert("model".to_owned(), serde_json::Value::String(app.model_name.clone()));
-    app.login_hint = None;
-    super::clear_compaction_state(app, false);
-    app.session_usage = super::super::SessionUsageState::default();
-    app.fast_mode_state = model::FastModeState::Off;
-    app.last_rate_limit_update = None;
-    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
     app.cached_header_line = None;
     app.cached_footer_line = None;
-    app.clear_active_turn_assistant();
     app.update_welcome_model_once();
     app.sync_welcome_recent_sessions();
     if !history_updates.is_empty() {
@@ -110,21 +95,31 @@ pub(super) fn handle_auth_required_event(
     clear_pending_command(app);
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
+    app.bump_session_scope_epoch();
     super::clear_compaction_state(app, false);
     app.last_rate_limit_update = None;
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
+    app.account_info = None;
+    app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
+    crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
+    app.bump_session_scope_epoch();
     super::clear_compaction_state(app, false);
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
     app.last_rate_limit_update = None;
+    app.account_info = None;
+    app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
+    crate::app::usage::reset_for_session_change(app);
     app.resuming_session_id = None;
     app.pending_command_label = None;
     app.pending_command_ack = None;
@@ -180,7 +175,12 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     tracing::info!("Logout completed via /logout");
     // Clear the session and start a new one. The bridge now checks auth
     // during initialization and will fire AuthRequired immediately.
+    app.bump_session_scope_epoch();
     app.session_id = None;
+    app.account_info = None;
+    app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
+    crate::app::usage::reset_for_session_change(app);
     app.force_redraw = true;
 
     if let Some(ref conn) = app.conn {

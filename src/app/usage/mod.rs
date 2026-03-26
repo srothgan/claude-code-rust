@@ -30,17 +30,19 @@ pub(crate) fn request_refresh(app: &mut App) {
     apply_refresh_started(app);
 
     let event_tx = app.event_tx.clone();
+    let epoch = app.session_scope_epoch;
     let source_mode = app.usage.active_source;
     let cwd_raw = app.cwd_raw.clone();
 
     tokio::task::spawn_local(async move {
-        let _ = event_tx.send(ClientEvent::UsageRefreshStarted);
+        let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch });
         match refresh_snapshot(source_mode, cwd_raw).await {
             Ok(snapshot) => {
-                let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { snapshot });
+                let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { epoch, snapshot });
             }
             Err(error) => {
                 let _ = event_tx.send(ClientEvent::UsageRefreshFailed {
+                    epoch,
                     message: error.message,
                     source: error.source,
                 });
@@ -66,6 +68,13 @@ pub(crate) fn apply_refresh_failure(app: &mut App, message: String, source: Usag
     app.usage.in_flight = false;
     app.usage.last_error = Some(message);
     app.usage.last_attempted_source = Some(source);
+}
+
+pub(crate) fn reset_for_session_change(app: &mut App) {
+    app.usage.snapshot = None;
+    app.usage.in_flight = false;
+    app.usage.last_error = None;
+    app.usage.last_attempted_source = None;
 }
 
 pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {

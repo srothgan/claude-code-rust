@@ -30,6 +30,7 @@ fn reset_session_identity_state(
     model_name: String,
     mode: Option<super::super::ModeState>,
 ) {
+    app.bump_session_scope_epoch();
     app.session_id = Some(session_id);
     app.model_name = model_name;
     app.mode = mode;
@@ -46,6 +47,7 @@ fn reset_session_identity_state(
     app.cancelled_turn_pending_hint = false;
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
+    app.account_info = None;
 }
 
 fn reset_messages_for_new_session(app: &mut App) {
@@ -82,6 +84,7 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.available_commands.clear();
     app.available_agents.clear();
     app.config.overlay = None;
+    app.config.pending_session_title_change = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
@@ -94,6 +97,9 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.mention = None;
     app.slash = None;
     app.subagent = None;
+    app.help_view = super::super::HelpView::default();
+    app.help_dialog = crate::app::dialog::DialogState::default();
+    app.help_visible_count = 0;
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
@@ -102,6 +108,8 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
     app.cached_footer_line = None;
     app.clear_terminal_tool_call_tracking();
     app.mcp = super::super::McpState::default();
+    crate::app::usage::reset_for_session_change(app);
+    crate::app::plugins::reset_for_session_change(app);
     app.force_redraw = true;
     app.needs_redraw = true;
 }

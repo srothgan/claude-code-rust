@@ -32,9 +32,15 @@ fn clear_transient_view_state(app: &mut App) {
     app.pending_paste_text.clear();
     app.pending_submit = None;
     app.help_open = false;
+    app.help_view = crate::app::HelpView::default();
+    app.help_dialog = crate::app::dialog::DialogState::default();
+    app.help_visible_count = 0;
     app.mention = None;
     app.slash = None;
     app.subagent = None;
+    if app.active_view == ActiveView::Config {
+        app.config.overlay = None;
+    }
     app.release_focus_target(crate::app::FocusTarget::Help);
     app.release_focus_target(crate::app::FocusTarget::Mention);
     app.paste_burst.on_non_char_key(Instant::now());

@@ -77,26 +77,31 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { account: crate::agent::types::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: crate::agent::types::AccountInfo },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
+        session_id: String,
         servers: Vec<crate::agent::types::McpServerStatus>,
         error: Option<String>,
     },
     /// Usage refresh task started.
-    UsageRefreshStarted,
+    UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.
-    UsageSnapshotReceived { snapshot: UsageSnapshot },
+    UsageSnapshotReceived { epoch: u64, snapshot: UsageSnapshot },
     /// Usage refresh failed.
-    UsageRefreshFailed { message: String, source: UsageSourceKind },
+    UsageRefreshFailed { epoch: u64, message: String, source: UsageSourceKind },
     /// Claude CLI plugin inventory refresh completed.
-    PluginsInventoryUpdated { snapshot: PluginsInventorySnapshot, claude_path: PathBuf },
+    PluginsInventoryUpdated {
+        cwd_raw: String,
+        snapshot: PluginsInventorySnapshot,
+        claude_path: PathBuf,
+    },
     /// Claude CLI plugin inventory refresh failed.
-    PluginsInventoryRefreshFailed(String),
+    PluginsInventoryRefreshFailed { cwd_raw: String, message: String },
     /// Plugin CLI action completed and returned a refreshed inventory snapshot.
-    PluginsCliActionSucceeded { result: PluginsCliActionSuccess },
+    PluginsCliActionSucceeded { cwd_raw: String, result: PluginsCliActionSuccess },
     /// Plugin CLI action failed.
-    PluginsCliActionFailed(String),
+    PluginsCliActionFailed { cwd_raw: String, message: String },
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
 }
