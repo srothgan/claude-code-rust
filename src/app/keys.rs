@@ -181,12 +181,6 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    if is_ctrl_char_shortcut(key, 'h') {
-        toggle_header(app);
-        sync_help_focus(app);
-        return true;
-    }
-
     if is_ctrl_char_shortcut(key, 'l') {
         app.force_redraw = true;
         sync_help_focus(app);
@@ -251,10 +245,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
-            true
-        }
-        (KeyCode::Char('h'), m) if m == KeyModifiers::CONTROL => {
-            toggle_header(app);
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
@@ -505,7 +495,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         current_mode_name: next_name,
         available_modes: modes,
     });
-    app.cached_footer_line = None;
+    app.cached_footer_lines = None;
     true
 }
 
@@ -871,11 +861,6 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
-}
-
-/// Toggle the header visibility.
-pub(super) fn toggle_header(app: &mut App) {
-    app.show_header = !app.show_header;
 }
 
 #[cfg(test)]

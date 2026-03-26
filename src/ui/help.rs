@@ -256,7 +256,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         // Global
         ("Ctrl+c".to_owned(), "Quit".to_owned()),
         ("Ctrl+q".to_owned(), "Quit".to_owned()),
-        ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
         ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
@@ -351,7 +350,6 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
         ("Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
-        ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Input keys".to_owned(), input_line.to_owned()),
     ]
@@ -728,10 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn key_tab_shows_ctrl_h_toggle_header_shortcut() {
+    fn key_tab_does_not_show_removed_header_shortcut() {
         let app = App::test_default();
         let items = build_help_items(&app);
-        assert!(has_item(&items, "Ctrl+h", "Toggle header"));
+        assert!(!has_item(&items, "Ctrl+h", "Toggle header"));
     }
 
     #[test]

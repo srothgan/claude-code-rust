@@ -7,7 +7,6 @@ mod chat_view;
 mod config;
 mod diff;
 mod footer;
-mod header;
 pub(crate) mod help;
 mod highlight;
 mod input;

@@ -170,7 +170,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
             app.mode = Some(mode);
-            app.cached_footer_line = None;
+            app.cached_footer_lines = None;
             if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
                 session::clear_pending_command(app);
             }
@@ -185,7 +185,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                     mode.current_mode_name.clone_from(&mode_id);
                     mode.current_mode_id = mode_id;
                 }
-                app.cached_footer_line = None;
+                app.cached_footer_lines = None;
             }
             if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
                 session::clear_pending_command(app);
@@ -201,7 +201,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
 
             if let Some(model_name) = model_name {
                 app.model_name = model_name;
-                app.cached_header_line = None;
                 app.update_welcome_model_once();
             } else if option_id == "model" {
                 tracing::warn!("ConfigOptionUpdate for model carried non-string value");
@@ -217,7 +216,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::FastModeUpdate(state) => {
             app.fast_mode_state = state;
-            app.cached_footer_line = None;
+            app.cached_footer_lines = None;
         }
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);
@@ -227,7 +226,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             // status updates are emitted consistently; if not, add a fallback indicator.
             if matches!(status, model::SessionStatus::Compacting) {
                 app.is_compacting = true;
-                app.cached_footer_line = None;
+                app.cached_footer_lines = None;
             } else {
                 clear_compaction_state(app, true);
             }
@@ -260,7 +259,7 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
     let should_emit_success = emit_manual_success && app.pending_compact_clear;
     app.pending_compact_clear = false;
     app.is_compacting = false;
-    app.cached_footer_line = None;
+    app.cached_footer_lines = None;
     if should_emit_success {
         push_system_message_with_severity(
             app,
@@ -2425,8 +2424,7 @@ mod tests {
             available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
         });
         app.fast_mode_state = model::FastModeState::On;
-        app.cached_header_line = Some(ratatui::text::Line::from("cached header"));
-        app.cached_footer_line = Some(ratatui::text::Line::from("cached footer"));
+        app.cached_footer_lines = Some(vec![ratatui::text::Line::from("cached footer")]);
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "task-1",
             model::ToolCallStatus::InProgress,
@@ -2457,8 +2455,7 @@ mod tests {
         assert_eq!(app.model_name, "Connecting...");
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
-        assert!(app.cached_header_line.is_none());
-        assert!(app.cached_footer_line.is_none());
+        assert!(app.cached_footer_lines.is_none());
     }
 
     #[test]
@@ -2472,8 +2469,7 @@ mod tests {
             available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
         });
         app.fast_mode_state = model::FastModeState::On;
-        app.cached_header_line = Some(ratatui::text::Line::from("cached header"));
-        app.cached_footer_line = Some(ratatui::text::Line::from("cached footer"));
+        app.cached_footer_lines = Some(vec![ratatui::text::Line::from("cached footer")]);
 
         handle_client_event(&mut app, ClientEvent::LogoutCompleted);
 
@@ -2481,8 +2477,7 @@ mod tests {
         assert_eq!(app.model_name, "Connecting...");
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
-        assert!(app.cached_header_line.is_none());
-        assert!(app.cached_footer_line.is_none());
+        assert!(app.cached_footer_lines.is_none());
     }
 
     #[test]
@@ -2594,7 +2589,7 @@ mod tests {
     #[test]
     fn fast_mode_update_sets_state_and_invalidates_footer_cache() {
         let mut app = make_test_app();
-        app.cached_footer_line = Some(ratatui::text::Line::from("cached"));
+        app.cached_footer_lines = Some(vec![ratatui::text::Line::from("cached")]);
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
 
         handle_client_event(
@@ -2605,7 +2600,7 @@ mod tests {
         );
 
         assert_eq!(app.fast_mode_state, model::FastModeState::Cooldown);
-        assert!(app.cached_footer_line.is_none());
+        assert!(app.cached_footer_lines.is_none());
     }
 
     #[test]
@@ -3142,24 +3137,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_h_toggles_header_visibility() {
-        let mut app = make_test_app();
-        assert!(app.show_header);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
-        );
-        assert!(!app.show_header);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
-        );
-        assert!(app.show_header);
-    }
-
-    #[test]
     fn ctrl_u_hides_update_hint_globally() {
         let mut app = make_test_app();
         app.update_check_hint = Some("Update available: v9.9.9 (current v0.2.0)".into());
@@ -3414,7 +3391,6 @@ mod tests {
         app.status = AppStatus::Connecting;
         app.help_view = HelpView::Keys;
         app.viewport.scroll_target = 2;
-        assert!(app.show_header);
 
         // Chat navigation remains available during startup.
         handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
@@ -3438,13 +3414,6 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
         );
         assert_eq!(app.help_view, HelpView::SlashCommands);
-
-        // Global UI navigation shortcuts still work.
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
-        );
-        assert!(!app.show_header);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{autocomplete, chat, footer, header, help, input, layout, theme, todo};
+use super::{autocomplete, chat, footer, help, input, layout, theme, todo};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -33,15 +33,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(frame_area, input_visual_lines, app.show_header, todo_height, help_height)
+        layout::compute(frame_area, input_visual_lines, todo_height, help_height)
     };
-
-    if areas.header.height > 0 {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::header"));
-        render_separator(frame, areas.header_top_sep);
-        header::render(frame, areas.header, app);
-        render_separator(frame, areas.header_bot_sep);
-    }
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
@@ -77,8 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         footer::render(frame, footer_area, app);
     }
 
-    let fps_y = if areas.header.height > 0 { areas.header.y } else { frame_area.y };
-    render_perf_fps_overlay(frame, frame_area, fps_y, app);
+    render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {

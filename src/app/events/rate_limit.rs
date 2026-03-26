@@ -121,7 +121,7 @@ pub(super) fn handle_compaction_boundary_update(
     }
     app.session_usage.last_compaction_trigger = Some(boundary.trigger);
     app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
-    app.cached_footer_line = None;
+    app.cached_footer_lines = None;
     tracing::debug!(
         "CompactionBoundary: trigger={:?} pre_tokens={}",
         boundary.trigger,

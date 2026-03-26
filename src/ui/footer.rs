@@ -15,8 +15,13 @@ use super::theme;
 const FOOTER_PAD: u16 = 2;
 const FOOTER_COLUMN_GAP: u16 = 1;
 type FooterItem = Option<(String, Color)>;
+const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.height == 0 {
+        return;
+    }
+
     let padded = Rect {
         x: area.x.saturating_add(FOOTER_PAD),
         y: area.y,
@@ -24,8 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         height: area.height,
     };
 
-    if app.cached_footer_line.is_none() {
-        let line = if let Some(ref mode) = app.mode {
+    if app.cached_footer_lines.is_none() {
+        let first_line = if let Some(ref mode) = app.mode {
             let color = mode_color(&mode.current_mode_id);
             let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
             Line::from(vec![
@@ -46,18 +51,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled(" : Help", Style::default().fg(theme::DIM)),
             ])
         };
-        app.cached_footer_line = Some(line);
+        let second_line = build_context_line(app);
+        app.cached_footer_lines = Some(vec![first_line, second_line]);
     }
 
-    if let Some(line) = &app.cached_footer_line {
-        let left_min = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    let [first_row, second_row] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(padded);
 
-        if let Some((hint_text, hint_color)) = footer_update_hint(app) {
-            let (left_area, right_area) = split_footer_columns_hint(padded, left_min);
-            frame.render_widget(Paragraph::new(line.clone()), left_area);
-            render_footer_right_info(frame, right_area, &hint_text, hint_color);
-        } else {
-            frame.render_widget(Paragraph::new(line.clone()), padded);
+    if let Some(lines) = &app.cached_footer_lines {
+        if let Some(line) = lines.first() {
+            let left_min = u16::try_from(line.width()).unwrap_or(u16::MAX);
+
+            if let Some((hint_text, hint_color)) = footer_update_hint(app) {
+                let (left_area, right_area) = split_footer_columns_hint(first_row, left_min);
+                frame.render_widget(Paragraph::new(line.clone()), left_area);
+                render_footer_right_info(frame, right_area, &hint_text, hint_color);
+            } else {
+                frame.render_widget(Paragraph::new(line.clone()), first_row);
+            }
+        }
+        if let Some(line) = lines.get(1) {
+            frame.render_widget(Paragraph::new(line.clone()), second_row);
         }
     }
 }
@@ -119,6 +133,21 @@ fn render_footer_right_info(frame: &mut Frame, area: Rect, right_text: &str, rig
 
     let line = Line::from(Span::styled(fitted, Style::default().fg(right_color)));
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
+}
+
+fn build_context_line(app: &App) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("Loc: ", Style::default().fg(theme::DIM)),
+        Span::styled(app.cwd.clone(), Style::default().fg(FOOTER_CONTEXT_VALUE)),
+    ];
+
+    if let Some(branch) = &app.git_branch {
+        spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled("Branch: ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(branch.clone(), Style::default().fg(FOOTER_CONTEXT_VALUE)));
+    }
+
+    Line::from(spans)
 }
 
 fn mode_color(mode_id: &str) -> Color {
@@ -207,5 +236,26 @@ mod tests {
     fn fast_mode_badge_maps_cooldown_to_cd() {
         let (label, _) = fast_mode_badge(model::FastModeState::Cooldown);
         assert_eq!(label, "FAST:CD");
+    }
+
+    #[test]
+    fn context_line_includes_loc_only_without_branch() {
+        let mut app = App::test_default();
+        app.cwd = "~/repo".into();
+
+        let text: String =
+            build_context_line(&app).spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "Loc: ~/repo");
+    }
+
+    #[test]
+    fn context_line_includes_branch_when_present() {
+        let mut app = App::test_default();
+        app.cwd = "~/repo".into();
+        app.git_branch = Some("main".into());
+
+        let text: String =
+            build_context_line(&app).spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "Loc: ~/repo  |  Branch: main");
     }
 }

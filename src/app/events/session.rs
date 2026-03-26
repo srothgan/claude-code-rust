@@ -34,8 +34,7 @@ pub(super) fn handle_connected_client_event(
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, model_name, mode);
     app.available_models = available_models;
-    app.cached_header_line = None;
-    app.cached_footer_line = None;
+    app.cached_footer_lines = None;
     app.update_welcome_model_once();
     app.sync_welcome_recent_sessions();
     if !history_updates.is_empty() {
@@ -306,8 +305,7 @@ fn sync_welcome_cwd(app: &mut App) {
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cwd_raw = cwd_raw;
     app.cwd = shorten_cwd_display(&app.cwd_raw);
-    app.cached_header_line = None;
-    app.cached_footer_line = None;
+    app.cached_footer_lines = None;
     app.refresh_git_branch();
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();
