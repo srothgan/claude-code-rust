@@ -3359,6 +3359,56 @@ mod tests {
     }
 
     #[test]
+    fn second_esc_after_permission_rejection_requests_turn_cancel() {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        app.status = AppStatus::Running;
+        app.session_id = Some(model::SessionId::new("session-1"));
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            true,
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        let response = response_rx.try_recv().expect("first Esc should answer permission");
+        let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id.clone(), "deny");
+        assert!(app.pending_interaction_ids.is_empty());
+        assert_eq!(app.pending_cancel_origin, None);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+        let envelope = rx.try_recv().expect("second Esc should send turn cancel");
+        assert!(matches!(
+            envelope.command,
+            crate::agent::wire::BridgeCommand::CancelTurn { session_id }
+                if session_id == "session-1"
+        ));
+    }
+
+    #[test]
     fn connecting_state_allows_navigation_and_help_shortcuts() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;

@@ -735,6 +735,29 @@ mod tests {
     }
 
     #[test]
+    fn esc_cancels_deferred_submit_snapshot_before_finalize() {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("draft");
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(app.pending_submit.is_some());
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        assert!(app.pending_submit.is_none());
+        finalize_deferred_submit(&mut app);
+        assert_eq!(app.input.text(), "draft");
+        assert!(app.messages.is_empty());
+        assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
+    }
+
+    #[test]
     fn spinner_advances_less_frequently_when_reduced_motion_enabled() {
         let mut app = App::test_default();
         let base = Instant::now();

@@ -343,6 +343,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Esc) {
         return false;
     }
+    app.pending_submit = None;
     if app.focus_owner() == FocusOwner::TodoList {
         app.release_focus_target(FocusTarget::TodoList);
         return true;

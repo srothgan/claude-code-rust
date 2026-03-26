@@ -57,6 +57,10 @@ fn is_turn_busy(app: &App) -> bool {
 }
 
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
+    if matches!(origin, CancelOrigin::Manual) {
+        app.pending_auto_submit_after_cancel = false;
+    }
+
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return Ok(());
     }
@@ -183,18 +187,48 @@ mod tests {
     fn manual_cancel_promotes_existing_auto_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
+        app.pending_auto_submit_after_cancel = true;
 
         request_cancel(&mut app, CancelOrigin::AutoQueue).expect("auto cancel request");
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
 
         assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
         assert!(app.cancelled_turn_pending_hint);
+        assert!(!app.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope.command,
             BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "manual promotion should not send second cancel");
+    }
+
+    #[test]
+    fn manual_cancel_prevents_later_auto_submit_after_cancel() {
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input.set_text("draft");
+
+        submit_input(&mut app);
+        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.pending_auto_submit_after_cancel);
+        let cancel = rx.try_recv().expect("cancel command should be sent");
+        assert!(matches!(
+            cancel.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
+        ));
+
+        request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
+        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+        assert!(!app.pending_auto_submit_after_cancel);
+
+        app.status = AppStatus::Ready;
+        app.pending_cancel_origin = None;
+        maybe_auto_submit_after_cancel(&mut app);
+
+        assert_eq!(app.input.text(), "draft");
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(app.messages.is_empty());
+        assert!(rx.try_recv().is_err(), "manual cancel should suppress queued prompt submit");
     }
 
     #[test]
