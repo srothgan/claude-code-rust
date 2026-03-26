@@ -58,6 +58,7 @@ pub(super) fn handle_connected_client_event(
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
+    app.rebuild_chat_focus_from_state();
 }
 
 pub(super) fn handle_sessions_listed_event(

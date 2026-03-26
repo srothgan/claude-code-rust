@@ -103,3 +103,31 @@ fn set_active_view_same_view_is_noop() {
     assert!(app.pending_submit.is_some());
     assert!(!app.needs_redraw);
 }
+
+#[test]
+fn set_active_view_restores_permission_focus_when_returning_to_chat() {
+    let mut app = busy_view_test_app();
+
+    set_active_view(&mut app, ActiveView::Trusted);
+    assert_eq!(app.active_view, ActiveView::Trusted);
+
+    set_active_view(&mut app, ActiveView::Chat);
+
+    assert_eq!(app.active_view, ActiveView::Chat);
+    assert_eq!(app.focus_owner(), crate::app::FocusOwner::Permission);
+}
+
+#[test]
+fn set_active_view_closes_help_without_clearing_question_mark_draft() {
+    let mut app = App::test_default();
+    app.input.set_text("?");
+    app.help_open = true;
+
+    set_active_view(&mut app, ActiveView::Trusted);
+    assert_eq!(app.input.text(), "?");
+    assert!(!app.is_help_active());
+
+    set_active_view(&mut app, ActiveView::Chat);
+    assert_eq!(app.input.text(), "?");
+    assert!(!app.is_help_active());
+}

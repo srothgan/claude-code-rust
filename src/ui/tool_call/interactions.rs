@@ -67,7 +67,7 @@ pub(super) fn render_permission_lines(
         spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
 
         let name_style = if is_selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -164,7 +164,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
         };
 
         let name_style = if is_selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -351,9 +351,11 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
 
 #[cfg(test)]
 mod tests {
-    use super::render_question_lines;
-    use crate::agent::model::{QuestionOption, QuestionPrompt};
-    use crate::app::InlineQuestion;
+    use super::{render_permission_lines, render_plan_approval_lines, render_question_lines};
+    use crate::agent::model::{
+        PermissionOption, PermissionOptionKind, QuestionOption, QuestionPrompt, ToolCallStatus,
+    };
+    use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
     use crate::ui::theme;
     use ratatui::style::Color;
     use std::collections::BTreeSet;
@@ -382,6 +384,48 @@ mod tests {
         }
     }
 
+    fn test_tool_call(sdk_tool_name: &str) -> ToolCallInfo {
+        ToolCallInfo {
+            id: "tool-1".into(),
+            title: "Tool".into(),
+            sdk_tool_name: sdk_tool_name.into(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: crate::app::BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+        }
+    }
+
+    fn test_permission(kind: PermissionOptionKind) -> InlinePermission {
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        InlinePermission {
+            options: vec![
+                PermissionOption::new("allow", "Allow", kind),
+                PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+            ],
+            response_tx,
+            selected_index: 0,
+            focused: true,
+        }
+    }
+
     #[test]
     fn focused_question_uses_left_right_footer_hint() {
         let lines = render_question_lines(&test_question());
@@ -406,5 +450,35 @@ mod tests {
         let footer = lines.last().expect("question footer line");
         assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Up/Down to focus)");
         assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn selected_permission_option_uses_orange_label() {
+        let tc = test_tool_call("Bash");
+        let perm = test_permission(PermissionOptionKind::AllowOnce);
+
+        let lines = render_permission_lines(&tc, &perm);
+        let selected_label = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "Allow")
+            .expect("selected permission label");
+
+        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
+    }
+
+    #[test]
+    fn selected_plan_option_uses_orange_label() {
+        let tc = test_tool_call("ExitPlanMode");
+        let perm = test_permission(PermissionOptionKind::PlanApprove);
+
+        let lines = render_plan_approval_lines(&tc, &perm);
+        let selected_label = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "Allow")
+            .expect("selected plan label");
+
+        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
     }
 }

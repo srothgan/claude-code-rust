@@ -110,6 +110,7 @@ pub fn create_app(cli: &Cli) -> App {
         login_hint: None,
         pending_compact_clear: false,
         help_view: HelpView::Keys,
+        help_open: false,
         help_dialog: DialogState::default(),
         help_visible_count: 0,
         pending_interaction_ids: Vec::new(),

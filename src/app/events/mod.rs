@@ -316,6 +316,7 @@ mod tests {
     use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
+    use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
         SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem, TodoStatus,
@@ -2448,6 +2449,7 @@ mod tests {
     fn help_overlay_left_right_switches_help_view_tab() {
         let mut app = make_test_app();
         app.input.set_text("?");
+        app.help_open = true;
         app.help_view = HelpView::Keys;
 
         dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -2602,6 +2604,76 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
         );
         assert!(app.show_todo_panel);
+    }
+
+    #[test]
+    fn permission_focus_ctrl_t_moves_focus_to_todo_list() {
+        let mut app = make_test_app();
+        let _response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            true,
+        );
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.show_todo_panel);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+    }
+
+    #[test]
+    fn permission_focus_tab_moves_focus_to_todo_list() {
+        let mut app = make_test_app();
+        let _response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            true,
+        );
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
     }
 
     #[test]
@@ -2770,7 +2842,18 @@ mod tests {
             true,
         );
 
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/config".into(),
+                primary: "/config".into(),
+                secondary: Some("Open settings".into()),
+            }],
+            dialog: crate::app::dialog::DialogState::default(),
+        });
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
@@ -3174,7 +3257,18 @@ mod tests {
         });
         app.show_todo_panel = true;
         app.claim_focus_target(FocusTarget::TodoList);
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/config".into(),
+                primary: "/config".into(),
+                secondary: Some("Open settings".into()),
+            }],
+            dialog: crate::app::dialog::DialogState::default(),
+        });
         app.claim_focus_target(FocusTarget::Mention);
 
         handle_terminal_event(

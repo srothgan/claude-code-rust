@@ -116,6 +116,8 @@ pub struct App {
     pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
+    /// Whether the help overlay is explicitly open.
+    pub help_open: bool,
     /// Scroll/selection state for the Slash and Subagents help tabs.
     pub help_dialog: dialog::DialogState,
     /// Number of items that currently fit in the help viewport (updated each render).
@@ -781,6 +783,7 @@ impl App {
             login_hint: None,
             pending_compact_clear: false,
             help_view: HelpView::Keys,
+            help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
             pending_interaction_ids: Vec::new(),
@@ -951,7 +954,45 @@ impl App {
 
     #[must_use]
     pub fn is_help_active(&self) -> bool {
-        self.input.text().trim() == "?"
+        self.help_open
+    }
+
+    #[must_use]
+    pub fn autocomplete_focus_available(&self) -> bool {
+        self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
+            || self.slash.is_some()
+            || self.subagent.is_some()
+    }
+
+    pub fn rebuild_chat_focus_from_state(&mut self) {
+        if self.active_view != ActiveView::Chat {
+            return;
+        }
+
+        self.normalize_focus_stack();
+
+        if self.pending_interaction_ids.is_empty() {
+            self.release_focus_target(FocusTarget::Permission);
+        } else {
+            self.claim_focus_target(FocusTarget::Permission);
+        }
+
+        if self.autocomplete_focus_available() {
+            self.claim_focus_target(FocusTarget::Mention);
+        } else {
+            self.release_focus_target(FocusTarget::Mention);
+        }
+
+        if self.is_help_active()
+            && self.pending_interaction_ids.is_empty()
+            && !self.autocomplete_focus_available()
+        {
+            self.claim_focus_target(FocusTarget::Help);
+        } else {
+            self.release_focus_target(FocusTarget::Help);
+        }
+
+        self.normalize_focus_stack();
     }
 
     /// Claim key routing for a navigation target.
@@ -977,7 +1018,7 @@ impl App {
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
-            self.active_autocomplete_kind().is_some(),
+            self.autocomplete_focus_available(),
             !self.pending_interaction_ids.is_empty(),
         )
         .with_help(self.is_help_active())
@@ -1007,6 +1048,8 @@ mod tests {
     // =====
 
     use super::*;
+    use crate::app::dialog;
+    use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
@@ -2703,7 +2746,18 @@ mod tests {
         app.claim_focus_target(FocusTarget::TodoList);
         app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/config".into(),
+                primary: "/config".into(),
+                secondary: Some("Open settings".into()),
+            }],
+            dialog: dialog::DialogState::default(),
+        });
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
     }
@@ -2739,7 +2793,18 @@ mod tests {
             active_form: String::new(),
         });
         app.show_todo_panel = true;
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/config".into(),
+                primary: "/config".into(),
+                secondary: Some("Open settings".into()),
+            }],
+            dialog: dialog::DialogState::default(),
+        });
         app.pending_interaction_ids.push("perm-1".into());
 
         app.claim_focus_target(FocusTarget::TodoList);

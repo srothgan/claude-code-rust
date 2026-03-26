@@ -18,6 +18,9 @@ pub fn set_active_view(app: &mut App, next: ActiveView) {
 
     clear_transient_view_state(app);
     app.active_view = next;
+    if next == ActiveView::Chat {
+        app.rebuild_chat_focus_from_state();
+    }
     app.needs_redraw = true;
 }
 
@@ -28,11 +31,10 @@ fn clear_transient_view_state(app: &mut App) {
     app.pending_paste_session = None;
     app.pending_paste_text.clear();
     app.pending_submit = None;
+    app.help_open = false;
     app.mention = None;
     app.slash = None;
     app.subagent = None;
-    app.release_focus_target(crate::app::FocusTarget::TodoList);
-    app.release_focus_target(crate::app::FocusTarget::Permission);
     app.release_focus_target(crate::app::FocusTarget::Help);
     app.release_focus_target(crate::app::FocusTarget::Mention);
     app.paste_burst.on_non_char_key(Instant::now());

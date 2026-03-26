@@ -162,8 +162,10 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     let changed = match (key.code, key.modifiers) {
         (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if app.is_help_active() {
+                app.help_open = false;
                 app.input.clear();
             } else {
+                app.help_open = true;
                 app.input.set_text("?");
             }
             true
@@ -249,6 +251,10 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     }
 
     let changed = handle_normal_key_actions(app, key);
+
+    if app.input.version != input_version_before {
+        sync_help_open_after_input_change(app);
+    }
 
     if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
@@ -544,6 +550,10 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         }
     }
 
+    if c == '?' && app.input.text().trim() == "?" {
+        app.help_open = true;
+    }
+
     if c == '@' {
         mention::activate(app);
     } else if c == '/' {
@@ -552,6 +562,12 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         subagent::activate(app);
     }
     true
+}
+
+fn sync_help_open_after_input_change(app: &mut App) {
+    if app.is_help_active() && app.input.text().trim() != "?" {
+        app.help_open = false;
+    }
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
@@ -601,10 +617,10 @@ pub(super) fn toggle_todo_panel_focus(app: &mut App) {
 
     app.show_todo_panel = !app.show_todo_panel;
     if app.show_todo_panel {
-        app.claim_focus_target(FocusTarget::TodoList);
         // Start at in-progress todo when available; fallback to first item.
         app.todo_selected =
             app.todos.iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+        app.claim_focus_target(FocusTarget::TodoList);
     } else {
         app.release_focus_target(FocusTarget::TodoList);
     }
@@ -695,7 +711,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
 fn sync_help_focus(app: &mut App) {
     if app.is_help_active()
         && app.pending_interaction_ids.is_empty()
-        && app.active_autocomplete_kind().is_none()
+        && !app.autocomplete_focus_available()
     {
         app.claim_focus_target(FocusTarget::Help);
     } else {
