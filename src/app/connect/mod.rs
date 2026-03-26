@@ -159,7 +159,6 @@ pub fn create_app(cli: &Cli) -> App {
         next_paste_session_id: 1,
         cached_todo_compact: None,
         git_branch: None,
-        cached_footer_lines: None,
         update_check_hint: None,
         session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),

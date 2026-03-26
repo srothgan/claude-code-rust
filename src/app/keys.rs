@@ -495,7 +495,6 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         current_mode_name: next_name,
         available_modes: modes,
     });
-    app.cached_footer_lines = None;
     true
 }
 

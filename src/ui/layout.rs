@@ -183,6 +183,14 @@ mod tests {
     }
 
     #[test]
+    fn threshold_height_keeps_footer_with_help_present() {
+        let layout = compute(area(80, 8), 1, 0, 1);
+        assert!(layout.footer.is_some());
+        assert!(layout.footer.unwrap().height > 0);
+        assert_eq!(layout.help.height, 1);
+    }
+
+    #[test]
     fn large_terminal() {
         let layout = compute(area(200, 100), 3, 5, 2);
         assert_eq!(total_height(&layout), 100);

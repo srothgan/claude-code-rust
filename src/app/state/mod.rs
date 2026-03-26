@@ -227,8 +227,6 @@ pub struct App {
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Current git branch (refreshed on focus gain + turn complete).
     pub git_branch: Option<String>,
-    /// Cached footer lines (invalidated on session chrome changes).
-    pub cached_footer_lines: Option<Vec<ratatui::text::Line<'static>>>,
     /// Optional startup update-check hint rendered at the footer's right edge.
     pub update_check_hint: Option<String>,
     /// Session-wide usage and cost telemetry from the bridge.
@@ -846,7 +844,6 @@ impl App {
             next_paste_session_id: 1,
             cached_todo_compact: None,
             git_branch: None,
-            cached_footer_lines: None,
             update_check_hint: None,
             session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
@@ -879,7 +876,7 @@ impl App {
         }
     }
 
-    /// Detect the current git branch and invalidate footer chrome if it changed.
+    /// Detect the current git branch.
     pub fn refresh_git_branch(&mut self) {
         let new_branch = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -896,7 +893,6 @@ impl App {
             });
         if new_branch != self.git_branch {
             self.git_branch = new_branch;
-            self.cached_footer_lines = None;
         }
     }
 
@@ -943,7 +939,6 @@ impl App {
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;
         self.welcome_model_resolved = false;
-        self.cached_footer_lines = None;
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
