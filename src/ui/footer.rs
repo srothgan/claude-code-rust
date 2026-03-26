@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model;
-use crate::app::App;
+use crate::app::{App, MessageBlock, MessageRole};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -71,13 +71,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         if let Some(line) = lines.get(1) {
-            frame.render_widget(Paragraph::new(line.clone()), second_row);
+            let left_min = u16::try_from(line.width()).unwrap_or(u16::MAX);
+            if let Some((hint_text, hint_color)) = footer_mcp_auth_hint(app) {
+                let (left_area, right_area) = split_footer_columns_hint(second_row, left_min);
+                frame.render_widget(Paragraph::new(line.clone()), left_area);
+                render_footer_right_info(frame, right_area, &hint_text, hint_color);
+            } else {
+                frame.render_widget(Paragraph::new(line.clone()), second_row);
+            }
         }
     }
 }
 
 fn footer_update_hint(app: &App) -> FooterItem {
+    let permission_count = pending_permission_request_count(app);
+    if permission_count > 0 {
+        return Some((format!("{permission_count} PEND. PERM."), Color::Yellow));
+    }
     app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE))
+}
+
+fn footer_mcp_auth_hint(app: &App) -> FooterItem {
+    let needs_auth_count = mcp_needs_auth_count(app);
+    (needs_auth_count > 0 && should_show_startup_mcp_hint(app))
+        .then(|| (format!("{needs_auth_count} MCP NEEDS AUTH"), Color::Yellow))
 }
 
 fn split_footer_columns_hint(area: Rect, left_min_width: u16) -> (Rect, Rect) {
@@ -150,6 +167,37 @@ fn build_context_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
+fn pending_permission_request_count(app: &App) -> usize {
+    app.pending_interaction_ids
+        .iter()
+        .filter(|tool_id| {
+            let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
+                return false;
+            };
+            matches!(
+                app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
+                Some(MessageBlock::ToolCall(tc)) if tc.pending_permission.is_some()
+            )
+        })
+        .count()
+}
+
+fn mcp_needs_auth_count(app: &App) -> usize {
+    app.mcp
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(server.status, crate::agent::types::McpServerConnectionStatus::NeedsAuth)
+        })
+        .count()
+}
+
+fn should_show_startup_mcp_hint(app: &App) -> bool {
+    !app.messages
+        .iter()
+        .any(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
+}
+
 fn mode_color(mode_id: &str) -> Color {
     match mode_id {
         "default" => theme::DIM,
@@ -172,7 +220,12 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::App;
+    use crate::agent::types::{McpServerConnectionStatus, McpServerStatus};
+    use crate::app::{
+        App, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
+        TerminalSnapshotMode, TextBlock, ToolCallInfo,
+    };
+    use tokio::sync::oneshot;
 
     #[test]
     fn split_footer_columns_hint_left_gets_its_minimum() {
@@ -233,6 +286,52 @@ mod tests {
     }
 
     #[test]
+    fn footer_update_hint_prefers_pending_permission_count() {
+        let mut app = App::test_default();
+        app.update_check_hint = Some("Update available".to_owned());
+        let (response_tx, _response_rx) = oneshot::channel();
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: "perm-1".into(),
+                title: "Read".into(),
+                sdk_tool_name: "Read".into(),
+                raw_input: None,
+                raw_input_bytes: 0,
+                output_metadata: None,
+                status: model::ToolCallStatus::Pending,
+                content: vec![],
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
+                terminal_output_len: 0,
+                terminal_bytes_seen: 0,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: Some(InlinePermission {
+                    options: vec![],
+                    response_tx,
+                    selected_index: 0,
+                    focused: true,
+                }),
+                pending_question: None,
+            }))],
+            usage: None,
+        });
+        app.index_tool_call("perm-1".into(), 0, 0);
+        app.pending_interaction_ids.push("perm-1".into());
+
+        assert_eq!(footer_update_hint(&app), Some(("1 PEND. PERM.".to_owned(), Color::Yellow)));
+    }
+
+    #[test]
     fn fast_mode_badge_maps_cooldown_to_cd() {
         let (label, _) = fast_mode_badge(model::FastModeState::Cooldown);
         assert_eq!(label, "FAST:CD");
@@ -257,5 +356,50 @@ mod tests {
         let text: String =
             build_context_line(&app).spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "Loc: ~/repo  |  Branch: main");
+    }
+
+    #[test]
+    fn mcp_auth_hint_shows_needs_auth_count_before_real_chat() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage {
+            role: MessageRole::Welcome,
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
+            usage: None,
+        });
+        app.mcp.servers.push(McpServerStatus {
+            name: "calendar".into(),
+            status: McpServerConnectionStatus::NeedsAuth,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: vec![],
+        });
+
+        assert_eq!(
+            footer_mcp_auth_hint(&app),
+            Some(("1 MCP NEEDS AUTH".to_owned(), Color::Yellow))
+        );
+    }
+
+    #[test]
+    fn mcp_auth_hint_hides_after_assistant_message() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+            usage: None,
+        });
+        app.mcp.servers.push(McpServerStatus {
+            name: "calendar".into(),
+            status: McpServerConnectionStatus::NeedsAuth,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: vec![],
+        });
+
+        assert_eq!(footer_mcp_auth_hint(&app), None);
     }
 }
