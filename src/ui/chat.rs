@@ -70,6 +70,13 @@ struct ScrollbarGeometry {
     thumb_top: usize,
     thumb_size: usize,
 }
+
+struct ScrolledRenderData {
+    paragraph: Paragraph<'static>,
+    stats: CulledRenderStats,
+    max_scroll: usize,
+    scroll_offset: usize,
+}
 /// Build a `SpinnerState` for a specific message index.
 fn msg_spinner(
     base: SpinnerState,
@@ -246,7 +253,60 @@ fn measure_message_height(
     (h, wrapped_lines)
 }
 
-/// Long content: smooth scroll + viewport culling.
+fn build_base_spinner(app: &App) -> SpinnerState {
+    let show_subagent_thinking = app.should_show_subagent_thinking(Instant::now());
+    SpinnerState {
+        frame: app.spinner_frame,
+        is_active_turn_assistant: false,
+        show_empty_thinking: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
+        show_thinking: matches!(app.status, AppStatus::Thinking),
+        show_subagent_thinking,
+        show_compacting: app.is_compacting,
+    }
+}
+
+fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> usize {
+    let width = area.width;
+    let viewport_height = usize::from(area.height);
+
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
+        if app.viewport.on_frame(width, area.height).resized() {
+            app.cache_metrics.record_resize();
+        }
+    }
+    let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
+    crate::perf::mark_with(
+        "chat::update_heights_measured_msgs",
+        "msgs",
+        height_stats.measured_msgs,
+    );
+    crate::perf::mark_with("chat::update_heights_reused_msgs", "msgs", height_stats.reused_msgs);
+    crate::perf::mark_with(
+        "chat::update_heights_measured_lines",
+        "lines",
+        height_stats.measured_lines,
+    );
+
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
+        app.viewport.rebuild_prefix_sums();
+    }
+    if let Some((anchor_idx, anchor_offset)) = app.viewport.ready_scroll_anchor_to_restore() {
+        app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
+    }
+
+    let content_height = app.viewport.total_message_height();
+    crate::perf::mark_with("chat::content_height", "rows", content_height);
+    crate::perf::mark_with("chat::viewport_height", "rows", viewport_height);
+    crate::perf::mark_with(
+        "chat::content_overflow_rows",
+        "rows",
+        content_height.saturating_sub(viewport_height),
+    );
+    content_height
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::too_many_arguments,
@@ -254,16 +314,13 @@ fn measure_message_height(
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-fn render_scrolled(
-    frame: &mut Frame,
-    area: Rect,
+fn build_scrolled_render_data(
     app: &mut App,
     base: SpinnerState,
     width: u16,
     content_height: usize,
     viewport_height: usize,
-) {
-    let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
+) -> ScrolledRenderData {
     let vp = &mut app.viewport;
     let reduced_motion = app.config.prefers_reduced_motion_effective();
     let max_scroll = content_height.saturating_sub(viewport_height);
@@ -291,7 +348,7 @@ fn render_scrolled(
     crate::perf::mark_with("chat::scroll_offset", "rows", scroll_offset);
 
     let mut all_lines = Vec::new();
-    let render_stats = {
+    let stats = {
         let _t = app
             .perf
             .as_ref()
@@ -299,14 +356,41 @@ fn render_scrolled(
         render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
     };
     crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
-    crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", render_stats.rendered_msgs);
-    crate::perf::mark_with(
-        "chat::render_scrolled_first_visible",
-        "idx",
-        render_stats.first_visible,
-    );
-    crate::perf::mark_with("chat::render_scrolled_start", "idx", render_stats.render_start);
-    let pinned_to_bottom = scroll_offset == max_scroll;
+    crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
+    crate::perf::mark_with("chat::render_scrolled_first_visible", "idx", stats.first_visible);
+    crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
+
+    let paragraph = {
+        let _t = app
+            .perf
+            .as_ref()
+            .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
+        Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
+    };
+
+    ScrolledRenderData { paragraph, stats, max_scroll, scroll_offset }
+}
+
+/// Long content: smooth scroll + viewport culling.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn render_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    base: SpinnerState,
+    width: u16,
+    content_height: usize,
+    viewport_height: usize,
+) {
+    let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
+    let render_data = build_scrolled_render_data(app, base, width, content_height, viewport_height);
+    let pinned_to_bottom = render_data.scroll_offset == render_data.max_scroll;
     if tracing::enabled!(tracing::Level::DEBUG) {
         let last_message_idx = app.messages.len().checked_sub(1);
         let last_message_height = last_message_idx.map(|idx| app.viewport.message_height(idx));
@@ -319,30 +403,24 @@ fn render_scrolled(
             pinned_to_bottom,
             app.viewport.scroll_target,
             app.viewport.scroll_pos,
-            scroll_offset,
-            max_scroll,
-            render_stats.first_visible,
-            render_stats.render_start,
-            render_stats.local_scroll,
-            render_stats.rendered_msgs,
-            render_stats.last_rendered_idx,
-            render_stats.rendered_line_count,
+            render_data.scroll_offset,
+            render_data.max_scroll,
+            render_data.stats.first_visible,
+            render_data.stats.render_start,
+            render_data.stats.local_scroll,
+            render_data.stats.rendered_msgs,
+            render_data.stats.last_rendered_idx,
+            render_data.stats.rendered_line_count,
             last_message_idx,
             last_message_height,
         );
     }
-
-    let paragraph = {
-        let _t = app
-            .perf
-            .as_ref()
-            .map(|p| p.start_with("chat::paragraph_build", "lines", all_lines.len()));
-        Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
-    };
-    let paragraph_scroll = paragraph_scroll_offset(render_stats.local_scroll);
     if tracing::enabled!(tracing::Level::TRACE) {
-        let visible_preview =
-            render_lines_from_paragraph(&paragraph, area, render_stats.local_scroll);
+        let visible_preview = render_lines_from_paragraph(
+            &render_data.paragraph,
+            area,
+            render_data.stats.local_scroll,
+        );
         tracing::trace!(
             "RENDER_VISIBLE_PREVIEW: bottom_lines={:?}",
             preview_tail_lines(&visible_preview, 5),
@@ -352,16 +430,48 @@ fn render_scrolled(
     app.rendered_chat_area = area;
     if chat_selection_snapshot_needed(app.selection) {
         let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
-        app.rendered_chat_lines =
-            render_lines_from_paragraph(&paragraph, area, render_stats.local_scroll);
+        app.rendered_chat_lines = render_lines_from_paragraph(
+            &render_data.paragraph,
+            area,
+            render_data.stats.local_scroll,
+        );
     }
     {
         let _t = app
             .perf
             .as_ref()
-            .map(|p| p.start_with("chat::render_widget", "scroll", render_stats.local_scroll));
-        frame.render_widget(paragraph.scroll((paragraph_scroll, 0)), area);
+            .map(|p| p.start_with("chat::render_widget", "scroll", render_data.stats.local_scroll));
+        frame.render_widget(
+            render_data
+                .paragraph
+                .scroll((paragraph_scroll_offset(render_data.stats.local_scroll), 0)),
+            area,
+        );
     }
+}
+
+pub(super) fn refresh_selection_snapshot(app: &mut App) {
+    if !chat_selection_snapshot_needed(app.selection) {
+        return;
+    }
+
+    let area = app.rendered_chat_area;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let base_spinner = build_base_spinner(app);
+    let content_height = sync_chat_layout(app, area, base_spinner);
+    let render_data = build_scrolled_render_data(
+        app,
+        base_spinner,
+        area.width,
+        content_height,
+        usize::from(area.height),
+    );
+    app.rendered_chat_area = area;
+    app.rendered_chat_lines =
+        render_lines_from_paragraph(&render_data.paragraph, area, render_data.stats.local_scroll);
 }
 
 #[must_use]
@@ -620,58 +730,10 @@ fn render_culled_messages(
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
     crate::perf::mark_with("chat::message_count", "msgs", app.messages.len());
-    let show_subagent_thinking = app.should_show_subagent_thinking(Instant::now());
     let width = area.width;
     let viewport_height = area.height as usize;
-
-    let base_spinner = SpinnerState {
-        frame: app.spinner_frame,
-        is_active_turn_assistant: false,
-        show_empty_thinking: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        show_thinking: matches!(app.status, AppStatus::Thinking),
-        show_subagent_thinking,
-        show_compacting: app.is_compacting,
-    };
-
-    // Detect width change and invalidate layout caches
-    {
-        let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
-        if app.viewport.on_frame(width, area.height).resized() {
-            app.cache_metrics.record_resize();
-        }
-    }
-    // Update per-message visual heights
-    let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
-    crate::perf::mark_with(
-        "chat::update_heights_measured_msgs",
-        "msgs",
-        height_stats.measured_msgs,
-    );
-    crate::perf::mark_with("chat::update_heights_reused_msgs", "msgs", height_stats.reused_msgs);
-    crate::perf::mark_with(
-        "chat::update_heights_measured_lines",
-        "lines",
-        height_stats.measured_lines,
-    );
-
-    // Rebuild prefix sums (O(1) fast path when only last message changed)
-    {
-        let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
-        app.viewport.rebuild_prefix_sums();
-    }
-    if let Some((anchor_idx, anchor_offset)) = app.viewport.ready_scroll_anchor_to_restore() {
-        app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
-    }
-
-    // O(1) via prefix sums instead of O(n) sum every frame
-    let content_height: usize = app.viewport.total_message_height();
-    crate::perf::mark_with("chat::content_height", "rows", content_height);
-    crate::perf::mark_with("chat::viewport_height", "rows", viewport_height);
-    crate::perf::mark_with(
-        "chat::content_overflow_rows",
-        "rows",
-        content_height.saturating_sub(viewport_height),
-    );
+    let base_spinner = build_base_spinner(app);
+    let content_height = sync_chat_layout(app, area, base_spinner);
 
     tracing::trace!(
         "RENDER: width={}, content_height={}, viewport_height={}, scroll_target={}, auto_scroll={}",

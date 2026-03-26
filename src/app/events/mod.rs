@@ -3338,6 +3338,8 @@ mod tests {
     #[test]
     fn connecting_state_ctrl_c_with_non_empty_selection_does_not_quit() {
         let mut app = make_test_app();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.status = AppStatus::Connecting;
         app.rendered_input_lines = vec!["copy".to_owned()];
         app.selection = Some(crate::app::SelectionState {
@@ -3422,6 +3424,8 @@ mod tests {
     #[test]
     fn ctrl_c_with_non_empty_selection_does_not_quit_and_clears_selection() {
         let mut app = make_test_app();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
@@ -3455,6 +3459,8 @@ mod tests {
     #[test]
     fn ctrl_c_second_press_after_copy_quits() {
         let mut app = make_test_app();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
@@ -3475,6 +3481,28 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_with_clipboard_failure_preserves_selection_without_quitting() {
+        let mut app = make_test_app();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Fail);
+        app.rendered_input_lines = vec!["copy".to_owned()];
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 4 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.selection.is_some());
     }
 
     #[test]
@@ -3499,6 +3527,8 @@ mod tests {
     #[test]
     fn ctrl_c_with_whitespace_selection_copies_and_clears_selection() {
         let mut app = make_test_app();
+        let _clipboard =
+            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["   ".to_owned()];
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,

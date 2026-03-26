@@ -8,10 +8,12 @@ use super::{
     ModeState,
 };
 use crate::app::inline_interactions::handle_inline_interaction_key;
-use crate::app::selection::clear_selection;
+use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
 use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(test)]
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -39,9 +41,15 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     if is_ctrl_char_shortcut(key, 'c') {
-        if copy_selection_to_clipboard(app) {
-            clear_selection(app);
-            return true;
+        match copy_selection_to_clipboard(app) {
+            ClipboardCopyResult::Copied => {
+                clear_selection(app);
+                return true;
+            }
+            ClipboardCopyResult::Failed => {
+                return true;
+            }
+            ClipboardCopyResult::NoText => {}
         }
         app.should_quit = true;
         return true;
@@ -49,62 +57,88 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-fn copy_selection_to_clipboard(app: &App) -> bool {
-    let Some(selection) = app.selection else {
-        return false;
-    };
-    let selected_text = selection_text_from_rendered_lines(app, selection);
-    if selected_text.is_empty() {
-        return false;
-    }
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(selected_text);
-    }
-    true
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardCopyResult {
+    Copied,
+    Failed,
+    NoText,
 }
 
-fn selection_text_from_rendered_lines(app: &App, selection: super::SelectionState) -> String {
+fn copy_selection_to_clipboard(app: &mut App) -> ClipboardCopyResult {
+    let Some(selected_text) = selection_text_for_copy(app) else {
+        return ClipboardCopyResult::NoText;
+    };
+
+    write_text_to_clipboard(selected_text)
+}
+
+fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
+    #[cfg(test)]
+    {
+        match TEST_CLIPBOARD_MODE.with(Cell::get) {
+            TestClipboardMode::Succeed => return ClipboardCopyResult::Copied,
+            TestClipboardMode::Fail => return ClipboardCopyResult::Failed,
+            TestClipboardMode::System => {}
+        }
+    }
+
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        tracing::warn!("failed to access clipboard while copying selection");
+        return ClipboardCopyResult::Failed;
+    };
+
+    if clipboard.set_text(selected_text).is_ok() {
+        ClipboardCopyResult::Copied
+    } else {
+        tracing::warn!("failed to write selection text to clipboard");
+        ClipboardCopyResult::Failed
+    }
+}
+
+fn selection_text_for_copy(app: &mut App) -> Option<String> {
+    let selection = app.selection?;
+    crate::ui::refresh_selection_snapshot(app);
     let lines = match selection.kind {
         super::SelectionKind::Chat => &app.rendered_chat_lines,
         super::SelectionKind::Input => &app.rendered_input_lines,
     };
-    if lines.is_empty() {
-        return String::new();
-    }
-
-    let (start, end) = super::normalize_selection(selection.start, selection.end);
-    if start.row >= lines.len() {
-        return String::new();
-    }
-    let last_row = end.row.min(lines.len().saturating_sub(1));
-
-    let mut out = String::new();
-    for row in start.row..=last_row {
-        let line = lines.get(row).map_or("", String::as_str);
-        let start_col = if row == start.row { start.col } else { 0 };
-        let end_col = if row == end.row { end.col } else { line.chars().count() };
-        out.push_str(&slice_by_cols(line, start_col, end_col));
-        if row < last_row {
-            out.push('\n');
-        }
-    }
-    out
+    let selected_text = selection_text_from_rendered_lines(lines, selection);
+    (!selected_text.is_empty()).then_some(selected_text)
 }
 
-fn slice_by_cols(text: &str, start_col: usize, end_col: usize) -> String {
-    if start_col >= end_col {
-        return String::new();
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TestClipboardMode {
+    System,
+    Succeed,
+    Fail,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLIPBOARD_MODE: Cell<TestClipboardMode> = const { Cell::new(TestClipboardMode::System) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestClipboardGuard {
+    previous: TestClipboardMode,
+}
+
+#[cfg(test)]
+impl Drop for TestClipboardGuard {
+    fn drop(&mut self) {
+        TEST_CLIPBOARD_MODE.with(|mode| mode.set(self.previous));
     }
-    let mut out = String::new();
-    for (i, ch) in text.chars().enumerate() {
-        if i >= end_col {
-            break;
-        }
-        if i >= start_col {
-            out.push(ch);
-        }
-    }
-    out
+}
+
+#[cfg(test)]
+pub(crate) fn override_test_clipboard(mode: TestClipboardMode) -> TestClipboardGuard {
+    let previous = TEST_CLIPBOARD_MODE.with(|current| {
+        let previous = current.get();
+        current.set(mode);
+        previous
+    });
+    TestClipboardGuard { previous }
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
@@ -846,7 +880,12 @@ pub(super) fn toggle_header(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{
+        ChatMessage, MessageBlock, MessageRole, SelectionKind, SelectionPoint, SelectionState,
+        TextBlock,
+    };
     use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -878,5 +917,55 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
+    }
+
+    #[test]
+    fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+            usage: None,
+        });
+        app.bind_active_turn_assistant(0);
+        app.rendered_chat_area = Rect::new(0, 0, 20, 6);
+        app.rendered_chat_lines = vec!["hello".to_owned()];
+        app.selection = Some(SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 11 },
+            dragging: false,
+        });
+
+        if let Some(MessageBlock::Text(block)) =
+            app.messages.get_mut(0).and_then(|message| message.blocks.get_mut(0))
+        {
+            block.text.push_str(" world");
+            block.markdown.append(" world");
+            block.cache.invalidate();
+        }
+        app.invalidate_layout(InvalidationLevel::MessageChanged(0));
+
+        assert!(selection_text_for_copy(&mut app).is_some());
+        assert!(app.rendered_chat_lines.iter().any(|line| line.contains("world")));
+    }
+
+    #[test]
+    fn selection_text_for_copy_refreshes_input_snapshot_before_redraw() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        app.rendered_input_area = Rect::new(0, 0, 20, 4);
+        app.rendered_input_lines = vec!["hello".to_owned()];
+        app.selection = Some(SelectionState {
+            kind: SelectionKind::Input,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 11 },
+            dragging: false,
+        });
+
+        app.input.set_text("hello world");
+
+        assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
 }

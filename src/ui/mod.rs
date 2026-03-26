@@ -33,3 +33,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Trusted => trusted::render(frame, app),
     }
 }
+
+pub(crate) fn refresh_selection_snapshot(app: &mut App) {
+    let Some(selection) = app.selection else {
+        return;
+    };
+
+    match (app.active_view, selection.kind) {
+        (ActiveView::Chat, crate::app::SelectionKind::Chat) => {
+            chat::refresh_selection_snapshot(app);
+        }
+        (ActiveView::Chat, crate::app::SelectionKind::Input) => {
+            input::refresh_selection_snapshot(app);
+        }
+        _ => {}
+    }
+}

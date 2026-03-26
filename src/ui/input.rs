@@ -195,9 +195,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     configure_input_textarea(app);
     app.rendered_input_area = geometry.text;
-    if app.selection.is_some() {
-        let rendered = render_lines_from_textarea(app.input.editor(), geometry.text);
-        app.rendered_input_lines = rendered;
+    if app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
+        refresh_selection_snapshot(app);
     }
     frame.render_widget(app.input.editor(), geometry.text);
 
@@ -206,6 +205,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     {
         frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
     }
+}
+
+pub(super) fn refresh_selection_snapshot(app: &mut App) {
+    if !app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
+        return;
+    }
+
+    let area = app.rendered_input_area;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    configure_input_textarea(app);
+    app.rendered_input_lines = render_lines_from_textarea(app.input.editor(), area);
 }
 
 fn configure_input_textarea(app: &mut App) {

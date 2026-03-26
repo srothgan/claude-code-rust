@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::App;
+use super::SelectionState;
+use unicode_width::UnicodeWidthChar;
 
 pub(crate) fn normalize_selection(
     a: super::SelectionPoint,
@@ -14,6 +16,75 @@ pub(super) fn clear_selection(app: &mut App) {
     app.selection = None;
     app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
+}
+
+pub(crate) fn selection_text_from_rendered_lines(
+    lines: &[String],
+    selection: SelectionState,
+) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let (start, end) = normalize_selection(selection.start, selection.end);
+    if start.row >= lines.len() {
+        return String::new();
+    }
+    let last_row = end.row.min(lines.len().saturating_sub(1));
+
+    let mut out = String::new();
+    for row in start.row..=last_row {
+        let line = lines.get(row).map_or("", String::as_str);
+        let start_col = if row == start.row { start.col } else { 0 };
+        let end_col = if row == end.row { end.col } else { line_display_width(line) };
+        out.push_str(&slice_by_display_cols(line, start_col, end_col));
+        if row < last_row {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+pub(crate) fn slice_by_display_cols(text: &str, start_col: usize, end_col: usize) -> String {
+    if start_col >= end_col {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut col = 0usize;
+    let mut last_visible_included = false;
+
+    for ch in text.chars() {
+        let width = display_width(ch);
+        if width == 0 {
+            if last_visible_included {
+                out.push(ch);
+            }
+            continue;
+        }
+
+        let char_start = col;
+        let char_end = col.saturating_add(width);
+        let include = char_end > start_col && char_start < end_col;
+        if include {
+            out.push(ch);
+        }
+        last_visible_included = include;
+        col = char_end;
+    }
+
+    out
+}
+
+fn line_display_width(text: &str) -> usize {
+    text.chars().map(display_width).sum()
+}
+
+fn display_width(ch: char) -> usize {
+    match ch {
+        '\t' | '\n' | '\r' => 1,
+        _ => UnicodeWidthChar::width(ch).unwrap_or(0),
+    }
 }
 
 #[cfg(test)]
@@ -389,5 +460,33 @@ mod tests {
         let s = "abcde";
         let windows: Vec<String> = (0..3).map(|i| slice_by_cols(s, i, i + 3)).collect();
         assert_eq!(windows, vec!["abc", "bcd", "cde"]);
+    }
+
+    #[test]
+    fn slice_by_display_cols_handles_wide_unicode_cells() {
+        let s = "a😀b";
+        assert_eq!(slice_by_display_cols(s, 0, 1), "a");
+        assert_eq!(slice_by_display_cols(s, 1, 3), "😀");
+        assert_eq!(slice_by_display_cols(s, 2, 4), "😀b");
+    }
+
+    #[test]
+    fn slice_by_display_cols_preserves_combining_suffix_for_selected_base() {
+        let s = "e\u{0301}x";
+        assert_eq!(slice_by_display_cols(s, 0, 1), "e\u{0301}");
+        assert_eq!(slice_by_display_cols(s, 1, 2), "x");
+    }
+
+    #[test]
+    fn selection_text_uses_display_columns_for_chat_lines() {
+        let lines = vec!["a😀b".to_owned()];
+        let selection = SelectionState {
+            kind: crate::app::SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 1 },
+            end: SelectionPoint { row: 0, col: 3 },
+            dragging: false,
+        };
+
+        assert_eq!(selection_text_from_rendered_lines(&lines, selection), "😀");
     }
 }
