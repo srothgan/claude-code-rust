@@ -316,6 +316,7 @@ mod tests {
     use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
+    use crate::agent::events::TerminalProcess;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
@@ -326,6 +327,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
@@ -750,6 +752,103 @@ mod tests {
             panic!("tool call block missing");
         };
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
+    }
+
+    #[test]
+    fn tool_call_update_with_same_terminal_content_still_invalidates_command_changes() {
+        let mut app = make_test_app();
+        let tc = model::ToolCall::new("tc-exec-terminal", "Terminal")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress)
+            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
+                "term-1",
+            ))]);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+        );
+
+        app.terminals.borrow_mut().insert(
+            "term-1".to_owned(),
+            TerminalProcess {
+                child: None,
+                output_buffer: Arc::new(Mutex::new(Vec::new())),
+                command: "echo refreshed".to_owned(),
+            },
+        );
+
+        let (mi, bi) = app.lookup_tool_call("tc-exec-terminal").expect("tool call not indexed");
+        let before_layout = match &app.messages[mi].blocks[bi] {
+            MessageBlock::ToolCall(tc) => tc.layout_epoch,
+            _ => panic!("expected tool call block"),
+        };
+
+        let update = model::ToolCallUpdate::new(
+            "tc-exec-terminal",
+            model::ToolCallUpdateFields::new().content(vec![model::ToolCallContent::Terminal(
+                model::TerminalToolCallContent::new("term-1"),
+            )]),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.terminal_command.as_deref(), Some("echo refreshed"));
+        assert!(tc.layout_epoch > before_layout);
+        assert_eq!(app.viewport.oldest_stale_index(), Some(mi));
+    }
+
+    #[test]
+    fn repeated_tool_call_updates_existing_execute_snapshot_state() {
+        let mut app = make_test_app();
+        app.terminals.borrow_mut().insert(
+            "term-2".to_owned(),
+            TerminalProcess {
+                child: None,
+                output_buffer: Arc::new(Mutex::new(Vec::new())),
+                command: "echo second".to_owned(),
+            },
+        );
+
+        let first = model::ToolCall::new("tc-dup", "Terminal")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress)
+            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
+                "term-1",
+            ))])
+            .raw_output(serde_json::json!("first"));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first)),
+        );
+
+        let second = model::ToolCall::new("tc-dup", "Terminal")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress)
+            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
+                "term-2",
+            ))])
+            .raw_output(serde_json::json!("second"));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(second)),
+        );
+
+        let (mi, bi) = app.lookup_tool_call("tc-dup").expect("tool call not indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.terminal_output.as_deref(), Some("second"));
+        assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
+        assert_eq!(tc.terminal_command.as_deref(), Some("echo second"));
+        assert!(app.terminal_tool_calls.iter().any(|entry| entry.terminal_id == "term-2"
+            && entry.msg_idx == mi
+            && entry.block_idx == bi));
+        assert!(app.terminal_tool_calls.iter().all(|entry| entry.terminal_id != "term-1"));
     }
 
     #[test]

@@ -28,8 +28,11 @@ impl super::App {
     }
 
     #[must_use]
-    fn protected_tail_message_idx(&self) -> Option<usize> {
-        self.is_streaming_tail_protected().then(|| self.messages.len().checked_sub(1)).flatten()
+    fn protected_streaming_message_idx(&self) -> Option<usize> {
+        if !self.is_streaming_tail_protected() {
+            return None;
+        }
+        self.active_turn_assistant_idx().or_else(|| self.messages.len().checked_sub(1))
     }
 
     #[must_use]
@@ -43,7 +46,7 @@ impl super::App {
 
     #[must_use]
     fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
-        let tail_protected = self.protected_tail_message_idx() == Some(msg_idx);
+        let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
         let Some(block) = self.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
         else {
             return false;
@@ -90,7 +93,7 @@ impl super::App {
         self.render_cache_protected_bytes = 0;
         self.render_cache_evictable.clear();
 
-        let protected_tail = self.protected_tail_message_idx();
+        let protected_tail = self.protected_streaming_message_idx();
         for (msg_idx, msg) in self.messages.iter().enumerate() {
             let mut slots = Vec::with_capacity(msg.blocks.len());
             for (block_idx, block) in msg.blocks.iter().enumerate() {
@@ -197,7 +200,7 @@ impl super::App {
 
     fn refresh_tail_message_cache_protection(&mut self) {
         self.ensure_render_cache_accounting();
-        let next_tail = self.protected_tail_message_idx();
+        let next_tail = self.protected_streaming_message_idx();
         if self.render_cache_tail_msg_idx == next_tail {
             return;
         }

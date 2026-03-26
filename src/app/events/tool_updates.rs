@@ -187,6 +187,7 @@ fn apply_tool_call_content_update(
     let Some(content) = content else {
         return false;
     };
+    let mut changed = false;
     for cb in content {
         if let model::ToolCallContent::Terminal(t) = cb {
             let tid = t.terminal_id.clone();
@@ -194,18 +195,20 @@ fn apply_tool_call_content_update(
                 && tc.terminal_command.as_deref() != Some(terminal.command.as_str())
             {
                 tc.terminal_command = Some(terminal.command.clone());
+                changed = true;
             }
             if tc.terminal_id.as_deref() != Some(tid.as_str()) {
                 tc.terminal_id = Some(tid.clone());
+                changed = true;
             }
             *terminal_subscription = Some(tid);
         }
     }
-    if tc.content == content {
-        return false;
+    if tc.content != content {
+        tc.content = content.to_vec();
+        changed = true;
     }
-    tc.content = content.to_vec();
-    true
+    changed
 }
 
 fn apply_tool_call_raw_input_update(

@@ -1607,6 +1607,48 @@ mod tests {
     }
 
     #[test]
+    fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("old message")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("active streaming owner")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::System(Some(SystemSeverity::Info)),
+                blocks: vec![assistant_text_block("late trailing system row")],
+                usage: None,
+            },
+        ];
+        app.bind_active_turn_assistant(1);
+
+        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+            block.cache.store(vec![Line::from("x".repeat(2000))]);
+        }
+        let protected_bytes = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+            block.cache.store(vec![Line::from("y".repeat(4000))]);
+            block.cache.cached_bytes()
+        } else {
+            0
+        };
+        if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+            block.cache.store(vec![Line::from("z".repeat(5000))]);
+        }
+
+        app.render_cache_budget.max_bytes = 64;
+        let stats = app.enforce_render_cache_budget();
+
+        assert_eq!(stats.protected_bytes, protected_bytes);
+    }
+
+    #[test]
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
