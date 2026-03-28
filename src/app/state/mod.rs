@@ -223,6 +223,10 @@ pub struct App {
     pub active_paste_session: Option<PasteSessionState>,
     /// Monotonic counter for paste session identifiers.
     pub next_paste_session_id: u64,
+    /// Pending image attachments accumulated via Ctrl+V clipboard reads and
+    /// consumed on submit. No cap on count — this is a developer tool, so
+    /// users are trusted to attach as many images as they need.
+    pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Current git branch (refreshed on focus gain + turn complete).
@@ -842,6 +846,7 @@ impl App {
             pending_paste_session: None,
             active_paste_session: None,
             next_paste_session_id: 1,
+            pending_images: Vec::new(),
             cached_todo_compact: None,
             git_branch: None,
             update_check_hint: None,

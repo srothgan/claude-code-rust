@@ -286,8 +286,19 @@ pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<mode
         types::ContentBlock::Text { text } => {
             Some(model::ContentBlock::Text(model::TextContent::new(text)))
         }
-        // Deferred for parity follow-up per scope.
-        types::ContentBlock::Image { .. } => None,
+        types::ContentBlock::Image { mime_type, uri: _, data } => {
+            let mime = mime_type.unwrap_or_else(|| "image/png".to_owned());
+            let image_data = data.unwrap_or_default();
+            if !crate::app::clipboard_image::is_supported_image_type(&mime) {
+                tracing::warn!(mime_type = %mime, "convert_content_block: skipping unsupported image type");
+                return None;
+            }
+            if image_data.is_empty() {
+                tracing::warn!("convert_content_block: skipping image block with empty data");
+                return None;
+            }
+            Some(model::ContentBlock::Image(model::ImageContent::new(image_data, mime)))
+        }
     }
 }
 

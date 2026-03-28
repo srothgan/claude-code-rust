@@ -30,6 +30,7 @@ const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
 const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
 const HIGHLIGHT_PASTE_PRIORITY: u8 = 9;
+const HIGHLIGHT_IMAGE_BADGE_PRIORITY: u8 = 10;
 
 /// Braille spinner frames (same as message.rs) for the connecting animation.
 const SPINNER_FRAMES: &[char] = &[
@@ -100,7 +101,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let geometry = compute_render_geometry(area, hint_lines);
 
     if let Some(hint_pad) = geometry.hint_pad {
-        let mut next_hint_row = hint_pad.y;
+        let mut hint_y = hint_pad.y;
 
         if let Some(hint) = &app.login_hint {
             let lines = vec![
@@ -116,14 +117,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme::DIM),
                 )),
             ];
-            let login_area = Rect {
-                x: hint_pad.x,
-                y: next_hint_row,
-                width: hint_pad.width,
-                height: LOGIN_HINT_LINES,
-            };
+            let login_area =
+                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: LOGIN_HINT_LINES };
             frame.render_widget(Paragraph::new(lines), login_area);
-            next_hint_row = next_hint_row.saturating_add(LOGIN_HINT_LINES);
+            hint_y = hint_y.saturating_add(LOGIN_HINT_LINES);
         }
 
         if has_cancel_hint(app) {
@@ -135,12 +132,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme::DIM),
                 ),
             ]);
-            let cancel_area = Rect {
-                x: hint_pad.x,
-                y: next_hint_row,
-                width: hint_pad.width,
-                height: CANCEL_HINT_LINES,
-            };
+            let cancel_area =
+                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: CANCEL_HINT_LINES };
             frame.render_widget(Paragraph::new(cancel_line), cancel_area);
         }
     }
@@ -246,6 +239,7 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
     let mention_style = Style::default().fg(Color::Cyan);
     let subagent_style = Style::default().fg(theme::SUBAGENT_TOKEN);
     let paste_style = Style::default().fg(Color::Green);
+    let image_badge_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
     for (row, line) in lines.iter().enumerate() {
         if let Some((start, end)) = slash_command_range(line) {
@@ -277,6 +271,14 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
                 ((row, start), (row, end)),
                 paste_style,
                 HIGHLIGHT_PASTE_PRIORITY,
+            );
+        }
+
+        for (start, end, _) in crate::app::clipboard_image::find_image_badge_spans(line) {
+            textarea.custom_highlight(
+                ((row, start), (row, end)),
+                image_badge_style,
+                HIGHLIGHT_IMAGE_BADGE_PRIORITY,
             );
         }
     }

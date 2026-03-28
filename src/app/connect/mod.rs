@@ -157,6 +157,7 @@ pub fn create_app(cli: &Cli) -> App {
         pending_paste_session: None,
         active_paste_session: None,
         next_paste_session_id: 1,
+        pending_images: Vec::new(),
         cached_todo_compact: None,
         git_branch: None,
         update_check_hint: None,

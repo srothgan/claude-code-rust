@@ -443,6 +443,89 @@ impl InputState {
     pub fn line_count(&self) -> u16 {
         u16::try_from(self.lines().len()).unwrap_or(u16::MAX)
     }
+
+    /// If the cursor is inside or immediately adjacent to an `[Image #N]` badge,
+    /// delete the entire badge and return the 1-based image index N.
+    ///
+    /// `direction` should be `"before"` for Backspace (cursor after badge) or
+    /// `"after"` for Delete (cursor before badge).
+    pub fn delete_image_badge(&mut self, direction: &str) -> Option<usize> {
+        let (row, col) = self.cursor();
+        let line = self.lines().get(row)?.clone();
+        let cursor_byte = char_to_byte_index(&line, col);
+
+        for (byte_start, byte_end, idx) in
+            crate::app::clipboard_image::find_image_badge_spans(&line)
+        {
+            let hit = match direction {
+                // Backspace: cursor is anywhere inside or at the end of the badge.
+                "before" => cursor_byte > byte_start && cursor_byte <= byte_end,
+                // Delete: cursor is anywhere inside or at the start of the badge.
+                "after" => cursor_byte >= byte_start && cursor_byte < byte_end,
+                _ => false,
+            };
+            if hit {
+                // Remove the badge text from the line.
+                let mut lines = self.lines().to_vec();
+                let l = &mut lines[row];
+                l.replace_range(byte_start..byte_end, "");
+                let new_col = byte_to_char_index(l, byte_start);
+                self.replace_lines_and_cursor(lines, row, new_col);
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// Renumber all `[Image #N]` badges in the input to match the current
+    /// `pending_images` indices (1-based). Call after removing an image.
+    pub fn renumber_image_badges(&mut self) {
+        let mut lines = self.lines().to_vec();
+        let (cursor_row, cursor_col) = self.cursor();
+        let mut new_cursor_col = cursor_col;
+        let mut counter = 0usize;
+        for (row_idx, line) in lines.iter_mut().enumerate() {
+            let mut result = String::with_capacity(line.len());
+            let mut search_from = 0usize;
+            // Badge text is pure ASCII (`[Image #N]`), so byte len == char len.
+            let mut col_delta: isize = 0;
+            while let Some(rel_start) = line[search_from..].find("[Image #") {
+                let abs_start = search_from + rel_start;
+                if let Some(end_rel) = line[abs_start..].find(']') {
+                    let abs_end = abs_start + end_rel + 1;
+                    let inner = &line[abs_start + 8..abs_start + end_rel];
+                    if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+                        counter += 1;
+                        let new_badge = format!("[Image #{counter}]");
+                        result.push_str(&line[search_from..abs_start]);
+                        let old_len = abs_end - abs_start;
+                        let new_len = new_badge.len();
+                        col_delta += new_len.cast_signed() - old_len.cast_signed();
+                        result.push_str(&new_badge);
+                        search_from = abs_end;
+                        continue;
+                    }
+                    // Not a valid badge, copy as-is.
+                    result.push_str(&line[search_from..abs_end]);
+                    search_from = abs_end;
+                } else {
+                    break;
+                }
+            }
+            result.push_str(&line[search_from..]);
+            *line = result;
+            if row_idx == cursor_row {
+                new_cursor_col =
+                    usize::try_from(cursor_col.cast_signed() + col_delta).unwrap_or(cursor_col);
+            }
+        }
+        self.replace_lines_and_cursor(lines, cursor_row, new_cursor_col);
+    }
+}
+
+/// Convert a byte index to a character index within a string.
+fn byte_to_char_index(s: &str, byte_idx: usize) -> usize {
+    s[..byte_idx].chars().count()
 }
 
 impl Default for InputState {

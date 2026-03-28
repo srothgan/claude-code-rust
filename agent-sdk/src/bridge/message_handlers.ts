@@ -35,6 +35,69 @@ export function textFromPrompt(command: Extract<BridgeCommand, { command: "promp
     .join("");
 }
 
+/** MIME types supported by the Anthropic Vision API.
+ *  NOTE: Keep in sync with `SUPPORTED_IMAGE_MIME_TYPES` in
+ *  `src/app/clipboard_image.rs`. */
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+/** Fast check that a string looks like valid base64 (non-empty, correct charset & padding). */
+function isValidBase64(data: string): boolean {
+  if (!data) return false;
+  const clean = data.replace(/\s/g, "");
+  if (clean.length % 4 !== 0) return false;
+  // Padding ('=') must only appear at the end and be at most 2 characters.
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(clean);
+}
+
+/**
+ * Build a content array from prompt chunks, supporting both text and image blocks.
+ * Returns the Anthropic API content block format expected by MessageParam.
+ */
+export function contentFromPrompt(
+  command: Extract<BridgeCommand, { command: "prompt" }>,
+): Array<Record<string, unknown>> {
+  const chunks = command.chunks ?? [];
+  const content: Array<Record<string, unknown>> = [];
+
+  for (const chunk of chunks) {
+    if (chunk.kind === "text") {
+      const text = typeof chunk.value === "string" ? chunk.value : "";
+      if (text.trim()) {
+        content.push({ type: "text", text });
+      }
+    } else if (chunk.kind === "image") {
+      const val =
+        chunk.value && typeof chunk.value === "object" ? (chunk.value as Record<string, unknown>) : null;
+      if (!val) continue;
+      const data = typeof val.data === "string" ? val.data : "";
+      const mimeType = typeof val.mime_type === "string" ? val.mime_type : "image/png";
+      if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+        console.warn(`contentFromPrompt: skipping unsupported image type "${mimeType}"`);
+        continue;
+      }
+      if (!isValidBase64(data)) {
+        console.warn("contentFromPrompt: skipping image with invalid base64 data");
+        continue;
+      }
+      content.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: mimeType,
+          data,
+        },
+      });
+    }
+  }
+
+  return content;
+}
+
 export function handleTaskSystemMessage(
   session: SessionState,
   subtype: string,

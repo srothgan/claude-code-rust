@@ -19,7 +19,7 @@ import {
   currentSessionListOptions,
   setSessionListingDir,
 } from "./bridge/events.js";
-import { textFromPrompt } from "./bridge/message_handlers.js";
+import { textFromPrompt, contentFromPrompt } from "./bridge/message_handlers.js";
 import {
   sessions,
   sessionById,
@@ -173,7 +173,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
               },
             ],
             capabilities: {
-              prompt_image: false,
+              prompt_image: true,
               prompt_embedded_context: true,
               supports_session_listing: true,
               supports_resume_session: true,
@@ -245,8 +245,8 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
-      const text = textFromPrompt(command);
-      if (!text.trim()) {
+      const content = contentFromPrompt(command);
+      if (content.length === 0) {
         return;
       }
       session.input.enqueue({
@@ -255,7 +255,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         parent_tool_use_id: null,
         message: {
           role: "user",
-          content: [{ type: "text", text }],
+          content,
         },
       } as import("@anthropic-ai/claude-agent-sdk").SDKUserMessage);
       return;

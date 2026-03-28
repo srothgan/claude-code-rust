@@ -278,6 +278,23 @@ pub enum MessageBlock {
     Text(TextBlock),
     ToolCall(Box<ToolCallInfo>),
     Welcome(WelcomeBlock),
+    /// Indicates N images were attached to this user message.
+    ImageAttachment(ImageAttachmentBlock),
+}
+
+/// Lightweight block for image attachment indicators. Carries a [`BlockCache`]
+/// to satisfy the render-budget invariant that every [`MessageBlock`] variant
+/// has a cache, even though the cached content is trivially small.
+pub struct ImageAttachmentBlock {
+    pub count: usize,
+    pub cache: BlockCache,
+}
+
+impl ImageAttachmentBlock {
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        Self { count, cache: BlockCache::default() }
+    }
 }
 
 #[derive(Debug)]

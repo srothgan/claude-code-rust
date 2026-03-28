@@ -211,13 +211,29 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
 
 fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(block) = block {
-            let trailing_gap = block.trailing_blank_lines();
-            let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
-            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-            for _ in 0..trailing_gap {
-                layout.push_blank();
+        match block {
+            MessageBlock::Text(block) => {
+                let trailing_gap = block.trailing_blank_lines();
+                let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
+                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                for _ in 0..trailing_gap {
+                    layout.push_blank();
+                }
             }
+            MessageBlock::ImageAttachment(img) => {
+                let count = img.count;
+                let label = if count == 1 {
+                    " [img] 1 image attached ".to_owned()
+                } else {
+                    format!(" [img] {count} images attached ")
+                };
+                let line = Line::from(Span::styled(
+                    label,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                ));
+                layout.push_wrapped_line(line, width);
+            }
+            _ => {}
         }
     }
 }
@@ -300,7 +316,7 @@ fn append_assistant_blocks(
                 has_visible_content = true;
                 prev_was_tool = true;
             }
-            MessageBlock::Welcome(_) => {}
+            MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => {}
         }
     }
 

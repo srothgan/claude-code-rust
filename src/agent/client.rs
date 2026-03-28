@@ -105,16 +105,46 @@ impl AgentConnection {
         Self { command_tx }
     }
 
+    /// Convenience wrapper for text-only prompts. Prefer `prompt_with_images`
+    /// for new call sites that may need image support.
     pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
+        self.prompt_with_images(session_id, text, Vec::new())
+    }
+
+    pub fn prompt_with_images(
+        &self,
+        session_id: String,
+        text: String,
+        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    ) -> anyhow::Result<PromptResponse> {
+        let mut chunks = Vec::with_capacity(1 + images.len());
+
+        // Add image chunks first (convention: images before text).
+        for img in images {
+            if let Err(reason) =
+                crate::app::clipboard_image::validate_image(&img.data, &img.mime_type)
+            {
+                tracing::warn!("prompt_with_images: skipping invalid image: {reason}");
+                continue;
+            }
+            chunks.push(crate::agent::types::PromptChunk {
+                kind: "image".to_owned(),
+                value: serde_json::json!({
+                    "data": img.data,
+                    "mime_type": img.mime_type,
+                }),
+            });
+        }
+
+        // Add text chunk.
+        chunks.push(crate::agent::types::PromptChunk {
+            kind: "text".to_owned(),
+            value: serde_json::Value::String(text),
+        });
+
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::Prompt {
-                session_id,
-                chunks: vec![crate::agent::types::PromptChunk {
-                    kind: "text".to_owned(),
-                    value: serde_json::Value::String(text),
-                }],
-            },
+            command: BridgeCommand::Prompt { session_id, chunks },
         })?;
         Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }

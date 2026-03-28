@@ -323,6 +323,9 @@ fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
     if handle_mode_cycle_key(app, key) {
         return true;
     }
+    if handle_clipboard_paste_key(app, key) {
+        return true;
+    }
     if handle_editing_key(app, key) {
         return true;
     }
@@ -334,6 +337,11 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     app.pending_submit = None;
+    // Clear any pending image attachments on Escape.
+    if !app.pending_images.is_empty() {
+        app.pending_images.clear();
+        app.needs_redraw = true;
+    }
     if app.focus_owner() == FocusOwner::TodoList {
         app.release_focus_target(FocusTarget::TodoList);
         return true;
@@ -498,6 +506,52 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
+fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
+    if !is_ctrl_char_shortcut(key, 'v') || app.focus_owner() == FocusOwner::TodoList {
+        return false;
+    }
+
+    // Skip system clipboard access in tests to avoid flaky failures / segfaults.
+    #[cfg(test)]
+    {
+        false
+    }
+    #[cfg(not(test))]
+    {
+        let Ok(mut clipboard) = arboard::Clipboard::new() else {
+            return false;
+        };
+
+        // Try reading an image from the clipboard first.
+        if let Ok(img_data) = clipboard.get_image()
+            && let Some(attachment) = super::clipboard_image::encode_clipboard_image(img_data)
+        {
+            app.pending_images.push(attachment);
+            // Insert badge text at the cursor position so the user (and
+            // the model) can see where images are relative to text.
+            let idx = app.pending_images.len();
+            let badge = format!("[Image #{idx}]");
+            app.input.insert_str(&badge);
+            app.needs_redraw = true;
+            tracing::debug!(
+                count = app.pending_images.len(),
+                "clipboard_paste: attached image from clipboard"
+            );
+            return true;
+        }
+
+        // Fallback: paste text (for terminals without Event::Paste).
+        let Ok(text) = clipboard.get_text() else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        app.queue_paste_text(&text);
+        true
+    }
+}
+
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
@@ -505,6 +559,9 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
+            if try_delete_image_badge(app, "before") {
+                return true;
+            }
             app.input.textarea_delete_word_before()
         }
         (KeyCode::Delete, m)
@@ -512,16 +569,41 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
+            if try_delete_image_badge(app, "after") {
+                return true;
+            }
             app.input.textarea_delete_word_after()
         }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
+            if try_delete_image_badge(app, "before") {
+                return true;
+            }
             app.input.textarea_delete_char_before()
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
+            if try_delete_image_badge(app, "after") {
+                return true;
+            }
             app.input.textarea_delete_char_after()
         }
         _ => false,
     }
+}
+
+/// If the cursor is inside or adjacent to an `[Image #N]` badge, delete the
+/// entire badge, remove the associated image from `pending_images`, and
+/// renumber remaining badges. Returns `true` if a badge was deleted.
+fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
+    let Some(one_based_idx) = app.input.delete_image_badge(direction) else {
+        return false;
+    };
+    let array_idx = one_based_idx.saturating_sub(1);
+    if array_idx < app.pending_images.len() {
+        app.pending_images.remove(array_idx);
+    }
+    app.input.renumber_image_badges();
+    app.needs_redraw = true;
+    true
 }
 
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
