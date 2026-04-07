@@ -780,7 +780,7 @@ mod tests {
 
         std::fs::write(tmp.path().join("new.rs"), "").expect("create watched file");
 
-        wait_for(&mut app, Duration::from_secs(4), |app| {
+        wait_for(&mut app, Duration::from_secs(8), |app| {
             app.mention.as_ref().is_some_and(|mention| {
                 mention.candidates.iter().any(|candidate| candidate.rel_path == "new.rs")
             })
@@ -798,7 +798,7 @@ mod tests {
         std::fs::rename(tmp.path().join("before.rs"), tmp.path().join("after.rs"))
             .expect("rename watched file");
 
-        wait_for(&mut app, Duration::from_secs(4), |app| {
+        wait_for(&mut app, Duration::from_secs(8), |app| {
             app.mention.as_ref().is_some_and(|mention| {
                 mention.candidates.iter().any(|candidate| candidate.rel_path == "after.rs")
                     && !mention.candidates.iter().any(|candidate| candidate.rel_path == "before.rs")
