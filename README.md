@@ -68,8 +68,14 @@ This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONT
 This project is licensed under the [Apache License 2.0](LICENSE).
 Apache-2.0 was chosen to keep usage and redistribution straightforward for individual users, downstream packagers, and commercial adopters.
 
-## Disclaimer
+## Disclaimer and Legal Notice
 
-This project is an unofficial terminal UI for Claude Code and is not affiliated with, endorsed by, or supported by Anthropic.
-Use it at your own risk.
+This project is not affiliated with, endorsed by, or supported by Anthropic.
+
+A quick note on where this project stands, since I know people worry about this kind of thing: claude-code-rust is a terminal UI that I wrote from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak -- it talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
+
+The project uses your existing Claude Code subscription via the Agent SDK and the Agent SDK's terms allow building on top of it. Other community projects do the same. As far as I can tell, using this project is fine -- but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
+
+This project's source code is licensed under [Apache-2.0](LICENSE). The Agent SDK itself is proprietary and governed by [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms).
+
 For official Claude documentation, see [https://claude.ai/docs](https://claude.ai/docs).
