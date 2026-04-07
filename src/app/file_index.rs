@@ -442,6 +442,12 @@ fn collect_rename_changes(
     paths: &[PathBuf],
 ) -> Vec<FileIndexChange> {
     if paths.len() < 2 {
+        // macOS FSEvents emits two separate RenameMode::Any events (one per
+        // path) instead of a single paired event. If the path no longer exists
+        // it is the "from" side of the rename and should be treated as a remove.
+        if paths.first().is_some_and(|p| !p.exists()) {
+            return collect_remove_changes(root, paths);
+        }
         return collect_create_or_modify_changes(root, respect_gitignore, paths);
     }
     let from = &paths[0];
