@@ -13,6 +13,7 @@ mod input;
 mod layout;
 mod markdown;
 mod message;
+mod session_picker;
 mod tables;
 pub mod theme;
 mod todo;
@@ -30,6 +31,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Chat => chat_view::render(frame, app),
         ActiveView::Config => config::render(frame, app),
         ActiveView::Trusted => trusted::render(frame, app),
+        ActiveView::SessionPicker => session_picker::render(frame, app),
     }
 }
 

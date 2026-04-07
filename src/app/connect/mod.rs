@@ -18,16 +18,17 @@ use super::dialog::DialogState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
+    SessionPickerState,
 };
 use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
-use crate::Cli;
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
+use crate::{Cli, Command};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -64,7 +65,7 @@ struct StartConnectionParams {
     session_launch_settings: SessionLaunchSettings,
 }
 
-pub(crate) use session_start::{SessionStartReason, resume_session, start_new_session};
+pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 #[allow(clippy::too_many_lines)]
@@ -141,6 +142,7 @@ pub fn create_app(cli: &Cli) -> App {
         available_agents: Vec::new(),
         available_models: Vec::new(),
         recent_sessions: Vec::new(),
+        session_picker: SessionPickerState::default(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
         scrollbar_drag: None,
@@ -189,8 +191,20 @@ pub fn create_app(cli: &Cli) -> App {
         startup_connection_requested: false,
         connection_started: false,
         startup_bridge_script: cli.bridge_script.clone(),
-        startup_resume_id: cli.resume.clone(),
-        startup_resume_requested: cli.resume.is_some(),
+        startup_resume_id: match &cli.command {
+            Some(Command::Resume { session_id: Some(id) }) => Some(id.clone()),
+            _ => None,
+        },
+        startup_resume_requested: matches!(
+            &cli.command,
+            Some(Command::Resume { session_id: Some(_) })
+        ),
+        startup_session_picker_requested: matches!(
+            &cli.command,
+            Some(Command::Resume { session_id: None })
+        ),
+        startup_recent_sessions_loaded: false,
+        startup_session_picker_resolved: false,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {

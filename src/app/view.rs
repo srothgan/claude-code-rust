@@ -9,6 +9,7 @@ pub enum ActiveView {
     Chat,
     Config,
     Trusted,
+    SessionPicker,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {

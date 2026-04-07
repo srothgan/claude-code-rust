@@ -25,8 +25,9 @@ pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
     LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, SUBAGENT_THINKING_DEBOUNCE, ScrollbarDragState,
-    SelectionKind, SelectionPoint, SelectionState, SessionUsageState, TodoItem, TodoStatus,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    SelectionKind, SelectionPoint, SelectionState, SessionPickerState, SessionUsageState, TodoItem,
+    TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -183,6 +184,8 @@ pub struct App {
     pub available_models: Vec<model::AvailableModel>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
+    /// Selection state for the startup session picker screen.
+    pub session_picker: SessionPickerState,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Current selection state for mouse-based selection.
@@ -284,6 +287,9 @@ pub struct App {
     pub startup_bridge_script: Option<PathBuf>,
     pub startup_resume_id: Option<String>,
     pub startup_resume_requested: bool,
+    pub startup_session_picker_requested: bool,
+    pub startup_recent_sessions_loaded: bool,
+    pub startup_session_picker_resolved: bool,
 }
 
 impl App {
@@ -826,6 +832,7 @@ impl App {
             available_agents: Vec::new(),
             available_models: Vec::new(),
             recent_sessions: Vec::new(),
+            session_picker: SessionPickerState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,
             scrollbar_drag: None,
@@ -873,6 +880,9 @@ impl App {
             startup_bridge_script: None,
             startup_resume_id: None,
             startup_resume_requested: false,
+            startup_session_picker_requested: false,
+            startup_recent_sessions_loaded: false,
+            startup_session_picker_resolved: false,
         }
     }
 

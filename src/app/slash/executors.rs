@@ -8,7 +8,7 @@ use super::{
     set_command_pending,
 };
 use crate::agent::events::ClientEvent;
-use crate::app::connect::{SessionStartReason, resume_session, start_new_session};
+use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use crate::app::events::push_system_message_with_severity;
 use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
 
@@ -431,9 +431,8 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     };
 
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
-    app.resuming_session_id = Some(session_id.to_owned());
     let session_id = session_id.to_owned();
-    if let Err(e) = resume_session(app, &conn, session_id) {
+    if let Err(e) = begin_resume_session(app, &conn, session_id) {
         let _ = app
             .event_tx
             .send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));

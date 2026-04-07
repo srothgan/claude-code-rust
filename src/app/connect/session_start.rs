@@ -105,6 +105,19 @@ pub(crate) fn resume_session(
     )
 }
 
+/// Begin a session resume by marking the target session and sending the command.
+///
+/// Caller owns UI concerns such as entering `CommandPending` and surfacing
+/// synchronous errors.
+pub(crate) fn begin_resume_session(
+    app: &mut App,
+    conn: &AgentConnection,
+    session_id: String,
+) -> anyhow::Result<()> {
+    app.resuming_session_id = Some(session_id.clone());
+    resume_session(app, conn, session_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};

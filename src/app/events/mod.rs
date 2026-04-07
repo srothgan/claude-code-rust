@@ -86,6 +86,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::trust::handle_key(app, key);
             true
         }
+        ActiveView::SessionPicker => {
+            super::session_picker::handle_key(app, key);
+            true
+        }
     }
 }
 
@@ -95,7 +99,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
             app.active_paste_session = None;
             mouse::handle_mouse_event(app, mouse);
         }
-        ActiveView::Config | ActiveView::Trusted => {
+        ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
             let _ = mouse;
         }
     }
@@ -115,7 +119,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             false
         }
         ActiveView::Config => super::config::handle_paste(app, text),
-        ActiveView::Trusted => false,
+        ActiveView::Trusted | ActiveView::SessionPicker => false,
     }
 }
 
@@ -695,6 +699,19 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
         (app, rx)
+    }
+
+    fn listed_session(id: &str, title: &str) -> crate::agent::types::SessionListEntry {
+        crate::agent::types::SessionListEntry {
+            session_id: id.to_owned(),
+            summary: title.to_owned(),
+            last_modified_ms: 1,
+            file_size_bytes: 2,
+            cwd: Some("/test".to_owned()),
+            git_branch: Some("main".to_owned()),
+            custom_title: Some(title.to_owned()),
+            first_prompt: Some(format!("prompt {title}")),
+        }
     }
 
     #[test]
@@ -1954,6 +1971,97 @@ mod tests {
         assert!(app.config.pending_session_title_change.is_none());
         assert_eq!(app.config.status_message.as_deref(), Some("Generated session title"));
         assert!(app.config.last_error.is_none());
+    }
+
+    #[test]
+    fn startup_picker_waits_for_connected_after_sessions_listed() {
+        let mut app = make_test_app();
+        app.startup_session_picker_requested = true;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionsListed {
+                sessions: vec![listed_session("session-1", "First Session")],
+            },
+        );
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert!(app.startup_recent_sessions_loaded);
+        assert!(!app.startup_session_picker_resolved);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert!(app.startup_session_picker_resolved);
+    }
+
+    #[test]
+    fn startup_picker_empty_list_stays_in_chat_with_info_message() {
+        let mut app = make_test_app();
+        app.startup_session_picker_requested = true;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert!(!app.startup_session_picker_resolved);
+
+        handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert!(app.startup_session_picker_resolved);
+        let last = app.messages.last().expect("info message");
+        let text = match last.blocks.first().expect("text block") {
+            MessageBlock::Text(block) => block.text.as_str(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("No recent sessions found for this directory"));
+    }
+
+    #[test]
+    fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::SessionPicker;
+        app.recent_sessions = vec![
+            crate::app::RecentSessionInfo {
+                session_id: "session-1".to_owned(),
+                summary: "First".to_owned(),
+                last_modified_ms: 1,
+                file_size_bytes: 1,
+                cwd: Some("/test".to_owned()),
+                git_branch: Some("main".to_owned()),
+                custom_title: Some("First".to_owned()),
+                first_prompt: Some("prompt one".to_owned()),
+            },
+            crate::app::RecentSessionInfo {
+                session_id: "session-2".to_owned(),
+                summary: "Second".to_owned(),
+                last_modified_ms: 2,
+                file_size_bytes: 1,
+                cwd: Some("/test".to_owned()),
+                git_branch: Some("main".to_owned()),
+                custom_title: Some("Second".to_owned()),
+                first_prompt: Some("prompt two".to_owned()),
+            },
+        ];
+        app.session_picker.selected = 1;
+        app.session_picker.scroll_offset = 1;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionsListed {
+                sessions: vec![
+                    listed_session("session-2", "Second"),
+                    listed_session("session-3", "Third"),
+                ],
+            },
+        );
+
+        assert_eq!(app.session_picker.selected, 0);
+        assert_eq!(app.recent_sessions[app.session_picker.selected].session_id, "session-2");
+        assert_eq!(app.session_picker.scroll_offset, 0);
     }
 
     #[test]
@@ -3946,6 +4054,17 @@ mod tests {
     }
 
     #[test]
+    fn session_picker_ignores_paste_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::SessionPicker;
+
+        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
     fn buffered_paste_char_does_not_force_redraw() {
         let mut app = make_test_app();
         let now = Instant::now();
@@ -3977,6 +4096,32 @@ mod tests {
     fn trusted_view_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Trusted;
+        app.viewport.scroll_target = 4;
+        app.selection = Some(SelectionState {
+            kind: SelectionKind::Chat,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert_eq!(app.viewport.scroll_target, 4);
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn session_picker_ignores_mouse_events() {
+        let mut app = make_test_app();
+        app.active_view = ActiveView::SessionPicker;
         app.viewport.scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,

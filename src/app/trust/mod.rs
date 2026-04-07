@@ -49,7 +49,12 @@ pub fn initialize(app: &mut App) {
     });
     app.startup_connection_requested = app.trust.is_trusted();
     if app.trust.is_trusted() {
-        view::set_active_view(app, ActiveView::Chat);
+        let next_view = if app.startup_session_picker_requested {
+            ActiveView::SessionPicker
+        } else {
+            ActiveView::Chat
+        };
+        view::set_active_view(app, next_view);
     } else {
         view::set_active_view(app, ActiveView::Trusted);
     }
@@ -91,7 +96,12 @@ pub fn accept(app: &mut App) -> Result<(), String> {
     app.trust.status = TrustStatus::Trusted;
     app.trust.last_error = None;
     app.startup_connection_requested = true;
-    view::set_active_view(app, ActiveView::Chat);
+    let next_view = if app.startup_session_picker_requested {
+        ActiveView::SessionPicker
+    } else {
+        ActiveView::Chat
+    };
+    view::set_active_view(app, next_view);
     Ok(())
 }
 
@@ -181,6 +191,47 @@ mod tests {
         assert!(raw.contains("\"hasTrustDialogAccepted\": true"));
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(app.is_project_trusted());
+        assert!(app.startup_connection_requested);
+    }
+
+    #[test]
+    fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
+        let project_path =
+            if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
+
+        let mut app = App::test_default();
+        app.cwd_raw = project_path.to_owned();
+        app.startup_session_picker_requested = true;
+        app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
+        let mut prefs = json!({ "projects": {} });
+        prefs["projects"][project_path] = json!({
+            "hasTrustDialogAccepted": true
+        });
+        app.config.committed_preferences_document = prefs;
+
+        initialize(&mut app);
+
+        assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert!(app.startup_connection_requested);
+    }
+
+    #[test]
+    fn accept_routes_resume_picker_startup_to_picker_view() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
+
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Trusted;
+        app.startup_session_picker_requested = true;
+        app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+        app.config.preferences_path = Some(path);
+        app.trust.status = TrustStatus::Untrusted;
+        app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+
+        accept(&mut app).expect("accept");
+
+        assert_eq!(app.active_view, ActiveView::SessionPicker);
         assert!(app.startup_connection_requested);
     }
 

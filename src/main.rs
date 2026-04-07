@@ -128,5 +128,6 @@ fn maybe_print_resume_hint(app: &claude_code_rust::app::App, success: bool) {
     let Some(session_id) = app.session_id.as_ref() else {
         return;
     };
-    eprintln!("Resume this session: claude-rs --resume {session_id}");
+    eprintln!("Resume this session: claude-rs resume {session_id}");
+    eprintln!("Tip: Run `claude-rs resume` to pick from recent sessions");
 }
