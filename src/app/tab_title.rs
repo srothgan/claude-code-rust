@@ -8,7 +8,6 @@
 
 use super::state::AppStatus;
 use std::io::Write;
-use std::path::Path;
 
 const ACTIVE_CHARS: &[char] = &['\u{25C7}', '\u{25C6}'];
 const IDLE_CHAR: char = '\u{25CB}';
@@ -16,7 +15,7 @@ const PULSE_FRAME_DIVISOR: usize = 10;
 
 /// Extract the last path component from a cwd string for use as the tab label.
 fn folder_name(cwd: &str) -> &str {
-    Path::new(cwd).file_name().and_then(|n| n.to_str()).unwrap_or("claude_rust")
+    cwd.rsplit(['/', '\\']).find(|segment| !segment.is_empty()).unwrap_or("claude_rust")
 }
 
 /// Write an OSC 2 (set window title) escape sequence to stdout.
