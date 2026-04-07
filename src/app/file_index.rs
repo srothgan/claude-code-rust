@@ -589,15 +589,18 @@ mod tests {
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
+        // Canonicalize so the watcher root matches the paths reported by FSEvents
+        // on macOS (where /tmp is a symlink to /private/tmp).
+        let canonical = tmp.path().canonicalize().expect("canonicalize tempdir");
         for file in files {
-            let path = tmp.path().join(file);
+            let path = canonical.join(file);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).expect("create parent");
             }
             std::fs::write(&path, "").expect("write file");
         }
         let mut app = App::test_default();
-        app.cwd_raw = tmp.path().to_string_lossy().into_owned();
+        app.cwd_raw = canonical.to_string_lossy().into_owned();
         (app, tmp)
     }
 
@@ -780,7 +783,7 @@ mod tests {
 
         std::fs::write(tmp.path().join("new.rs"), "").expect("create watched file");
 
-        wait_for(&mut app, Duration::from_secs(8), |app| {
+        wait_for(&mut app, Duration::from_secs(4), |app| {
             app.mention.as_ref().is_some_and(|mention| {
                 mention.candidates.iter().any(|candidate| candidate.rel_path == "new.rs")
             })
@@ -798,7 +801,7 @@ mod tests {
         std::fs::rename(tmp.path().join("before.rs"), tmp.path().join("after.rs"))
             .expect("rename watched file");
 
-        wait_for(&mut app, Duration::from_secs(8), |app| {
+        wait_for(&mut app, Duration::from_secs(4), |app| {
             app.mention.as_ref().is_some_and(|mention| {
                 mention.candidates.iter().any(|candidate| candidate.rel_path == "after.rs")
                     && !mention.candidates.iter().any(|candidate| candidate.rel_path == "before.rs")
