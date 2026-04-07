@@ -23,6 +23,7 @@ mod service_status_check;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
+mod tab_title;
 mod terminal;
 mod todos;
 mod trust;
@@ -199,9 +200,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         ) || app.is_compacting;
         if is_animating {
             advance_spinner_frame(app, Instant::now());
+            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
             app.needs_redraw = true;
         } else {
             app.spinner_last_advance_at = None;
+        }
+        // Update tab title on non-animating state transitions (Ready, Error).
+        if !is_animating && app.needs_redraw {
+            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
         }
         // Smooth scroll still settling
         let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
@@ -271,6 +277,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     }
 
     // Restore terminal
+    tab_title::restore_tab_title(&app.cwd);
     suspend_terminal();
     ratatui::restore();
 
