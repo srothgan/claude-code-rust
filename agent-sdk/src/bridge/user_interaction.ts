@@ -13,7 +13,12 @@ import type {
   ToolCallUpdateFields,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { writeEvent, emitSessionUpdate } from "./events.js";
+import {
+  emitPermissionRequestEvent,
+  emitQuestionRequestEvent,
+  emitSessionUpdate,
+} from "./events.js";
+import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { setToolCallStatus } from "./tool_calls.js";
 import type { SessionState } from "./session_lifecycle.js";
 
@@ -69,7 +74,20 @@ export async function requestExitPlanModeApproval(
       toolName: EXIT_PLAN_MODE_TOOL_NAME,
       inputData,
     });
-    writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_request_created",
+      message: "exit plan mode permission request created",
+      outcome: "start",
+      sessionId: session.sessionId,
+      toolCallId: toolUseId,
+      count: request.options.length,
+      fields: {
+        tool_name: EXIT_PLAN_MODE_TOOL_NAME,
+        option_count: request.options.length,
+      },
+    });
+    emitPermissionRequestEvent(session.sessionId, request);
   });
 
   if (outcome.outcome !== "selected" || outcome.option_id === "reject") {
@@ -254,7 +272,21 @@ export async function requestAskUserQuestionAnswers(
         toolName: ASK_USER_QUESTION_TOOL_NAME,
         inputData,
       });
-      writeEvent({ event: "question_request", session_id: session.sessionId, request });
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_PERMISSION,
+        eventName: "question_request_created",
+        message: "ask user question request created",
+        outcome: "start",
+        sessionId: session.sessionId,
+        toolCallId: toolUseId,
+        count: request.prompt.options.length,
+        fields: {
+          tool_name: ASK_USER_QUESTION_TOOL_NAME,
+          question_index: index,
+          total_questions: prompts.length,
+        },
+      });
+      emitQuestionRequestEvent(session.sessionId, request);
     });
 
     if (outcome.outcome !== "answered") {

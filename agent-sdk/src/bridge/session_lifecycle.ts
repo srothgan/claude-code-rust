@@ -30,9 +30,8 @@ import type {
   ToolCall,
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
-import { AsyncQueue, logPermissionDebug } from "./shared.js";
+import { AsyncQueue } from "./shared.js";
 import {
-  formatPermissionUpdates,
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
 } from "./permissions.js";
@@ -45,6 +44,8 @@ import {
   emitConnectEvent,
   emitSessionsList,
   refreshSessionsList,
+  emitPermissionRequestEvent,
+  emitElicitationRequestEvent,
 } from "./events.js";
 import {
   ensureToolCallVisible,
@@ -217,10 +218,6 @@ export async function createSession(params: {
       const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
       return await requestExitPlanModeApproval(session, toolUseId, inputData, existing);
     }
-    logPermissionDebug(
-      `request tool_use_id=${toolUseId} tool=${toolName} blocked_path=${options.blockedPath ?? "<none>"} ` +
-        `decision_reason=${options.decisionReason ?? "<none>"} suggestions=${formatPermissionUpdates(options.suggestions)}`,
-    );
     const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
 
     if (toolName === ASK_USER_QUESTION_TOOL_NAME) {
@@ -236,7 +233,21 @@ export async function createSession(params: {
       tool_call: existing,
       options: permissionOptionsFromSuggestions(options.suggestions),
     };
-    writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_request_created",
+      message: "permission request created",
+      outcome: "start",
+      sessionId: session.sessionId,
+      toolCallId: toolUseId,
+      count: request.options.length,
+      fields: {
+        tool_name: toolName,
+        blocked_path: options.blockedPath ?? "<none>",
+        decision_reason: options.decisionReason ?? "<none>",
+      },
+    });
+    emitPermissionRequestEvent(session.sessionId, request);
 
     return await new Promise<PermissionResult>((resolve) => {
       session.pendingPermissions.set(toolUseId, {
@@ -674,17 +685,35 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
           ? { requested_schema: request.requestedSchema as Record<string, Json> }
           : {}),
       };
-      writeEvent({
-        event: "elicitation_request",
-        session_id: params.sessionIdForLogs(),
-        request: normalized,
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_PERMISSION,
+        eventName: "elicitation_request_created",
+        message: "elicitation request created",
+        outcome: "start",
+        sessionId: params.sessionIdForLogs(),
+        requestId,
+        fields: {
+          server_name: normalized.server_name,
+          mode: normalized.mode,
+          has_url: normalized.url !== undefined,
+        },
       });
+      emitElicitationRequestEvent(params.sessionIdForLogs(), normalized);
       return await new Promise<{
         action: ElicitationAction;
         content?: Record<string, unknown>;
       }>((resolve) => {
         const currentSession = sessions.get(params.sessionIdForLogs());
         if (!currentSession) {
+          bridgeLogger.warn({
+            target: LOG_TARGETS.BRIDGE_PERMISSION,
+            eventName: "elicitation_request_dropped",
+            message: "elicitation request dropped without an active session",
+            outcome: "dropped",
+            sessionId: params.sessionIdForLogs(),
+            requestId,
+            fields: { reason: "unknown_session" },
+          });
           resolve({ action: "cancel" });
           return;
         }
@@ -738,38 +767,78 @@ export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableMo
 }
 
 export function handlePermissionResponse(command: Extract<BridgeCommand, { command: "permission_response" }>): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "permission_response_received",
+    message: "permission response received",
+    outcome: "success",
+    sessionId: command.session_id,
+    toolCallId: command.tool_call_id,
+    fields: {
+      response_kind: command.outcome.outcome,
+      selected_option:
+        command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled",
+    },
+  });
   const session = sessionById(command.session_id);
   if (!session) {
-    logPermissionDebug(
-      `response dropped: unknown session session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_response_dropped",
+      message: "permission response dropped for unknown session",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: { reason: "unknown_session" },
+    });
     return;
   }
   const resolver = session.pendingPermissions.get(command.tool_call_id);
   if (!resolver) {
-    logPermissionDebug(
-      `response dropped: no pending resolver session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_response_dropped",
+      message: "permission response dropped without a pending resolver",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: { reason: "missing_pending_resolver" },
+    });
     return;
   }
   session.pendingPermissions.delete(command.tool_call_id);
 
   const outcome = command.outcome as PermissionOutcome;
   if (resolver.onOutcome) {
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_response_applied",
+      message: "permission response applied to outcome callback",
+      outcome: "success",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: {
+        tool_name: resolver.toolName,
+        response_kind: outcome.outcome,
+        selected_option: outcome.outcome === "selected" ? outcome.option_id : "cancelled",
+      },
+    });
     resolver.onOutcome(outcome);
     return;
   }
   if (!resolver.resolve) {
-    logPermissionDebug(
-      `response dropped: resolver missing callback session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "permission_response_dropped",
+      message: "permission response dropped because resolver callback was missing",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: { reason: "missing_resolver_callback" },
+    });
     return;
   }
   const selectedOption = outcome.outcome === "selected" ? outcome.option_id : "cancelled";
-  logPermissionDebug(
-    `response session_id=${command.session_id} tool_call_id=${command.tool_call_id} tool=${resolver.toolName} ` +
-      `selected=${selectedOption} suggestions=${formatPermissionUpdates(resolver.suggestions)}`,
-  );
   if (
     outcome.outcome === "selected" &&
     (outcome.option_id === "allow_once" ||
@@ -790,41 +859,94 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
     resolver.suggestions,
     resolver.toolName,
   );
-  if (permissionResult.behavior === "allow") {
-    logPermissionDebug(
-      `result tool_call_id=${command.tool_call_id} behavior=allow updated_permissions=` +
-        `${formatPermissionUpdates(permissionResult.updatedPermissions)}`,
-    );
-  } else {
-    logPermissionDebug(
-      `result tool_call_id=${command.tool_call_id} behavior=deny message=${permissionResult.message}`,
-    );
-  }
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "permission_response_applied",
+    message: "permission response applied",
+    outcome: "success",
+    sessionId: command.session_id,
+    toolCallId: command.tool_call_id,
+    fields: {
+      tool_name: resolver.toolName,
+      response_kind: outcome.outcome,
+      selected_option: selectedOption,
+      behavior: permissionResult.behavior,
+    },
+  });
   resolver.resolve(permissionResult);
 }
 
 export function handleQuestionResponse(command: Extract<BridgeCommand, { command: "question_response" }>): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "question_response_received",
+    message: "question response received",
+    outcome: "success",
+    sessionId: command.session_id,
+    toolCallId: command.tool_call_id,
+    fields: { response_kind: command.outcome.outcome },
+  });
   const session = sessionById(command.session_id);
   if (!session) {
-    logPermissionDebug(
-      `question response dropped: unknown session session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "question_response_dropped",
+      message: "question response dropped for unknown session",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: { reason: "unknown_session" },
+    });
     return;
   }
   const resolver = session.pendingQuestions.get(command.tool_call_id);
   if (!resolver) {
-    logPermissionDebug(
-      `question response dropped: no pending resolver session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "question_response_dropped",
+      message: "question response dropped without a pending resolver",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      toolCallId: command.tool_call_id,
+      fields: { reason: "missing_pending_resolver" },
+    });
     return;
   }
   session.pendingQuestions.delete(command.tool_call_id);
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "question_response_applied",
+    message: "question response applied",
+    outcome: "success",
+    sessionId: command.session_id,
+    toolCallId: command.tool_call_id,
+    fields: {
+      tool_name: resolver.toolName,
+      response_kind: command.outcome.outcome,
+      selected_option_count:
+        command.outcome.outcome === "answered" ? command.outcome.selected_option_ids.length : 0,
+      has_annotation:
+        command.outcome.outcome === "answered" && command.outcome.annotation !== undefined,
+    },
+  });
   resolver.onOutcome(command.outcome);
 }
 
 export function handleElicitationResponse(
   command: Extract<BridgeCommand, { command: "elicitation_response" }>,
 ): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "elicitation_response_received",
+    message: "elicitation response received",
+    outcome: "success",
+    sessionId: command.session_id,
+    requestId: command.elicitation_request_id,
+    fields: {
+      action: command.action,
+      has_content: command.content !== undefined,
+    },
+  });
   const session = sessionById(command.session_id);
   if (!session) {
     bridgeLogger.warn({
@@ -852,6 +974,19 @@ export function handleElicitationResponse(
     return;
   }
   session.pendingElicitations.delete(command.elicitation_request_id);
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "elicitation_response_applied",
+    message: "elicitation response applied",
+    outcome: "success",
+    sessionId: command.session_id,
+    requestId: command.elicitation_request_id,
+    fields: {
+      action: command.action,
+      server_name: pending.serverName,
+      has_content: command.content !== undefined,
+    },
+  });
   pending.resolve({
     action: command.action,
     ...(command.content ? { content: command.content } : {}),

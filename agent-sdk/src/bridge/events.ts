@@ -58,6 +58,69 @@ export function emitSessionUpdate(sessionId: string, update: SessionUpdate): voi
   writeEvent({ event: "session_update", session_id: sessionId, update });
 }
 
+export function emitPermissionRequestEvent(
+  sessionId: string,
+  request: Extract<BridgeEvent, { event: "permission_request" }>["request"],
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "permission_request_emitted",
+    message: "permission request emitted",
+    outcome: "success",
+    sessionId,
+    toolCallId: request.tool_call.tool_call_id,
+    count: request.options.length,
+    fields: {
+      option_count: request.options.length,
+      tool_title: request.tool_call.title,
+    },
+  });
+  writeEvent({ event: "permission_request", session_id: sessionId, request });
+}
+
+export function emitQuestionRequestEvent(
+  sessionId: string,
+  request: Extract<BridgeEvent, { event: "question_request" }>["request"],
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "question_request_emitted",
+    message: "question request emitted",
+    outcome: "success",
+    sessionId,
+    toolCallId: request.tool_call.tool_call_id,
+    count: request.prompt.options.length,
+    fields: {
+      question_index: request.question_index,
+      total_questions: request.total_questions,
+      option_count: request.prompt.options.length,
+      header: request.prompt.header,
+    },
+  });
+  writeEvent({ event: "question_request", session_id: sessionId, request });
+}
+
+export function emitElicitationRequestEvent(
+  sessionId: string,
+  request: Extract<BridgeEvent, { event: "elicitation_request" }>["request"],
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "elicitation_request_emitted",
+    message: "elicitation request emitted",
+    outcome: "success",
+    sessionId,
+    requestId: request.request_id,
+    fields: {
+      server_name: request.server_name,
+      mode: request.mode,
+      has_url: request.url !== undefined,
+      has_requested_schema: request.requested_schema !== undefined,
+    },
+  });
+  writeEvent({ event: "elicitation_request", session_id: sessionId, request });
+}
+
 function buildConnectBridgeEvent(
   session: SessionState,
   eventName: "connected" | "session_replaced",
