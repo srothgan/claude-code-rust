@@ -45,7 +45,7 @@ import {
 import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
-export { AsyncQueue, logPermissionDebug } from "./bridge/shared.js";
+export { AsyncQueue } from "./bridge/shared.js";
 export { asRecordOrNull } from "./bridge/shared.js";
 export { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./bridge/cache_policy.js";
 export {

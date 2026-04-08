@@ -104,71 +104,17 @@ pub fn emit_bridge_stderr_line(line: &str) {
         record.emit();
         return;
     }
-    emit_legacy_bridge_stderr_line(line);
-}
-
-fn emit_legacy_bridge_stderr_line(line: &str) {
-    let lowered = line.to_ascii_lowercase();
-    let level = if lowered.contains("[sdk error]")
-        || lowered.starts_with("error")
-        || lowered.contains("panic")
-    {
-        BridgeDiagnosticLevel::Error
-    } else if lowered.contains("[sdk warn]") || lowered.starts_with("warn") {
-        BridgeDiagnosticLevel::Warn
-    } else {
-        BridgeDiagnosticLevel::Debug
-    };
-
     let preview = preview_text(line, BRIDGE_LINE_PREVIEW_LIMIT);
     let line_chars = line.chars().count();
-    match level {
-        BridgeDiagnosticLevel::Error => tracing::error!(
-            target: targets::BRIDGE_SDK,
-            event_name = "legacy_bridge_stderr_line",
-            message = "legacy bridge stderr line received",
-            outcome = "legacy",
-            preview = %preview,
-            preview_chars = preview.chars().count(),
-            line_chars,
-        ),
-        BridgeDiagnosticLevel::Warn => tracing::warn!(
-            target: targets::BRIDGE_SDK,
-            event_name = "legacy_bridge_stderr_line",
-            message = "legacy bridge stderr line received",
-            outcome = "legacy",
-            preview = %preview,
-            preview_chars = preview.chars().count(),
-            line_chars,
-        ),
-        BridgeDiagnosticLevel::Info => tracing::info!(
-            target: targets::BRIDGE_SDK,
-            event_name = "legacy_bridge_stderr_line",
-            message = "legacy bridge stderr line received",
-            outcome = "legacy",
-            preview = %preview,
-            preview_chars = preview.chars().count(),
-            line_chars,
-        ),
-        BridgeDiagnosticLevel::Debug => tracing::debug!(
-            target: targets::BRIDGE_SDK,
-            event_name = "legacy_bridge_stderr_line",
-            message = "legacy bridge stderr line received",
-            outcome = "legacy",
-            preview = %preview,
-            preview_chars = preview.chars().count(),
-            line_chars,
-        ),
-        BridgeDiagnosticLevel::Trace => tracing::trace!(
-            target: targets::BRIDGE_SDK,
-            event_name = "legacy_bridge_stderr_line",
-            message = "legacy bridge stderr line received",
-            outcome = "legacy",
-            preview = %preview,
-            preview_chars = preview.chars().count(),
-            line_chars,
-        ),
-    }
+    tracing::warn!(
+        target: targets::BRIDGE_SDK,
+        event_name = "bridge_stderr_unstructured",
+        message = "unstructured bridge stderr line received",
+        outcome = "unexpected",
+        preview = %preview,
+        preview_chars = preview.chars().count(),
+        line_chars,
+    );
 }
 
 fn preview_text(input: &str, limit: usize) -> String {

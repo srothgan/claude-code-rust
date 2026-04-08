@@ -35,13 +35,6 @@ pub fn compute_height(app: &App) -> u16 {
 
 /// Render the todo panel into the given area.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    tracing::debug!(
-        "todo::render: {} todos, show_panel={}, area={}x{}",
-        app.todos.len(),
-        app.show_todo_panel,
-        area.width,
-        area.height
-    );
     if app.todos.is_empty() {
         return;
     }

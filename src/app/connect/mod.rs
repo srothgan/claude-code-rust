@@ -235,7 +235,13 @@ pub fn create_app(cli: &Cli) -> App {
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
-        tracing::warn!("failed to initialize shared settings state: {err}");
+        tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "shared_settings_init_failed",
+            message = "failed to initialize shared settings state",
+            outcome = "failure",
+            error_message = %err,
+        );
         app.config.last_error = Some(err);
     }
 

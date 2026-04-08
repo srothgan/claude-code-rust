@@ -132,7 +132,13 @@ fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'sta
             if spans.is_empty() { Line::default() } else { Line::from(spans) }
         }
         Err(err) => {
-            tracing::warn!("syntect highlight failed: {err}");
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "syntax_highlight_failed",
+                message = "syntax highlighting failed; falling back to plain text",
+                outcome = "fallback",
+                error_message = %err,
+            );
             Line::from(line.trim_end_matches('\n').to_owned())
         }
     }

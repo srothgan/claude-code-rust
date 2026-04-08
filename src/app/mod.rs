@@ -139,7 +139,13 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
-                    tracing::warn!(%err, "OS shutdown signal listener failed");
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "os_shutdown_listener_failed",
+                        message = "OS shutdown signal listener failed",
+                        outcome = "failure",
+                        error_message = %err,
+                    );
                 }
                 app.should_quit = true;
             }

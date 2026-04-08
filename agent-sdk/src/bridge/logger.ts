@@ -1,9 +1,6 @@
 import type { BridgeCommand, BridgeEvent } from "../types.js";
 
 const LOG_SCHEMA = "claude-rs-log/v1" as const;
-const SDK_DEBUG_ENABLED = process.env.CLAUDE_RS_SDK_DEBUG === "1";
-const PERMISSION_DEBUG_ENABLED =
-  process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || SDK_DEBUG_ENABLED;
 
 export const LOG_TARGETS = {
   APP_AUTH: "app.auth",
@@ -48,8 +45,6 @@ type DiagnosticEvent = {
   sizeBytes?: number;
   fields?: DiagnosticFields;
 };
-
-type PermissionDebugContext = Omit<DiagnosticEvent, "target" | "eventName" | "message">;
 
 function definedFields(fields?: DiagnosticFields): DiagnosticFields | undefined {
   if (!fields) {
@@ -236,18 +231,6 @@ export const bridgeLogger = {
     writeDiagnostic("trace", event);
   },
 };
-
-export function logPermissionDebug(message: string, context: PermissionDebugContext = {}): void {
-  if (!PERMISSION_DEBUG_ENABLED) {
-    return;
-  }
-  bridgeLogger.debug({
-    target: LOG_TARGETS.BRIDGE_PERMISSION,
-    eventName: "permission_debug",
-    message,
-    ...context,
-  });
-}
 
 export function logSdkStderrLine(line: string, sessionId?: string): void {
   const trimmed = line.trim();

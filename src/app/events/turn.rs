@@ -305,8 +305,11 @@ pub(super) fn handle_turn_error_event(
     if exit.cancelled_requested.is_some() {
         let summary = summarize_internal_error(msg);
         tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "turn_error_suppressed",
+            message = "turn error suppressed after cancellation request",
+            outcome = "cancelled",
             error_preview = %summary,
-            "Turn error suppressed after cancellation request"
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
@@ -317,27 +320,46 @@ pub(super) fn handle_turn_error_event(
     }
 
     let error_class = classified.unwrap_or_else(|| classify_turn_error(msg));
-    tracing::error!("Turn error: {msg}");
     let summary = summarize_internal_error(msg);
+    tracing::error!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "turn_error_received",
+        message = "turn error received",
+        outcome = "failure",
+        error_class = ?error_class,
+        error_preview = %summary,
+    );
     match error_class {
         TurnErrorClass::PlanLimit => {
             tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_classified",
+                message = "turn error classified as plan limit",
+                outcome = "degraded",
+                error_class = "plan_limit",
                 error_preview = %summary,
-                "Turn error classified as plan/usage limit"
             );
         }
         TurnErrorClass::AuthRequired => {
             tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "turn_error_classified",
+                message = "turn error indicates authentication is required",
+                outcome = "degraded",
+                error_class = "auth_required",
                 error_preview = %summary,
-                "Turn error indicates authentication is required"
             );
             app.exit_error = Some(crate::error::AppError::AuthRequired);
             app.should_quit = true;
         }
         TurnErrorClass::Internal => {
             tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_classified",
+                message = "turn error classified as internal SDK error",
+                outcome = "degraded",
+                error_class = "internal",
                 error_preview = %summary,
-                "Internal Agent SDK turn error payload"
             );
         }
         TurnErrorClass::Other => {}

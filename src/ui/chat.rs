@@ -730,7 +730,7 @@ fn emit_render_summary(
 ) {
     let last_message_idx = app.messages.len().checked_sub(1);
     let last_message_height = last_message_idx.map(|idx| app.viewport.message_height(idx));
-    tracing::debug!(
+    tracing::trace!(
         target: crate::logging::targets::APP_RENDER,
         event_name = "chat_render_summary",
         message = "chat render summary emitted",

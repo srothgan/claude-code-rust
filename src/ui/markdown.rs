@@ -16,7 +16,12 @@ where
     if let Ok(lines) = panic::catch_unwind(AssertUnwindSafe(|| renderer(text, bg))) {
         lines
     } else {
-        tracing::warn!("tui-markdown panic; falling back to plain-text markdown rendering");
+        tracing::warn!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "markdown_render_failed",
+            message = "markdown renderer panicked; falling back to plain text",
+            outcome = "fallback",
+        );
         plain_text_fallback(text, bg)
     }
 }

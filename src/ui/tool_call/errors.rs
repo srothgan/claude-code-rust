@@ -60,13 +60,16 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
         .map_or_else(|| "<no terminal output>".to_owned(), preview_for_log);
 
     tracing::debug!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_error_payload_detected",
+        message = "failed tool call payload detected during rendering",
+        outcome = "degraded",
         tool_call_id = %tc.id,
         title = %tc.title,
         sdk_tool_name = %tc.sdk_tool_name,
         content_blocks = tc.content.len(),
         text_preview = %text_preview,
         terminal_preview = %terminal_preview,
-        "Failed tool call render payload"
     );
 }
 

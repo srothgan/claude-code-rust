@@ -287,15 +287,26 @@ fn respond_question(app: &mut App) {
         let annotation = question_annotation(&pending, &selected_indices);
 
         if selected_option_ids.is_empty() {
-            tracing::warn!("question selection had no valid option ids: tool_call_id={tool_id}");
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_response_rejected",
+                message = "question response rejected because no valid option IDs were resolved",
+                outcome = "failure",
+                tool_call_id = %tool_id,
+                selected_option_count = selected_indices.len(),
+            );
             let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
                 model::RequestQuestionOutcome::Cancelled,
             ));
         } else {
             tracing::debug!(
-                "question selection: tool_call_id={} selected_option_ids={:?}",
-                tool_id,
-                selected_option_ids
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_response_applied",
+                message = "question response applied",
+                outcome = "success",
+                tool_call_id = %tool_id,
+                selected_option_count = selected_option_ids.len(),
+                has_annotation = annotation.is_some(),
             );
             let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
                 model::RequestQuestionOutcome::Answered(

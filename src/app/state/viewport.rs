@@ -208,13 +208,16 @@ impl ChatViewport {
         };
         if change.resized() {
             tracing::debug!(
-                "RESIZE: width {} -> {}, height {} -> {}, scroll_target={}, auto_scroll={}",
-                self.width,
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "viewport_resized",
+                message = "chat viewport geometry changed",
+                outcome = "success",
+                previous_width = self.width,
                 width,
-                self.height,
+                previous_height = self.height,
                 height,
-                self.scroll_target,
-                self.auto_scroll
+                scroll_target = self.scroll_target,
+                auto_scroll = self.auto_scroll,
             );
         }
         if change.width_changed {

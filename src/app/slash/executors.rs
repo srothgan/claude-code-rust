@@ -140,7 +140,12 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     }
 
     push_user_message(app, "/login");
-    tracing::debug!("Handling /login command");
+    tracing::debug!(
+        target: crate::logging::targets::APP_AUTH,
+        event_name = "login_command_requested",
+        message = "login slash command requested",
+        outcome = "start",
+    );
 
     if crate::app::auth::has_credentials() {
         push_system_message_with_severity(
@@ -160,7 +165,13 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     let tx = app.event_tx.clone();
     let conn = app.conn.clone();
     tokio::task::spawn_local(async move {
-        tracing::debug!("Suspending TUI for claude auth login");
+        tracing::debug!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "auth_terminal_suspended",
+            message = "terminal suspended for login command",
+            outcome = "start",
+            auth_command = "login",
+        );
         crate::app::suspend_terminal();
 
         let result = tokio::process::Command::new(&claude_path)
@@ -176,9 +187,13 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
         match result {
             Ok(status) => {
                 tracing::debug!(
+                    target: crate::logging::targets::APP_AUTH,
+                    event_name = "auth_command_completed",
+                    message = "login command completed",
+                    outcome = if status.success() { "success" } else { "failure" },
+                    auth_command = "login",
                     success = status.success(),
-                    code = ?status.code(),
-                    "claude auth login exited"
+                    exit_code = ?status.code(),
                 );
                 if status.success() {
                     if !crate::app::auth::has_credentials() {
@@ -221,7 +236,12 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
     }
 
     push_user_message(app, "/logout");
-    tracing::debug!("Handling /logout command");
+    tracing::debug!(
+        target: crate::logging::targets::APP_AUTH,
+        event_name = "logout_command_requested",
+        message = "logout slash command requested",
+        outcome = "start",
+    );
 
     if !crate::app::auth::has_credentials() {
         push_system_message_with_severity(
@@ -240,7 +260,13 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
 
     let tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
-        tracing::debug!("Suspending TUI for claude auth logout");
+        tracing::debug!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "auth_terminal_suspended",
+            message = "terminal suspended for logout command",
+            outcome = "start",
+            auth_command = "logout",
+        );
         crate::app::suspend_terminal();
 
         let result = tokio::process::Command::new(&claude_path)
@@ -256,9 +282,13 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
         match result {
             Ok(status) => {
                 tracing::debug!(
+                    target: crate::logging::targets::APP_AUTH,
+                    event_name = "auth_command_completed",
+                    message = "logout command completed",
+                    outcome = if status.success() { "success" } else { "failure" },
+                    auth_command = "logout",
                     success = status.success(),
-                    code = ?status.code(),
-                    "claude auth logout exited"
+                    exit_code = ?status.code(),
                 );
                 if status.success() {
                     if crate::app::auth::has_credentials() {
@@ -290,7 +320,14 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
 /// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.
 fn resolve_claude_cli(app: &mut App, subcommand: &str) -> Option<std::path::PathBuf> {
     if let Ok(path) = which::which("claude") {
-        tracing::debug!(path = %path.display(), "Resolved claude CLI binary");
+        tracing::debug!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "auth_cli_resolved",
+            message = "resolved claude CLI binary",
+            outcome = "success",
+            auth_command = subcommand,
+            path = %path.display(),
+        );
         Some(path)
     } else {
         push_system_message(

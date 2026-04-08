@@ -153,13 +153,8 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
-    if !matches!(
-        update,
-        model::SessionUpdate::ToolCall(_) | model::SessionUpdate::ToolCallUpdate(_)
-    ) {
-        tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
-    }
     match update {
         model::SessionUpdate::AgentMessageChunk(chunk) => {
             clear_compaction_state(app, true);
@@ -171,15 +166,37 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::UserMessageChunk(_) => {}
         model::SessionUpdate::AgentThoughtChunk(chunk) => {
-            tracing::debug!("Agent thought: {:?}", chunk);
+            let chunk_chars = match &chunk.content {
+                model::ContentBlock::Text(text) => text.text.chars().count(),
+                model::ContentBlock::Image(_) => 0,
+            };
+            tracing::trace!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "agent_thought_chunk_applied",
+                message = "agent thought chunk applied",
+                outcome = "success",
+                chunk_chars,
+            );
             app.status = AppStatus::Thinking;
         }
         model::SessionUpdate::Plan(plan) => {
-            tracing::debug!("Plan update: {:?}", plan);
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "plan_update_applied",
+                message = "plan update applied",
+                outcome = "success",
+                todo_count = plan.entries.len(),
+            );
             apply_plan_todos(app, &plan);
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "available_commands_applied",
+                message = "available commands update applied",
+                outcome = "success",
+                command_count = cmds.available_commands.len(),
+            );
             app.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
             if app.slash.is_some() {
@@ -187,7 +204,13 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             }
         }
         model::SessionUpdate::AvailableAgentsUpdate(agents) => {
-            tracing::debug!("Available subagents: {} agents", agents.available_agents.len());
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "available_agents_applied",
+                message = "available agents update applied",
+                outcome = "success",
+                agent_count = agents.available_agents.len(),
+            );
             app.available_agents = agents.available_agents;
             if app.subagent.is_some() {
                 super::subagent::update_query(app);
@@ -231,7 +254,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             } else {
                 clear_compaction_state(app, true);
             }
-            tracing::debug!("SessionStatusUpdate: compacting={}", app.is_compacting);
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "session_status_applied",
+                message = "session status update applied",
+                outcome = "success",
+                session_status = ?status,
+                compacting = app.is_compacting,
+            );
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
@@ -311,27 +341,6 @@ fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate)
         Some(PendingCommandAck::ConfigOptionUpdate { option_id: expected }) if expected == &option_id
     ) {
         session::clear_pending_command(app);
-    }
-}
-
-/// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
-fn session_update_name(update: &model::SessionUpdate) -> &'static str {
-    match update {
-        model::SessionUpdate::AgentMessageChunk(_) => "AgentMessageChunk",
-        model::SessionUpdate::ToolCall(_) => "ToolCall",
-        model::SessionUpdate::ToolCallUpdate(_) => "ToolCallUpdate",
-        model::SessionUpdate::UserMessageChunk(_) => "UserMessageChunk",
-        model::SessionUpdate::AgentThoughtChunk(_) => "AgentThoughtChunk",
-        model::SessionUpdate::Plan(_) => "Plan",
-        model::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
-        model::SessionUpdate::AvailableAgentsUpdate(_) => "AvailableAgentsUpdate",
-        model::SessionUpdate::ModeStateUpdate(_) => "ModeStateUpdate",
-        model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
-        model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
-        model::SessionUpdate::FastModeUpdate(_) => "FastModeUpdate",
-        model::SessionUpdate::RateLimitUpdate(_) => "RateLimitUpdate",
-        model::SessionUpdate::SessionStatusUpdate(_) => "SessionStatusUpdate",
-        model::SessionUpdate::CompactionBoundary(_) => "CompactionBoundary",
     }
 }
 

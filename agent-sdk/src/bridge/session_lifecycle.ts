@@ -696,7 +696,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       });
       return child;
     },
-    // Match claude-agent-acp defaults to avoid emitting an empty
+    // Match the Claude Code CLI defaults to avoid emitting an empty
     // --setting-sources argument.
     settingSources: DEFAULT_SETTING_SOURCES,
     resume: params.resume,

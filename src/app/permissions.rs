@@ -273,11 +273,15 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
             tracing::debug!(
-                "permission selection: tool_call_id={} option_id={} option_name={} option_kind={:?}",
-                tool_id,
-                opt.option_id,
-                opt.name,
-                opt.kind
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "permission_response_applied",
+                message = "permission response applied",
+                outcome = "success",
+                tool_call_id = %tool_id,
+                selected_index = idx,
+                option_id = %opt.option_id,
+                option_name = %opt.name,
+                option_kind = ?opt.kind,
             );
             let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
                 model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
@@ -286,10 +290,13 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
             ));
         } else {
             tracing::warn!(
-                "permission selection index out of bounds: tool_call_id={} selected_index={} options={}",
-                tool_id,
-                idx,
-                pending.options.len()
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "permission_response_rejected",
+                message = "permission response index was out of bounds",
+                outcome = "failure",
+                tool_call_id = %tool_id,
+                selected_index = idx,
+                option_count = pending.options.len(),
             );
         }
         tc.mark_tool_call_layout_dirty();
