@@ -81,18 +81,22 @@ pub fn create_app(cli: &Cli) -> App {
         if logger.is_some() {
             tracing::info!(
                 target: crate::logging::targets::APP_PERF,
-                event_name = "perf_logging_enabled",
-                message = "performance logging enabled",
+                event_name = "perf_telemetry_enabled",
+                message = "perf telemetry sidecar enabled",
                 outcome = "success",
+                telemetry_channel = "perf_sidecar",
+                perf_schema = "claude-rs-perf/v1",
                 perf_log = %path.display(),
                 perf_append = cli.perf_append,
             );
         } else {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERF,
-                event_name = "perf_logging_unavailable",
-                message = "failed to enable performance logging",
+                event_name = "perf_telemetry_unavailable",
+                message = "failed to enable perf telemetry sidecar",
                 outcome = "failure",
+                telemetry_channel = "perf_sidecar",
+                perf_schema = "claude-rs-perf/v1",
                 perf_log = %path.display(),
                 perf_append = cli.perf_append,
             );

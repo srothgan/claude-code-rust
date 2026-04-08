@@ -1,7 +1,25 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-//! Lightweight per-frame performance logger for rendering instrumentation.
+//! Explicit high-frequency performance telemetry sidecar.
+//!
+//! This module is intentionally separate from the main structured runtime logs.
+//! Use it only for hot-path timings and counters where writing every sample into
+//! the normal operational log stream would create unacceptable noise.
+//!
+//! What belongs here:
+//!
+//! - render-frame timing
+//! - layout/cache timing and counters
+//! - terminal/render hot-path counters
+//! - other explicit perf-mode samples
+//!
+//! What does not belong here:
+//!
+//! - session or bridge lifecycle
+//! - tool, permission, or auth lifecycle
+//! - user-facing state changes
+//! - raw payloads or content previews
 //!
 //! Gated behind `--features perf`. When the feature is disabled, all types
 //! become zero-size and all methods are no-ops that the compiler eliminates.
@@ -11,16 +29,19 @@
 //! ```bash
 //! cargo run --features perf -- --perf-log performance.log
 //! # Writes JSON lines:
-//! # {"run":"...","frame":1234,"ts_ms":1739599900793,"fn":"chat::render_msgs","ms":2.345,"n":42}
+//! # {"schema":"claude-rs-perf/v1","kind":"duration","run_id":"...","frame":1234,"ts_ms":1739599900793,"metric":"chat::render","duration_ms":2.345,"extra":{"key":"msgs","value":42}}
 //! ```
 
 #[cfg(feature = "perf")]
 mod enabled {
+    use serde::Serialize;
     use std::cell::RefCell;
     use std::fs::{File, OpenOptions};
     use std::io::{BufWriter, Write};
     use std::path::Path;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    const PERF_SCHEMA: &str = "claude-rs-perf/v1";
 
     // Thread-local file handle so Timer::drop can log without borrowing PerfLogger.
     thread_local! {
@@ -33,8 +54,43 @@ mod enabled {
         _private: (),
     }
 
+    #[derive(Serialize)]
+    struct PerfExtraField {
+        key: &'static str,
+        value: usize,
+    }
+
+    #[derive(Serialize)]
+    struct PerfSample<'a> {
+        schema: &'static str,
+        kind: &'static str,
+        run_id: &'a str,
+        frame: u64,
+        ts_ms: u128,
+        metric: &'a str,
+        duration_ms: Option<f64>,
+        extra: Option<PerfExtraField>,
+    }
+
+    #[derive(Serialize)]
+    struct PerfRunStarted<'a> {
+        schema: &'static str,
+        kind: &'static str,
+        run_id: &'a str,
+        ts_ms: u128,
+        pid: u32,
+        version: &'a str,
+        append: bool,
+    }
+
     fn unix_ms() -> u128 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis())
+    }
+
+    fn write_json_line<T: Serialize>(file: &mut BufWriter<File>, value: &T) {
+        if serde_json::to_writer(&mut *file, value).is_ok() {
+            let _ = writeln!(file);
+        }
     }
 
     pub(crate) fn write_entry(name: &'static str, ms: f64, extra: Option<(&'static str, usize)>) {
@@ -44,17 +100,17 @@ mod enabled {
             if let Some(ref mut file) = *f.borrow_mut() {
                 RUN_ID.with(|run| {
                     let run_id = run.borrow();
-                    if let Some((k, v)) = extra {
-                        let _ = writeln!(
-                            file,
-                            r#"{{"run":"{run_id}","frame":{frame},"ts_ms":{ts_ms},"fn":"{name}","ms":{ms:.3},"{k}":{v}}}"#,
-                        );
-                    } else {
-                        let _ = writeln!(
-                            file,
-                            r#"{{"run":"{run_id}","frame":{frame},"ts_ms":{ts_ms},"fn":"{name}","ms":{ms:.3}}}"#,
-                        );
-                    }
+                    let sample = PerfSample {
+                        schema: PERF_SCHEMA,
+                        kind: if ms == 0.0 { "mark" } else { "duration" },
+                        run_id: run_id.as_str(),
+                        frame,
+                        ts_ms,
+                        metric: name,
+                        duration_ms: (ms != 0.0).then_some(ms),
+                        extra: extra.map(|(key, value)| PerfExtraField { key, value }),
+                    };
+                    write_json_line(file, &sample);
                 });
             }
         });
@@ -75,12 +131,16 @@ mod enabled {
             let mut writer = BufWriter::new(file);
             let run_id = uuid::Uuid::new_v4().to_string();
             let ts_ms = unix_ms();
-            let _ = writeln!(
-                writer,
-                r#"{{"event":"run_start","run":"{run_id}","ts_ms":{ts_ms},"pid":{},"version":"{}","append":{append}}}"#,
-                std::process::id(),
-                env!("CARGO_PKG_VERSION")
-            );
+            let started = PerfRunStarted {
+                schema: PERF_SCHEMA,
+                kind: "run_started",
+                run_id: run_id.as_str(),
+                ts_ms,
+                pid: std::process::id(),
+                version: env!("CARGO_PKG_VERSION"),
+                append,
+            };
+            write_json_line(&mut writer, &started);
             let _ = writer.flush();
             LOG_FILE.with(|f| *f.borrow_mut() = Some(writer));
             RUN_ID.with(|r| *r.borrow_mut() = run_id);

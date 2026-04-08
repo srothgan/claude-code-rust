@@ -45,7 +45,7 @@ pub struct Cli {
     #[arg(long)]
     pub log_append: bool,
 
-    /// Write frame performance events to a file (requires `--features perf` build).
+    /// Write high-frequency perf telemetry to a sidecar JSON file (requires `--features perf` build).
     #[arg(long, value_name = "PATH")]
     pub perf_log: Option<std::path::PathBuf>,
 
