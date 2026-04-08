@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
+use tracing::{Instrument as _, info_span};
 
 pub struct BridgeClient {
     child: Child,
@@ -17,6 +18,13 @@ pub struct BridgeClient {
 
 impl BridgeClient {
     pub fn spawn(launcher: &BridgeLauncher) -> anyhow::Result<Self> {
+        let spawn_span = info_span!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            "bridge_spawn",
+            runtime_path = %launcher.runtime_path.display(),
+            script_path = %launcher.script_path.display(),
+        );
+        let _entered = spawn_span.enter();
         tracing::info!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             event_name = "bridge_spawn_started",
@@ -50,24 +58,27 @@ impl BridgeClient {
     }
 
     fn spawn_stderr_logger(stderr: ChildStderr) {
-        tokio::task::spawn_local(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => crate::logging::emit_bridge_stderr_line(&line),
-                    Ok(None) => break,
-                    Err(err) => {
-                        tracing::error!(
-                            target: crate::logging::targets::BRIDGE_SDK,
-                            event_name = "bridge_stderr_read_failed",
-                            message = "failed to read bridge stderr",
-                            error = %err,
-                        );
-                        break;
+        tokio::task::spawn_local(
+            async move {
+                let mut lines = BufReader::new(stderr).lines();
+                loop {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => crate::logging::emit_bridge_stderr_line(&line),
+                        Ok(None) => break,
+                        Err(err) => {
+                            tracing::error!(
+                                target: crate::logging::targets::BRIDGE_SDK,
+                                event_name = "bridge_stderr_read_failed",
+                                message = "failed to read bridge stderr",
+                                error = %err,
+                            );
+                            break;
+                        }
                     }
                 }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
     }
 
     pub async fn send(&mut self, envelope: CommandEnvelope) -> anyhow::Result<()> {

@@ -8,6 +8,7 @@ use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{Instrument as _, info_span};
 
 const UPDATE_CHECK_DISABLE_ENV: &str = "CLAUDE_RUST_NO_UPDATE_CHECK";
 const UPDATE_CHECK_TTL_SECS: u64 = 24 * 60 * 60;
@@ -60,16 +61,26 @@ pub fn start_update_check(app: &App, cli: &Cli) {
         current_version = %current_version,
     );
 
-    tokio::task::spawn_local(async move {
-        let latest_version = resolve_latest_version().await;
-        let Some(latest_version) = latest_version else {
-            return;
-        };
+    let update_check_span = info_span!(
+        target: crate::logging::targets::APP_UPDATE,
+        "update_check",
+        current_version = %current_version,
+    );
 
-        if is_newer_version(&latest_version, &current_version) {
-            let _ = event_tx.send(ClientEvent::UpdateAvailable { latest_version, current_version });
+    tokio::task::spawn_local(
+        async move {
+            let latest_version = resolve_latest_version().await;
+            let Some(latest_version) = latest_version else {
+                return;
+            };
+
+            if is_newer_version(&latest_version, &current_version) {
+                let _ =
+                    event_tx.send(ClientEvent::UpdateAvailable { latest_version, current_version });
+            }
         }
-    });
+        .instrument(update_check_span),
+    );
 }
 
 fn update_check_disabled(no_update_check_flag: bool) -> bool {

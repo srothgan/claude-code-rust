@@ -12,6 +12,7 @@ use crate::error::AppError;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::{Instrument as _, info_span};
 
 use super::event_dispatch::handle_bridge_event;
 use super::{ConnectionSlot, StartConnectionParams, extract_app_error};
@@ -20,49 +21,66 @@ pub(super) async fn run_connection_task(
     params: StartConnectionParams,
     conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
 ) {
-    tracing::debug!(
+    let request_kind = if params.resume_id.is_some() { "resume" } else { "create" };
+    let session_id = params.resume_id.clone().unwrap_or_default();
+    let connection_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
-        event_name = "bridge_connection_task_started",
-        message = "bridge connection task started",
-        outcome = "start",
+        "bridge_connection",
+        request_kind,
         resume_requested = params.resume_requested,
+        session_id = %session_id,
+        cwd = %params.cwd_raw,
     );
 
-    let Some(launcher) = resolve_launcher(&params) else {
-        return;
-    };
-    let Some(mut bridge) = spawn_bridge_client(&params.event_tx, &launcher) else {
-        return;
-    };
-
-    let mut connected_once = false;
-    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
-    publish_connection_slot(&conn_slot_writer, &cmd_tx);
-
-    if !send_initialize_command(&params, &mut bridge).await {
-        return;
-    }
-    if let Err(app_error) = wait_for_bridge_initialized(
-        &mut bridge,
-        &params.event_tx,
-        &cmd_tx,
-        &mut connected_once,
-        params.resume_requested,
-    )
-    .await
-    {
-        emit_connection_failed(
-            &params.event_tx,
-            "Bridge did not complete initialization".to_owned(),
-            app_error,
+    async move {
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_connection_task_started",
+            message = "bridge connection task started",
+            outcome = "start",
+            request_kind,
+            resume_requested = params.resume_requested,
+            session_id = %session_id,
         );
-        return;
-    }
-    if !send_session_command(&params, &mut bridge).await {
-        return;
-    }
 
-    bridge_event_loop(&params, &mut bridge, &cmd_tx, &mut cmd_rx, &mut connected_once).await;
+        let Some(launcher) = resolve_launcher(&params) else {
+            return;
+        };
+        let Some(mut bridge) = spawn_bridge_client(&params.event_tx, &launcher) else {
+            return;
+        };
+
+        let mut connected_once = false;
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
+        publish_connection_slot(&conn_slot_writer, &cmd_tx);
+
+        if !send_initialize_command(&params, &mut bridge).await {
+            return;
+        }
+        if let Err(app_error) = wait_for_bridge_initialized(
+            &mut bridge,
+            &params.event_tx,
+            &cmd_tx,
+            &mut connected_once,
+            params.resume_requested,
+        )
+        .await
+        {
+            emit_connection_failed(
+                &params.event_tx,
+                "Bridge did not complete initialization".to_owned(),
+                app_error,
+            );
+            return;
+        }
+        if !send_session_command(&params, &mut bridge).await {
+            return;
+        }
+
+        bridge_event_loop(&params, &mut bridge, &cmd_tx, &mut cmd_rx, &mut connected_once).await;
+    }
+    .instrument(connection_span)
+    .await;
 }
 
 fn resolve_launcher(params: &StartConnectionParams) -> Option<BridgeLauncher> {
@@ -284,29 +302,46 @@ pub(super) async fn wait_for_bridge_initialized(
     resume_requested: bool,
 ) -> Result<(), AppError> {
     let timeout = Duration::from_secs(10);
-    let started = tokio::time::Instant::now();
-    loop {
-        let elapsed = tokio::time::Instant::now().saturating_duration_since(started);
-        let remaining = timeout.saturating_sub(elapsed);
-        if remaining.is_zero() {
-            let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-            tracing::error!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                event_name = "bridge_initialize_timed_out",
-                message = "bridge initialization timed out",
-                outcome = "timeout",
-                timeout_ms,
-            );
-            return Err(AppError::ConnectionFailed);
-        }
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let initialize_span = info_span!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        "bridge_initialize",
+        resume_requested,
+        timeout_ms,
+    );
 
-        let event = tokio::time::timeout(remaining, bridge.recv()).await;
-        match event {
-            Ok(Ok(Some(envelope))) => {
-                if matches!(envelope.event, BridgeEvent::Initialized { .. }) {
-                    return Ok(());
-                }
-                if matches!(envelope.event, BridgeEvent::ConnectionFailed { .. }) {
+    async {
+        let started = tokio::time::Instant::now();
+        loop {
+            let elapsed = tokio::time::Instant::now().saturating_duration_since(started);
+            let remaining = timeout.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "bridge_initialize_timed_out",
+                    message = "bridge initialization timed out",
+                    outcome = "timeout",
+                    timeout_ms,
+                );
+                return Err(AppError::ConnectionFailed);
+            }
+
+            let event = tokio::time::timeout(remaining, bridge.recv()).await;
+            match event {
+                Ok(Ok(Some(envelope))) => {
+                    if matches!(envelope.event, BridgeEvent::Initialized { .. }) {
+                        return Ok(());
+                    }
+                    if matches!(envelope.event, BridgeEvent::ConnectionFailed { .. }) {
+                        handle_bridge_event(
+                            event_tx,
+                            cmd_tx,
+                            connected_once,
+                            resume_requested,
+                            envelope,
+                        );
+                        return Err(AppError::ConnectionFailed);
+                    }
                     handle_bridge_event(
                         event_tx,
                         cmd_tx,
@@ -314,11 +349,11 @@ pub(super) async fn wait_for_bridge_initialized(
                         resume_requested,
                         envelope,
                     );
-                    return Err(AppError::ConnectionFailed);
                 }
-                handle_bridge_event(event_tx, cmd_tx, connected_once, resume_requested, envelope);
+                Ok(Ok(None) | Err(_)) | Err(_) => return Err(AppError::ConnectionFailed),
             }
-            Ok(Ok(None) | Err(_)) | Err(_) => return Err(AppError::ConnectionFailed),
         }
     }
+    .instrument(initialize_span)
+    .await
 }

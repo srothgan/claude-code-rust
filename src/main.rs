@@ -5,6 +5,7 @@ use clap::Parser;
 use claude_code_rust::Cli;
 use claude_code_rust::error::AppError;
 use std::time::Instant;
+use tracing::info_span;
 
 #[allow(clippy::exit)]
 fn main() {
@@ -27,17 +28,27 @@ fn run() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("`--perf-log` requires a binary built with `--features perf`"));
     }
 
-    let resolve_started = Instant::now();
-    let bridge_launcher =
-        claude_code_rust::agent::bridge::resolve_bridge_launcher(cli.bridge_script.as_deref())?;
-    let duration_ms = u64::try_from(resolve_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    tracing::info!(
-        target: claude_code_rust::logging::targets::BRIDGE_LIFECYCLE,
-        event_name = "bridge_launcher_resolved",
-        message = "resolved agent bridge launcher",
-        duration_ms,
-        launcher = %bridge_launcher.describe(),
-    );
+    {
+        let startup_bootstrap_span = info_span!(
+            target: claude_code_rust::logging::targets::APP_LIFECYCLE,
+            "startup_bootstrap",
+            resume_requested = cli.resume.is_some(),
+            perf_telemetry_requested = cli.perf_log.is_some(),
+            explicit_bridge_script = cli.bridge_script.is_some(),
+        );
+        let _entered = startup_bootstrap_span.enter();
+        let resolve_started = Instant::now();
+        let bridge_launcher =
+            claude_code_rust::agent::bridge::resolve_bridge_launcher(cli.bridge_script.as_deref())?;
+        let duration_ms = u64::try_from(resolve_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::info!(
+            target: claude_code_rust::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_launcher_resolved",
+            message = "resolved agent bridge launcher",
+            duration_ms,
+            launcher = %bridge_launcher.describe(),
+        );
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
