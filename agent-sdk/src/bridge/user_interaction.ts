@@ -16,10 +16,9 @@ import { asRecordOrNull } from "./shared.js";
 import {
   emitPermissionRequestEvent,
   emitQuestionRequestEvent,
-  emitSessionUpdate,
 } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
-import { setToolCallStatus } from "./tool_calls.js";
+import { emitToolCallUpdate, setToolCallStatus } from "./tool_calls.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 export type AskUserQuestionOption = {
@@ -254,16 +253,7 @@ export async function requestAskUserQuestionAnswers(
       status: "in_progress",
       raw_input: promptToolCall.raw_input,
     };
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: { tool_call_id: toolUseId, fields },
-    });
-    const tracked = session.toolCalls.get(toolUseId);
-    if (tracked) {
-      tracked.title = promptToolCall.title;
-      tracked.status = "in_progress";
-      tracked.raw_input = promptToolCall.raw_input;
-    }
+    emitToolCallUpdate(session, toolUseId, fields, "status");
 
     const request = buildQuestionRequest(promptToolCall, prompt, index, prompts.length);
     const outcome = await new Promise<QuestionOutcome>((resolve) => {
@@ -319,15 +309,7 @@ export async function requestAskUserQuestionAnswers(
       raw_output: summary,
       content: [{ type: "content", content: { type: "text", text: summary } }],
     };
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: { tool_call_id: toolUseId, fields: progressFields },
-    });
-    if (tracked) {
-      tracked.status = progressFields.status ?? tracked.status;
-      tracked.raw_output = summary;
-      tracked.content = progressFields.content ?? tracked.content;
-    }
+    emitToolCallUpdate(session, toolUseId, progressFields, "summary");
   }
 
   return {

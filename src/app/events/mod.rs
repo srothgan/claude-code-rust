@@ -154,7 +154,12 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
 }
 
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
-    tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
+    if !matches!(
+        update,
+        model::SessionUpdate::ToolCall(_) | model::SessionUpdate::ToolCallUpdate(_)
+    ) {
+        tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
+    }
     match update {
         model::SessionUpdate::AgentMessageChunk(chunk) => {
             clear_compaction_state(app, true);

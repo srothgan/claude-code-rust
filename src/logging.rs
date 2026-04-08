@@ -11,6 +11,7 @@ pub mod targets {
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_PERMISSION: &str = "app.permission";
     pub const APP_SESSION: &str = "app.session";
+    pub const APP_TOOL: &str = "app.tool";
     pub const BRIDGE_LIFECYCLE: &str = "bridge.lifecycle";
     pub const BRIDGE_MCP: &str = "bridge.mcp";
     pub const BRIDGE_PERMISSION: &str = "bridge.permission";
@@ -304,6 +305,7 @@ impl BridgeDiagnosticRecord {
         match self.target.as_str() {
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
             targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
+            targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),
             targets::BRIDGE_LIFECYCLE => emit_for_level!(targets::BRIDGE_LIFECYCLE),
             targets::BRIDGE_MCP => emit_for_level!(targets::BRIDGE_MCP),
             targets::BRIDGE_PERMISSION => emit_for_level!(targets::BRIDGE_PERMISSION),

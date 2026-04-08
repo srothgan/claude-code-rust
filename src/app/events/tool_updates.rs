@@ -3,22 +3,34 @@
 
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
-    has_in_progress_tool_calls, sdk_tool_name_from_meta, should_jump_on_large_write,
+    current_session_id, has_in_progress_tool_calls, json_value_size, sdk_tool_name_from_meta,
+    should_jump_on_large_write, tool_scope_name,
 };
-use crate::agent::error_handling::{looks_like_internal_error, summarize_internal_error};
 use crate::agent::model;
 use crate::app::todos::{parse_todos_if_present, set_todos};
 use std::time::Instant;
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
-    log_tool_call_update_received(&id_str, tcu);
-    maybe_log_internal_failed_tool_update(&id_str, tcu);
     let Some((mi, bi)) = app.lookup_tool_call(&id_str) else {
-        tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
+        tracing::warn!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "tool_call_update_missing",
+            message = "tool call update dropped because tool call was not found",
+            outcome = "dropped",
+            session_id = %current_session_id(app),
+            tool_call_id = %id_str,
+            tool_status = ?tcu.fields.status,
+        );
         return;
     };
     let tool_scope = app.tool_call_scope(&id_str);
+    let previous_status = app.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
+        |block| match block {
+            MessageBlock::ToolCall(tc) => Some(tc.status),
+            _ => None,
+        },
+    );
     apply_tool_scope_status_update(app, &id_str, tool_scope, tcu.fields.status);
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
@@ -26,42 +38,12 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
+    log_tool_call_update_applied(app, &id_str, tcu, tool_scope, previous_status, &update_outcome);
     if let Some(todos) = update_outcome.pending_todos {
         set_todos(app, todos);
     }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
-    }
-}
-
-fn log_tool_call_update_received(id_str: &str, tcu: &model::ToolCallUpdate) {
-    let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
-    let has_raw_output = tcu.fields.raw_output.is_some();
-    tracing::debug!(
-        "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content} has_raw_output={has_raw_output}",
-        tcu.fields.title,
-        tcu.fields.status
-    );
-    if has_raw_output {
-        tracing::debug!("ToolCallUpdate raw_output: id={id_str} {:?}", tcu.fields.raw_output);
-    }
-}
-
-fn maybe_log_internal_failed_tool_update(id_str: &str, tcu: &model::ToolCallUpdate) {
-    if matches!(tcu.fields.status, Some(model::ToolCallStatus::Failed))
-        && let Some(content_preview) = internal_failed_tool_content_preview(
-            tcu.fields.content.as_deref(),
-            tcu.fields.raw_output.as_ref(),
-        )
-    {
-        let sdk_tool_name = sdk_tool_name_from_meta(tcu.meta.as_ref());
-        tracing::debug!(
-            tool_call_id = %id_str,
-            title = ?tcu.fields.title,
-            sdk_tool_name = ?sdk_tool_name,
-            content_preview = %content_preview,
-            "Internal failed ToolCallUpdate payload"
-        );
     }
 }
 
@@ -97,6 +79,7 @@ fn apply_tool_scope_status_update(
 }
 
 struct ToolCallUpdateApplyOutcome {
+    changed: bool,
     layout_dirty_idx: Option<usize>,
     pending_todos: Option<Vec<super::super::TodoItem>>,
 }
@@ -108,8 +91,10 @@ fn apply_tool_call_update_to_indexed_block(
     id_str: &str,
     tcu: &model::ToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
-    let mut out = ToolCallUpdateApplyOutcome { layout_dirty_idx: None, pending_todos: None };
+    let mut out =
+        ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None, pending_todos: None };
     let terminals = std::rc::Rc::clone(&app.terminals);
+    let session_id = current_session_id(app);
     let mut terminal_subscription: Option<String> = None;
     let mut detach_terminal = false;
 
@@ -130,11 +115,16 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
-        out.pending_todos =
-            extract_todo_updates_from_tool_call_update(id_str, tc, tcu.fields.raw_input.as_ref());
+        out.pending_todos = extract_todo_updates_from_tool_call_update(
+            id_str,
+            &session_id,
+            tc,
+            tcu.fields.raw_input.as_ref(),
+        );
         detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
+            out.changed = true;
             if should_jump_on_large_write(tc) {
                 app.viewport.engage_auto_scroll();
             }
@@ -285,20 +275,38 @@ fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
 
 fn extract_todo_updates_from_tool_call_update(
     id_str: &str,
+    session_id: &str,
     tc: &ToolCallInfo,
     raw_input: Option<&serde_json::Value>,
 ) -> Option<Vec<super::super::TodoItem>> {
     if tc.sdk_tool_name != "TodoWrite" {
         return None;
     }
-    tracing::info!("TodoWrite ToolCallUpdate: id={id_str}, raw_input={raw_input:?}");
     let raw_input = raw_input?;
     if let Some(todos) = parse_todos_if_present(raw_input) {
-        tracing::info!("Parsed {} todos from ToolCallUpdate raw_input", todos.len());
+        tracing::info!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "tool_plan_synchronized",
+            message = "todo plan synchronized from tool update",
+            outcome = "success",
+            session_id = %session_id,
+            tool_call_id = %id_str,
+            count = todos.len(),
+            size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
+            tool_name = "TodoWrite",
+            todo_count = todos.len(),
+        );
         return Some(todos);
     }
     tracing::debug!(
-        "TodoWrite ToolCallUpdate raw_input has no todos array yet; preserving existing todos"
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_plan_sync_skipped",
+        message = "todo plan sync skipped for tool update",
+        outcome = "skipped",
+        session_id = %session_id,
+        tool_call_id = %id_str,
+        size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
+        tool_name = "TodoWrite",
     );
     None
 }
@@ -325,25 +333,160 @@ fn extract_text_field(value: &serde_json::Value) -> Option<&str> {
     value.get("text").and_then(serde_json::Value::as_str)
 }
 
-fn internal_failed_tool_content_preview(
-    content: Option<&[model::ToolCallContent]>,
-    raw_output: Option<&serde_json::Value>,
-) -> Option<String> {
-    let text = content
-        .and_then(|items| {
-            items.iter().find_map(|c| match c {
-                model::ToolCallContent::Content(inner) => match &inner.content {
-                    model::ContentBlock::Text(t) => Some(t.text.clone()),
-                    model::ContentBlock::Image(_) => None,
-                },
-                _ => None,
-            })
-        })
-        .or_else(|| raw_output.and_then(raw_output_to_terminal_text))?;
-    if !looks_like_internal_error(&text) {
-        return None;
+fn log_tool_call_update_applied(
+    app: &App,
+    id_str: &str,
+    tcu: &model::ToolCallUpdate,
+    tool_scope: Option<ToolCallScope>,
+    previous_status: Option<model::ToolCallStatus>,
+    update_outcome: &ToolCallUpdateApplyOutcome,
+) {
+    if !update_outcome.changed {
+        return;
     }
-    Some(summarize_internal_error(&text))
+
+    let Some(tc) = app
+        .lookup_tool_call(id_str)
+        .and_then(|(mi, bi)| app.messages.get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|block| match block {
+            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
+            _ => None,
+        })
+    else {
+        return;
+    };
+
+    let session_id = current_session_id(app);
+    let log_spec = tool_update_log_spec(tc, tcu);
+    let scope_name = tool_scope.map_or("unknown", tool_scope_name);
+    let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
+        serde_json::Value::String(text) => Some(text.chars().count()),
+        _ => serde_json::to_string(value).ok().map(|text| text.chars().count()),
+    });
+    let content_block_count = tcu.fields.content.as_ref().map_or(tc.content.len(), Vec::len);
+    let raw_input_bytes = json_value_size(tcu.fields.raw_input.as_ref()).unwrap_or_default();
+    let location_count = tcu.fields.locations.as_ref().map_or(0, Vec::len);
+
+    match log_spec.level {
+        ToolUpdateLogLevel::Info => tracing::info!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = log_spec.event_name,
+            message = log_spec.message,
+            outcome = log_spec.outcome,
+            session_id = %session_id,
+            tool_call_id = %id_str,
+            tool_name = %tc.sdk_tool_name,
+            tool_title = %tc.title,
+            tool_scope = scope_name,
+            previous_status = ?previous_status,
+            tool_status = ?tc.status,
+            content_block_count,
+            raw_output_chars = raw_output_chars.unwrap_or_default(),
+            has_output_metadata = tc.output_metadata.is_some(),
+        ),
+        ToolUpdateLogLevel::Warn => tracing::warn!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = log_spec.event_name,
+            message = log_spec.message,
+            outcome = log_spec.outcome,
+            session_id = %session_id,
+            tool_call_id = %id_str,
+            tool_name = %tc.sdk_tool_name,
+            tool_title = %tc.title,
+            tool_scope = scope_name,
+            previous_status = ?previous_status,
+            tool_status = ?tc.status,
+            content_block_count,
+            raw_output_chars = raw_output_chars.unwrap_or_default(),
+            has_output_metadata = tc.output_metadata.is_some(),
+        ),
+        ToolUpdateLogLevel::Debug => tracing::debug!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = log_spec.event_name,
+            message = log_spec.message,
+            outcome = log_spec.outcome,
+            session_id = %session_id,
+            tool_call_id = %id_str,
+            tool_name = %tc.sdk_tool_name,
+            tool_title = %tc.title,
+            tool_scope = scope_name,
+            previous_status = ?previous_status,
+            tool_status = ?tc.status,
+            content_block_count,
+            raw_output_chars = raw_output_chars.unwrap_or_default(),
+            has_output_metadata = tc.output_metadata.is_some(),
+            title_changed = tcu.fields.title.is_some(),
+            status_changed = tcu.fields.status != previous_status,
+            raw_input_bytes,
+            location_count,
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ToolUpdateLogLevel {
+    Info,
+    Warn,
+    Debug,
+}
+
+#[derive(Clone, Copy)]
+struct ToolUpdateLogSpec {
+    level: ToolUpdateLogLevel,
+    event_name: &'static str,
+    message: &'static str,
+    outcome: &'static str,
+}
+
+fn tool_update_log_spec(tc: &ToolCallInfo, tcu: &model::ToolCallUpdate) -> ToolUpdateLogSpec {
+    match tc.status {
+        model::ToolCallStatus::Completed => ToolUpdateLogSpec {
+            level: ToolUpdateLogLevel::Info,
+            event_name: "tool_call_completed",
+            message: "tool call completed",
+            outcome: "success",
+        },
+        model::ToolCallStatus::Failed => {
+            if let Some(raw_output) = tcu.fields.raw_output.as_ref() {
+                let text = match raw_output {
+                    serde_json::Value::String(text) => text.to_ascii_lowercase(),
+                    value => serde_json::to_string(value).unwrap_or_default().to_ascii_lowercase(),
+                };
+                if text.contains("permission denied")
+                    || text.contains("cancelled by user")
+                    || text.contains("plan rejected")
+                    || text.contains("question cancelled")
+                {
+                    return ToolUpdateLogSpec {
+                        level: ToolUpdateLogLevel::Info,
+                        event_name: "tool_call_refused",
+                        message: "tool call refused",
+                        outcome: "cancelled",
+                    };
+                }
+                if text.contains("timed out") || text.contains("timeout") {
+                    return ToolUpdateLogSpec {
+                        level: ToolUpdateLogLevel::Warn,
+                        event_name: "tool_call_timeout",
+                        message: "tool call timed out",
+                        outcome: "timeout",
+                    };
+                }
+            }
+            ToolUpdateLogSpec {
+                level: ToolUpdateLogLevel::Warn,
+                event_name: "tool_call_failed",
+                message: "tool call failed",
+                outcome: "failure",
+            }
+        }
+        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => ToolUpdateLogSpec {
+            level: ToolUpdateLogLevel::Debug,
+            event_name: "tool_call_updated",
+            message: "tool call updated",
+            outcome: "success",
+        },
+    }
 }
 
 #[cfg(test)]

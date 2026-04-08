@@ -1,7 +1,217 @@
 import type { PlanEntry, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { emitSessionUpdate } from "./events.js";
+import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { buildToolResultFields, createToolCall } from "./tooling.js";
+
+type ToolUpdateKind =
+  | "initial"
+  | "refresh"
+  | "progress"
+  | "result"
+  | "summary"
+  | "status"
+  | "finalize"
+  | "task_started"
+  | "task_progress"
+  | "task_notification";
+
+function jsonSize(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function toolNameFromMeta(meta: ToolCall["meta"] | undefined): string | undefined {
+  if (!meta || typeof meta !== "object") {
+    return undefined;
+  }
+  const claudeCode =
+    "claudeCode" in meta && meta.claudeCode && typeof meta.claudeCode === "object" ? meta.claudeCode : undefined;
+  const toolName =
+    claudeCode && "toolName" in claudeCode && typeof claudeCode.toolName === "string" ? claudeCode.toolName : "";
+  return toolName || undefined;
+}
+
+function toolName(base: ToolCall | undefined, fields?: ToolCallUpdateFields): string | undefined {
+  const fieldMeta = fields?.meta;
+  if (fieldMeta && typeof fieldMeta === "object") {
+    const fromFields = toolNameFromMeta(fieldMeta);
+    if (fromFields) {
+      return fromFields;
+    }
+  }
+  return toolNameFromMeta(base?.meta);
+}
+
+function classifyFailureKind(rawOutput: string | undefined): "refused" | "timeout" | "failed" {
+  if (!rawOutput) {
+    return "failed";
+  }
+  const normalized = rawOutput.trim().toLowerCase();
+  if (
+    normalized.includes("permission denied") ||
+    normalized.includes("cancelled by user") ||
+    normalized.includes("plan rejected") ||
+    normalized.includes("question cancelled")
+  ) {
+    return "refused";
+  }
+  if (normalized.includes("timed out") || normalized.includes("timeout")) {
+    return "timeout";
+  }
+  return "failed";
+}
+
+function updateOutcome(status: ToolCall["status"] | undefined): string {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "failure";
+    case "in_progress":
+      return "partial";
+    case "pending":
+      return "start";
+    default:
+      return "partial";
+  }
+}
+
+function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
+  if (fields.title !== undefined) {
+    base.title = fields.title;
+  }
+  if (fields.kind !== undefined) {
+    base.kind = fields.kind;
+  }
+  if (fields.status !== undefined) {
+    base.status = fields.status;
+  }
+  if (fields.raw_input !== undefined) {
+    base.raw_input = fields.raw_input;
+  }
+  if (fields.raw_output !== undefined) {
+    base.raw_output = fields.raw_output;
+  }
+  if (fields.locations !== undefined) {
+    base.locations = fields.locations;
+  }
+  if (fields.output_metadata !== undefined) {
+    base.output_metadata = fields.output_metadata;
+  }
+  if (fields.meta !== undefined) {
+    base.meta = fields.meta;
+  }
+  if (fields.content !== undefined) {
+    base.content = fields.content;
+  }
+}
+
+function logToolCallSubmitted(
+  sessionId: string,
+  toolCall: ToolCall,
+  updateKind: "initial" | "refresh",
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_TOOL,
+    eventName: "tool_call_submitted",
+    message: "tool call submitted",
+    outcome: "success",
+    sessionId,
+    toolCallId: toolCall.tool_call_id,
+    sizeBytes: jsonSize(toolCall.raw_input),
+    fields: {
+      submission_kind: updateKind,
+      tool_name: toolNameFromMeta(toolCall.meta),
+      tool_title: toolCall.title,
+      tool_kind: toolCall.kind,
+      status: toolCall.status,
+      content_block_count: toolCall.content.length,
+      location_count: toolCall.locations.length,
+      has_output_metadata: toolCall.output_metadata !== undefined,
+    },
+  });
+}
+
+function logToolCallUpdateEmitted(
+  sessionId: string,
+  toolUseId: string,
+  fields: ToolCallUpdateFields,
+  base: ToolCall | undefined,
+  updateKind: ToolUpdateKind,
+): void {
+  const nextStatus = fields.status ?? base?.status;
+  const rawOutput = typeof fields.raw_output === "string" ? fields.raw_output : base?.raw_output;
+  const failureKind = nextStatus === "failed" ? classifyFailureKind(rawOutput) : undefined;
+  const commonEvent = {
+    target: LOG_TARGETS.APP_TOOL,
+    eventName: "tool_call_update_emitted",
+    message: "tool call update emitted",
+    outcome: updateOutcome(nextStatus),
+    sessionId,
+    toolCallId: toolUseId,
+    sizeBytes: jsonSize(fields.raw_input),
+    fields: {
+      update_kind: updateKind,
+      tool_name: toolName(base, fields),
+      previous_status: base?.status,
+      next_status: nextStatus,
+      title_changed: fields.title !== undefined && fields.title !== base?.title,
+      content_block_count: fields.content?.length,
+      location_count: fields.locations?.length,
+      raw_output_chars: rawOutput?.length,
+      has_output_metadata: fields.output_metadata !== undefined || base?.output_metadata !== undefined,
+      failure_kind: failureKind,
+    },
+  } as const;
+
+  if (nextStatus === "failed") {
+    bridgeLogger.warn(commonEvent);
+    return;
+  }
+  if (nextStatus === "completed") {
+    bridgeLogger.info(commonEvent);
+    return;
+  }
+  if (nextStatus === "in_progress" || nextStatus === "pending") {
+    bridgeLogger.debug(commonEvent);
+    return;
+  }
+  bridgeLogger.debug(commonEvent);
+}
+
+function emitInitialToolCall(
+  session: SessionState,
+  toolCall: ToolCall,
+  updateKind: "initial" | "refresh" = "initial",
+): void {
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+  logToolCallSubmitted(session.sessionId, toolCall, updateKind);
+  emitSessionUpdate(session.sessionId, { type: "tool_call", tool_call: toolCall });
+}
+
+export function emitToolCallUpdate(
+  session: SessionState,
+  toolUseId: string,
+  fields: ToolCallUpdateFields,
+  updateKind: ToolUpdateKind,
+): void {
+  const base = session.toolCalls.get(toolUseId);
+  logToolCallUpdateEmitted(session.sessionId, toolUseId, fields, base, updateKind);
+  emitSessionUpdate(session.sessionId, {
+    type: "tool_call_update",
+    tool_call_update: { tool_call_id: toolUseId, fields },
+  });
+  if (base) {
+    applyFieldsToBase(base, fields);
+  }
+}
 
 export function emitToolCall(session: SessionState, toolUseId: string, name: string, input: Record<string, unknown>): void {
   const toolCall = createToolCall(toolUseId, name, input);
@@ -10,8 +220,7 @@ export function emitToolCall(session: SessionState, toolUseId: string, name: str
 
   const existing = session.toolCalls.get(toolUseId);
   if (!existing) {
-    session.toolCalls.set(toolUseId, toolCall);
-    emitSessionUpdate(session.sessionId, { type: "tool_call", tool_call: toolCall });
+    emitInitialToolCall(session, toolCall);
     return;
   }
 
@@ -26,20 +235,7 @@ export function emitToolCall(session: SessionState, toolUseId: string, name: str
   if (toolCall.content.length > 0) {
     fields.content = toolCall.content;
   }
-  emitSessionUpdate(session.sessionId, {
-    type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
-  });
-
-  existing.title = toolCall.title;
-  existing.kind = toolCall.kind;
-  existing.status = status;
-  existing.raw_input = toolCall.raw_input;
-  existing.locations = toolCall.locations;
-  existing.meta = toolCall.meta;
-  if (toolCall.content.length > 0) {
-    existing.content = toolCall.content;
-  }
+  emitToolCallUpdate(session, toolUseId, fields, "refresh");
 }
 
 export function ensureToolCallVisible(
@@ -53,8 +249,7 @@ export function ensureToolCallVisible(
     return existing;
   }
   const toolCall = createToolCall(toolUseId, toolName, input);
-  session.toolCalls.set(toolUseId, toolCall);
-  emitSessionUpdate(session.sessionId, { type: "tool_call", tool_call: toolCall });
+  emitInitialToolCall(session, toolCall);
   return toolCall;
 }
 
@@ -89,23 +284,8 @@ export function emitToolResultUpdate(
   rawContent: unknown,
   rawResult: unknown = rawContent,
 ): void {
-  const base = session.toolCalls.get(toolUseId);
-  const fields = buildToolResultFields(isError, rawContent, base, rawResult);
-  const update = { tool_call_id: toolUseId, fields };
-  emitSessionUpdate(session.sessionId, { type: "tool_call_update", tool_call_update: update });
-
-  if (base) {
-    base.status = fields.status ?? base.status;
-    if (fields.raw_output) {
-      base.raw_output = fields.raw_output;
-    }
-    if (fields.content) {
-      base.content = fields.content;
-    }
-    if (fields.output_metadata) {
-      base.output_metadata = fields.output_metadata;
-    }
-  }
+  const fields = buildToolResultFields(isError, rawContent, session.toolCalls.get(toolUseId), rawResult);
+  emitToolCallUpdate(session, toolUseId, fields, "result");
 }
 
 export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {
@@ -113,12 +293,7 @@ export function finalizeOpenToolCalls(session: SessionState, status: "completed"
     if (toolCall.status !== "pending" && toolCall.status !== "in_progress") {
       continue;
     }
-    const fields: ToolCallUpdateFields = { status };
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: { tool_call_id: toolUseId, fields },
-    });
-    toolCall.status = status;
+    emitToolCallUpdate(session, toolUseId, { status }, "finalize");
   }
 }
 
@@ -136,12 +311,7 @@ export function emitToolProgressUpdate(session: SessionState, toolUseId: string,
     return;
   }
 
-  const fields: ToolCallUpdateFields = { status: "in_progress" };
-  emitSessionUpdate(session.sessionId, {
-    type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
-  });
-  existing.status = "in_progress";
+  emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
 }
 
 export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, summary: string): void {
@@ -154,12 +324,7 @@ export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, 
     raw_output: summary,
     content: [{ type: "content", content: { type: "text", text: summary } }],
   };
-  emitSessionUpdate(session.sessionId, {
-    type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
-  });
-  base.status = fields.status ?? base.status;
-  base.raw_output = summary;
+  emitToolCallUpdate(session, toolUseId, fields, "summary");
 }
 
 export function setToolCallStatus(
@@ -178,14 +343,7 @@ export function setToolCallStatus(
     fields.raw_output = message;
     fields.content = [{ type: "content", content: { type: "text", text: message } }];
   }
-  emitSessionUpdate(session.sessionId, {
-    type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
-  });
-  base.status = status;
-  if (fields.raw_output) {
-    base.raw_output = fields.raw_output;
-  }
+  emitToolCallUpdate(session, toolUseId, fields, "status");
 }
 
 export function resolveTaskToolUseId(session: SessionState, msg: Record<string, unknown>): string {

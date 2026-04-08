@@ -7,6 +7,7 @@ const PERMISSION_DEBUG_ENABLED =
 
 export const LOG_TARGETS = {
   APP_SESSION: "app.session",
+  APP_TOOL: "app.tool",
   BRIDGE_LIFECYCLE: "bridge.lifecycle",
   BRIDGE_MCP: "bridge.mcp",
   BRIDGE_PERMISSION: "bridge.permission",

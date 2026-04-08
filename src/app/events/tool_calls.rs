@@ -11,10 +11,10 @@ use crate::app::todos::{parse_todos_if_present, set_todos};
 use std::time::Instant;
 
 pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
-    log_tool_call_received(&tc);
     let id_str = tc.tool_call_id.clone();
     let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
     let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name);
+    log_tool_call_received(app, &tc, scope, &sdk_tool_name);
     maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
     update_subagent_scope_state(app, scope, tc.status, &id_str);
 
@@ -28,15 +28,31 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     app.files_accessed += 1;
 }
 
-fn log_tool_call_received(tc: &model::ToolCall) {
-    let id_str = tc.tool_call_id.clone();
-    let title = tc.title.clone();
-    let kind = tc.kind;
-    tracing::debug!(
-        "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={} has_raw_output={}",
-        tc.status,
-        tc.content.len(),
-        tc.raw_output.is_some()
+fn log_tool_call_received(
+    app: &App,
+    tc: &model::ToolCall,
+    scope: ToolCallScope,
+    sdk_tool_name: &str,
+) {
+    let session_id = current_session_id(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_TOOL,
+        event_name = "tool_call_received",
+        message = "tool call received",
+        outcome = "success",
+        session_id = %session_id,
+        tool_call_id = %tc.tool_call_id,
+        count = tc.content.len(),
+        size_bytes = json_value_size(tc.raw_input.as_ref()).unwrap_or_default(),
+        tool_name = sdk_tool_name,
+        tool_title = %tc.title,
+        tool_kind = %tool_kind_name(tc.kind),
+        tool_status = ?tc.status,
+        tool_scope = %tool_scope_name(scope),
+        content_block_count = tc.content.len(),
+        location_count = tc.locations.len(),
+        has_raw_output = tc.raw_output.is_some(),
+        has_output_metadata = tc.output_metadata.is_some(),
     );
 }
 
@@ -72,18 +88,44 @@ fn maybe_apply_todo_write_from_tool_call(
     if sdk_tool_name != "TodoWrite" {
         return;
     }
-    tracing::info!("TodoWrite ToolCall detected: id={id}, raw_input={raw_input:?}");
+    let session_id = current_session_id(app);
     if let Some(raw_input) = raw_input {
         if let Some(todos) = parse_todos_if_present(raw_input) {
-            tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
+            tracing::info!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_plan_synchronized",
+                message = "todo plan synchronized from tool call",
+                outcome = "success",
+                session_id = %session_id,
+                tool_call_id = %id,
+                count = todos.len(),
+                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
+                tool_name = "TodoWrite",
+                todo_count = todos.len(),
+            );
             set_todos(app, todos);
         } else {
             tracing::debug!(
-                "TodoWrite ToolCall raw_input has no todos array yet; preserving existing todos"
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_plan_sync_skipped",
+                message = "todo plan sync skipped for tool call",
+                outcome = "skipped",
+                session_id = %session_id,
+                tool_call_id = %id,
+                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
+                tool_name = "TodoWrite",
             );
         }
     } else {
-        tracing::warn!("TodoWrite ToolCall has no raw_input");
+        tracing::warn!(
+            target: crate::logging::targets::APP_TOOL,
+            event_name = "tool_plan_sync_blocked",
+            message = "todo plan sync blocked by missing tool input",
+            outcome = "blocked",
+            session_id = %session_id,
+            tool_call_id = %id,
+            tool_name = "TodoWrite",
+        );
     }
 }
 
@@ -306,8 +348,12 @@ pub(super) fn resolve_sdk_tool_name(
         let fallback = fallback_sdk_tool_name(kind);
         if matches!(kind, model::ToolKind::Think) {
             tracing::warn!(
-                "ToolKind::Think tool arrived with no meta.claudeCode.toolName -- \
-                 Task/Agent scope detection may be incorrect; falling back to '{fallback}'"
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "tool_name_fallback_used",
+                message = "tool name fallback used for tool call",
+                outcome = "degraded",
+                tool_kind = %tool_kind_name(kind),
+                fallback_tool_name = fallback,
             );
         }
         fallback.to_owned()
@@ -373,4 +419,37 @@ pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
         });
     }
     false
+}
+
+pub(super) fn current_session_id(app: &App) -> String {
+    app.session_id.as_ref().map_or_else(String::new, ToString::to_string)
+}
+
+pub(super) fn json_value_size(value: Option<&serde_json::Value>) -> Option<u64> {
+    value
+        .and_then(|value| serde_json::to_vec(value).ok())
+        .and_then(|bytes| u64::try_from(bytes.len()).ok())
+}
+
+pub(super) fn tool_scope_name(scope: ToolCallScope) -> &'static str {
+    match scope {
+        ToolCallScope::Task => "task",
+        ToolCallScope::MainAgent => "main_agent",
+        ToolCallScope::Subagent => "subagent",
+    }
+}
+
+pub(super) fn tool_kind_name(kind: model::ToolKind) -> &'static str {
+    match kind {
+        model::ToolKind::Read => "read",
+        model::ToolKind::Edit => "edit",
+        model::ToolKind::Delete => "delete",
+        model::ToolKind::Move => "move",
+        model::ToolKind::Search => "search",
+        model::ToolKind::Execute => "execute",
+        model::ToolKind::Think => "think",
+        model::ToolKind::Fetch => "fetch",
+        model::ToolKind::SwitchMode => "switch_mode",
+        model::ToolKind::Other => "other",
+    }
 }

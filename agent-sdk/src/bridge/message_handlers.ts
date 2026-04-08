@@ -11,6 +11,7 @@ import {
 import { TOOL_RESULT_TYPES, unwrapToolUseResult } from "./tooling.js";
 import {
   emitToolCall,
+  emitToolCallUpdate,
   emitPlanIfTodoWrite,
   emitToolResultUpdate,
   finalizeOpenToolCalls,
@@ -124,11 +125,7 @@ export function handleTaskSystemMessage(
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
   if (toolCall.status === "pending") {
-    toolCall.status = "in_progress";
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: { tool_call_id: toolUseId, fields: { status: "in_progress" } },
-    });
+    emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
   }
 
   if (subtype === "task_started") {
@@ -136,17 +133,16 @@ export function handleTaskSystemMessage(
     if (!description) {
       return;
     }
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: toolUseId,
-        fields: {
-          status: "in_progress",
-          raw_output: description,
-          content: [{ type: "content", content: { type: "text", text: description } }],
-        },
+    emitToolCallUpdate(
+      session,
+      toolUseId,
+      {
+        status: "in_progress",
+        raw_output: description,
+        content: [{ type: "content", content: { type: "text", text: description } }],
       },
-    });
+      "task_started",
+    );
     return;
   }
 
@@ -155,17 +151,16 @@ export function handleTaskSystemMessage(
     if (!progress) {
       return;
     }
-    emitSessionUpdate(session.sessionId, {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: toolUseId,
-        fields: {
-          status: "in_progress",
-          raw_output: progress,
-          content: [{ type: "content", content: { type: "text", text: progress } }],
-        },
+    emitToolCallUpdate(
+      session,
+      toolUseId,
+      {
+        status: "in_progress",
+        raw_output: progress,
+        content: [{ type: "content", content: { type: "text", text: progress } }],
       },
-    });
+      "task_progress",
+    );
     return;
   }
 
@@ -177,11 +172,7 @@ export function handleTaskSystemMessage(
     fields.raw_output = summary;
     fields.content = [{ type: "content", content: { type: "text", text: summary } }];
   }
-  emitSessionUpdate(session.sessionId, {
-    type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
-  });
-  toolCall.status = finalStatus;
+  emitToolCallUpdate(session, toolUseId, fields, "task_notification");
   if (taskId) {
     session.taskToolUseIds.delete(taskId);
   }
