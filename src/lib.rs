@@ -29,7 +29,10 @@ pub struct Cli {
     #[arg(long)]
     pub bridge_script: Option<std::path::PathBuf>,
 
-    /// Write tracing diagnostics to a file (disabled unless explicitly set).
+    /// Write tracing diagnostics to a file.
+    ///
+    /// When omitted but logging is otherwise enabled via `--log-filter`,
+    /// `--log-append`, or `RUST_LOG`, a default log path is used.
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
@@ -38,7 +41,7 @@ pub struct Cli {
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,
 
-    /// Append to `--log-file` instead of truncating on startup.
+    /// Append to the active log file instead of resetting the current log window on startup.
     #[arg(long)]
     pub log_append: bool,
 

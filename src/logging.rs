@@ -5,7 +5,10 @@ use crate::Cli;
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
     pub const APP_AUTH: &str = "app.auth";
@@ -31,41 +34,37 @@ pub mod targets {
 
 const BRIDGE_LOG_SCHEMA: &str = "claude-rs-log/v1";
 const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
+const DEFAULT_LOG_DIR: &str = "claude-code-rust";
+const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
+const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const LOG_ROTATION_MAX_FILES: usize = 5;
 
 pub struct LoggingRuntime {
-    _private: (),
+    _guard: Option<WorkerGuard>,
 }
 
 impl LoggingRuntime {
     pub fn init(cli: &Cli) -> anyhow::Result<Self> {
-        let Some(path) = cli.log_file.as_ref() else {
-            if std::env::var_os("RUST_LOG").is_some() {
-                eprintln!(
-                    "RUST_LOG is set, but tracing is disabled without --log-file <PATH>. \
-Use --log-file to enable diagnostics."
-                );
-            }
-            return Ok(Self { _private: () });
+        let Some(log_path) = resolve_log_path(cli)? else {
+            return Ok(Self { _guard: None });
         };
 
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
-
-        let mut options = OpenOptions::new();
-        options.create(true).write(true);
-        if cli.log_append {
-            options.append(true);
-        } else {
-            options.truncate(true);
-        }
-        let file = options
-            .open(path)
-            .with_context(|| format!("failed to open log file {}", path.display()))?;
+        let writer = RollingFileWriter::new(
+            &log_path.path,
+            cli.log_append,
+            LOG_ROTATION_MAX_BYTES,
+            LOG_ROTATION_MAX_FILES,
+        )?;
+        let (non_blocking, guard) = tracing_appender::non_blocking(writer);
 
         tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
             .with_env_filter(filter)
-            .with_writer(file)
+            .with_writer(non_blocking)
             .with_ansi(false)
             .with_file(true)
             .with_line_number(true)
@@ -77,13 +76,16 @@ Use --log-file to enable diagnostics."
             target: targets::APP_LIFECYCLE,
             event_name = "logging_initialized",
             message = "tracing subscriber initialized",
-            log_file = %path.display(),
+            log_file = %log_path.path.display(),
+            log_path_source = log_path.source.as_str(),
             log_filter = %directives,
             log_append = cli.log_append,
+            log_rotation_max_bytes = LOG_ROTATION_MAX_BYTES,
+            log_rotation_max_files = LOG_ROTATION_MAX_FILES,
             version = env!("CARGO_PKG_VERSION"),
         );
 
-        Ok(Self { _private: () })
+        Ok(Self { _guard: Some(guard) })
     }
 }
 
@@ -97,6 +99,194 @@ fn build_filter_directives(cli: &Cli) -> String {
         directives.push_str(",tui_markdown=info");
     }
     directives
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogPathSource {
+    Explicit,
+    Default,
+}
+
+impl LogPathSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedLogPath {
+    path: PathBuf,
+    source: LogPathSource,
+}
+
+fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
+    if let Some(path) = cli.log_file.clone() {
+        return Ok(Some(ResolvedLogPath { path, source: LogPathSource::Explicit }));
+    }
+    if !logging_enabled_without_explicit_path(cli) {
+        return Ok(None);
+    }
+    let path = default_log_path()?;
+    Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
+}
+
+fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
+    cli.log_filter.is_some() || cli.log_append || std::env::var_os("RUST_LOG").is_some()
+}
+
+fn default_log_path() -> anyhow::Result<PathBuf> {
+    let base_dir = if let Some(dir) = dirs::data_local_dir() {
+        dir.join(DEFAULT_LOG_DIR).join("logs")
+    } else if let Some(dir) = dirs::cache_dir() {
+        dir.join(DEFAULT_LOG_DIR).join("logs")
+    } else if let Some(home) = dirs::home_dir() {
+        home.join(format!(".{DEFAULT_LOG_DIR}")).join("logs")
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current directory for default log path")?
+            .join(format!(".{DEFAULT_LOG_DIR}"))
+            .join("logs")
+    };
+    Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
+}
+
+#[derive(Debug)]
+struct RollingFileWriter {
+    base_path: PathBuf,
+    max_bytes: u64,
+    max_files: usize,
+    file: BufWriter<File>,
+    current_size: u64,
+}
+
+impl RollingFileWriter {
+    fn new(path: &Path, append: bool, max_bytes: u64, max_files: usize) -> anyhow::Result<Self> {
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent)
+                .with_context(|| format!("failed to create log directory {}", parent.display()))?;
+        }
+        if append {
+            let current_size = metadata(path).map_or(0, |m| m.len());
+            if current_size >= max_bytes {
+                rotate_file_window(path, max_files)?;
+                return Self::new(path, false, max_bytes, max_files);
+            }
+            let file = open_log_file(path, true)?;
+            return Ok(Self {
+                base_path: path.to_path_buf(),
+                max_bytes,
+                max_files,
+                file: BufWriter::new(file),
+                current_size,
+            });
+        }
+
+        clear_rotated_files(path, max_files)?;
+        let file = open_log_file(path, false)?;
+        Ok(Self {
+            base_path: path.to_path_buf(),
+            max_bytes,
+            max_files,
+            file: BufWriter::new(file),
+            current_size: 0,
+        })
+    }
+
+    fn rotate_if_needed(&mut self, incoming_len: usize) -> std::io::Result<()> {
+        let incoming = u64::try_from(incoming_len).unwrap_or(u64::MAX);
+        if self.current_size == 0 || self.current_size.saturating_add(incoming) <= self.max_bytes {
+            return Ok(());
+        }
+        self.file.flush()?;
+        rotate_file_window(&self.base_path, self.max_files)?;
+        self.file = BufWriter::new(open_log_file(&self.base_path, false)?);
+        self.current_size = 0;
+        Ok(())
+    }
+}
+
+impl Write for RollingFileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.rotate_if_needed(buf.len())?;
+        let written = self.file.write(buf)?;
+        self.current_size =
+            self.current_size.saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+fn open_log_file(path: &Path, append: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    options.open(path)
+}
+
+fn rotate_file_window(base_path: &Path, max_files: usize) -> std::io::Result<()> {
+    if max_files == 0 {
+        if base_path.exists() {
+            remove_file(base_path)?;
+        }
+        return Ok(());
+    }
+
+    let oldest = rotated_log_path(base_path, max_files);
+    if oldest.exists() {
+        remove_file(&oldest)?;
+    }
+
+    for index in (1..max_files).rev() {
+        let from = rotated_log_path(base_path, index);
+        if from.exists() {
+            let to = rotated_log_path(base_path, index + 1);
+            if to.exists() {
+                remove_file(&to)?;
+            }
+            rename(&from, &to)?;
+        }
+    }
+
+    if base_path.exists() {
+        let first = rotated_log_path(base_path, 1);
+        if first.exists() {
+            remove_file(&first)?;
+        }
+        rename(base_path, first)?;
+    }
+
+    Ok(())
+}
+
+fn clear_rotated_files(base_path: &Path, max_files: usize) -> std::io::Result<()> {
+    for index in 1..=max_files {
+        let rotated = rotated_log_path(base_path, index);
+        if rotated.exists() {
+            remove_file(rotated)?;
+        }
+    }
+    Ok(())
+}
+
+fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
+    let suffix = format!(".{index}");
+    if let Some(name) = base_path.file_name().and_then(|name| name.to_str()) {
+        base_path.with_file_name(format!("{name}{suffix}"))
+    } else {
+        let mut path = base_path.as_os_str().to_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    }
 }
 
 pub fn emit_bridge_stderr_line(line: &str) {
@@ -259,6 +449,7 @@ impl BridgeDiagnosticRecord {
         }
 
         match self.target.as_str() {
+            targets::APP_LIFECYCLE => emit_for_level!(targets::APP_LIFECYCLE),
             targets::APP_AUTH => emit_for_level!(targets::APP_AUTH),
             targets::APP_CACHE => emit_for_level!(targets::APP_CACHE),
             targets::APP_CONFIG => emit_for_level!(targets::APP_CONFIG),
@@ -284,7 +475,15 @@ impl BridgeDiagnosticRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeDiagnosticRecord, preview_text};
+    use super::{
+        BridgeDiagnosticRecord, RollingFileWriter, clear_rotated_files, preview_text,
+        resolve_log_path, rotated_log_path,
+    };
+    use crate::Cli;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn parses_structured_bridge_diagnostic() {
@@ -301,5 +500,75 @@ mod tests {
     fn preview_truncates_with_ellipsis() {
         let preview = preview_text("abcdefgh", 5);
         assert_eq!(preview, "abcde...");
+    }
+
+    #[test]
+    fn resolve_log_path_uses_explicit_path_when_provided() {
+        let cli = Cli {
+            resume: None,
+            no_update_check: false,
+            dir: None,
+            bridge_script: None,
+            log_file: Some(PathBuf::from("custom.log")),
+            log_filter: None,
+            log_append: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
+        assert_eq!(resolved.path, PathBuf::from("custom.log"));
+        assert_eq!(resolved.source.as_str(), "explicit");
+    }
+
+    #[test]
+    fn resolve_log_path_uses_default_when_filter_enables_logging() {
+        let cli = Cli {
+            resume: None,
+            no_update_check: false,
+            dir: None,
+            bridge_script: None,
+            log_file: None,
+            log_filter: Some("app.render=trace".to_owned()),
+            log_append: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
+        assert_eq!(resolved.source.as_str(), "default");
+        let path = resolved.path.to_string_lossy().replace('\\', "/");
+        assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
+    }
+
+    #[test]
+    fn rolling_writer_rotates_by_size() {
+        let dir = tempdir().expect("temp dir");
+        let base = dir.path().join("runtime.log");
+        let mut writer = RollingFileWriter::new(&base, false, 10, 2).expect("writer");
+
+        writer.write_all(b"12345").expect("first write");
+        writer.write_all(b"67890").expect("second write");
+        writer.write_all(b"abc").expect("rotation write");
+        writer.flush().expect("flush");
+
+        let current = fs::read_to_string(&base).expect("current log");
+        let rotated = fs::read_to_string(rotated_log_path(&base, 1)).expect("rotated log");
+
+        assert_eq!(current, "abc");
+        assert_eq!(rotated, "1234567890");
+    }
+
+    #[test]
+    fn clear_rotated_files_removes_existing_window() {
+        let dir = tempdir().expect("temp dir");
+        let base = dir.path().join("runtime.log");
+        fs::write(rotated_log_path(&base, 1), "a").expect("write first");
+        fs::write(rotated_log_path(&base, 2), "b").expect("write second");
+
+        clear_rotated_files(&base, 2).expect("clear rotated files");
+
+        assert!(!rotated_log_path(&base, 1).exists());
+        assert!(!rotated_log_path(&base, 2).exists());
     }
 }
