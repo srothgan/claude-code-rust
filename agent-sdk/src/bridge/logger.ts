@@ -6,9 +6,13 @@ const PERMISSION_DEBUG_ENABLED =
   process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || SDK_DEBUG_ENABLED;
 
 export const LOG_TARGETS = {
+  APP_AUTH: "app.auth",
+  APP_CONFIG: "app.config",
   APP_COMMAND: "app.command",
+  APP_NETWORK: "app.network",
   APP_SESSION: "app.session",
   APP_TOOL: "app.tool",
+  APP_UPDATE: "app.update",
   BRIDGE_LIFECYCLE: "bridge.lifecycle",
   BRIDGE_MCP: "bridge.mcp",
   BRIDGE_PERMISSION: "bridge.permission",

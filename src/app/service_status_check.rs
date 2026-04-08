@@ -44,11 +44,25 @@ struct IncidentComponent {
 
 pub fn start_service_status_check(app: &App) {
     let event_tx = app.event_tx.clone();
+    tracing::info!(
+        target: crate::logging::targets::APP_NETWORK,
+        event_name = "service_check_started",
+        message = "service status check started",
+        outcome = "start",
+        url = STATUSPAGE_SUMMARY_URL,
+    );
 
     tokio::task::spawn_local(async move {
         let Some(issue) = resolve_service_status_issue().await else {
             return;
         };
+        tracing::info!(
+            target: crate::logging::targets::APP_NETWORK,
+            event_name = "service_issue_detected",
+            message = "service status issue detected",
+            outcome = "success",
+            severity = ?issue.severity,
+        );
         let _ = event_tx
             .send(ClientEvent::ServiceStatus { severity: issue.severity, message: issue.message });
     });
@@ -58,7 +72,14 @@ async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
     let client = reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build().ok()?;
     let response = client.get(STATUSPAGE_SUMMARY_URL).send().await.ok()?;
     if !response.status().is_success() {
-        tracing::debug!("service-status request failed with status {}", response.status());
+        tracing::warn!(
+            target: crate::logging::targets::APP_NETWORK,
+            event_name = "service_check_failed",
+            message = "service status request failed",
+            outcome = "failure",
+            status = %response.status(),
+            url = STATUSPAGE_SUMMARY_URL,
+        );
         return None;
     }
 

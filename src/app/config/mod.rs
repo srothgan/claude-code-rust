@@ -1547,7 +1547,24 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     let Some(ref sid) = app.session_id else {
         return;
     };
-    let _ = conn.get_status_snapshot(sid.to_string());
+    let session_id = sid.to_string();
+    match conn.get_status_snapshot(session_id.clone()) {
+        Ok(()) => tracing::debug!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "status_snapshot_requested",
+            message = "status snapshot requested",
+            outcome = "start",
+            session_id = %session_id,
+        ),
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "status_snapshot_request_failed",
+            message = "failed to request status snapshot",
+            outcome = "failure",
+            session_id = %session_id,
+            error_message = %error,
+        ),
+    }
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {

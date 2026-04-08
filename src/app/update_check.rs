@@ -40,12 +40,25 @@ struct GithubLatestRelease {
 
 pub fn start_update_check(app: &App, cli: &Cli) {
     if update_check_disabled(cli.no_update_check) {
-        tracing::debug!("Skipping update check (disabled by flag/env)");
+        tracing::debug!(
+            target: crate::logging::targets::APP_UPDATE,
+            event_name = "update_check_skipped",
+            message = "update check skipped",
+            outcome = "skipped",
+            reason = "disabled_by_flag_or_env",
+        );
         return;
     }
 
     let event_tx = app.event_tx.clone();
     let current_version = env!("CARGO_PKG_VERSION").to_owned();
+    tracing::info!(
+        target: crate::logging::targets::APP_UPDATE,
+        event_name = "update_check_started",
+        message = "update check started",
+        outcome = "start",
+        current_version = %current_version,
+    );
 
     tokio::task::spawn_local(async move {
         let latest_version = resolve_latest_version().await;
@@ -77,6 +90,13 @@ async fn resolve_latest_version() -> Option<String> {
         && now.saturating_sub(cache.checked_at_unix_secs) <= UPDATE_CHECK_TTL_SECS
         && is_valid_version(&cache.latest_version)
     {
+        tracing::debug!(
+            target: crate::logging::targets::APP_UPDATE,
+            event_name = "update_check_cache_hit",
+            message = "update check cache hit",
+            outcome = "success",
+            latest_version = %cache.latest_version,
+        );
         return Some(cache.latest_version.clone());
     }
 
@@ -84,7 +104,14 @@ async fn resolve_latest_version() -> Option<String> {
         Some(latest_version) => {
             let cache = UpdateCheckCache { checked_at_unix_secs: now, latest_version };
             if let Err(err) = write_cache(&cache_path, &cache).await {
-                tracing::debug!("update-check cache write failed: {err}");
+                tracing::warn!(
+                    target: crate::logging::targets::APP_UPDATE,
+                    event_name = "update_check_cache_write_failed",
+                    message = "failed to write update check cache",
+                    outcome = "failure",
+                    cache_path = %cache_path.display(),
+                    error_message = %err,
+                );
             }
             Some(cache.latest_version)
         }
@@ -127,7 +154,14 @@ async fn fetch_latest_release_tag() -> Option<String> {
         .ok()?;
 
     if !response.status().is_success() {
-        tracing::debug!("update-check request failed with status {}", response.status());
+        tracing::warn!(
+            target: crate::logging::targets::APP_UPDATE,
+            event_name = "update_check_failed",
+            message = "update check request failed",
+            outcome = "failure",
+            status = %response.status(),
+            url = GITHUB_LATEST_RELEASE_API_URL,
+        );
         return None;
     }
 

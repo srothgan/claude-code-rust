@@ -159,11 +159,9 @@ pub(super) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(crate) fn refresh_mcp_snapshot_if_needed(app: &mut App) {
-    if app.config.active_tab != ConfigTab::Mcp {
-        tracing::debug!("skipping MCP refresh request: active_tab={:?}", app.config.active_tab);
-        return;
+    if app.config.active_tab == ConfigTab::Mcp {
+        refresh_mcp_snapshot(app);
     }
-    refresh_mcp_snapshot(app);
 }
 
 pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
@@ -181,13 +179,29 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
         app.mcp.in_flight = false;
         return;
     };
-    tracing::debug!("requesting MCP snapshot: session_id={sid}");
+    let session_id = sid.to_string();
     app.mcp.in_flight = true;
     app.mcp.last_error = None;
-    if let Err(err) = conn.get_mcp_snapshot(sid.to_string()) {
-        app.mcp.in_flight = false;
-        app.mcp.last_error = Some(err.to_string());
-        tracing::warn!("failed to request MCP snapshot: {err}");
+    match conn.get_mcp_snapshot(session_id.clone()) {
+        Ok(()) => tracing::debug!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_snapshot_requested",
+            message = "MCP snapshot requested",
+            outcome = "start",
+            session_id = %session_id,
+        ),
+        Err(err) => {
+            app.mcp.in_flight = false;
+            app.mcp.last_error = Some(err.to_string());
+            tracing::warn!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_snapshot_request_failed",
+                message = "failed to request MCP snapshot",
+                outcome = "failure",
+                session_id = %session_id,
+                error_message = %err,
+            );
+        }
     }
 }
 
@@ -198,8 +212,28 @@ pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
     let Some(ref sid) = app.session_id else {
         return;
     };
-    if conn.reconnect_mcp_server(sid.to_string(), server_name.to_owned()).is_ok() {
-        refresh_mcp_snapshot(app);
+    let session_id = sid.to_string();
+    match conn.reconnect_mcp_server(session_id.clone(), server_name.to_owned()) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_reconnect_requested",
+                message = "MCP reconnect requested",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+            );
+            refresh_mcp_snapshot(app);
+        }
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_reconnect_request_failed",
+            message = "failed to request MCP reconnect",
+            outcome = "failure",
+            session_id = %session_id,
+            server_name = %server_name,
+            error_message = %error,
+        ),
     }
 }
 
@@ -210,8 +244,30 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
     let Some(ref sid) = app.session_id else {
         return;
     };
-    if conn.toggle_mcp_server(sid.to_string(), server_name.to_owned(), enabled).is_ok() {
-        refresh_mcp_snapshot(app);
+    let session_id = sid.to_string();
+    match conn.toggle_mcp_server(session_id.clone(), server_name.to_owned(), enabled) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_toggle_requested",
+                message = "MCP server toggle requested",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+                enabled,
+            );
+            refresh_mcp_snapshot(app);
+        }
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_toggle_request_failed",
+            message = "failed to request MCP server toggle",
+            outcome = "failure",
+            session_id = %session_id,
+            server_name = %server_name,
+            enabled,
+            error_message = %error,
+        ),
     }
 }
 
@@ -222,10 +278,30 @@ pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
     let Some(ref sid) = app.session_id else {
         return;
     };
-    if conn.authenticate_mcp_server(sid.to_string(), server_name.to_owned()).is_ok() {
-        app.config.status_message = Some(format!("Starting MCP auth for {server_name}..."));
-        app.config.last_error = None;
-        refresh_mcp_snapshot(app);
+    let session_id = sid.to_string();
+    match conn.authenticate_mcp_server(session_id.clone(), server_name.to_owned()) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_authenticate_requested",
+                message = "MCP authentication requested",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+            );
+            app.config.status_message = Some(format!("Starting MCP auth for {server_name}..."));
+            app.config.last_error = None;
+            refresh_mcp_snapshot(app);
+        }
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_authenticate_request_failed",
+            message = "failed to request MCP authentication",
+            outcome = "failure",
+            session_id = %session_id,
+            server_name = %server_name,
+            error_message = %error,
+        ),
     }
 }
 
@@ -236,8 +312,28 @@ pub(crate) fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
     let Some(ref sid) = app.session_id else {
         return;
     };
-    if conn.clear_mcp_auth(sid.to_string(), server_name.to_owned()).is_ok() {
-        refresh_mcp_snapshot(app);
+    let session_id = sid.to_string();
+    match conn.clear_mcp_auth(session_id.clone(), server_name.to_owned()) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_clear_auth_requested",
+                message = "MCP auth clear requested",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+            );
+            refresh_mcp_snapshot(app);
+        }
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_clear_auth_request_failed",
+            message = "failed to request MCP auth clear",
+            outcome = "failure",
+            session_id = %session_id,
+            server_name = %server_name,
+            error_message = %error,
+        ),
     }
 }
 
@@ -252,11 +348,35 @@ pub(crate) fn submit_mcp_oauth_callback_url(
     let Some(ref sid) = app.session_id else {
         return;
     };
-    if conn
-        .submit_mcp_oauth_callback_url(sid.to_string(), server_name.to_owned(), callback_url)
-        .is_ok()
-    {
-        refresh_mcp_snapshot(app);
+    let session_id = sid.to_string();
+    let callback_url_chars = callback_url.chars().count();
+    match conn.submit_mcp_oauth_callback_url(
+        session_id.clone(),
+        server_name.to_owned(),
+        callback_url,
+    ) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_oauth_callback_requested",
+                message = "MCP OAuth callback URL submitted",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+                callback_url_chars,
+            );
+            refresh_mcp_snapshot(app);
+        }
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_oauth_callback_request_failed",
+            message = "failed to submit MCP OAuth callback URL",
+            outcome = "failure",
+            session_id = %session_id,
+            server_name = %server_name,
+            callback_url_chars,
+            error_message = %error,
+        ),
     }
 }
 
@@ -436,6 +556,7 @@ pub(crate) fn present_mcp_auth_redirect(
     app: &mut App,
     redirect: crate::agent::types::McpAuthRedirect,
 ) {
+    let server_name_for_log = redirect.server_name.clone();
     view::set_active_view(app, ActiveView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
@@ -450,6 +571,14 @@ pub(crate) fn present_mcp_auth_redirect(
         browser_open_error,
     }));
     app.config.last_error = None;
+    tracing::info!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "mcp_auth_redirect_presented",
+        message = "MCP auth redirect presented",
+        outcome = "success",
+        server_name = %server_name_for_log,
+        browser_opened,
+    );
 }
 
 pub(crate) fn handle_mcp_elicitation_completed(
@@ -488,6 +617,15 @@ pub(crate) fn handle_mcp_operation_error(
     app.mcp.last_error = Some(formatted.clone());
     app.config.last_error = Some(formatted);
     app.config.status_message = None;
+    tracing::error!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "mcp_operation_error_applied",
+        message = "MCP operation error applied",
+        outcome = "failure",
+        server_name = %error.server_name.as_deref().unwrap_or(""),
+        operation = %error.operation,
+        error_message = %error.message,
+    );
 }
 
 fn format_mcp_operation_error(error: &crate::agent::types::McpOperationError) -> String {

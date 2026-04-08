@@ -429,21 +429,50 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
-      const account = await session.query.accountInfo();
-      writeEvent(
-        {
-          event: "status_snapshot",
-          session_id: session.sessionId,
-          account: {
-            email: account.email,
-            organization: account.organization,
+      try {
+        const account = await session.query.accountInfo();
+        bridgeLogger.info({
+          target: LOG_TARGETS.APP_AUTH,
+          eventName: "status_snapshot_emitted",
+          message: "status snapshot emitted",
+          outcome: "success",
+          ...(requestId ? { requestId } : {}),
+          sessionId: session.sessionId,
+          fields: {
+            has_email: typeof account.email === "string" && account.email.trim().length > 0,
+            has_organization: account.organization !== undefined,
             subscription_type: account.subscriptionType,
             token_source: account.tokenSource,
             api_key_source: account.apiKeySource,
           },
-        },
-        requestId,
-      );
+        });
+        writeEvent(
+          {
+            event: "status_snapshot",
+            session_id: session.sessionId,
+            account: {
+              email: account.email,
+              organization: account.organization,
+              subscription_type: account.subscriptionType,
+              token_source: account.tokenSource,
+              api_key_source: account.apiKeySource,
+            },
+          },
+          requestId,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_AUTH,
+          eventName: "status_snapshot_failed",
+          message: "failed to build status snapshot",
+          outcome: "failure",
+          ...(requestId ? { requestId } : {}),
+          sessionId: session.sessionId,
+          fields: { error_message: message },
+        });
+        throw error;
+      }
       return;
     }
 

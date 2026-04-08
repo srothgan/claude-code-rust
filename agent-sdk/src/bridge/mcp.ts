@@ -17,6 +17,46 @@ type McpAuthMethodName =
 export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
 const knownConnectedMcpServers = new Set<string>();
 
+function logMcpSuccess(
+  eventName: string,
+  message: string,
+  sessionId: string,
+  requestId?: string,
+  fields?: Record<string, unknown>,
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_MCP,
+    eventName,
+    message,
+    outcome: "success",
+    sessionId,
+    ...(requestId ? { requestId } : {}),
+    ...(fields ? { fields } : {}),
+  });
+}
+
+function logMcpFailure(
+  eventName: string,
+  message: string,
+  sessionId: string,
+  errorMessage: string,
+  requestId?: string,
+  fields?: Record<string, unknown>,
+): void {
+  bridgeLogger.warn({
+    target: LOG_TARGETS.BRIDGE_MCP,
+    eventName,
+    message,
+    outcome: "failure",
+    sessionId,
+    ...(requestId ? { requestId } : {}),
+    fields: {
+      ...(fields ?? {}),
+      error_message: errorMessage,
+    },
+  });
+}
+
 function queryWithMcpAuth(session: SessionState): QueryWithMcpAuth {
   return session.query as QueryWithMcpAuth;
 }
@@ -91,6 +131,9 @@ export async function emitMcpSnapshotEvent(
   let mapped = servers.map(mapMcpServerStatus);
   mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
   rememberKnownConnectedMcpServers(mapped);
+  logMcpSuccess("mcp_snapshot_emitted", "MCP snapshot emitted", session.sessionId, requestId, {
+    server_count: mapped.length,
+  });
   writeEvent(
     {
       event: "mcp_snapshot",
@@ -234,6 +277,13 @@ export async function handleMcpStatusCommand(
     await emitMcpSnapshotEvent(session, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_snapshot_failed",
+      "failed to emit MCP snapshot",
+      session.sessionId,
+      message,
+      requestId,
+    );
     writeEvent(
       {
         event: "mcp_snapshot",
@@ -253,8 +303,19 @@ export async function handleMcpReconnectCommand(
 ): Promise<void> {
   try {
     await session.query.reconnectMcpServer(command.server_name);
+    logMcpSuccess("mcp_reconnect_completed", "MCP reconnect completed", command.session_id, requestId, {
+      server_name: command.server_name,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_reconnect_failed",
+      "MCP reconnect failed",
+      command.session_id,
+      message,
+      requestId,
+      { server_name: command.server_name },
+    );
     emitMcpCommandError(
       command.session_id,
       "reconnect",
@@ -272,8 +333,23 @@ export async function handleMcpToggleCommand(
 ): Promise<void> {
   try {
     await session.query.toggleMcpServer(command.server_name, command.enabled);
+    logMcpSuccess(
+      "mcp_toggle_completed",
+      "MCP server toggle completed",
+      command.session_id,
+      requestId,
+      { server_name: command.server_name, enabled: command.enabled },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_toggle_failed",
+      "MCP server toggle failed",
+      command.session_id,
+      message,
+      requestId,
+      { server_name: command.server_name, enabled: command.enabled },
+    );
     emitMcpCommandError(command.session_id, "toggle", message, requestId, command.server_name);
   }
 }
@@ -285,8 +361,23 @@ export async function handleMcpSetServersCommand(
 ): Promise<void> {
   try {
     await session.query.setMcpServers(command.servers as Record<string, McpServerConfig>);
+    logMcpSuccess(
+      "mcp_servers_set_completed",
+      "MCP server configuration updated",
+      command.session_id,
+      requestId,
+      { server_count: Object.keys(command.servers).length },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_servers_set_failed",
+      "failed to update MCP server configuration",
+      command.session_id,
+      message,
+      requestId,
+      { server_count: Object.keys(command.servers).length },
+    );
     slashError(command.session_id, `failed to set MCP servers: ${message}`, requestId);
   }
 }
@@ -300,15 +391,41 @@ export async function handleMcpAuthenticateCommand(
     const result = await callMcpAuthMethod(session, "mcpAuthenticate", [command.server_name]);
     const redirect = extractMcpAuthRedirect(command.server_name, result);
     if (redirect) {
-      writeEvent({
-        event: "mcp_auth_redirect",
-        session_id: command.session_id,
-        redirect,
-      });
+      logMcpSuccess(
+        "mcp_auth_redirect_emitted",
+        "MCP auth redirect emitted",
+        command.session_id,
+        requestId,
+        { server_name: command.server_name, requires_user_action: redirect.requires_user_action },
+      );
+      writeEvent(
+        {
+          event: "mcp_auth_redirect",
+          session_id: command.session_id,
+          redirect,
+        },
+        requestId,
+      );
+    } else {
+      logMcpSuccess(
+        "mcp_authenticate_completed",
+        "MCP authentication command completed",
+        command.session_id,
+        requestId,
+        { server_name: command.server_name },
+      );
     }
     scheduleMcpAuthSnapshotMonitor(session, command.server_name);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_authenticate_failed",
+      "MCP authentication command failed",
+      command.session_id,
+      message,
+      requestId,
+      { server_name: command.server_name },
+    );
     emitMcpCommandError(
       command.session_id,
       "authenticate",
@@ -328,8 +445,19 @@ export async function handleMcpClearAuthCommand(
     await callMcpAuthMethod(session, "mcpClearAuth", [command.server_name]);
     forgetKnownConnectedMcpServer(command.server_name);
     session.mcpStatusRevalidatedAt.delete(command.server_name);
+    logMcpSuccess("mcp_clear_auth_completed", "MCP auth cleared", command.session_id, requestId, {
+      server_name: command.server_name,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_clear_auth_failed",
+      "failed to clear MCP auth",
+      command.session_id,
+      message,
+      requestId,
+      { server_name: command.server_name },
+    );
     emitMcpCommandError(
       command.session_id,
       "clear-auth",
@@ -350,8 +478,29 @@ export async function handleMcpOauthCallbackUrlCommand(
       command.server_name,
       command.callback_url,
     ]);
+    logMcpSuccess(
+      "mcp_oauth_callback_completed",
+      "MCP OAuth callback URL submitted",
+      command.session_id,
+      requestId,
+      {
+        server_name: command.server_name,
+        callback_url_chars: command.callback_url.length,
+      },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logMcpFailure(
+      "mcp_oauth_callback_failed",
+      "failed to submit MCP OAuth callback URL",
+      command.session_id,
+      message,
+      requestId,
+      {
+        server_name: command.server_name,
+        callback_url_chars: command.callback_url.length,
+      },
+    );
     emitMcpCommandError(
       command.session_id,
       "submit-callback-url",

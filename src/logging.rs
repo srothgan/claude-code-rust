@@ -8,11 +8,15 @@ use serde_json::{Map, Value};
 use std::fs::OpenOptions;
 
 pub mod targets {
+    pub const APP_AUTH: &str = "app.auth";
+    pub const APP_CONFIG: &str = "app.config";
     pub const APP_COMMAND: &str = "app.command";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
+    pub const APP_NETWORK: &str = "app.network";
     pub const APP_PERMISSION: &str = "app.permission";
     pub const APP_SESSION: &str = "app.session";
     pub const APP_TOOL: &str = "app.tool";
+    pub const APP_UPDATE: &str = "app.update";
     pub const BRIDGE_LIFECYCLE: &str = "bridge.lifecycle";
     pub const BRIDGE_MCP: &str = "bridge.mcp";
     pub const BRIDGE_PERMISSION: &str = "bridge.permission";
@@ -304,10 +308,14 @@ impl BridgeDiagnosticRecord {
         }
 
         match self.target.as_str() {
+            targets::APP_AUTH => emit_for_level!(targets::APP_AUTH),
+            targets::APP_CONFIG => emit_for_level!(targets::APP_CONFIG),
             targets::APP_COMMAND => emit_for_level!(targets::APP_COMMAND),
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
             targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
             targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),
+            targets::APP_NETWORK => emit_for_level!(targets::APP_NETWORK),
+            targets::APP_UPDATE => emit_for_level!(targets::APP_UPDATE),
             targets::BRIDGE_LIFECYCLE => emit_for_level!(targets::BRIDGE_LIFECYCLE),
             targets::BRIDGE_MCP => emit_for_level!(targets::BRIDGE_MCP),
             targets::BRIDGE_PERMISSION => emit_for_level!(targets::BRIDGE_PERMISSION),

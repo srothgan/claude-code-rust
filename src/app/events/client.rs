@@ -96,22 +96,52 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_AUTH,
+                    event_name = "status_snapshot_dropped",
+                    message = "status snapshot dropped for a stale session",
+                    outcome = "dropped",
+                    session_id = %session_id,
+                    reason = "stale_session",
+                );
                 return;
             }
+            let has_email = account.email.as_deref().is_some_and(|email| !email.trim().is_empty());
+            let has_organization = account.organization.is_some();
+            let subscription_type = account.subscription_type.clone();
+            let token_source = account.token_source.clone();
+            let api_key_source = account.api_key_source.clone();
             app.account_info = Some(account);
             app.needs_redraw = true;
+            tracing::info!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "status_snapshot_applied",
+                message = "status snapshot applied",
+                outcome = "success",
+                session_id = %session_id,
+                has_email,
+                has_organization,
+                subscription_type = ?subscription_type,
+                token_source = ?token_source,
+                api_key_source = ?api_key_source,
+            );
         }
         ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "mcp_snapshot_dropped",
+                    message = "MCP snapshot dropped for a stale session",
+                    outcome = "dropped",
+                    session_id = %session_id,
+                    reason = "stale_session",
+                );
                 return;
             }
-            tracing::debug!(
-                "received MCP snapshot: servers={} error_present={}",
-                servers.len(),
-                error.is_some()
-            );
+            let server_count = servers.len();
+            let error_present = error.is_some();
             app.mcp.servers = servers;
             app.mcp.in_flight = false;
             app.mcp.last_error = error;
@@ -138,6 +168,15 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     app.config.overlay = None;
                 }
             }
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_snapshot_applied",
+                message = "MCP snapshot applied",
+                outcome = "success",
+                session_id = %session_id,
+                server_count,
+                error_present,
+            );
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch != epoch {

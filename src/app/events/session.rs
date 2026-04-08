@@ -147,8 +147,8 @@ pub(super) fn handle_auth_required_event(
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     tracing::warn!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "auth_required_cleared_session",
+        target: crate::logging::targets::APP_AUTH,
+        event_name = "auth_required_detected",
         message = "auth required cleared active session state",
         outcome = "blocked",
         method_name = %method_name_for_log,
@@ -214,10 +214,16 @@ pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnecti
         "Authentication successful. Starting new session...",
     );
     app.force_redraw = true;
+    tracing::info!(
+        target: crate::logging::targets::APP_AUTH,
+        event_name = "login_completed",
+        message = "login completed and session restart requested",
+        outcome = "success",
+    );
 
     if let Err(e) = start_new_session(app, conn, SessionStartReason::Login) {
         tracing::error!(
-            target: crate::logging::targets::APP_SESSION,
+            target: crate::logging::targets::APP_AUTH,
             event_name = "login_session_restart_failed",
             message = "failed to start session after login",
             outcome = "failure",
@@ -243,8 +249,8 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     crate::app::usage::reset_for_session_change(app);
     app.force_redraw = true;
     tracing::info!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "logout_cleared_session",
+        target: crate::logging::targets::APP_AUTH,
+        event_name = "logout_completed",
         message = "logout cleared active session state",
         outcome = "success",
     );
@@ -254,7 +260,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         app.pending_command_ack = None;
         if let Err(e) = start_new_session(app, conn, SessionStartReason::Logout) {
             tracing::error!(
-                target: crate::logging::targets::APP_SESSION,
+                target: crate::logging::targets::APP_AUTH,
                 event_name = "logout_session_restart_failed",
                 message = "failed to start replacement session after logout",
                 outcome = "failure",
@@ -269,7 +275,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         }
     } else {
         tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
+            target: crate::logging::targets::APP_AUTH,
             event_name = "logout_session_restart_unavailable",
             message = "logout completed without a connection to start a replacement session",
             outcome = "blocked",
@@ -330,6 +336,14 @@ pub(super) fn handle_update_available_event(
     app.update_check_hint = Some(format!(
         "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
     ));
+    tracing::info!(
+        target: crate::logging::targets::APP_UPDATE,
+        event_name = "update_available_applied",
+        message = "update availability applied",
+        outcome = "success",
+        latest_version = %latest_version,
+        current_version = %current_version,
+    );
 }
 
 pub(super) fn handle_service_status_event(
@@ -342,6 +356,24 @@ pub(super) fn handle_service_status_event(
         ServiceStatusSeverity::Error => SystemSeverity::Error,
     };
     push_system_message_with_severity(app, Some(ui_severity), message);
+    match severity {
+        ServiceStatusSeverity::Warning => tracing::warn!(
+            target: crate::logging::targets::APP_NETWORK,
+            event_name = "service_status_applied",
+            message = "service status warning applied",
+            outcome = "success",
+            severity = ?severity,
+            service_message = %message,
+        ),
+        ServiceStatusSeverity::Error => tracing::error!(
+            target: crate::logging::targets::APP_NETWORK,
+            event_name = "service_status_applied",
+            message = "service status error applied",
+            outcome = "success",
+            severity = ?severity,
+            service_message = %message,
+        ),
+    }
 }
 
 pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {

@@ -215,27 +215,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             }
         }
         model::SessionUpdate::ConfigOptionUpdate(config) => {
-            tracing::debug!("Config update: {:?}", config);
-            let option_id = config.option_id;
-            let value = config.value;
-            let model_name =
-                if option_id == "model" { value.as_str().map(ToOwned::to_owned) } else { None };
-            app.config_options.insert(option_id.clone(), value);
-
-            if let Some(model_name) = model_name {
-                app.model_name = model_name;
-                app.update_welcome_model_once();
-            } else if option_id == "model" {
-                tracing::warn!("ConfigOptionUpdate for model carried non-string value");
-            }
-
-            if matches!(
-                app.pending_command_ack.as_ref(),
-                Some(PendingCommandAck::ConfigOptionUpdate { option_id: expected })
-                    if expected == &option_id
-            ) {
-                session::clear_pending_command(app);
-            }
+            handle_config_option_update(app, config);
         }
         model::SessionUpdate::FastModeUpdate(state) => {
             app.fast_mode_state = state;
@@ -286,6 +266,51 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
             Some(SystemSeverity::Info),
             "Session successfully compacted.",
         );
+    }
+}
+
+fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
+    let option_id = config.option_id;
+    let value = config.value;
+    let model_name =
+        if option_id == "model" { value.as_str().map(ToOwned::to_owned) } else { None };
+    let value_kind = match &value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+    app.config_options.insert(option_id.clone(), value);
+    tracing::debug!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "config_option_update_applied",
+        message = "config option update applied",
+        outcome = "success",
+        option_id = %option_id,
+        value_kind,
+    );
+
+    if let Some(model_name) = model_name {
+        app.model_name = model_name;
+        app.update_welcome_model_once();
+    } else if option_id == "model" {
+        tracing::warn!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "config_option_update_rejected",
+            message = "config option update carried an invalid model value",
+            outcome = "failure",
+            option_id = "model",
+            value_kind,
+        );
+    }
+
+    if matches!(
+        app.pending_command_ack.as_ref(),
+        Some(PendingCommandAck::ConfigOptionUpdate { option_id: expected }) if expected == &option_id
+    ) {
+        session::clear_pending_command(app);
     }
 }
 
