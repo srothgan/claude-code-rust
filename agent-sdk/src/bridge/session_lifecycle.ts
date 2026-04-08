@@ -311,6 +311,15 @@ export async function createSession(params: {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+        eventName: "bridge_session_initialization_failed",
+        message: "agent initialization failed before bridge connect",
+        outcome: "failure",
+        ...(session.connectRequestId ? { requestId: session.connectRequestId } : {}),
+        sessionId: session.sessionId,
+        fields: { error_message: message },
+      });
       failConnection(`agent initialization failed: ${message}`, session.connectRequestId);
       session.connectRequestId = undefined;
     });
@@ -323,10 +332,25 @@ export async function createSession(params: {
         handleSdkMessage(session, message);
       }
       if (!session.connected) {
+        bridgeLogger.error({
+          target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+          eventName: "bridge_session_stream_ended",
+          message: "agent stream ended before session initialization",
+          outcome: "failure",
+          ...(params.requestId ? { requestId: params.requestId } : {}),
+        });
         failConnection("agent stream ended before session initialization", params.requestId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+        eventName: "bridge_session_stream_failed",
+        message: "agent stream failed before session initialization",
+        outcome: "failure",
+        ...(params.requestId ? { requestId: params.requestId } : {}),
+        fields: { error_message: message },
+      });
       failConnection(`agent stream failed: ${message}`, params.requestId);
     }
   })();

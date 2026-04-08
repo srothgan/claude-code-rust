@@ -17,11 +17,29 @@ pub struct BridgeClient {
 
 impl BridgeClient {
     pub fn spawn(launcher: &BridgeLauncher) -> anyhow::Result<Self> {
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_spawn_started",
+            message = "spawning bridge process",
+            outcome = "start",
+            runtime_path = %launcher.runtime_path.display(),
+            script_path = %launcher.script_path.display(),
+        );
         let mut child = launcher
             .command()
             .spawn()
             .map_err(|_| anyhow::Error::new(AppError::AdapterCrashed))
             .with_context(|| format!("failed to spawn bridge process: {}", launcher.describe()))?;
+
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_spawn_completed",
+            message = "bridge process spawned",
+            outcome = "success",
+            bridge_pid = child.id().unwrap_or_default(),
+            runtime_path = %launcher.runtime_path.display(),
+            script_path = %launcher.script_path.display(),
+        );
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
@@ -53,31 +71,233 @@ impl BridgeClient {
     }
 
     pub async fn send(&mut self, envelope: CommandEnvelope) -> anyhow::Result<()> {
-        let line =
-            serde_json::to_string(&envelope).context("failed to serialize bridge command")?;
-        self.stdin.write_all(line.as_bytes()).await.context("failed to write bridge command")?;
-        self.stdin.write_all(b"\n").await.context("failed to write bridge newline")?;
-        self.stdin.flush().await.context("failed to flush bridge stdin")?;
+        let request_id = envelope.request_id.as_deref().unwrap_or("");
+        let bridge_command = envelope.command.command_name();
+        let session_id = envelope.command.session_id().unwrap_or("");
+        let tool_call_id = envelope.command.tool_call_id().unwrap_or("");
+
+        let line = serde_json::to_string(&envelope).map_err(|err| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_send_failed",
+                message = "failed to serialize bridge command",
+                outcome = "failure",
+                request_id,
+                bridge_command,
+                session_id,
+                tool_call_id,
+                stage = "serialize",
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to serialize bridge command")
+        })?;
+        let size_bytes = line.len() + 1;
+        self.stdin.write_all(line.as_bytes()).await.map_err(|err| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_send_failed",
+                message = "failed to write bridge command",
+                outcome = "failure",
+                request_id,
+                bridge_command,
+                session_id,
+                tool_call_id,
+                size_bytes,
+                stage = "write",
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to write bridge command")
+        })?;
+        self.stdin.write_all(b"\n").await.map_err(|err| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_send_failed",
+                message = "failed to write bridge newline",
+                outcome = "failure",
+                request_id,
+                bridge_command,
+                session_id,
+                tool_call_id,
+                size_bytes,
+                stage = "write_newline",
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to write bridge newline")
+        })?;
+        self.stdin.flush().await.map_err(|err| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_send_failed",
+                message = "failed to flush bridge stdin",
+                outcome = "failure",
+                request_id,
+                bridge_command,
+                session_id,
+                tool_call_id,
+                size_bytes,
+                stage = "flush",
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to flush bridge stdin")
+        })?;
+        log_bridge_command_sent(bridge_command, request_id, session_id, tool_call_id, size_bytes);
         Ok(())
     }
 
     pub async fn recv(&mut self) -> anyhow::Result<Option<EventEnvelope>> {
-        let Some(line) = self.stdout.next_line().await.context("failed to read bridge stdout")?
+        let Some(line) = self.stdout.next_line().await.map_err(|err| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_stdout_read_failed",
+                message = "failed to read bridge stdout",
+                outcome = "failure",
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to read bridge stdout")
+        })?
         else {
             return Ok(None);
         };
-        let event: EventEnvelope =
-            serde_json::from_str(&line).context("failed to decode bridge event json")?;
+        let size_bytes = line.len() + 1;
+        let event: EventEnvelope = serde_json::from_str(&line).map_err(|err| {
+            let preview = line.chars().take(240).collect::<String>();
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_event_decode_failed",
+                message = "failed to decode bridge event json",
+                outcome = "failure",
+                size_bytes,
+                preview = %preview,
+                preview_chars = preview.chars().count(),
+                error = %err,
+            );
+            anyhow::Error::new(err).context("failed to decode bridge event json")
+        })?;
+        log_bridge_event_received(&event, size_bytes);
         Ok(Some(event))
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        tracing::info!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_shutdown_requested",
+            message = "requesting bridge shutdown",
+            outcome = "start",
+        );
         self.send(CommandEnvelope { request_id: None, command: BridgeCommand::Shutdown }).await?;
         Ok(())
     }
 
     pub async fn wait(mut self) -> anyhow::Result<std::process::ExitStatus> {
         self.child.wait().await.context("failed to wait for bridge process")
+    }
+}
+
+fn log_bridge_command_sent(
+    bridge_command: &str,
+    request_id: &str,
+    session_id: &str,
+    tool_call_id: &str,
+    size_bytes: usize,
+) {
+    match bridge_command {
+        "initialize" | "create_session" | "resume_session" | "new_session" | "shutdown" => {
+            tracing::info!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_sent",
+                message = "bridge command sent",
+                outcome = "success",
+                bridge_command,
+                request_id,
+                session_id,
+                tool_call_id,
+                size_bytes,
+            );
+        }
+        _ => {
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_PROTOCOL,
+                event_name = "bridge_command_sent",
+                message = "bridge command sent",
+                outcome = "success",
+                bridge_command,
+                request_id,
+                session_id,
+                tool_call_id,
+                size_bytes,
+            );
+        }
+    }
+}
+
+fn log_bridge_event_received(envelope: &EventEnvelope, size_bytes: usize) {
+    let bridge_event = envelope.event.event_name();
+    let request_id = envelope.request_id.as_deref().unwrap_or("");
+    let session_id = envelope.event.session_id().unwrap_or("");
+    let tool_call_id = envelope.event.tool_call_id().unwrap_or("");
+
+    match bridge_event {
+        "initialized" | "connected" | "session_replaced" => tracing::info!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "bridge_event_received",
+            message = "bridge event received",
+            outcome = "success",
+            bridge_event,
+            request_id,
+            session_id,
+            tool_call_id,
+            size_bytes,
+        ),
+        "connection_failed" => tracing::error!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "bridge_event_received",
+            message = "bridge event received",
+            outcome = "failure",
+            bridge_event,
+            request_id,
+            session_id,
+            tool_call_id,
+            size_bytes,
+        ),
+        "auth_required" | "turn_error" | "slash_error" | "mcp_operation_error" => tracing::warn!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "bridge_event_received",
+            message = "bridge event received",
+            outcome = "degraded",
+            bridge_event,
+            request_id,
+            session_id,
+            tool_call_id,
+            size_bytes,
+        ),
+        "session_update"
+        | "permission_request"
+        | "question_request"
+        | "elicitation_request"
+        | "elicitation_complete"
+        | "mcp_auth_redirect"
+        | "turn_complete" => tracing::trace!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "bridge_event_received",
+            message = "bridge event received",
+            outcome = "success",
+            bridge_event,
+            request_id,
+            session_id,
+            tool_call_id,
+            size_bytes,
+        ),
+        _ => tracing::debug!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "bridge_event_received",
+            message = "bridge event received",
+            outcome = "success",
+            bridge_event,
+            request_id,
+            session_id,
+            tool_call_id,
+            size_bytes,
+        ),
     }
 }
 

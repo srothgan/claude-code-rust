@@ -7,7 +7,7 @@ import type {
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
-import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
@@ -33,7 +33,9 @@ export function writeEvent(event: BridgeEvent, requestId?: string): void {
     ...(requestId ? { request_id: requestId } : {}),
     ...event,
   };
-  process.stdout.write(`${JSON.stringify(envelope)}\n`);
+  const serialized = JSON.stringify(envelope);
+  logBridgeEventSent(event, requestId, Buffer.byteLength(serialized) + 1);
+  process.stdout.write(`${serialized}\n`);
 }
 
 export function failConnection(message: string, requestId?: string): void {

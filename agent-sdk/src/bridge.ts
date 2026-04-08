@@ -42,6 +42,7 @@ import {
   handleMcpToggleCommand,
   staleMcpAuthCandidates,
 } from "./bridge/mcp.js";
+import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue, logPermissionDebug } from "./bridge/shared.js";
@@ -146,8 +147,20 @@ export function agentSdkVersionCompatibilityError(): string | undefined {
 }
 
 async function handleCommand(command: BridgeCommand, requestId?: string): Promise<void> {
+  logBridgeCommandReceived(command, requestId);
   const sdkVersionError = agentSdkVersionCompatibilityError();
   if (sdkVersionError && command.command !== "initialize" && command.command !== "shutdown") {
+    bridgeLogger.error({
+      target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+      eventName: "bridge_command_rejected",
+      message: "bridge command rejected due to unsupported SDK version",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      fields: {
+        bridge_command: command.command,
+        error_message: sdkVersionError,
+      },
+    });
     failConnection(sdkVersionError, requestId);
     return;
   }
@@ -155,6 +168,14 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
   switch (command.command) {
     case "initialize":
       if (sdkVersionError) {
+        bridgeLogger.error({
+          target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+          eventName: "bridge_initialize_failed",
+          message: "bridge initialization failed due to unsupported SDK version",
+          outcome: "failure",
+          ...(requestId ? { requestId } : {}),
+          fields: { error_message: sdkVersionError },
+        });
         failConnection(sdkVersionError, requestId);
         return;
       }
@@ -452,15 +473,48 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
 
     case "shutdown":
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+        eventName: "bridge_shutdown_requested",
+        message: "bridge shutdown requested",
+        outcome: "start",
+        ...(requestId ? { requestId } : {}),
+      });
       await closeAllSessions();
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+        eventName: "bridge_shutdown_completed",
+        message: "bridge shutdown completed",
+        outcome: "success",
+        ...(requestId ? { requestId } : {}),
+      });
       process.exit(0);
 
     default:
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_PROTOCOL,
+        eventName: "bridge_command_rejected",
+        message: "received unsupported bridge command",
+        outcome: "failure",
+        ...(requestId ? { requestId } : {}),
+        fields: {
+          bridge_command: (command as { command?: string }).command ?? "unknown",
+          reason: "unsupported_command",
+        },
+      });
       failConnection(`unhandled command: ${(command as { command?: string }).command ?? "unknown"}`, requestId);
   }
 }
 
 function main(): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+    eventName: "bridge_process_started",
+    message: "bridge process started",
+    outcome: "start",
+    fields: { pid: process.pid },
+  });
+
   const rl = readline.createInterface({
     input: process.stdin,
     crlfDelay: Number.POSITIVE_INFINITY,
@@ -476,6 +530,18 @@ function main(): void {
         parsed = parseCommandEnvelope(line);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.error({
+          target: LOG_TARGETS.BRIDGE_PROTOCOL,
+          eventName: "bridge_command_decode_failed",
+          message: "failed to decode bridge command envelope",
+          outcome: "failure",
+          sizeBytes: Buffer.byteLength(line),
+          fields: {
+            preview: line.slice(0, 240),
+            preview_chars: Math.min(line.length, 240),
+            error_message: message,
+          },
+        });
         failConnection(`invalid command envelope: ${message}`);
         return;
       }
@@ -484,6 +550,22 @@ function main(): void {
         await handleCommand(parsed.command, parsed.requestId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.error({
+          target: LOG_TARGETS.BRIDGE_PROTOCOL,
+          eventName: "bridge_command_failed",
+          message: "bridge command handler failed",
+          outcome: "failure",
+          ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
+          ...(parsed.command.command === "create_session" || parsed.command.command === "new_session"
+            ? {}
+            : "session_id" in parsed.command
+              ? { sessionId: parsed.command.session_id }
+              : {}),
+          fields: {
+            bridge_command: parsed.command.command,
+            error_message: message,
+          },
+        });
         failConnection(
           `bridge command failed (${parsed.command.command}): ${message}`,
           parsed.requestId,
@@ -493,7 +575,21 @@ function main(): void {
   });
 
   rl.on("close", () => {
-    void closeAllSessions().finally(() => process.exit(0));
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+      eventName: "bridge_input_closed",
+      message: "bridge stdin closed",
+      outcome: "success",
+    });
+    void closeAllSessions().finally(() => {
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
+        eventName: "bridge_shutdown_completed",
+        message: "bridge shutdown completed after stdin close",
+        outcome: "success",
+      });
+      process.exit(0);
+    });
   });
 }
 

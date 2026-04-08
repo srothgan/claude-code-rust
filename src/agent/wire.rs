@@ -136,6 +136,90 @@ pub enum BridgeCommand {
     Shutdown,
 }
 
+impl BridgeCommand {
+    #[must_use]
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::Initialize { .. } => "initialize",
+            Self::CreateSession { .. } => "create_session",
+            Self::ResumeSession { .. } => "resume_session",
+            Self::Prompt { .. } => "prompt",
+            Self::CancelTurn { .. } => "cancel_turn",
+            Self::SetModel { .. } => "set_model",
+            Self::SetMode { .. } => "set_mode",
+            Self::GenerateSessionTitle { .. } => "generate_session_title",
+            Self::RenameSession { .. } => "rename_session",
+            Self::NewSession { .. } => "new_session",
+            Self::PermissionResponse { .. } => "permission_response",
+            Self::QuestionResponse { .. } => "question_response",
+            Self::ElicitationResponse { .. } => "elicitation_response",
+            Self::GetStatusSnapshot { .. } => "get_status_snapshot",
+            Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
+            Self::McpReconnect { .. } => "mcp_reconnect",
+            Self::McpToggle { .. } => "mcp_toggle",
+            Self::McpSetServers { .. } => "mcp_set_servers",
+            Self::McpAuthenticate { .. } => "mcp_authenticate",
+            Self::McpClearAuth { .. } => "mcp_clear_auth",
+            Self::McpOauthCallbackUrl { .. } => "mcp_oauth_callback_url",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::ResumeSession { session_id, .. }
+            | Self::Prompt { session_id, .. }
+            | Self::CancelTurn { session_id }
+            | Self::SetModel { session_id, .. }
+            | Self::SetMode { session_id, .. }
+            | Self::GenerateSessionTitle { session_id, .. }
+            | Self::RenameSession { session_id, .. }
+            | Self::PermissionResponse { session_id, .. }
+            | Self::QuestionResponse { session_id, .. }
+            | Self::ElicitationResponse { session_id, .. }
+            | Self::GetStatusSnapshot { session_id }
+            | Self::GetMcpSnapshot { session_id }
+            | Self::McpReconnect { session_id, .. }
+            | Self::McpToggle { session_id, .. }
+            | Self::McpSetServers { session_id, .. }
+            | Self::McpAuthenticate { session_id, .. }
+            | Self::McpClearAuth { session_id, .. }
+            | Self::McpOauthCallbackUrl { session_id, .. } => Some(session_id.as_str()),
+            Self::CreateSession { resume, .. } => resume.as_deref(),
+            Self::Initialize { .. } | Self::NewSession { .. } | Self::Shutdown => None,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> Option<&str> {
+        match self {
+            Self::PermissionResponse { tool_call_id, .. }
+            | Self::QuestionResponse { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            Self::Initialize { .. }
+            | Self::CreateSession { .. }
+            | Self::ResumeSession { .. }
+            | Self::Prompt { .. }
+            | Self::CancelTurn { .. }
+            | Self::SetModel { .. }
+            | Self::SetMode { .. }
+            | Self::GenerateSessionTitle { .. }
+            | Self::RenameSession { .. }
+            | Self::NewSession { .. }
+            | Self::ElicitationResponse { .. }
+            | Self::GetStatusSnapshot { .. }
+            | Self::GetMcpSnapshot { .. }
+            | Self::McpReconnect { .. }
+            | Self::McpToggle { .. }
+            | Self::McpSetServers { .. }
+            | Self::McpAuthenticate { .. }
+            | Self::McpClearAuth { .. }
+            | Self::McpOauthCallbackUrl { .. }
+            | Self::Shutdown => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +315,82 @@ pub enum BridgeEvent {
         servers: Vec<types::McpServerStatus>,
         error: Option<String>,
     },
+}
+
+impl BridgeEvent {
+    #[must_use]
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::Connected { .. } => "connected",
+            Self::AuthRequired { .. } => "auth_required",
+            Self::ConnectionFailed { .. } => "connection_failed",
+            Self::SessionUpdate { .. } => "session_update",
+            Self::PermissionRequest { .. } => "permission_request",
+            Self::QuestionRequest { .. } => "question_request",
+            Self::ElicitationRequest { .. } => "elicitation_request",
+            Self::ElicitationComplete { .. } => "elicitation_complete",
+            Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
+            Self::McpOperationError { .. } => "mcp_operation_error",
+            Self::TurnComplete { .. } => "turn_complete",
+            Self::TurnError { .. } => "turn_error",
+            Self::SlashError { .. } => "slash_error",
+            Self::SessionReplaced { .. } => "session_replaced",
+            Self::Initialized { .. } => "initialized",
+            Self::SessionsListed { .. } => "sessions_listed",
+            Self::StatusSnapshot { .. } => "status_snapshot",
+            Self::McpSnapshot { .. } => "mcp_snapshot",
+        }
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::Connected { session_id, .. }
+            | Self::SessionUpdate { session_id, .. }
+            | Self::PermissionRequest { session_id, .. }
+            | Self::QuestionRequest { session_id, .. }
+            | Self::ElicitationRequest { session_id, .. }
+            | Self::ElicitationComplete { session_id, .. }
+            | Self::McpAuthRedirect { session_id, .. }
+            | Self::McpOperationError { session_id, .. }
+            | Self::TurnComplete { session_id }
+            | Self::TurnError { session_id, .. }
+            | Self::SlashError { session_id, .. }
+            | Self::SessionReplaced { session_id, .. }
+            | Self::StatusSnapshot { session_id, .. }
+            | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
+            Self::AuthRequired { .. }
+            | Self::ConnectionFailed { .. }
+            | Self::Initialized { .. }
+            | Self::SessionsListed { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_call_id(&self) -> Option<&str> {
+        match self {
+            Self::PermissionRequest { request, .. } => {
+                Some(request.tool_call.tool_call_id.as_str())
+            }
+            Self::QuestionRequest { request, .. } => Some(request.tool_call.tool_call_id.as_str()),
+            Self::Connected { .. }
+            | Self::AuthRequired { .. }
+            | Self::ConnectionFailed { .. }
+            | Self::SessionUpdate { .. }
+            | Self::ElicitationRequest { .. }
+            | Self::ElicitationComplete { .. }
+            | Self::McpAuthRedirect { .. }
+            | Self::McpOperationError { .. }
+            | Self::TurnComplete { .. }
+            | Self::TurnError { .. }
+            | Self::SlashError { .. }
+            | Self::SessionReplaced { .. }
+            | Self::Initialized { .. }
+            | Self::SessionsListed { .. }
+            | Self::StatusSnapshot { .. }
+            | Self::McpSnapshot { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
