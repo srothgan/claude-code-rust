@@ -36,28 +36,20 @@ impl BridgeClient {
             let mut lines = BufReader::new(stderr).lines();
             loop {
                 match lines.next_line().await {
-                    Ok(Some(line)) => Self::log_bridge_stderr_line(&line),
+                    Ok(Some(line)) => crate::logging::emit_bridge_stderr_line(&line),
                     Ok(None) => break,
                     Err(err) => {
-                        tracing::error!("failed to read bridge stderr: {err}");
+                        tracing::error!(
+                            target: crate::logging::targets::BRIDGE_SDK,
+                            event_name = "bridge_stderr_read_failed",
+                            message = "failed to read bridge stderr",
+                            error = %err,
+                        );
                         break;
                     }
                 }
             }
         });
-    }
-
-    fn log_bridge_stderr_line(line: &str) {
-        // The bridge uses a structured "[sdk <verb>]" prefix format.
-        // Extract an explicit level from it; fall back to debug for ordinary chatter.
-        let lower = line.to_ascii_lowercase();
-        if lower.contains("[sdk error]") || lower.starts_with("error") || lower.contains("panic") {
-            tracing::error!("bridge stderr: {line}");
-        } else if lower.contains("[sdk warn]") || lower.starts_with("warn") {
-            tracing::warn!("bridge stderr: {line}");
-        } else {
-            tracing::debug!("bridge stderr: {line}");
-        }
     }
 
     pub async fn send(&mut self, envelope: CommandEnvelope) -> anyhow::Result<()> {

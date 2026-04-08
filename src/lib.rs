@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod app;
 pub mod error;
+pub mod logging;
 pub mod perf;
 pub mod ui;
 

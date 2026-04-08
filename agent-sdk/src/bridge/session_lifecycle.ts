@@ -29,6 +29,7 @@ import type {
   SessionUpdate,
   ToolCall,
 } from "../types.js";
+import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
 import { AsyncQueue, logPermissionDebug } from "./shared.js";
 import {
   formatPermissionUpdates,
@@ -456,7 +457,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.sdkDebugFile ? { debugFile: params.sdkDebugFile } : {}),
     stderr: (line: string) => {
       if (line.trim().length > 0) {
-        console.error(`[sdk stderr] ${line}`);
+        logSdkStderrLine(line);
       }
     },
     ...(params.enableSpawnDebug
@@ -468,9 +469,17 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
             env: Record<string, string | undefined>;
             signal: AbortSignal;
           }) => {
-            console.error(
-              `[sdk spawn] command=${options.command} args=${JSON.stringify(options.args)} cwd=${options.cwd ?? "<none>"}`,
-            );
+            bridgeLogger.debug({
+              target: LOG_TARGETS.BRIDGE_SDK,
+              eventName: "sdk_spawn_started",
+              message: "spawning Claude Code process",
+              fields: {
+                command: options.command,
+                cwd: options.cwd ?? "<none>",
+                arg_count: options.args.length,
+                args_preview: options.args.slice(0, 5),
+              },
+            });
             const child = spawnChild(options.command, options.args, {
               cwd: options.cwd,
               env: options.env,
@@ -479,9 +488,14 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
               windowsHide: true,
             });
             child.on("error", (error) => {
-              console.error(
-                `[sdk spawn error] code=${(error as NodeJS.ErrnoException).code ?? "<none>"} message=${error.message}`,
-              );
+              bridgeLogger.error({
+                target: LOG_TARGETS.BRIDGE_SDK,
+                eventName: "sdk_spawn_failed",
+                message: "Claude Code process spawn failed",
+                outcome: "failure",
+                errorCode: (error as NodeJS.ErrnoException).code ?? "<none>",
+                fields: { error_message: error.message },
+              });
             });
             return child;
           },
@@ -681,18 +695,28 @@ export function handleElicitationResponse(
 ): void {
   const session = sessionById(command.session_id);
   if (!session) {
-    console.error(
-      `[sdk warn] elicitation response dropped: unknown session ` +
-        `session_id=${command.session_id} request_id=${command.elicitation_request_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "elicitation_response_dropped",
+      message: "elicitation response dropped for unknown session",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      requestId: command.elicitation_request_id,
+      fields: { reason: "unknown_session" },
+    });
     return;
   }
   const pending = session.pendingElicitations.get(command.elicitation_request_id);
   if (!pending) {
-    console.error(
-      `[sdk warn] elicitation response dropped: no pending request ` +
-        `session_id=${command.session_id} request_id=${command.elicitation_request_id}`,
-    );
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "elicitation_response_dropped",
+      message: "elicitation response dropped without pending request",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      requestId: command.elicitation_request_id,
+      fields: { reason: "missing_pending_request" },
+    });
     return;
   }
   session.pendingElicitations.delete(command.elicitation_request_id);

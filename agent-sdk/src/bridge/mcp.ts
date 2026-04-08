@@ -1,5 +1,6 @@
 import type { BridgeCommand, McpServerConfig, McpServerStatus } from "../types.js";
 import { emitMcpOperationError, slashError, writeEvent } from "./events.js";
+import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 type QueryWithMcpAuth = import("@anthropic-ai/claude-agent-sdk").Query & {
@@ -150,18 +151,35 @@ async function reconcileSuspiciousMcpStatuses(
   const now = Date.now();
   for (const serverName of candidates) {
     session.mcpStatusRevalidatedAt.set(serverName, now);
-    console.error(
-      `[sdk mcp reconcile] session=${session.sessionId} server=${serverName} ` +
-        `status=needs-auth reason=previously-connected action=reconnect`,
-    );
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_MCP,
+      eventName: "mcp_auth_revalidation_started",
+      message: "revalidating stale MCP auth status",
+      outcome: "start",
+      sessionId: session.sessionId,
+      fields: {
+        server_name: serverName,
+        status: "needs-auth",
+        reason: "previously_connected",
+        action: "reconnect",
+      },
+    });
     try {
       await session.query.reconnectMcpServer(serverName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(
-        `[sdk mcp reconcile] session=${session.sessionId} server=${serverName} ` +
-          `action=reconnect failed=${message}`,
-      );
+      bridgeLogger.warn({
+        target: LOG_TARGETS.BRIDGE_MCP,
+        eventName: "mcp_auth_revalidation_failed",
+        message: "failed to revalidate MCP auth status",
+        outcome: "failure",
+        sessionId: session.sessionId,
+        fields: {
+          server_name: serverName,
+          action: "reconnect",
+          error_message: message,
+        },
+      });
     }
   }
 

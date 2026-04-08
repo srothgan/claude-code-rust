@@ -1,3 +1,5 @@
+export { logPermissionDebug } from "./logger.js";
+
 export function asRecordOrNull(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -49,14 +51,4 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
       },
     };
   }
-}
-
-const permissionDebugEnabled =
-  process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || process.env.CLAUDE_RS_SDK_DEBUG === "1";
-
-export function logPermissionDebug(message: string): void {
-  if (!permissionDebugEnabled) {
-    return;
-  }
-  console.error(`[perm debug] ${message}`);
 }

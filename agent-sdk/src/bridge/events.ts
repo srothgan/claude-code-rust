@@ -7,6 +7,7 @@ import type {
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
+import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
@@ -111,7 +112,14 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
     writeEvent({ event: "sessions_listed", sessions: mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT) }, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[sdk warn] listSessions failed: ${message}`);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_SDK,
+      eventName: "sessions_list_failed",
+      message: "failed to list SDK sessions",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      fields: { error_message: message },
+    });
     writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
   }
 }
