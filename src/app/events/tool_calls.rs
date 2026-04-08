@@ -19,6 +19,8 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     update_subagent_scope_state(app, scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name);
+    log_command_started(app, &tool_info);
+    log_terminal_spawned(app, &tool_info, "initial");
     if should_jump_on_large_write(&tool_info) {
         app.viewport.engage_auto_scroll();
     }
@@ -419,6 +421,88 @@ pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
         });
     }
     false
+}
+
+pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
+    if !tc.is_execute_tool() {
+        return;
+    }
+
+    match tc.status {
+        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => tracing::info!(
+            target: crate::logging::targets::APP_COMMAND,
+            event_name = "command_started",
+            message = "command execution started",
+            outcome = "start",
+            session_id = %current_session_id(app),
+            tool_call_id = %tc.id,
+            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+            size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
+            tool_name = %tc.sdk_tool_name,
+            tool_status = ?tc.status,
+            has_terminal = tc.terminal_id.is_some(),
+            has_command = tc.terminal_command.is_some(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            token_saver_active = tc.token_saver_active(),
+        ),
+        model::ToolCallStatus::Completed => tracing::info!(
+            target: crate::logging::targets::APP_COMMAND,
+            event_name = "command_completed",
+            message = "command execution completed",
+            outcome = "success",
+            session_id = %current_session_id(app),
+            tool_call_id = %tc.id,
+            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+            size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
+            tool_name = %tc.sdk_tool_name,
+            tool_status = ?tc.status,
+            has_terminal = tc.terminal_id.is_some(),
+            has_command = tc.terminal_command.is_some(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            token_saver_active = tc.token_saver_active(),
+        ),
+        model::ToolCallStatus::Failed => tracing::warn!(
+            target: crate::logging::targets::APP_COMMAND,
+            event_name = "command_failed",
+            message = "command execution failed",
+            outcome = "failure",
+            session_id = %current_session_id(app),
+            tool_call_id = %tc.id,
+            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+            size_bytes = u64::try_from(tc.raw_input_bytes).unwrap_or_default(),
+            tool_name = %tc.sdk_tool_name,
+            tool_status = ?tc.status,
+            error_kind = "command_error",
+            has_terminal = tc.terminal_id.is_some(),
+            has_command = tc.terminal_command.is_some(),
+            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            token_saver_active = tc.token_saver_active(),
+        ),
+    }
+}
+
+pub(super) fn log_terminal_spawned(app: &App, tc: &ToolCallInfo, source: &str) {
+    if !tc.is_execute_tool() || tc.terminal_id.is_none() {
+        return;
+    }
+
+    tracing::info!(
+        target: crate::logging::targets::APP_COMMAND,
+        event_name = "terminal_spawned",
+        message = "terminal attached to command execution",
+        outcome = "success",
+        session_id = %current_session_id(app),
+        tool_call_id = %tc.id,
+        terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+        tool_name = %tc.sdk_tool_name,
+        spawn_source = source,
+        has_command = tc.terminal_command.is_some(),
+        assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+        token_saver_active = tc.token_saver_active(),
+    );
 }
 
 pub(super) fn current_session_id(app: &App) -> String {

@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 use std::fs::OpenOptions;
 
 pub mod targets {
+    pub const APP_COMMAND: &str = "app.command";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_PERMISSION: &str = "app.permission";
     pub const APP_SESSION: &str = "app.session";
@@ -303,6 +304,7 @@ impl BridgeDiagnosticRecord {
         }
 
         match self.target.as_str() {
+            targets::APP_COMMAND => emit_for_level!(targets::APP_COMMAND),
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
             targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
             targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),

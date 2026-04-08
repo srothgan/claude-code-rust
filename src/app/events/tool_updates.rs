@@ -3,8 +3,8 @@
 
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
-    current_session_id, has_in_progress_tool_calls, json_value_size, sdk_tool_name_from_meta,
-    should_jump_on_large_write, tool_scope_name,
+    current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
+    sdk_tool_name_from_meta, should_jump_on_large_write, tool_scope_name,
 };
 use crate::agent::model;
 use crate::app::todos::{parse_todos_if_present, set_todos};
@@ -31,6 +31,13 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
             _ => None,
         },
     );
+    let previous_terminal_id =
+        app.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
+            |block| match block {
+                MessageBlock::ToolCall(tc) => tc.terminal_id.clone(),
+                _ => None,
+            },
+        );
     apply_tool_scope_status_update(app, &id_str, tool_scope, tcu.fields.status);
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
@@ -39,6 +46,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
     log_tool_call_update_applied(app, &id_str, tcu, tool_scope, previous_status, &update_outcome);
+    log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
     if let Some(todos) = update_outcome.pending_todos {
         set_todos(app, todos);
     }
@@ -487,6 +495,90 @@ fn tool_update_log_spec(tc: &ToolCallInfo, tcu: &model::ToolCallUpdate) -> ToolU
             outcome: "success",
         },
     }
+}
+
+fn log_command_update_applied(
+    app: &App,
+    id_str: &str,
+    previous_status: Option<model::ToolCallStatus>,
+    previous_terminal_id: Option<&str>,
+) {
+    let Some(tc) = app
+        .lookup_tool_call(id_str)
+        .and_then(|(mi, bi)| app.messages.get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|block| match block {
+            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
+            _ => None,
+        })
+    else {
+        return;
+    };
+
+    if !tc.is_execute_tool() {
+        return;
+    }
+
+    if previous_terminal_id.is_none() && tc.terminal_id.is_some() {
+        log_terminal_spawned(app, tc, "update");
+    }
+
+    let transitioned_to_final =
+        matches!(
+            previous_status,
+            Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
+        ) && matches!(tc.status, model::ToolCallStatus::Completed | model::ToolCallStatus::Failed);
+    if !transitioned_to_final {
+        return;
+    }
+
+    let failure_kind = command_failure_kind(tc);
+    match tc.status {
+        model::ToolCallStatus::Completed => tracing::info!(
+            target: crate::logging::targets::APP_COMMAND,
+            event_name = "command_completed",
+            message = "command execution completed",
+            outcome = "success",
+            session_id = %current_session_id(app),
+            tool_call_id = %tc.id,
+            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+            tool_name = %tc.sdk_tool_name,
+            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            has_terminal = tc.terminal_id.is_some(),
+            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            token_saver_active = tc.token_saver_active(),
+        ),
+        model::ToolCallStatus::Failed => tracing::warn!(
+            target: crate::logging::targets::APP_COMMAND,
+            event_name = "command_failed",
+            message = "command execution failed",
+            outcome = "failure",
+            session_id = %current_session_id(app),
+            tool_call_id = %tc.id,
+            terminal_id = %tc.terminal_id.as_deref().unwrap_or(""),
+            tool_name = %tc.sdk_tool_name,
+            error_kind = failure_kind,
+            terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
+            has_terminal = tc.terminal_id.is_some(),
+            assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
+            token_saver_active = tc.token_saver_active(),
+        ),
+        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {}
+    }
+}
+
+fn command_failure_kind(tc: &ToolCallInfo) -> &'static str {
+    let text = tc.terminal_output.as_deref().unwrap_or("").to_ascii_lowercase();
+    if text.contains("permission denied")
+        || text.contains("cancelled by user")
+        || text.contains("plan rejected")
+        || text.contains("question cancelled")
+    {
+        return "refused";
+    }
+    if text.contains("timed out") || text.contains("timeout") {
+        return "timeout";
+    }
+    "command_error"
 }
 
 #[cfg(test)]

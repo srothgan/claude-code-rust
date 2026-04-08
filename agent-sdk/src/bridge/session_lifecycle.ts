@@ -489,6 +489,66 @@ type QueryOptionsBuilderParams = {
   sessionIdForLogs: () => string;
 };
 
+function logSdkProcessSpawnStarted(
+  options: {
+    command: string;
+    args: string[];
+    cwd?: string;
+  },
+  includeArgsPreview: boolean,
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_SDK,
+    eventName: "sdk_spawn_started",
+    message: "spawning Claude Code process",
+    outcome: "start",
+    fields: {
+      command: options.command,
+      cwd: options.cwd ?? "<none>",
+      arg_count: options.args.length,
+      ...(includeArgsPreview ? { args_preview: options.args.slice(0, 5) } : {}),
+    },
+  });
+}
+
+function logSdkProcessSpawned(
+  sessionId: string | undefined,
+  child: ReturnType<typeof spawnChild>,
+  cwd: string | undefined,
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_SDK,
+    eventName: "sdk_spawned",
+    message: "Claude Code process spawned",
+    outcome: "success",
+    ...(sessionId ? { sessionId } : {}),
+    fields: {
+      cwd: cwd ?? "<none>",
+      pid: child.pid ?? "<none>",
+    },
+  });
+}
+
+function logSdkProcessExit(
+  sessionId: string | undefined,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  const exitedCleanly = code === 0 && signal === null;
+  const logger = exitedCleanly ? bridgeLogger.info : bridgeLogger.warn;
+  logger({
+    target: LOG_TARGETS.BRIDGE_SDK,
+    eventName: "sdk_process_exited",
+    message: "Claude Code process exited",
+    outcome: exitedCleanly ? "success" : "failure",
+    ...(sessionId ? { sessionId } : {}),
+    fields: {
+      exit_code: code ?? "<none>",
+      exit_signal: signal ?? "<none>",
+    },
+  });
+}
+
 function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | undefined {
   if (typeof rawMode !== "string") {
     return undefined;
@@ -603,47 +663,39 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         logSdkStderrLine(line);
       }
     },
-    ...(params.enableSpawnDebug
-      ? {
-          spawnClaudeCodeProcess: (options: {
-            command: string;
-            args: string[];
-            cwd?: string;
-            env: Record<string, string | undefined>;
-            signal: AbortSignal;
-          }) => {
-            bridgeLogger.debug({
-              target: LOG_TARGETS.BRIDGE_SDK,
-              eventName: "sdk_spawn_started",
-              message: "spawning Claude Code process",
-              fields: {
-                command: options.command,
-                cwd: options.cwd ?? "<none>",
-                arg_count: options.args.length,
-                args_preview: options.args.slice(0, 5),
-              },
-            });
-            const child = spawnChild(options.command, options.args, {
-              cwd: options.cwd,
-              env: options.env,
-              signal: options.signal,
-              stdio: ["pipe", "pipe", "pipe"],
-              windowsHide: true,
-            });
-            child.on("error", (error) => {
-              bridgeLogger.error({
-                target: LOG_TARGETS.BRIDGE_SDK,
-                eventName: "sdk_spawn_failed",
-                message: "Claude Code process spawn failed",
-                outcome: "failure",
-                errorCode: (error as NodeJS.ErrnoException).code ?? "<none>",
-                fields: { error_message: error.message },
-              });
-            });
-            return child;
-          },
-        }
-      : {}),
+    spawnClaudeCodeProcess: (options: {
+      command: string;
+      args: string[];
+      cwd?: string;
+      env: Record<string, string | undefined>;
+      signal: AbortSignal;
+    }) => {
+      logSdkProcessSpawnStarted(options, params.enableSpawnDebug);
+      const child = spawnChild(options.command, options.args, {
+        cwd: options.cwd,
+        env: options.env,
+        signal: options.signal,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      logSdkProcessSpawned(params.sessionIdForLogs() || undefined, child, options.cwd);
+      child.on("error", (error) => {
+        const sessionId = params.sessionIdForLogs();
+        bridgeLogger.error({
+          target: LOG_TARGETS.BRIDGE_SDK,
+          eventName: "sdk_spawn_failed",
+          message: "Claude Code process spawn failed",
+          outcome: "failure",
+          ...(sessionId ? { sessionId } : {}),
+          errorCode: (error as NodeJS.ErrnoException).code ?? "<none>",
+          fields: { error_message: error.message },
+        });
+      });
+      child.on("exit", (code, signal) => {
+        logSdkProcessExit(params.sessionIdForLogs() || undefined, code, signal);
+      });
+      return child;
+    },
     // Match claude-agent-acp defaults to avoid emitting an empty
     // --setting-sources argument.
     settingSources: DEFAULT_SETTING_SOURCES,
