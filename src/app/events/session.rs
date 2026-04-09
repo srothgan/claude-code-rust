@@ -42,6 +42,7 @@ pub(super) fn handle_connected_client_event(
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
+    crate::app::file_index::restart(app);
     app.rebuild_chat_focus_from_state();
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
     maybe_open_startup_session_picker(app);
@@ -235,6 +236,7 @@ pub(super) fn handle_session_replaced_event(
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
+    crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
 }
 
@@ -362,4 +364,54 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
     app.session_picker.scroll_offset = 0;
     view::set_active_view(app, ActiveView::SessionPicker);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+
+    #[test]
+    fn connected_prewarms_file_index_for_new_cwd() {
+        let mut app = App::test_default();
+
+        handle_connected_client_event(
+            &mut app,
+            model::SessionId::new("session-1"),
+            "/replacement".to_owned(),
+            "model".to_owned(),
+            Vec::new(),
+            None,
+            &[],
+        );
+
+        assert_eq!(
+            app.file_index.root.as_deref(),
+            Some(std::path::Path::new("/replacement"))
+        );
+        assert!(app.file_index.scan.is_some());
+        assert!(app.file_index.watch.is_some());
+    }
+
+    #[test]
+    fn session_replaced_prewarms_file_index_for_replaced_cwd() {
+        let mut app = App::test_default();
+
+        handle_session_replaced_event(
+            &mut app,
+            model::SessionId::new("session-2"),
+            "/replaced".to_owned(),
+            "model".to_owned(),
+            Vec::new(),
+            None,
+            &[],
+        );
+
+        assert_eq!(
+            app.file_index.root.as_deref(),
+            Some(std::path::Path::new("/replaced"))
+        );
+        assert!(app.file_index.scan.is_some());
+        assert!(app.file_index.watch.is_some());
+    }
 }

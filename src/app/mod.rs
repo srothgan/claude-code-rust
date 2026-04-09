@@ -8,6 +8,7 @@ pub(crate) mod config;
 mod connect;
 mod dialog;
 mod events;
+pub(crate) mod file_index;
 mod focus;
 mod git_context;
 mod inline_interactions;
@@ -160,6 +161,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             }
         }
 
+        file_index::drain_events(app);
+
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
@@ -183,7 +186,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         mention::tick(app, Instant::now());
         app.tick_git_context(Instant::now());
-
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
         // submit that unchanged draft.

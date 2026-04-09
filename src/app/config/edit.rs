@@ -301,7 +301,12 @@ where
             if previous_respect_gitignore
                 .is_some_and(|previous| previous != app.config.respect_gitignore_effective())
             {
-                crate::app::mention::invalidate_session_cache(app);
+                if app.mention.is_some() {
+                    crate::app::file_index::restart(app);
+                    crate::app::mention::refresh_from_file_index(app);
+                } else {
+                    crate::app::file_index::reset(app);
+                }
             }
             app.reconcile_runtime_from_persisted_settings_change();
             app.config.last_error = None;

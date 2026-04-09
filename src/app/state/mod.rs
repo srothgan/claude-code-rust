@@ -39,11 +39,13 @@ use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
 use super::config::ConfigState;
 use super::dialog;
+use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
@@ -141,6 +143,8 @@ pub struct App {
     pub pending_auto_submit_after_cancel: bool,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
+    pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
     /// Message index that owns the current main-assistant turn indicators.
@@ -203,6 +207,8 @@ pub struct App {
     pub rendered_input_area: ratatui::layout::Rect,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
+    /// App-owned file index backing `@` file mention autocomplete.
+    pub file_index: file_index::FileIndexState,
     /// Active slash-command autocomplete state.
     pub slash: Option<slash::SlashState>,
     /// Active subagent autocomplete state (`&name`).
@@ -781,6 +787,7 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (file_index_tx, file_index_rx) = std_mpsc::channel();
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
@@ -819,6 +826,8 @@ impl App {
             pending_auto_submit_after_cancel: false,
             event_tx: tx,
             event_rx: rx,
+            file_index_event_tx: file_index_tx,
+            file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
             active_turn_assistant_message_idx: None,
@@ -849,6 +858,7 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             mention: None,
+            file_index: file_index::FileIndexState::default(),
             slash: None,
             subagent: None,
             pending_submit: None,

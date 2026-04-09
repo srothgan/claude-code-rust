@@ -73,6 +73,7 @@ pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let terminals: crate::agent::events::TerminalMap =
         Rc::new(std::cell::RefCell::new(HashMap::new()));
 
@@ -121,6 +122,8 @@ pub fn create_app(cli: &Cli) -> App {
         pending_auto_submit_after_cancel: false,
         event_tx,
         event_rx,
+        file_index_event_tx,
+        file_index_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
         active_turn_assistant_message_idx: None,
@@ -151,6 +154,7 @@ pub fn create_app(cli: &Cli) -> App {
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         mention: None,
+        file_index: super::file_index::FileIndexState::default(),
         slash: None,
         subagent: None,
         pending_submit: None,
@@ -218,6 +222,7 @@ pub fn create_app(cli: &Cli) -> App {
     app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);
     app.sync_git_context();
+    super::file_index::restart(&mut app);
     app
 }
 
@@ -274,6 +279,7 @@ pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
 #[cfg(test)]
 mod tests {
     use super::type_converters::map_session_update;
+    use crate::Cli;
     use crate::agent::model;
     use crate::agent::types;
 
@@ -289,5 +295,27 @@ mod tests {
         };
         assert_eq!(cfg.option_id, "model");
         assert_eq!(cfg.value, serde_json::Value::String("sonnet".to_owned()));
+    }
+
+    #[test]
+    fn create_app_prewarms_file_index_for_startup_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = Cli {
+            resume: None,
+            no_update_check: true,
+            dir: Some(dir.path().to_path_buf()),
+            bridge_script: None,
+            log_file: None,
+            log_filter: None,
+            log_append: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let app = super::create_app(&cli);
+
+        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
+        assert!(app.file_index.scan.is_some());
+        assert!(app.file_index.watch.is_some());
     }
 }

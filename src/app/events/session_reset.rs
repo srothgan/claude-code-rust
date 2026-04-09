@@ -97,6 +97,7 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
     app.mention = None;
+    crate::app::file_index::reset(app);
     app.slash = None;
     app.subagent = None;
     app.help_view = super::super::HelpView::default();

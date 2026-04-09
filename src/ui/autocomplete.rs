@@ -3,7 +3,7 @@
 
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
-use crate::app::{mention, slash, subagent};
+use crate::app::{file_index, mention, slash, subagent};
 use crate::ui::input;
 use crate::ui::theme;
 use ratatui::Frame;
@@ -197,7 +197,7 @@ fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
 
 fn mention_candidate_line(
     mention: &mention::MentionState,
-    candidate: &mention::FileCandidate,
+    candidate: &file_index::FileCandidate,
     global_idx: usize,
 ) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
