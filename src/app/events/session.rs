@@ -385,10 +385,7 @@ mod tests {
             &[],
         );
 
-        assert_eq!(
-            app.file_index.root.as_deref(),
-            Some(std::path::Path::new("/replacement"))
-        );
+        assert_eq!(app.file_index.root.as_deref(), Some(std::path::Path::new("/replacement")));
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
     }
@@ -407,10 +404,7 @@ mod tests {
             &[],
         );
 
-        assert_eq!(
-            app.file_index.root.as_deref(),
-            Some(std::path::Path::new("/replaced"))
-        );
+        assert_eq!(app.file_index.root.as_deref(), Some(std::path::Path::new("/replaced")));
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
     }

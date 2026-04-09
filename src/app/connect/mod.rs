@@ -301,7 +301,7 @@ mod tests {
     fn create_app_prewarms_file_index_for_startup_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: true,
             dir: Some(dir.path().to_path_buf()),
             bridge_script: None,

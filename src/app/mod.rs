@@ -184,7 +184,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             finalize_pending_paste_event(app);
         }
 
-        mention::tick(app, Instant::now());
         app.tick_git_context(Instant::now());
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
