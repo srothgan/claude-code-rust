@@ -39,7 +39,7 @@ serde_json = "1.0.149"
 similar = "3.0"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.51.1", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.3"
