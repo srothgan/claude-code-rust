@@ -840,6 +840,7 @@ fn count_populated_cache_slots(messages: &[crate::app::ChatMessage]) -> usize {
         .flat_map(|m| m.blocks.iter())
         .filter(|block| match block {
             MessageBlock::Text(block) => block.cache.cached_bytes() > 0,
+            MessageBlock::Notice(block) => block.text.cache.cached_bytes() > 0,
             MessageBlock::Welcome(w) => w.cache.cached_bytes() > 0,
             MessageBlock::ToolCall(tc) => tc.cache.cached_bytes() > 0,
             MessageBlock::ImageAttachment(img) => img.cache.cached_bytes() > 0,

@@ -15,8 +15,8 @@ pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, SystemSeverity, TextBlock,
-    TextBlockSpacing, WelcomeBlock,
+    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
+    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock,
 };
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
@@ -75,6 +75,26 @@ pub enum AutocompleteKind {
     Mention,
     Slash,
     Subagent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoticeStage {
+    Warning,
+    Rejected,
+    PlanLimitTurnError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnNoticeLocation {
+    Inline { msg_idx: usize, block_idx: usize },
+    Standalone { msg_idx: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnNoticeRef {
+    pub dedup_key: NoticeDedupKey,
+    pub stage: NoticeStage,
+    pub location: TurnNoticeLocation,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -256,6 +276,8 @@ pub struct App {
     pub fast_mode_state: model::FastModeState,
     /// Latest rate-limit telemetry from the SDK.
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
+    /// Turn-local inline/system notices that may upgrade in place during the active turn.
+    pub turn_notice_refs: Vec<TurnNoticeRef>,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
@@ -877,6 +899,7 @@ impl App {
             mcp: McpState::default(),
             fast_mode_state: model::FastModeState::Off,
             last_rate_limit_update: None,
+            turn_notice_refs: Vec::new(),
             is_compacting: false,
             account_info: None,
             terminal_tool_calls: Vec::new(),
@@ -955,6 +978,54 @@ impl App {
 
     pub fn clear_active_turn_assistant(&mut self) {
         self.active_turn_assistant_message_idx = None;
+    }
+
+    pub(crate) fn clear_turn_notice_refs(&mut self) {
+        self.turn_notice_refs.clear();
+    }
+
+    pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
+        for notice_ref in &mut self.turn_notice_refs {
+            match &mut notice_ref.location {
+                TurnNoticeLocation::Inline { msg_idx, .. }
+                | TurnNoticeLocation::Standalone { msg_idx }
+                    if idx <= *msg_idx =>
+                {
+                    *msg_idx = msg_idx.saturating_add(1);
+                }
+                TurnNoticeLocation::Inline { .. } | TurnNoticeLocation::Standalone { .. } => {}
+            }
+        }
+    }
+
+    pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
+        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+            TurnNoticeLocation::Inline { msg_idx, .. }
+            | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
+                std::cmp::Ordering::Less => {
+                    *msg_idx = msg_idx.saturating_sub(1);
+                    true
+                }
+                std::cmp::Ordering::Equal => false,
+                std::cmp::Ordering::Greater => true,
+            },
+        });
+    }
+
+    pub(crate) fn remap_turn_notice_refs_after_message_drop(
+        &mut self,
+        old_to_new: &[Option<usize>],
+    ) {
+        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+            TurnNoticeLocation::Inline { msg_idx, .. }
+            | TurnNoticeLocation::Standalone { msg_idx } => {
+                let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
+                    return false;
+                };
+                *msg_idx = new_idx;
+                true
+            }
+        });
     }
 
     pub fn bump_session_scope_epoch(&mut self) {

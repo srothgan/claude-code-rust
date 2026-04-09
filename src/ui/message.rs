@@ -238,6 +238,13 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLay
     }
 }
 
+#[derive(Default)]
+struct AssistantLayoutState {
+    prev_was_tool: bool,
+    has_body_content: bool,
+    has_visible_content: bool,
+}
+
 fn append_assistant_blocks(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -257,99 +264,171 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let show_subagent_thinking = spinner.show_subagent_thinking && !show_compacting;
-    let mut prev_was_tool = false;
-    let mut has_body_content = false;
-    let mut has_visible_content = false;
+    let mut state = AssistantLayoutState::default();
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
-                if prev_was_tool {
-                    layout.push_blank();
-                }
-                let rendered = assistant_text_block_layout(block, width, !has_visible_content);
-                let trailing_gap = if !has_visible_content && rendered.height == 0 {
-                    0
-                } else {
-                    block.trailing_blank_lines()
-                };
-                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-                for _ in 0..trailing_gap {
-                    layout.push_blank();
-                }
-                if rendered.height > 0 {
-                    has_body_content = true;
-                    has_visible_content = true;
-                }
-                prev_was_tool = false;
+                append_assistant_text_block(block, width, layout, &mut state);
             }
-            MessageBlock::ToolCall(tc) => {
-                let tc = tc.as_mut();
-                if tc.hidden {
-                    continue;
-                }
-                if !prev_was_tool && has_body_content {
-                    layout.push_blank();
-                }
-                let mut lines = Vec::new();
-                tool_call::render_tool_call_cached_with_tools_collapsed(
-                    tc,
-                    width,
-                    spinner.frame,
-                    tools_collapsed,
-                    &mut lines,
-                );
-                let (height, wrapped_lines) = if let Some(layout_generation) = layout_generation {
-                    tool_call::measure_tool_call_height_cached_with_tools_collapsed(
-                        tc,
-                        width,
-                        spinner.frame,
-                        layout_generation,
-                        tools_collapsed,
-                    )
-                } else {
-                    (rendered_lines_height(&lines, width), 0)
-                };
-                layout.push_lines(lines, height, wrapped_lines);
-                if height > 0 {
-                    has_body_content = true;
-                }
-                has_visible_content = true;
-                prev_was_tool = true;
+            MessageBlock::Notice(notice) => {
+                append_assistant_notice_block(notice, width, layout, &mut state);
             }
+            MessageBlock::ToolCall(tc) => append_assistant_tool_block(
+                tc.as_mut(),
+                spinner,
+                width,
+                tools_collapsed,
+                layout_generation,
+                layout,
+                &mut state,
+            ),
             MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => {}
         }
     }
 
     if show_compacting {
-        if has_body_content {
+        if state.has_body_content {
             layout.push_blank();
         }
         layout.push_wrapped_line(compacting_line(spinner.frame), width);
     } else if show_subagent_thinking {
-        if has_body_content {
+        if state.has_body_content {
             layout.push_blank();
         }
         layout.push_wrapped_line(subagent_thinking_line(spinner.frame), width);
     }
     if spinner.show_thinking && !show_subagent_thinking && !show_compacting {
-        if has_body_content {
+        if state.has_body_content {
             layout.push_blank();
         }
         layout.push_wrapped_line(thinking_line(spinner.frame), width);
     }
 }
 
+fn append_assistant_text_block(
+    block: &mut TextBlock,
+    width: u16,
+    layout: &mut MessageLayout,
+    state: &mut AssistantLayoutState,
+) {
+    if state.prev_was_tool {
+        layout.push_blank();
+    }
+    let rendered = assistant_text_block_layout(block, width, !state.has_visible_content);
+    let trailing_gap = trailing_gap_for_text_like_block(
+        state.has_visible_content,
+        rendered.height,
+        block.trailing_blank_lines(),
+    );
+    layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+    for _ in 0..trailing_gap {
+        layout.push_blank();
+    }
+    if rendered.height > 0 {
+        state.has_body_content = true;
+        state.has_visible_content = true;
+    }
+    state.prev_was_tool = false;
+}
+
+fn append_assistant_notice_block(
+    notice: &mut crate::app::NoticeBlock,
+    width: u16,
+    layout: &mut MessageLayout,
+    state: &mut AssistantLayoutState,
+) {
+    if state.prev_was_tool {
+        layout.push_blank();
+    }
+    let rendered = notice_block_layout(notice, width, !state.has_visible_content, notice.severity);
+    let trailing_gap = trailing_gap_for_text_like_block(
+        state.has_visible_content,
+        rendered.height,
+        notice.trailing_blank_lines(),
+    );
+    layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+    for _ in 0..trailing_gap {
+        layout.push_blank();
+    }
+    if rendered.height > 0 {
+        state.has_body_content = true;
+        state.has_visible_content = true;
+    }
+    state.prev_was_tool = false;
+}
+
+fn append_assistant_tool_block(
+    tc: &mut crate::app::ToolCallInfo,
+    spinner: &SpinnerState,
+    width: u16,
+    tools_collapsed: bool,
+    layout_generation: Option<u64>,
+    layout: &mut MessageLayout,
+    state: &mut AssistantLayoutState,
+) {
+    if tc.hidden {
+        return;
+    }
+    if !state.prev_was_tool && state.has_body_content {
+        layout.push_blank();
+    }
+    let mut lines = Vec::new();
+    tool_call::render_tool_call_cached_with_tools_collapsed(
+        tc,
+        width,
+        spinner.frame,
+        tools_collapsed,
+        &mut lines,
+    );
+    let (height, wrapped_lines) = if let Some(layout_generation) = layout_generation {
+        tool_call::measure_tool_call_height_cached_with_tools_collapsed(
+            tc,
+            width,
+            spinner.frame,
+            layout_generation,
+            tools_collapsed,
+        )
+    } else {
+        (rendered_lines_height(&lines, width), 0)
+    };
+    layout.push_lines(lines, height, wrapped_lines);
+    if height > 0 {
+        state.has_body_content = true;
+    }
+    state.has_visible_content = true;
+    state.prev_was_tool = true;
+}
+
+fn trailing_gap_for_text_like_block(
+    has_visible_content: bool,
+    rendered_height: usize,
+    trailing_blank_lines: usize,
+) -> usize {
+    if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
+}
+
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
-        if let MessageBlock::Text(block) = block {
-            let trailing_gap = block.trailing_blank_lines();
-            let mut rendered = text_block_layout(block, width, None, false);
-            tint_lines(&mut rendered.lines, color);
-            layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-            for _ in 0..trailing_gap {
-                layout.push_blank();
+        match block {
+            MessageBlock::Text(block) => {
+                let trailing_gap = block.trailing_blank_lines();
+                let mut rendered = text_block_layout(block, width, None, false);
+                tint_lines(&mut rendered.lines, color);
+                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                for _ in 0..trailing_gap {
+                    layout.push_blank();
+                }
             }
+            MessageBlock::Notice(notice) => {
+                let trailing_gap = notice.trailing_blank_lines();
+                let rendered = notice_block_layout(notice, width, false, notice.severity);
+                layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                for _ in 0..trailing_gap {
+                    layout.push_blank();
+                }
+            }
+            MessageBlock::ToolCall(_) | MessageBlock::Welcome(_) => {}
         }
     }
 }
@@ -572,6 +651,18 @@ fn assistant_text_block_layout(
         }
     }
 
+    rendered
+}
+
+fn notice_block_layout(
+    block: &mut crate::app::NoticeBlock,
+    width: u16,
+    trim_leading_blank_lines: bool,
+    severity: SystemSeverity,
+) -> RenderedBlockLayout {
+    let mut rendered =
+        assistant_text_block_layout(&mut block.text, width, trim_leading_blank_lines);
+    tint_lines(&mut rendered.lines, system_severity_color(severity));
     rendered
 }
 
@@ -840,7 +931,7 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ChatMessage, MessageBlock, TextBlock, TextBlockSpacing};
+    use crate::app::{ChatMessage, MessageBlock, NoticeBlock, TextBlock, TextBlockSpacing};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
@@ -1126,6 +1217,21 @@ mod tests {
         }
     }
 
+    fn make_assistant_notice_message() -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![
+                MessageBlock::Text(TextBlock::from_complete("Before notice")),
+                MessageBlock::Notice(NoticeBlock::from_complete(
+                    SystemSeverity::Warning,
+                    "Warning inline",
+                )),
+                MessageBlock::Text(TextBlock::from_complete("After notice")),
+            ],
+            usage: None,
+        }
+    }
+
     fn make_tool_call_info(
         id: &str,
         sdk_tool_name: &str,
@@ -1263,6 +1369,57 @@ mod tests {
                 String::new(),
             ]
         );
+    }
+
+    #[test]
+    fn assistant_notice_block_renders_inline_in_order() {
+        let spinner = idle_spinner();
+        let mut msg = make_assistant_notice_message();
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 80, &mut lines);
+
+        assert_eq!(
+            render_lines_to_strings(&lines),
+            vec![
+                "Claude".to_owned(),
+                "Before notice".to_owned(),
+                "Warning inline".to_owned(),
+                "After notice".to_owned(),
+                String::new(),
+            ]
+        );
+    }
+
+    #[test]
+    fn assistant_notice_block_is_tinted_by_severity() {
+        let spinner = idle_spinner();
+        let mut msg = make_assistant_notice_message();
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 80, &mut lines);
+
+        let notice_line = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content == "Warning inline"))
+            .expect("expected notice line");
+        assert!(
+            notice_line
+                .spans
+                .iter()
+                .filter(|span| !span.content.is_empty())
+                .all(|span| span.style.fg == Some(theme::STATUS_WARNING))
+        );
+    }
+
+    #[test]
+    fn assistant_notice_height_matches_ground_truth() {
+        let spinner = idle_spinner();
+        let mut measured_msg = make_assistant_notice_message();
+        let mut truth_msg = make_assistant_notice_message();
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 16, 1);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 16);
+
+        assert_eq!(h, truth);
     }
 
     #[test]

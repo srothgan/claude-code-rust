@@ -117,6 +117,7 @@ pub(super) fn handle_auth_required_event(
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
+    super::notices::clear_turn_notice_tracking(app);
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
@@ -139,6 +140,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.pending_submit = None;
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
+    super::notices::clear_turn_notice_tracking(app);
     push_connection_error_message(app, msg);
 }
 

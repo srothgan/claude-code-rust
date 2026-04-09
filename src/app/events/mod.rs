@@ -3,6 +3,7 @@
 
 mod client;
 mod mouse;
+mod notices;
 mod rate_limit;
 mod session;
 mod session_reset;
@@ -384,6 +385,16 @@ mod tests {
             role: MessageRole::User,
             blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
             usage: None,
+        }
+    }
+
+    fn first_block_text(msg: &ChatMessage) -> &str {
+        match msg.blocks.first() {
+            Some(MessageBlock::Text(block)) => &block.text,
+            Some(MessageBlock::Notice(block)) => &block.text.text,
+            Some(MessageBlock::ToolCall(_)) => panic!("expected text-like block, found tool call"),
+            Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
+            None => panic!("expected message block"),
         }
     }
 
@@ -2464,12 +2475,11 @@ mod tests {
         else {
             panic!("expected system error message");
         };
-        let Some(MessageBlock::Text(block)) = blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Turn blocked by account or plan limits"));
-        assert!(block.text.contains("Next steps:"));
-        assert!(block.text.contains("Check quota/billing"));
+        assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("Turn blocked by account or plan limits"));
+        assert!(text.contains("Next steps:"));
+        assert!(text.contains("Check quota/billing"));
     }
 
     #[test]
@@ -2489,11 +2499,10 @@ mod tests {
         else {
             panic!("expected system error message");
         };
-        let Some(MessageBlock::Text(block)) = blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Turn blocked by account or plan limits"));
-        assert!(block.text.contains("Next steps:"));
+        assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("Turn blocked by account or plan limits"));
+        assert!(text.contains("Next steps:"));
     }
 
     #[test]
@@ -2716,7 +2725,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_warning_transitions_once_and_rejected_emits_each_event() {
+    fn rate_limit_notices_dedup_and_upgrade_in_place() {
         let mut app = make_test_app();
 
         let warning_update = model::RateLimitUpdate {
@@ -2746,6 +2755,7 @@ mod tests {
 
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Warning))));
+        assert!(matches!(app.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
         let rejected_update =
             model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
@@ -2760,13 +2770,64 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
         );
 
-        assert_eq!(app.messages.len(), 3);
-        assert!(matches!(app.messages[1].role, MessageRole::System(_)));
-        assert!(matches!(app.messages[2].role, MessageRole::System(_)));
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Error))));
+        assert!(first_block_text(&app.messages[0]).contains("Rate limit reached"));
     }
 
     #[test]
-    fn plan_limit_turn_error_includes_rate_limit_context_and_warning_severity() {
+    fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("hello"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "partial response",
+        ))]));
+        app.bind_active_turn_assistant(1);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                model::RateLimitUpdate {
+                    status: model::RateLimitStatus::AllowedWarning,
+                    resets_at: Some(1_741_280_000.0),
+                    utilization: Some(0.95),
+                    rate_limit_type: Some("five_hour".to_owned()),
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    is_using_overage: None,
+                    surpassed_threshold: None,
+                },
+            )),
+        );
+        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages[1].blocks.len(), 2);
+        assert!(matches!(app.messages[1].blocks[1], MessageBlock::Notice(_)));
+        assert_eq!(app.turn_notice_refs.len(), 1);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "HTTP 429 Too Many Requests".to_owned(),
+                class: TurnErrorClass::PlanLimit,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages[1].blocks.len(), 2);
+        let Some(MessageBlock::Notice(block)) = app.messages[1].blocks.get(1) else {
+            panic!("expected inline notice block");
+        };
+        assert_eq!(block.severity, SystemSeverity::Warning);
+        assert!(block.text.text.contains("Approaching rate limit"));
+        assert!(block.text.text.contains("Turn blocked by account or plan limits"));
+        assert!(app.turn_notice_refs.is_empty());
+    }
+
+    #[test]
+    fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         let mut app = make_test_app();
         app.last_rate_limit_update = Some(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
@@ -2779,6 +2840,10 @@ mod tests {
             is_using_overage: None,
             surpassed_threshold: None,
         });
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("first"));
+        app.messages.push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(1);
 
         handle_client_event(
             &mut app,
@@ -2787,16 +2852,109 @@ mod tests {
                 class: TurnErrorClass::PlanLimit,
             },
         );
+        assert_eq!(app.messages.len(), 2);
+        let first_notice_text = match app.messages[1].blocks.as_slice() {
+            [MessageBlock::Notice(block)] => block.text.text.clone(),
+            _ => panic!("expected first turn notice"),
+        };
+        assert!(first_notice_text.contains("Approaching rate limit"));
 
-        let Some(last) = app.messages.last() else {
-            panic!("expected combined system message");
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("second"));
+        app.messages.push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(3);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                model::RateLimitUpdate {
+                    status: model::RateLimitStatus::Rejected,
+                    resets_at: Some(1_741_290_000.0),
+                    utilization: None,
+                    rate_limit_type: Some("daily".to_owned()),
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    is_using_overage: None,
+                    surpassed_threshold: None,
+                },
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 4);
+        let Some(MessageBlock::Notice(first_notice)) = app.messages[1].blocks.first() else {
+            panic!("expected first turn notice");
         };
-        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
+        assert_eq!(first_notice.text.text, first_notice_text);
+        let Some(MessageBlock::Notice(second_notice)) = app.messages[3].blocks.first() else {
+            panic!("expected second turn notice");
         };
-        assert!(block.text.contains("Approaching rate limit"));
-        assert!(block.text.contains("Turn blocked by account or plan limits"));
+        assert!(second_notice.text.text.contains("daily rate limit"));
+        assert_ne!(second_notice.text.text, first_notice_text);
+    }
+
+    #[test]
+    fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("hello"));
+        app.messages.push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(1);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                model::RateLimitUpdate {
+                    status: model::RateLimitStatus::AllowedWarning,
+                    resets_at: Some(123.0),
+                    utilization: Some(0.91),
+                    rate_limit_type: Some("five_hour".to_owned()),
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    is_using_overage: None,
+                    surpassed_threshold: None,
+                },
+            )),
+        );
+
+        assert_eq!(app.turn_notice_refs.len(), 1);
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        assert!(app.turn_notice_refs.is_empty());
+
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("again"));
+        app.messages.push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(app.messages.len() - 1);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
+                model::RateLimitUpdate {
+                    status: model::RateLimitStatus::AllowedWarning,
+                    resets_at: Some(456.0),
+                    utilization: Some(0.92),
+                    rate_limit_type: Some("daily".to_owned()),
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    is_using_overage: None,
+                    surpassed_threshold: None,
+                },
+            )),
+        );
+        assert_eq!(app.turn_notice_refs.len(), 1);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("new-session"),
+                cwd: "/test".into(),
+                model_name: "claude".into(),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: Vec::new(),
+            },
+        );
+        assert!(app.turn_notice_refs.is_empty());
     }
 
     #[test]

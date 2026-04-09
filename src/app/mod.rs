@@ -54,10 +54,11 @@ pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatViewport, ExtraUsage,
     HelpView, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
     LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo,
-    ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionKind,
-    SelectionPoint, SelectionState, SessionPickerState, SessionUsageState, SystemSeverity,
-    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck,
+    RateLimitIncidentKey, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
+    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
+    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
+    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
     WelcomeBlock, is_execute_tool_name,
 };
 pub use trust::TrustSelection;

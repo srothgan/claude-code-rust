@@ -4,12 +4,13 @@
 use crate::agent::model;
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 
 use super::LayoutInvalidation as InvalidationLevel;
 use super::LayoutRemeasureReason;
 use super::messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock, WelcomeBlock,
+    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
+    WelcomeBlock,
 };
 use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
 use super::types::{HistoryRetentionStats, MessageUsage, RecentSessionInfo};
@@ -204,6 +205,20 @@ impl super::App {
                         .saturating_add(block.text.capacity())
                         .saturating_add(block.markdown.text_capacity());
                 }
+                MessageBlock::Notice(block) => {
+                    total = total
+                        .saturating_add(size_of_val(block))
+                        .saturating_add(block.text.text.capacity())
+                        .saturating_add(block.text.markdown.text_capacity());
+                    if let Some(dedup_key) = &block.dedup_key {
+                        total = total.saturating_add(size_of_val(dedup_key));
+                        total = total.saturating_add(match dedup_key {
+                            NoticeDedupKey::RateLimit(incident) => {
+                                incident.rate_limit_type.as_ref().map_or(0, String::capacity)
+                            }
+                        });
+                    }
+                }
                 MessageBlock::ToolCall(tc) => {
                     total = total.saturating_add(Self::measure_tool_call_bytes(tc));
                 }
@@ -281,6 +296,7 @@ impl super::App {
         let appended_at_tail = insert_idx == self.messages.len();
         if !appended_at_tail {
             self.shift_active_turn_assistant_for_insert(insert_idx);
+            self.shift_turn_notice_refs_for_insert(insert_idx);
         }
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.insert(insert_idx, msg);
@@ -306,6 +322,7 @@ impl super::App {
         }
         let removed_tail = idx + 1 == old_len;
         self.shift_active_turn_assistant_for_remove(idx);
+        self.shift_turn_notice_refs_for_remove(idx);
         let removed = self.messages.remove(idx);
         let removed_bytes = self.message_retained_bytes.remove(idx);
         self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
@@ -326,6 +343,7 @@ impl super::App {
         self.message_retained_bytes.clear();
         self.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
+        self.clear_turn_notice_refs();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.viewport.sync_message_count(0);
@@ -627,6 +645,7 @@ impl super::App {
         self.messages = retained;
         self.message_retained_bytes = retained_bytes;
         self.active_turn_assistant_message_idx = remapped_active_turn_owner;
+        self.remap_turn_notice_refs_after_message_drop(&old_to_new);
 
         let (anchor_idx, anchor_offset) = preserved_anchor?;
         if let Some(new_idx) = old_to_new.get(anchor_idx).copied().flatten() {

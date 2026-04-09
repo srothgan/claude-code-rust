@@ -3,10 +3,10 @@
 
 use super::super::{
     App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
-    InvalidationLevel, MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
 };
 use super::clear_compaction_state;
-use super::rate_limit::format_rate_limit_summary;
+use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use std::collections::BTreeSet;
@@ -201,6 +201,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.clear_active_turn_assistant();
+    super::notices::clear_turn_notice_tracking(app);
 }
 
 pub(super) fn handle_turn_complete_event(app: &mut App) {
@@ -288,6 +289,7 @@ pub(super) fn handle_turn_error_event(
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.clear_active_turn_assistant();
+    super::notices::clear_turn_notice_tracking(app);
 }
 
 fn push_interrupted_hint(app: &mut App) {
@@ -328,33 +330,51 @@ fn push_turn_error_message(
     class: TurnErrorClass,
     rate_limit_context: Option<&model::RateLimitUpdate>,
 ) {
-    let base_message = match class {
+    match class {
         TurnErrorClass::PlanLimit => {
-            let summary = summarize_internal_error(error);
-            format!(
-                "Turn blocked by account or plan limits: {summary}\n\n{PLAN_LIMIT_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
-            )
+            let base_message = {
+                let summary = summarize_internal_error(error);
+                format!(
+                    "Turn blocked by account or plan limits: {summary}\n\n{PLAN_LIMIT_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
+                )
+            };
+            let (severity, message, dedup_key) = if let Some(update) = rate_limit_context {
+                let prefix = format_rate_limit_summary(update);
+                let severity = match update.status {
+                    model::RateLimitStatus::AllowedWarning => SystemSeverity::Warning,
+                    model::RateLimitStatus::Rejected | model::RateLimitStatus::Allowed => {
+                        SystemSeverity::Error
+                    }
+                };
+                (severity, format!("{prefix}\n\n{base_message}"), rate_limit_notice_key(update))
+            } else {
+                (
+                    SystemSeverity::Error,
+                    base_message,
+                    super::super::NoticeDedupKey::RateLimit(super::super::RateLimitIncidentKey {
+                        rate_limit_type: None,
+                        resets_at_bucket: None,
+                    }),
+                )
+            };
+            super::notices::upsert_turn_notice(
+                app,
+                dedup_key,
+                NoticeStage::PlanLimitTurnError,
+                severity,
+                &message,
+            );
         }
         TurnErrorClass::AuthRequired => {
-            format!("{AUTH_REQUIRED_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
+            let message =
+                format!("{AUTH_REQUIRED_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+            super::push_system_message_with_severity(app, None, &message);
         }
         TurnErrorClass::Internal | TurnErrorClass::Other => {
-            format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
+            let message = format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+            super::push_system_message_with_severity(app, None, &message);
         }
-    };
-    let (severity, message) = if matches!(class, TurnErrorClass::PlanLimit)
-        && let Some(update) = rate_limit_context
-    {
-        let prefix = format_rate_limit_summary(update);
-        let severity = match update.status {
-            model::RateLimitStatus::AllowedWarning => Some(SystemSeverity::Warning),
-            model::RateLimitStatus::Rejected | model::RateLimitStatus::Allowed => None,
-        };
-        (severity, format!("{prefix}\n\n{base_message}"))
-    } else {
-        (None, base_message)
-    };
-    super::push_system_message_with_severity(app, severity, &message);
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{App, SystemSeverity};
+use super::super::{App, NoticeDedupKey, NoticeStage, RateLimitIncidentKey, SystemSeverity};
 use crate::agent::model;
+use std::time::Duration;
 
 fn format_rate_limit_type(raw: &str) -> &str {
     match raw {
@@ -91,22 +92,44 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
     message
 }
 
+pub(super) fn rate_limit_notice_key(update: &model::RateLimitUpdate) -> NoticeDedupKey {
+    NoticeDedupKey::RateLimit(RateLimitIncidentKey {
+        rate_limit_type: update.rate_limit_type.clone(),
+        resets_at_bucket: update.resets_at.and_then(reset_bucket_from_epoch_secs),
+    })
+}
+
+fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
+    if !value.is_finite() {
+        return None;
+    }
+    Some(Duration::from_secs_f64(value.max(0.0)).as_secs())
+}
+
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
-    let previous_status = app.last_rate_limit_update.as_ref().map(|existing| existing.status);
     app.last_rate_limit_update = Some(update.clone());
 
     match update.status {
         model::RateLimitStatus::Allowed => {}
         model::RateLimitStatus::AllowedWarning => {
-            if previous_status == Some(model::RateLimitStatus::AllowedWarning) {
-                return;
-            }
             let summary = format_rate_limit_summary(update);
-            super::push_system_message_with_severity(app, Some(SystemSeverity::Warning), &summary);
+            super::notices::upsert_turn_notice(
+                app,
+                rate_limit_notice_key(update),
+                NoticeStage::Warning,
+                SystemSeverity::Warning,
+                &summary,
+            );
         }
         model::RateLimitStatus::Rejected => {
             let summary = format_rate_limit_summary(update);
-            super::push_system_message_with_severity(app, None, &summary);
+            super::notices::upsert_turn_notice(
+                app,
+                rate_limit_notice_key(update),
+                NoticeStage::Rejected,
+                SystemSeverity::Error,
+                &summary,
+            );
         }
     }
 }

@@ -273,9 +273,54 @@ impl TextBlock {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RateLimitIncidentKey {
+    pub rate_limit_type: Option<String>,
+    pub resets_at_bucket: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NoticeDedupKey {
+    RateLimit(RateLimitIncidentKey),
+}
+
+pub struct NoticeBlock {
+    pub severity: SystemSeverity,
+    pub text: TextBlock,
+    pub dedup_key: Option<NoticeDedupKey>,
+}
+
+impl NoticeBlock {
+    #[must_use]
+    pub fn new(severity: SystemSeverity, text: String) -> Self {
+        Self { severity, text: TextBlock::new(text), dedup_key: None }
+    }
+
+    #[must_use]
+    pub fn from_complete(severity: SystemSeverity, text: &str) -> Self {
+        Self::new(severity, text.to_owned())
+    }
+
+    #[must_use]
+    pub fn with_dedup_key(mut self, dedup_key: NoticeDedupKey) -> Self {
+        self.dedup_key = Some(dedup_key);
+        self
+    }
+
+    pub fn replace_text(&mut self, text: &str) {
+        self.text = TextBlock::from_complete(text);
+    }
+
+    #[must_use]
+    pub fn trailing_blank_lines(&self) -> usize {
+        self.text.trailing_blank_lines()
+    }
+}
+
 /// Ordered content block - text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
     Text(TextBlock),
+    Notice(NoticeBlock),
     ToolCall(Box<ToolCallInfo>),
     Welcome(WelcomeBlock),
     /// Indicates N images were attached to this user message.
