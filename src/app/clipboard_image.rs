@@ -17,6 +17,31 @@ pub struct ImageAttachment {
     pub mime_type: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardImageError {
+    InvalidDimensions,
+    InvalidPixelBuffer,
+    EncodeFailed,
+    TooLarge,
+}
+
+impl ClipboardImageError {
+    #[must_use]
+    pub fn user_message(self) -> &'static str {
+        match self {
+            ClipboardImageError::InvalidDimensions | ClipboardImageError::InvalidPixelBuffer => {
+                "Clipboard image data is invalid and could not be attached."
+            }
+            ClipboardImageError::EncodeFailed => {
+                "Clipboard image could not be converted to PNG for upload."
+            }
+            ClipboardImageError::TooLarge => {
+                "Clipboard image is too large to attach. Keep images under 10 MiB."
+            }
+        }
+    }
+}
+
 /// Returns `true` if `mime_type` is a supported image MIME type.
 pub fn is_supported_image_type(mime_type: &str) -> bool {
     SUPPORTED_IMAGE_MIME_TYPES.contains(&mime_type)
@@ -89,25 +114,29 @@ pub fn find_image_badge_spans(line: &str) -> Vec<(usize, usize, usize)> {
 /// Accepts the `arboard::ImageData` obtained from a clipboard that the caller
 /// has already opened, avoiding a redundant `Clipboard::new()` call.
 ///
-/// Returns `Some(ImageAttachment)` on success, `None` on encoding failure or
-/// if the image exceeds the size limit.
+/// Returns an encoded attachment or a typed failure reason for UI/logging.
 #[cfg(not(test))]
-pub fn encode_clipboard_image(img_data: arboard::ImageData<'_>) -> Option<ImageAttachment> {
+pub fn encode_clipboard_image(
+    img_data: arboard::ImageData<'_>,
+) -> Result<ImageAttachment, ClipboardImageError> {
     use base64::Engine as _;
 
     const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
     // Convert RGBA pixel data to PNG using the `image` crate.
-    let width = u32::try_from(img_data.width).ok()?;
-    let height = u32::try_from(img_data.height).ok()?;
+    let width =
+        u32::try_from(img_data.width).map_err(|_| ClipboardImageError::InvalidDimensions)?;
+    let height =
+        u32::try_from(img_data.height).map_err(|_| ClipboardImageError::InvalidDimensions)?;
     let rgba_bytes: Vec<u8> = img_data.bytes.into_owned();
 
-    let img_buf = image::RgbaImage::from_raw(width, height, rgba_bytes)?;
+    let img_buf = image::RgbaImage::from_raw(width, height, rgba_bytes)
+        .ok_or(ClipboardImageError::InvalidPixelBuffer)?;
     let mut png_bytes: Vec<u8> = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut png_bytes);
     if let Err(e) = img_buf.write_to(&mut cursor, image::ImageFormat::Png) {
         tracing::warn!("clipboard_image: failed to encode PNG: {e}");
-        return None;
+        return Err(ClipboardImageError::EncodeFailed);
     }
 
     if png_bytes.len() > MAX_IMAGE_BYTES {
@@ -116,7 +145,7 @@ pub fn encode_clipboard_image(img_data: arboard::ImageData<'_>) -> Option<ImageA
             max = MAX_IMAGE_BYTES,
             "clipboard_image: image too large, ignoring"
         );
-        return None;
+        return Err(ClipboardImageError::TooLarge);
     }
 
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
@@ -129,7 +158,7 @@ pub fn encode_clipboard_image(img_data: arboard::ImageData<'_>) -> Option<ImageA
         "clipboard_image: successfully read image from clipboard"
     );
 
-    Some(ImageAttachment { data: base64_data, mime_type: "image/png".to_owned() })
+    Ok(ImageAttachment { data: base64_data, mime_type: "image/png".to_owned() })
 }
 
 #[cfg(test)]
@@ -213,5 +242,25 @@ mod tests {
     #[test]
     fn find_badge_spans_empty() {
         assert!(find_image_badge_spans("no badges here").is_empty());
+    }
+
+    #[test]
+    fn clipboard_image_error_messages_are_stable() {
+        assert_eq!(
+            ClipboardImageError::InvalidDimensions.user_message(),
+            "Clipboard image data is invalid and could not be attached."
+        );
+        assert_eq!(
+            ClipboardImageError::InvalidPixelBuffer.user_message(),
+            "Clipboard image data is invalid and could not be attached."
+        );
+        assert_eq!(
+            ClipboardImageError::EncodeFailed.user_message(),
+            "Clipboard image could not be converted to PNG for upload."
+        );
+        assert_eq!(
+            ClipboardImageError::TooLarge.user_message(),
+            "Clipboard image is too large to attach. Keep images under 10 MiB."
+        );
     }
 }

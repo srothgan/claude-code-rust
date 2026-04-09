@@ -30,6 +30,7 @@ fn clear_transient_view_state(app: &mut App) {
     app.active_paste_session = None;
     app.pending_paste_session = None;
     app.pending_paste_text.clear();
+    app.pending_clipboard_paste_dedupe = None;
     app.pending_submit = None;
     app.help_open = false;
     app.help_view = crate::app::HelpView::default();

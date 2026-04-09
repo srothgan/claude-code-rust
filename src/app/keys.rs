@@ -7,6 +7,8 @@ use super::{
     App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
     ModeState,
 };
+#[cfg(not(test))]
+use crate::app::SystemSeverity;
 use crate::app::inline_interactions::handle_inline_interaction_key;
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
@@ -532,25 +534,46 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     #[cfg(not(test))]
     {
         let Ok(mut clipboard) = arboard::Clipboard::new() else {
-            return false;
+            super::events::push_system_message_with_severity(
+                app,
+                Some(SystemSeverity::Warning),
+                "Failed to access the system clipboard.",
+            );
+            app.viewport.engage_auto_scroll();
+            app.needs_redraw = true;
+            tracing::warn!("clipboard_paste: failed to access system clipboard");
+            return true;
         };
 
         // Try reading an image from the clipboard first.
-        if let Ok(img_data) = clipboard.get_image()
-            && let Some(attachment) = super::clipboard_image::encode_clipboard_image(img_data)
-        {
-            app.pending_images.push(attachment);
-            // Insert badge text at the cursor position so the user (and
-            // the model) can see where images are relative to text.
-            let idx = app.pending_images.len();
-            let badge = format!("[Image #{idx}]");
-            app.input.insert_str(&badge);
-            app.needs_redraw = true;
-            tracing::debug!(
-                count = app.pending_images.len(),
-                "clipboard_paste: attached image from clipboard"
-            );
-            return true;
+        if let Ok(img_data) = clipboard.get_image() {
+            match super::clipboard_image::encode_clipboard_image(img_data) {
+                Ok(attachment) => {
+                    app.pending_images.push(attachment);
+                    // Insert badge text at the cursor position so the user (and
+                    // the model) can see where images are relative to text.
+                    let idx = app.pending_images.len();
+                    let badge = format!("[Image #{idx}]");
+                    app.input.insert_str(&badge);
+                    app.needs_redraw = true;
+                    tracing::debug!(
+                        count = app.pending_images.len(),
+                        "clipboard_paste: attached image from clipboard"
+                    );
+                    return true;
+                }
+                Err(error) => {
+                    super::events::push_system_message_with_severity(
+                        app,
+                        Some(SystemSeverity::Warning),
+                        error.user_message(),
+                    );
+                    app.viewport.engage_auto_scroll();
+                    app.needs_redraw = true;
+                    tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
+                    return true;
+                }
+            }
         }
 
         // Fallback: paste text (for terminals without Event::Paste).
@@ -560,6 +583,10 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
         if text.is_empty() {
             return false;
         }
+        if app.pending_paste_text == text {
+            return true;
+        }
+        app.pending_clipboard_paste_dedupe = Some(text.clone());
         app.queue_paste_text(&text);
         true
     }

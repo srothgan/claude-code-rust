@@ -109,6 +109,16 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
 fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
     match app.active_view {
         ActiveView::Chat => {
+            if app
+                .pending_clipboard_paste_dedupe
+                .as_deref()
+                .is_some_and(|expected| expected == text)
+            {
+                app.pending_clipboard_paste_dedupe = None;
+                tracing::debug!("paste_event: suppressed duplicate clipboard text paste");
+                return true;
+            }
+            app.pending_clipboard_paste_dedupe = None;
             if !matches!(
                 app.status,
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
@@ -3907,6 +3917,28 @@ mod tests {
             state: crossterm::event::KeyEventState::NONE,
         };
         assert!(!should_dispatch_key_event(key));
+    }
+
+    #[test]
+    fn matching_event_paste_is_suppressed_after_clipboard_fallback() {
+        let mut app = make_test_app();
+        app.pending_clipboard_paste_dedupe = Some("pasted".to_owned());
+
+        handle_terminal_event(&mut app, Event::Paste("pasted".into()));
+
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_clipboard_paste_dedupe.is_none());
+    }
+
+    #[test]
+    fn non_matching_event_paste_is_not_suppressed() {
+        let mut app = make_test_app();
+        app.pending_clipboard_paste_dedupe = Some("clipboard".to_owned());
+
+        handle_terminal_event(&mut app, Event::Paste("terminal".into()));
+
+        assert_eq!(app.pending_paste_text, "terminal");
+        assert!(app.pending_clipboard_paste_dedupe.is_none());
     }
 
     #[test]

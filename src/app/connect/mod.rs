@@ -154,6 +154,7 @@ pub fn create_app(cli: &Cli) -> App {
         pending_submit: None,
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         pending_paste_text: String::new(),
+        pending_clipboard_paste_dedupe: None,
         pending_paste_session: None,
         active_paste_session: None,
         next_paste_session_id: 1,
