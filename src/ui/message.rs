@@ -428,7 +428,9 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageL
                     layout.push_blank();
                 }
             }
-            MessageBlock::ToolCall(_) | MessageBlock::Welcome(_) => {}
+            MessageBlock::ToolCall(_)
+            | MessageBlock::Welcome(_)
+            | MessageBlock::ImageAttachment(_) => {}
         }
     }
 }

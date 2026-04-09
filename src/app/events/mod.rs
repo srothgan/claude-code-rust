@@ -394,6 +394,9 @@ mod tests {
             Some(MessageBlock::Notice(block)) => &block.text.text,
             Some(MessageBlock::ToolCall(_)) => panic!("expected text-like block, found tool call"),
             Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
+            Some(MessageBlock::ImageAttachment(_)) => {
+                panic!("expected text-like block, found image attachment")
+            }
             None => panic!("expected message block"),
         }
     }
