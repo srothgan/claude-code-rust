@@ -40,7 +40,7 @@ By participating, you agree to uphold this code.
    fix: prevent panic on empty terminal output
    ```
 7. Push to your fork and open a Pull Request against `main`
-8. Fill out the PR template completely
+8. Fill out the PR summary, validation, and any relevant notes
 
 ## Development Setup
 
