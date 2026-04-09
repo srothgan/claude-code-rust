@@ -24,9 +24,22 @@ fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
 }
 
+fn ctrl_char(expected: char) -> Option<char> {
+    let upper = expected.to_ascii_uppercase();
+    if !upper.is_ascii_alphabetic() {
+        return None;
+    }
+    Some(char::from((upper as u8) & 0x1f))
+}
+
 fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
-    is_ctrl_shortcut(key.modifiers)
-        && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
+    match key.code {
+        KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected) => is_ctrl_shortcut(key.modifiers),
+        KeyCode::Char(c) if Some(c) == ctrl_char(expected) => {
+            !key.modifiers.contains(KeyModifiers::ALT)
+        }
+        _ => false,
+    }
 }
 
 fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
@@ -507,7 +520,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_ctrl_char_shortcut(key, 'v') || app.focus_owner() == FocusOwner::TodoList {
+    if !is_clipboard_paste_shortcut(key) || app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
 
@@ -550,6 +563,10 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
         app.queue_paste_text(&text);
         true
     }
+}
+
+pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
+    is_ctrl_char_shortcut(key, 'v')
 }
 
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
@@ -954,6 +971,24 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
+        let key = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    #[test]
+    fn ctrl_shortcut_accepts_raw_control_character_encoding() {
+        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
+        assert!(is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    #[test]
+    fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
+        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
+        assert!(!is_ctrl_char_shortcut(key, 'v'));
+    }
 
     #[test]
     fn queued_paste_still_blocks_overlapping_key_text() {

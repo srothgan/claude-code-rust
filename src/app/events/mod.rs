@@ -25,7 +25,7 @@ pub use client::handle_client_event;
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     let changed = match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => dispatch_key_by_view(app, key),
+        Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
             dispatch_mouse_by_view(app, mouse);
             true
@@ -48,6 +48,11 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         Event::Key(_) => false,
     };
     app.needs_redraw |= changed;
+}
+
+fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) {
@@ -3880,6 +3885,28 @@ mod tests {
 
         assert!(app.pending_paste_text.is_empty());
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn clipboard_paste_shortcut_dispatches_on_release() {
+        let key = crossterm::event::KeyEvent {
+            code: KeyCode::Char('v'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        assert!(should_dispatch_key_event(key));
+    }
+
+    #[test]
+    fn non_paste_shortcut_release_is_ignored() {
+        let key = crossterm::event::KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        assert!(!should_dispatch_key_event(key));
     }
 
     #[test]

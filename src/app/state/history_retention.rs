@@ -233,7 +233,8 @@ impl super::App {
                     }
                 }
                 MessageBlock::ImageAttachment(_) => {
-                    total = total.saturating_add(size_of::<super::messages::ImageAttachmentBlock>());
+                    total =
+                        total.saturating_add(size_of::<super::messages::ImageAttachmentBlock>());
                 }
             }
         }

@@ -1,7 +1,6 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::state::messages::ImageAttachmentBlock;
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -124,13 +123,8 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 
     // Take pending images for this turn.
     let images = std::mem::take(&mut app.pending_images);
-    let image_count = images.len();
 
-    let mut user_blocks: Vec<MessageBlock> = Vec::new();
-    if image_count > 0 {
-        user_blocks.push(MessageBlock::ImageAttachment(ImageAttachmentBlock::new(image_count)));
-    }
-    user_blocks.push(MessageBlock::Text(TextBlock::from_complete(&text)));
+    let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
 
     app.push_message_tracked(ChatMessage {
         role: MessageRole::User,
