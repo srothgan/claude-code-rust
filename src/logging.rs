@@ -9,11 +9,16 @@ use std::fs::OpenOptions;
 
 pub mod targets {
     pub const APP_AUTH: &str = "app.auth";
+    pub const APP_CACHE: &str = "app.cache";
     pub const APP_CONFIG: &str = "app.config";
     pub const APP_COMMAND: &str = "app.command";
+    pub const APP_INPUT: &str = "app.input";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_NETWORK: &str = "app.network";
+    pub const APP_PASTE: &str = "app.paste";
+    pub const APP_PERF: &str = "app.perf";
     pub const APP_PERMISSION: &str = "app.permission";
+    pub const APP_RENDER: &str = "app.render";
     pub const APP_SESSION: &str = "app.session";
     pub const APP_TOOL: &str = "app.tool";
     pub const APP_UPDATE: &str = "app.update";
@@ -309,9 +314,14 @@ impl BridgeDiagnosticRecord {
 
         match self.target.as_str() {
             targets::APP_AUTH => emit_for_level!(targets::APP_AUTH),
+            targets::APP_CACHE => emit_for_level!(targets::APP_CACHE),
             targets::APP_CONFIG => emit_for_level!(targets::APP_CONFIG),
             targets::APP_COMMAND => emit_for_level!(targets::APP_COMMAND),
+            targets::APP_INPUT => emit_for_level!(targets::APP_INPUT),
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
+            targets::APP_PASTE => emit_for_level!(targets::APP_PASTE),
+            targets::APP_PERF => emit_for_level!(targets::APP_PERF),
+            targets::APP_RENDER => emit_for_level!(targets::APP_RENDER),
             targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
             targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),
             targets::APP_NETWORK => emit_for_level!(targets::APP_NETWORK),

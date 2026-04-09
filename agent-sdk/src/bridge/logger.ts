@@ -7,9 +7,14 @@ const PERMISSION_DEBUG_ENABLED =
 
 export const LOG_TARGETS = {
   APP_AUTH: "app.auth",
+  APP_CACHE: "app.cache",
   APP_CONFIG: "app.config",
   APP_COMMAND: "app.command",
   APP_NETWORK: "app.network",
+  APP_INPUT: "app.input",
+  APP_PASTE: "app.paste",
+  APP_PERF: "app.perf",
+  APP_RENDER: "app.render",
   APP_SESSION: "app.session",
   APP_TOOL: "app.tool",
   APP_UPDATE: "app.update",

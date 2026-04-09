@@ -391,41 +391,14 @@ fn render_scrolled(
     let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
     let render_data = build_scrolled_render_data(app, base, width, content_height, viewport_height);
     let pinned_to_bottom = render_data.scroll_offset == render_data.max_scroll;
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        let last_message_idx = app.messages.len().checked_sub(1);
-        let last_message_height = last_message_idx.map(|idx| app.viewport.message_height(idx));
-        tracing::debug!(
-            "RENDER_SCROLLED: auto_scroll={} pinned_to_bottom={} scroll_target={} scroll_pos={:.2} \
-             scroll_offset={} max_scroll={} first_visible={} render_start={} local_scroll={} \
-             rendered_msgs={} last_rendered_idx={:?} rendered_line_count={} last_message_idx={:?} \
-             last_message_height={:?}",
-            app.viewport.auto_scroll,
-            pinned_to_bottom,
-            app.viewport.scroll_target,
-            app.viewport.scroll_pos,
-            render_data.scroll_offset,
-            render_data.max_scroll,
-            render_data.stats.first_visible,
-            render_data.stats.render_start,
-            render_data.stats.local_scroll,
-            render_data.stats.rendered_msgs,
-            render_data.stats.last_rendered_idx,
-            render_data.stats.rendered_line_count,
-            last_message_idx,
-            last_message_height,
-        );
-    }
-    if tracing::enabled!(tracing::Level::TRACE) {
-        let visible_preview = render_lines_from_paragraph(
-            &render_data.paragraph,
-            area,
-            render_data.stats.local_scroll,
-        );
-        tracing::trace!(
-            "RENDER_VISIBLE_PREVIEW: bottom_lines={:?}",
-            preview_tail_lines(&visible_preview, 5),
-        );
-    }
+    emit_render_summary(
+        app,
+        width,
+        content_height,
+        viewport_height,
+        pinned_to_bottom,
+        &render_data,
+    );
 
     app.rendered_chat_area = area;
     if chat_selection_snapshot_needed(app.selection) {
@@ -483,9 +456,12 @@ fn chat_selection_snapshot_needed(selection: Option<SelectionState>) -> bool {
 fn paragraph_scroll_offset(scroll_offset: usize) -> u16 {
     u16::try_from(scroll_offset).unwrap_or_else(|_| {
         tracing::warn!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "render_scroll_clamped",
+            message = "chat paragraph scroll exceeded the ratatui u16 boundary",
+            outcome = "clamped",
             scroll_offset,
             max_scroll = u16::MAX,
-            "chat paragraph scroll exceeds ratatui u16 boundary; clamping local paragraph scroll"
         );
         u16::MAX
     })
@@ -698,32 +674,14 @@ fn render_culled_messages(
         }
     }
 
-    let stats = CulledRenderStats {
+    CulledRenderStats {
         local_scroll,
         first_visible,
         render_start,
         rendered_msgs,
         last_rendered_idx,
         rendered_line_count: out.len(),
-    };
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        tracing::debug!(
-            "RENDER_CULLED: scroll={} viewport_height={} height_before_start={} lines_needed={} \
-             first_visible={} render_start={} local_scroll={} rendered_msgs={} last_rendered_idx={:?} \
-             rendered_line_count={}",
-            scroll,
-            viewport_height,
-            height_before_start,
-            rows_needed,
-            stats.first_visible,
-            stats.render_start,
-            stats.local_scroll,
-            stats.rendered_msgs,
-            stats.last_rendered_idx,
-            stats.rendered_line_count,
-        );
     }
-    stats
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
@@ -734,15 +692,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let viewport_height = area.height as usize;
     let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, area, base_spinner);
-
-    tracing::trace!(
-        "RENDER: width={}, content_height={}, viewport_height={}, scroll_target={}, auto_scroll={}",
-        width,
-        content_height,
-        viewport_height,
-        app.viewport.scroll_target,
-        app.viewport.auto_scroll
-    );
 
     if content_height <= viewport_height {
         crate::perf::mark_with("chat::path_short", "active", 1);
@@ -768,6 +717,43 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 
     enforce_and_emit_cache_metrics(app);
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn emit_render_summary(
+    app: &App,
+    width: u16,
+    content_height: usize,
+    viewport_height: usize,
+    pinned_to_bottom: bool,
+    render_data: &ScrolledRenderData,
+) {
+    let last_message_idx = app.messages.len().checked_sub(1);
+    let last_message_height = last_message_idx.map(|idx| app.viewport.message_height(idx));
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = "chat_render_summary",
+        message = "chat render summary emitted",
+        outcome = "success",
+        width,
+        content_height,
+        viewport_height,
+        auto_scroll = app.viewport.auto_scroll,
+        pinned_to_bottom,
+        scroll_target = ?app.viewport.scroll_target,
+        scroll_pos = app.viewport.scroll_pos,
+        scroll_offset = render_data.scroll_offset,
+        max_scroll = render_data.max_scroll,
+        first_visible = render_data.stats.first_visible,
+        render_start = render_data.stats.render_start,
+        local_scroll = render_data.stats.local_scroll,
+        rendered_msgs = render_data.stats.rendered_msgs,
+        last_rendered_idx = ?render_data.stats.last_rendered_idx,
+        rendered_line_count = render_data.stats.rendered_line_count,
+        last_message_idx = ?last_message_idx,
+        last_message_height = ?last_message_height,
+        selection_snapshot_active = chat_selection_snapshot_needed(app.selection),
+    );
 }
 
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -897,19 +883,6 @@ fn render_lines_from_paragraph(
         lines.push(line.trim_end().to_owned());
     }
     lines
-}
-
-fn preview_tail_lines(lines: &[String], count: usize) -> Vec<String> {
-    lines
-        .iter()
-        .rev()
-        .filter(|line| !line.is_empty())
-        .take(count)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
 }
 
 #[cfg(test)]

@@ -97,15 +97,28 @@ fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
         }
     }
 
+    let selected_chars = selected_text.chars().count();
     let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        tracing::warn!("failed to access clipboard while copying selection");
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "clipboard_access_failed",
+            message = "failed to access the clipboard while copying selection",
+            outcome = "failure",
+            selected_chars,
+        );
         return ClipboardCopyResult::Failed;
     };
 
     if clipboard.set_text(selected_text).is_ok() {
         ClipboardCopyResult::Copied
     } else {
-        tracing::warn!("failed to write selection text to clipboard");
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "clipboard_write_failed",
+            message = "failed to write selection text to the clipboard",
+            outcome = "failure",
+            selected_chars,
+        );
         ClipboardCopyResult::Failed
     }
 }
@@ -364,7 +377,13 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
     {
-        tracing::error!("Failed to send cancel: {message}");
+        tracing::error!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "cancel_request_failed",
+            message = "failed to send manual cancel request",
+            outcome = "failure",
+            error_message = %message,
+        );
     }
     true
 }
@@ -379,7 +398,12 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
     if app.paste_burst.on_enter(now) {
-        tracing::debug!("paste_enter: enter routed through paste buffer");
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "enter_routed_to_paste_buffer",
+            message = "enter was routed through the paste buffer",
+            outcome = "success",
+        );
         return true;
     }
 
@@ -387,11 +411,21 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
         app.pending_submit = Some(app.input.snapshot());
-        tracing::debug!("paste_enter: armed deferred submit snapshot");
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "deferred_submit_armed",
+            message = "deferred submit snapshot armed",
+            outcome = "start",
+        );
         return false;
     }
     app.pending_submit = None;
-    tracing::debug!("paste_enter: inserted explicit newline");
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "explicit_newline_inserted",
+        message = "explicit newline inserted instead of submit",
+        outcome = "success",
+    );
     app.input.textarea_insert_newline()
 }
 
@@ -501,7 +535,13 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         let conn = Rc::clone(conn);
         tokio::task::spawn_local(async move {
             if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
-                tracing::error!("Failed to set mode: {e}");
+                tracing::error!(
+                    target: crate::logging::targets::APP_INPUT,
+                    event_name = "mode_change_request_failed",
+                    message = "failed to request mode change",
+                    outcome = "failure",
+                    error_message = %e,
+                );
             }
         });
     }
@@ -667,7 +707,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     match app.paste_burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
-            tracing::debug!(ch = %c.escape_default(), "paste_key: consumed char into burst");
             return false;
         }
         CharAction::RetroCapture(delete_count) => {
@@ -676,9 +715,11 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
                 let _ = app.input.textarea_delete_char_before();
             }
             tracing::debug!(
-                ch = %c.escape_default(),
+                target: crate::logging::targets::APP_PASTE,
+                event_name = "paste_retro_capture_applied",
+                message = "retro-captured leaked characters from a confirmed paste burst",
+                outcome = "success",
                 delete_count,
-                "paste_key: retro-captured leaked chars"
             );
             return true;
         }
@@ -686,11 +727,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
             // Normal typing or a previously-held char released.
             // If `ch == c`, single normal insert. Otherwise the detector
             // emitted a held char; insert it first, then the current char.
-            tracing::debug!(
-                input = %c.escape_default(),
-                emitted = %ch.escape_default(),
-                "paste_key: passthrough"
-            );
             if ch == c {
                 let _ = app.input.textarea_insert_char(c);
             } else {
@@ -852,7 +888,6 @@ const fn prev_help_view(current: HelpView) -> HelpView {
 
 fn set_help_view(app: &mut App, next: HelpView) {
     if app.help_view != next {
-        tracing::debug!(from = ?app.help_view, to = ?next, "Help view changed via keyboard");
         app.help_view = next;
         app.help_dialog = DialogState::default();
     }

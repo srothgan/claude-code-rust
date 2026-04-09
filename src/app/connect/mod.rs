@@ -76,6 +76,29 @@ pub fn create_app(cli: &Cli) -> App {
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let terminals: crate::agent::events::TerminalMap =
         Rc::new(std::cell::RefCell::new(HashMap::new()));
+    let perf = cli.perf_log.as_deref().and_then(|path| {
+        let logger = crate::perf::PerfLogger::open(path, cli.perf_append);
+        if logger.is_some() {
+            tracing::info!(
+                target: crate::logging::targets::APP_PERF,
+                event_name = "perf_logging_enabled",
+                message = "performance logging enabled",
+                outcome = "success",
+                perf_log = %path.display(),
+                perf_append = cli.perf_append,
+            );
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERF,
+                event_name = "perf_logging_unavailable",
+                message = "failed to enable performance logging",
+                outcome = "failure",
+                perf_log = %path.display(),
+                perf_append = cli.perf_append,
+            );
+        }
+        logger
+    });
 
     let cwd_display = shorten_cwd(&cwd);
     let initial_model_name = "Connecting...".to_owned();
@@ -180,10 +203,7 @@ pub fn create_app(cli: &Cli) -> App {
         terminal_tool_call_membership: HashSet::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
-        perf: cli
-            .perf_log
-            .as_deref()
-            .and_then(|path| crate::perf::PerfLogger::open(path, cli.perf_append)),
+        perf,
         render_cache_budget: RenderCacheBudget::default(),
         render_cache_slots: Vec::new(),
         render_cache_total_bytes: 0,

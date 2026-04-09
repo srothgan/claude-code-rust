@@ -148,16 +148,10 @@ impl PasteBurstDetector {
                         received_at: now,
                         retro_prefix: self.collect_retro_prefix(now),
                     };
-                    tracing::debug!(
-                        ch = %debug_char(ch),
-                        recent_passthrough = self.recent_passthrough.len(),
-                        "paste_burst: idle -> pending"
-                    );
                     CharAction::Consumed
                 } else {
                     // Normal typing speed -- pass through immediately.
                     self.push_recent_passthrough(ch, now);
-                    tracing::debug!(ch = %debug_char(ch), "paste_burst: passthrough");
                     CharAction::Passthrough(ch)
                 }
             }
@@ -177,12 +171,13 @@ impl PasteBurstDetector {
                     self.state = BurstState::Buffering;
                     self.recent_passthrough.clear();
                     tracing::debug!(
-                        held = %debug_char(held),
-                        ch = %debug_char(ch),
+                        target: crate::logging::targets::APP_PASTE,
+                        event_name = "paste_burst_detected",
+                        message = "paste burst detected",
+                        outcome = "start",
                         retro_len,
+                        buffer_chars = self.buffer.chars().count(),
                         within_pending_window,
-                        buffer = %debug_text(&self.buffer),
-                        "paste_burst: pending -> buffering"
                     );
                     if retro_len > 0 {
                         CharAction::RetroCapture(retro_len)
@@ -197,11 +192,6 @@ impl PasteBurstDetector {
                     self.state = BurstState::Idle;
                     self.push_recent_passthrough(prev, now);
                     self.push_recent_passthrough(ch, now);
-                    tracing::debug!(
-                        held = %debug_char(prev),
-                        ch = %debug_char(ch),
-                        "paste_burst: pending false alarm"
-                    );
                     CharAction::Passthrough(prev)
                 }
             }
@@ -209,11 +199,6 @@ impl PasteBurstDetector {
                 // Once a burst is confirmed, keep buffering until idle timeout.
                 // This tolerates Windows scheduling jitter between pasted chars.
                 self.buffer.push(ch);
-                tracing::debug!(
-                    ch = %debug_char(ch),
-                    buffer_len = self.buffer.chars().count(),
-                    "paste_burst: buffering append"
-                );
                 CharAction::Consumed
             }
         }
@@ -230,7 +215,14 @@ impl PasteBurstDetector {
             BurstState::Buffering => {
                 self.buffer.push('\n');
                 self.last_char_time = Some(now);
-                tracing::debug!(buffer = %debug_text(&self.buffer), "paste_burst: enter during buffering");
+                tracing::debug!(
+                    target: crate::logging::targets::APP_PASTE,
+                    event_name = "paste_enter_buffered",
+                    message = "enter routed into the active paste burst buffer",
+                    outcome = "success",
+                    reason = "buffering",
+                    buffer_chars = self.buffer.chars().count(),
+                );
                 true
             }
             BurstState::Pending { held_char, .. } => {
@@ -242,9 +234,12 @@ impl PasteBurstDetector {
                 self.state = BurstState::Buffering;
                 self.last_char_time = Some(now);
                 tracing::debug!(
-                    held = %debug_char(held),
-                    buffer = %debug_text(&self.buffer),
-                    "paste_burst: enter promoted pending -> buffering"
+                    target: crate::logging::targets::APP_PASTE,
+                    event_name = "paste_enter_buffered",
+                    message = "enter promoted a pending paste burst into buffering",
+                    outcome = "success",
+                    reason = "pending",
+                    buffer_chars = self.buffer.chars().count(),
                 );
                 true
             }
@@ -253,13 +248,17 @@ impl PasteBurstDetector {
                 self.buffer.push('\n');
                 self.state = BurstState::Buffering;
                 self.last_char_time = Some(now);
-                tracing::debug!("paste_burst: suppressed enter queued as newline");
+                tracing::debug!(
+                    target: crate::logging::targets::APP_PASTE,
+                    event_name = "paste_enter_buffered",
+                    message = "enter suppressed and queued as a paste newline",
+                    outcome = "success",
+                    reason = "suppression_window",
+                    buffer_chars = self.buffer.chars().count(),
+                );
                 true
             }
-            BurstState::Idle => {
-                tracing::debug!("paste_burst: enter not suppressed");
-                false
-            }
+            BurstState::Idle => false,
         }
     }
 
@@ -272,7 +271,6 @@ impl PasteBurstDetector {
                     let ch = *held_char;
                     self.state = BurstState::Idle;
                     self.push_recent_passthrough(ch, now);
-                    tracing::debug!(ch = %debug_char(ch), "paste_burst: pending timeout emit char");
                     Some(FlushAction::EmitChar(ch))
                 } else {
                     None
@@ -287,7 +285,13 @@ impl PasteBurstDetector {
                     if text.is_empty() {
                         None
                     } else {
-                        tracing::debug!(text = %debug_text(&text), "paste_burst: idle timeout emit paste");
+                        tracing::debug!(
+                            target: crate::logging::targets::APP_PASTE,
+                            event_name = "paste_burst_flushed",
+                            message = "paste burst flushed after idle timeout",
+                            outcome = "success",
+                            pasted_chars = text.chars().count(),
+                        );
                         Some(FlushAction::EmitPaste(text))
                     }
                 } else {
@@ -313,12 +317,10 @@ impl PasteBurstDetector {
     /// Prevents state from leaking across unrelated input.
     pub fn on_non_char_key(&mut self, now: Instant) {
         if matches!(self.state, BurstState::Buffering) {
-            let dropped = self.flush_buffer(now);
-            tracing::debug!(text = %debug_text(&dropped), "paste_burst: non-char dropped buffered text");
+            let _ = self.flush_buffer(now);
         } else if let BurstState::Pending { .. } = &self.state {
             // Drop the held char -- non-char input breaks any potential burst.
             self.state = BurstState::Idle;
-            tracing::debug!("paste_burst: non-char cleared pending state");
         }
         self.last_char_time = None;
         self.recent_passthrough.clear();
@@ -364,26 +366,6 @@ impl Default for PasteBurstDetector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn debug_char(ch: char) -> String {
-    ch.escape_default().collect()
-}
-
-fn debug_text(text: &str) -> String {
-    const MAX_CHARS: usize = 40;
-    let mut out = String::new();
-    let mut iter = text.chars();
-    for _ in 0..MAX_CHARS {
-        let Some(ch) = iter.next() else {
-            return out;
-        };
-        out.extend(ch.escape_default());
-    }
-    if iter.next().is_some() {
-        out.push_str("...");
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------

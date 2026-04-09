@@ -279,7 +279,10 @@ pub fn build_snapshot(
 /// Emit a debug-level structured log summarizing render cache state.
 pub fn emit_render_metrics(snap: &CacheMetricsSnapshot) {
     tracing::debug!(
-        target: "cache",
+        target: crate::logging::targets::APP_CACHE,
+        event_name = "render_cache_metrics",
+        message = "render cache metrics emitted",
+        outcome = "success",
         render_bytes = snap.render_bytes,
         render_max = snap.render_max_bytes,
         render_util_pct = format_args!("{:.1}", snap.render_utilization_pct),
@@ -295,14 +298,16 @@ pub fn emit_render_metrics(snap: &CacheMetricsSnapshot) {
         viewport_width_valid = snap.viewport_width_valid,
         viewport_prefix_sums_valid = snap.viewport_prefix_sums_valid,
         resize_count = snap.resize_count,
-        "render cache metrics"
     );
 }
 
 /// Emit a debug-level structured log summarizing history retention state.
 pub fn emit_history_metrics(snap: &CacheMetricsSnapshot) {
     tracing::debug!(
-        target: "cache",
+        target: crate::logging::targets::APP_CACHE,
+        event_name = "history_retention_metrics",
+        message = "history retention metrics emitted",
+        outcome = "success",
         history_bytes = snap.history_bytes,
         history_max = snap.history_max_bytes,
         history_util_pct = format_args!("{:.1}", snap.history_utilization_pct),
@@ -311,7 +316,6 @@ pub fn emit_history_metrics(snap: &CacheMetricsSnapshot) {
         history_dropped_bytes_total = snap.history_total_dropped_bytes,
         history_peak = snap.history_peak_bytes,
         history_enforcements = snap.history_enforcement_count,
-        "history retention metrics"
     );
 }
 
@@ -320,23 +324,32 @@ pub fn emit_cache_warning(kind: &CacheWarnKind) {
     match kind {
         CacheWarnKind::HighRenderUtilization(pct) => {
             tracing::warn!(
-                target: "cache",
+                target: crate::logging::targets::APP_CACHE,
+                event_name = "cache_warning",
+                message = "render cache utilization high",
+                outcome = "warning",
+                warning_kind = "high_render_utilization",
                 util_pct = format_args!("{:.1}", pct),
-                "render cache utilization high"
             );
         }
         CacheWarnKind::HighHistoryUtilization(pct) => {
             tracing::warn!(
-                target: "cache",
+                target: crate::logging::targets::APP_CACHE,
+                event_name = "cache_warning",
+                message = "history retention utilization high",
+                outcome = "warning",
+                warning_kind = "high_history_utilization",
                 util_pct = format_args!("{:.1}", pct),
-                "history retention utilization high"
             );
         }
         CacheWarnKind::EvictionSpike(blocks) => {
             tracing::warn!(
-                target: "cache",
+                target: crate::logging::targets::APP_CACHE,
+                event_name = "cache_warning",
+                message = "render cache eviction spike",
+                outcome = "warning",
+                warning_kind = "eviction_spike",
                 evicted_blocks = blocks,
-                "render cache eviction spike"
             );
         }
     }
