@@ -708,6 +708,11 @@ fn build_message_block_render_signature(
             text_hash: hash_text_block_content(&block.text, block.trailing_spacing),
             trailing_spacing: block.trailing_spacing,
         },
+        MessageBlock::Notice(block) => MessageBlockRenderSignature::Notice {
+            severity: block.severity,
+            text_hash: hash_text_block_content(&block.text.text, block.text.trailing_spacing),
+            trailing_spacing: block.text.trailing_spacing,
+        },
         MessageBlock::ToolCall(tc) => MessageBlockRenderSignature::ToolCall {
             render_epoch: tc.render_epoch,
             layout_epoch: tc.layout_epoch,
@@ -720,6 +725,9 @@ fn build_message_block_render_signature(
         },
         MessageBlock::Welcome(block) => {
             MessageBlockRenderSignature::Welcome { content_hash: hash_welcome_block_content(block) }
+        }
+        MessageBlock::ImageAttachment(block) => {
+            MessageBlockRenderSignature::ImageAttachment { count: block.count }
         }
     }
 }
@@ -1355,9 +1363,9 @@ mod tests {
     }
 
     fn make_assistant_notice_message() -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
                 MessageBlock::Text(TextBlock::from_complete("Before notice")),
                 MessageBlock::Notice(NoticeBlock::from_complete(
                     SystemSeverity::Warning,
@@ -1365,8 +1373,8 @@ mod tests {
                 )),
                 MessageBlock::Text(TextBlock::from_complete("After notice")),
             ],
-            usage: None,
-        }
+            None,
+        )
     }
 
     fn make_tool_call_info(

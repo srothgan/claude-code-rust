@@ -79,6 +79,11 @@ pub enum MessageBlockRenderSignature {
         text_hash: u64,
         trailing_spacing: TextBlockSpacing,
     },
+    Notice {
+        severity: SystemSeverity,
+        text_hash: u64,
+        trailing_spacing: TextBlockSpacing,
+    },
     ToolCall {
         render_epoch: u64,
         layout_epoch: u64,
@@ -91,6 +96,9 @@ pub enum MessageBlockRenderSignature {
     },
     Welcome {
         content_hash: u64,
+    },
+    ImageAttachment {
+        count: usize,
     },
 }
 

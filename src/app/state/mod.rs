@@ -15,10 +15,10 @@ pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, CachedMessageSegment, MessageBlockRenderSignature, MessageRenderCache,
-    MessageRenderCacheKey, MessageRenderSignature, SystemSeverity, TextBlock, TextBlockSpacing,
-    WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock,
+    MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
+    MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey, SystemSeverity, TextBlock,
+    TextBlockSpacing, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,

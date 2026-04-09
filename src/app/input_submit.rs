@@ -149,11 +149,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
 
-    app.push_message_tracked(ChatMessage::new(
-        MessageRole::User,
-        user_blocks,
-        None,
-    ));
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
     // Create empty assistant message immediately -- message.rs shows thinking indicator
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();

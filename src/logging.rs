@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_explicit_path_when_provided() {
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: false,
             dir: None,
             bridge_script: None,
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_filter_enables_logging() {
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: false,
             dir: None,
             bridge_script: None,
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_enable_logs_is_set() {
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: false,
             dir: None,
             bridge_script: None,
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_preset_is_set() {
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: false,
             dir: None,
             bridge_script: None,
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn resolve_perf_path_uses_default_when_enable_perf_is_set() {
         let cli = Cli {
-            resume: None,
+            command: None,
             no_update_check: false,
             dir: None,
             bridge_script: None,

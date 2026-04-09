@@ -110,13 +110,13 @@ fn insert_standalone_notice(
     message: &str,
 ) {
     let msg_idx = app.messages.len();
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::System(Some(severity)),
-        blocks: vec![MessageBlock::Notice(
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(severity)),
+        vec![MessageBlock::Notice(
             NoticeBlock::from_complete(severity, message).with_dedup_key(dedup_key.clone()),
         )],
-        usage: None,
-    });
+        None,
+    ));
     app.enforce_history_retention_tracked();
     app.turn_notice_refs.push(TurnNoticeRef {
         dedup_key,

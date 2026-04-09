@@ -354,9 +354,12 @@ mod tests {
             no_update_check: true,
             dir: Some(dir.path().to_path_buf()),
             bridge_script: None,
+            enable_logs: false,
+            diagnostics_preset: None,
             log_file: None,
             log_filter: None,
             log_append: false,
+            enable_perf: false,
             perf_log: None,
             perf_append: false,
         };

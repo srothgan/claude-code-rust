@@ -35,7 +35,10 @@ fn run() -> anyhow::Result<()> {
         let startup_bootstrap_span = info_span!(
             target: claude_code_rust::logging::targets::APP_LIFECYCLE,
             "startup_bootstrap",
-            resume_requested = cli.resume.is_some(),
+            resume_requested = matches!(
+                cli.command,
+                Some(claude_code_rust::Command::Resume { .. })
+            ),
             perf_telemetry_requested = perf_path.is_some(),
             explicit_bridge_script = cli.bridge_script.is_some(),
         );

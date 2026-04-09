@@ -27,6 +27,7 @@ import { buildRateLimitUpdate, numberField } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { updateSessionId } from "./session_lifecycle.js";
+import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
   const chunks = command.chunks ?? [];
@@ -83,11 +84,23 @@ export function contentFromPrompt(
       const data = typeof val.data === "string" ? val.data : "";
       const mimeType = typeof val.mime_type === "string" ? val.mime_type : "image/png";
       if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
-        console.warn(`contentFromPrompt: skipping unsupported image type "${mimeType}"`);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.BRIDGE_PROTOCOL,
+          eventName: "prompt_image_skipped",
+          message: "skipping unsupported prompt image type",
+          outcome: "skipped",
+          fields: { mime_type: mimeType },
+        });
         continue;
       }
       if (!isValidBase64(data)) {
-        console.warn("contentFromPrompt: skipping image with invalid base64 data");
+        bridgeLogger.warn({
+          target: LOG_TARGETS.BRIDGE_PROTOCOL,
+          eventName: "prompt_image_skipped",
+          message: "skipping prompt image with invalid base64 data",
+          outcome: "skipped",
+          fields: { mime_type: mimeType, reason: "invalid_base64" },
+        });
         continue;
       }
       content.push({
