@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
 
-fn next_cache_access_tick() -> u64 {
+pub(crate) fn next_cache_access_tick() -> u64 {
     CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
 }
 

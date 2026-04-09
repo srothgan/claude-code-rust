@@ -19,12 +19,17 @@ impl BridgeLauncher {
     }
 
     #[must_use]
-    pub fn command(&self) -> Command {
+    pub fn command(&self, bridge_diagnostics_enabled: bool) -> Command {
         let mut cmd = Command::new(&self.runtime_path);
         cmd.arg(&self.script_path);
+        cmd.env("CLAUDE_RS_BRIDGE_DIAGNOSTICS", if bridge_diagnostics_enabled { "1" } else { "0" });
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        cmd.stderr(if bridge_diagnostics_enabled {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        });
         cmd
     }
 }

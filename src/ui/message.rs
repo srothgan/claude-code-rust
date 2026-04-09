@@ -82,12 +82,6 @@ impl MessageLayout {
         self.height += height;
         self.wrapped_lines += wrapped_lines;
     }
-
-    fn render_into(self, out: &mut Vec<Line<'static>>) {
-        for segment in self.segments {
-            segment.render_into(out);
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -97,13 +91,6 @@ enum MessageLayoutSegment {
 }
 
 impl MessageLayoutSegment {
-    fn render_into(self, out: &mut Vec<Line<'static>>) {
-        match self {
-            Self::Blank => out.push(Line::default()),
-            Self::Lines { lines, .. } => out.extend(lines),
-        }
-    }
-
     fn into_cached(self) -> CachedMessageSegment {
         match self {
             Self::Blank => CachedMessageSegment::Blank,
@@ -206,7 +193,7 @@ fn render_message_internal(
         layout_generation,
         MessageRenderOptions { tools_collapsed, include_trailing_separator },
     );
-    out.extend_from_slice(cache.lines());
+    render_cached_message(cache.segments(), out);
 }
 
 fn build_message_layout(
@@ -637,6 +624,15 @@ fn render_cached_message_from_offset(
     }
 }
 
+fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'static>>) {
+    for segment in segments {
+        match segment {
+            CachedMessageSegment::Blank => out.push(Line::default()),
+            CachedMessageSegment::Lines { lines, .. } => out.extend(lines.iter().cloned()),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
@@ -657,9 +653,7 @@ fn get_or_build_message_render_cache<'a>(
         let wrapped_lines = layout.wrapped_lines;
         let segments =
             layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
-        let mut lines = Vec::new();
-        layout.render_into(&mut lines);
-        msg.render_cache.store(key, segments, lines, height, wrapped_lines);
+        msg.render_cache.store(key, segments, height, wrapped_lines);
     }
     &msg.render_cache
 }
@@ -2003,11 +1997,12 @@ mod tests {
 
         let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
         assert!(cache.matches(&key));
-        let first_lines = cache.lines().to_vec();
+        let first_segments = cache.segments().to_vec();
 
         let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
         assert!(cache.matches(&key));
-        assert_eq!(cache.lines(), first_lines.as_slice());
+        assert_eq!(cache.segments().len(), first_segments.len());
+        assert_eq!(cache.height(), rendered_segment_height(&first_segments));
     }
 
     #[test]
@@ -2048,5 +2043,15 @@ mod tests {
         let _ = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, without_separator);
         assert!(msg.render_cache.matches(&without_key));
         assert!(!msg.render_cache.matches(&with_key));
+    }
+
+    fn rendered_segment_height(segments: &[CachedMessageSegment]) -> usize {
+        segments
+            .iter()
+            .map(|segment| match segment {
+                CachedMessageSegment::Blank => 1,
+                CachedMessageSegment::Lines { height, .. } => *height,
+            })
+            .sum()
     }
 }

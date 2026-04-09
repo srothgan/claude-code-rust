@@ -18,6 +18,7 @@ pub struct BridgeClient {
 
 impl BridgeClient {
     pub fn spawn(launcher: &BridgeLauncher) -> anyhow::Result<Self> {
+        let bridge_diagnostics_enabled = crate::logging::bridge_diagnostics_enabled();
         let spawn_span = info_span!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             "bridge_spawn",
@@ -34,7 +35,7 @@ impl BridgeClient {
             script_path = %launcher.script_path.display(),
         );
         let mut child = launcher
-            .command()
+            .command(bridge_diagnostics_enabled)
             .spawn()
             .map_err(|_| anyhow::Error::new(AppError::AdapterCrashed))
             .with_context(|| format!("failed to spawn bridge process: {}", launcher.describe()))?;
@@ -51,8 +52,10 @@ impl BridgeClient {
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
-        let stderr = child.stderr.take().context("bridge stderr not available")?;
-        Self::spawn_stderr_logger(stderr);
+        if bridge_diagnostics_enabled {
+            let stderr = child.stderr.take().context("bridge stderr not available")?;
+            Self::spawn_stderr_logger(stderr);
+        }
 
         Ok(Self { child, stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout).lines() })
     }

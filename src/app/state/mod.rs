@@ -319,11 +319,12 @@ pub struct App {
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
     pub perf: Option<crate::perf::PerfLogger>,
-    /// Global in-memory budget for rendered block caches (message + tool + welcome).
+    /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
-    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`.
+    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`
+    /// plus one synthetic per-message slot at the tail of each row.
     pub(crate) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
-    /// Rolling total of cached render bytes across all blocks.
+    /// Rolling total of cached render bytes across blocks and message-level caches.
     pub(crate) render_cache_total_bytes: usize,
     /// Rolling total of cached render bytes currently excluded from the budget.
     pub(crate) render_cache_protected_bytes: usize,
@@ -1863,6 +1864,50 @@ mod tests {
 
         let stats = app.enforce_render_cache_budget();
         assert_eq!(stats.protected_bytes, 0);
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_accounts_for_message_render_cache() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block(&"a".repeat(4000))],
+                None,
+            ),
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block(&"b".repeat(4000))],
+                None,
+            ),
+        ];
+
+        let spinner = crate::ui::SpinnerState {
+            frame: 0,
+            is_active_turn_assistant: false,
+            show_empty_thinking: false,
+            show_thinking: false,
+            show_subagent_thinking: false,
+            show_compacting: false,
+        };
+
+        let _ = crate::ui::measure_message_height_cached(&mut app.messages[0], &spinner, 80, 1);
+        let _ = crate::ui::measure_message_height_cached(&mut app.messages[1], &spinner, 80, 1);
+
+        let bytes_a = app.messages[0].render_cache.cached_bytes();
+        let bytes_b = app.messages[1].render_cache.cached_bytes();
+        assert!(bytes_a > 0);
+        assert!(bytes_b > 0);
+
+        app.rebuild_render_cache_accounting();
+        app.render_cache_budget.max_bytes = bytes_b;
+        let stats = app.enforce_render_cache_budget();
+
+        assert!(stats.evicted_bytes >= bytes_a);
+        assert!(
+            app.messages[0].render_cache.cached_bytes() == 0
+                || app.messages[1].render_cache.cached_bytes() == 0
+        );
     }
 
     #[test]

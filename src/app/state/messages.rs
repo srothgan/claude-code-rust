@@ -6,6 +6,7 @@ use super::tool_call_info::ToolCallInfo;
 use super::types::{MessageUsage, RecentSessionInfo};
 use ratatui::style::Color;
 use ratatui::text::Line;
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -97,9 +98,10 @@ pub enum MessageBlockRenderSignature {
 pub struct MessageRenderCache {
     key: Option<MessageRenderCacheKey>,
     segments: Vec<CachedMessageSegment>,
-    lines: Vec<Line<'static>>,
+    cached_bytes: usize,
     height: usize,
     wrapped_lines: usize,
+    last_access_tick: Cell<u64>,
 }
 
 #[derive(Clone)]
@@ -109,52 +111,84 @@ pub enum CachedMessageSegment {
 }
 
 impl MessageRenderCache {
+    fn touch(&self) {
+        self.last_access_tick.set(super::block_cache::next_cache_access_tick());
+    }
+
     #[must_use]
     pub fn matches(&self, key: &MessageRenderCacheKey) -> bool {
         self.key.as_ref() == Some(key)
     }
 
     #[must_use]
-    pub fn lines(&self) -> &[Line<'static>] {
-        &self.lines
-    }
-
-    #[must_use]
     pub fn segments(&self) -> &[CachedMessageSegment] {
+        self.touch();
         &self.segments
     }
 
     #[must_use]
     pub fn height(&self) -> usize {
+        self.touch();
         self.height
     }
 
     #[must_use]
     pub fn wrapped_lines(&self) -> usize {
+        self.touch();
         self.wrapped_lines
+    }
+
+    #[must_use]
+    pub fn cached_bytes(&self) -> usize {
+        self.cached_bytes
+    }
+
+    #[must_use]
+    pub fn last_access_tick(&self) -> u64 {
+        self.last_access_tick.get()
     }
 
     pub fn store(
         &mut self,
         key: MessageRenderCacheKey,
         segments: Vec<CachedMessageSegment>,
-        lines: Vec<Line<'static>>,
         height: usize,
         wrapped_lines: usize,
     ) {
+        let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
         self.key = Some(key);
         self.segments = segments;
-        self.lines = lines;
+        self.cached_bytes = cached_bytes;
         self.height = height;
         self.wrapped_lines = wrapped_lines;
+        self.touch();
     }
 
     pub fn invalidate(&mut self) {
         self.key = None;
         self.segments.clear();
-        self.lines.clear();
+        self.cached_bytes = 0;
         self.height = 0;
         self.wrapped_lines = 0;
+    }
+
+    pub fn evict_cached_render(&mut self) -> usize {
+        let removed = self.cached_bytes;
+        if removed == 0 {
+            return 0;
+        }
+        self.invalidate();
+        removed
+    }
+}
+
+impl CachedMessageSegment {
+    #[must_use]
+    fn cached_bytes(&self) -> usize {
+        match self {
+            Self::Blank => 1,
+            Self::Lines { lines, .. } => lines.iter().map(line_utf8_bytes).sum(),
+        }
     }
 }
 
@@ -182,6 +216,12 @@ pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
         recent.first_prompt.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn line_utf8_bytes(line: &Line<'static>) -> usize {
+    let span_bytes =
+        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
+    span_bytes.saturating_add(1)
 }
 
 /// Text holder for a single message block's markdown source.

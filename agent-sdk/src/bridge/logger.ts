@@ -1,6 +1,7 @@
 import type { BridgeCommand, BridgeEvent } from "../types.js";
 
 const LOG_SCHEMA = "claude-rs-log/v1" as const;
+const DIAGNOSTICS_ENABLED = process.env.CLAUDE_RS_BRIDGE_DIAGNOSTICS === "1";
 
 export const LOG_TARGETS = {
   APP_AUTH: "app.auth",
@@ -55,6 +56,9 @@ function definedFields(fields?: DiagnosticFields): DiagnosticFields | undefined 
 }
 
 function writeDiagnostic(level: LogLevel, event: DiagnosticEvent): void {
+  if (!DIAGNOSTICS_ENABLED) {
+    return;
+  }
   const envelope: Record<string, unknown> = {
     schema: LOG_SCHEMA,
     timestamp: new Date().toISOString(),
