@@ -408,9 +408,8 @@ fn collect_create_or_modify_changes(
     let mut changes = Vec::new();
     for path in paths {
         if path.is_dir() {
-            if let Some(rel_prefix) = normalized_prefix(root, path) {
-                let entries = scan_subtree(root, path, respect_gitignore);
-                changes.push(FileIndexChange::ReplacePrefix { rel_prefix, entries });
+            if let Some(change) = replace_subtree_change(root, path, respect_gitignore) {
+                changes.push(change);
             }
         } else if path.is_file() {
             let mut entries = scan_subtree(root, path, respect_gitignore);
@@ -448,28 +447,45 @@ fn collect_rename_changes(
         if paths.first().is_some_and(|p| !p.exists()) {
             return collect_remove_changes(root, paths);
         }
-        return collect_create_or_modify_changes(root, respect_gitignore, paths);
+        return collect_parent_rescan_changes(root, respect_gitignore, paths);
     }
-    let from = &paths[0];
-    let to = &paths[1];
-    let mut changes = Vec::new();
-    if from.is_dir() || (!from.exists() && to.is_dir()) {
-        if let Some(rel_prefix) = normalized_prefix(root, from) {
-            changes.push(FileIndexChange::RemovePrefix { rel_prefix });
-        }
-    } else if let Some(rel_path) = normalize_relative_path(root, from) {
-        changes.push(FileIndexChange::RemoveExact { rel_path });
-    }
-    changes.extend(collect_create_or_modify_changes(
-        root,
-        respect_gitignore,
-        std::slice::from_ref(to),
-    ));
-    changes
+    collect_parent_rescan_changes(root, respect_gitignore, paths)
 }
 
 fn scan_subtree(root: &Path, path: &Path, respect_gitignore: bool) -> Vec<FileCandidate> {
     collect_candidates(root, path, respect_gitignore, None)
+}
+
+fn collect_parent_rescan_changes(
+    root: &Path,
+    respect_gitignore: bool,
+    paths: &[PathBuf],
+) -> Vec<FileIndexChange> {
+    let mut changes = Vec::new();
+    let mut seen_prefixes = BTreeSet::new();
+    for path in paths {
+        let Some(parent) = path.parent() else { continue };
+        let Some(change) = replace_subtree_change(root, parent, respect_gitignore) else {
+            continue;
+        };
+        let FileIndexChange::ReplacePrefix { rel_prefix, .. } = &change else {
+            continue;
+        };
+        if seen_prefixes.insert(rel_prefix.clone()) {
+            changes.push(change);
+        }
+    }
+    changes
+}
+
+fn replace_subtree_change(
+    root: &Path,
+    path: &Path,
+    respect_gitignore: bool,
+) -> Option<FileIndexChange> {
+    let rel_prefix = if path == root { String::new() } else { normalized_prefix(root, path)? };
+    let entries = scan_subtree(root, path, respect_gitignore);
+    Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
 }
 
 fn for_each_candidate(
@@ -813,5 +829,25 @@ mod tests {
                     && !mention.candidates.iter().any(|candidate| candidate.rel_path == "before.rs")
             })
         });
+    }
+
+    #[test]
+    fn root_file_rename_rescans_root_subtree() {
+        let (_app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
+            .expect("rename watched file");
+
+        let changes =
+            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
+
+        assert_eq!(changes.len(), 1);
+        let FileIndexChange::ReplacePrefix { rel_prefix, entries } = &changes[0] else {
+            panic!("expected replace prefix");
+        };
+        assert_eq!(rel_prefix, "");
+        assert!(entries.iter().any(|candidate| candidate.rel_path == "after.rs"));
+        assert!(entries.iter().any(|candidate| candidate.rel_path == "keep.rs"));
+        assert!(!entries.iter().any(|candidate| candidate.rel_path == "before.rs"));
     }
 }
