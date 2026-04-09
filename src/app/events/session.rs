@@ -29,6 +29,9 @@ pub(super) fn handle_connected_client_event(
     mode: Option<super::super::ModeState>,
     history_updates: &[model::SessionUpdate],
 ) {
+    let session_id_for_log = session_id.to_string();
+    let history_update_count = history_updates.len();
+    let available_model_count = available_models.len();
     if let Some(slot) = take_connection_slot() {
         app.conn = Some(slot.conn);
     }
@@ -46,17 +49,30 @@ pub(super) fn handle_connected_client_event(
     app.rebuild_chat_focus_from_state();
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
     maybe_open_startup_session_picker(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_connected",
+        message = "session connected and applied",
+        outcome = "success",
+        session_id = %session_id_for_log,
+        cwd = %app.cwd_raw,
+        model_name = %app.model_name,
+        history_update_count,
+        available_model_count,
+    );
 }
 
 pub(super) fn handle_sessions_listed_event(
     app: &mut App,
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
+    let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();
     let selected_session_id = app
         .recent_sessions
         .get(app.session_picker.selected)
         .map(|session| session.session_id.clone());
+    let had_pending_title_change = pending_title_change.is_some();
     app.recent_sessions = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
@@ -70,11 +86,13 @@ pub(super) fn handle_sessions_listed_event(
             first_prompt: entry.first_prompt,
         })
         .collect();
+    let mut pending_title_change_resolved = false;
     if let Some(pending_title_change) = pending_title_change {
         let renamed_session_present = app
             .recent_sessions
             .iter()
             .any(|session| session.session_id == pending_title_change.session_id);
+        pending_title_change_resolved = renamed_session_present;
         if renamed_session_present {
             app.config.last_error = None;
             app.config.status_message = Some(match pending_title_change.kind {
@@ -94,6 +112,15 @@ pub(super) fn handle_sessions_listed_event(
     reconcile_session_picker_selection(app, selected_session_id.as_deref());
     app.sync_welcome_recent_sessions();
     maybe_open_startup_session_picker(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "sessions_list_updated",
+        message = "sessions list applied",
+        outcome = "success",
+        session_count,
+        had_pending_title_change,
+        pending_title_change_resolved,
+    );
 }
 
 pub(super) fn handle_auth_required_event(
@@ -101,6 +128,7 @@ pub(super) fn handle_auth_required_event(
     method_name: String,
     method_description: String,
 ) {
+    let method_name_for_log = method_name.clone();
     clear_pending_command(app);
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
@@ -118,6 +146,13 @@ pub(super) fn handle_auth_required_event(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    tracing::warn!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "auth_required_cleared_session",
+        message = "auth required cleared active session state",
+        outcome = "blocked",
+        method_name = %method_name_for_log,
+    );
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
@@ -142,6 +177,13 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     push_connection_error_message(app, msg);
+    tracing::error!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_connection_failed",
+        message = "session connection failure applied",
+        outcome = "failure",
+        error_message = %msg,
+    );
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
@@ -163,7 +205,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnection>) {
-    tracing::info!("Authentication completed via /login");
     app.login_hint = None;
     app.pending_command_label = Some("Starting session...".to_owned());
     app.pending_command_ack = None;
@@ -175,6 +216,13 @@ pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnecti
     app.force_redraw = true;
 
     if let Err(e) = start_new_session(app, conn, SessionStartReason::Login) {
+        tracing::error!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "login_session_restart_failed",
+            message = "failed to start session after login",
+            outcome = "failure",
+            error_message = %e,
+        );
         clear_pending_command(app);
         push_system_message_with_severity(
             app,
@@ -185,7 +233,6 @@ pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnecti
 }
 
 pub(super) fn handle_logout_completed_event(app: &mut App) {
-    tracing::info!("Logout completed via /logout");
     // Clear the session and start a new one. The bridge now checks auth
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();
@@ -195,11 +242,24 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.force_redraw = true;
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "logout_cleared_session",
+        message = "logout cleared active session state",
+        outcome = "success",
+    );
 
     if let Some(ref conn) = app.conn {
         app.pending_command_label = Some("Starting session...".to_owned());
         app.pending_command_ack = None;
         if let Err(e) = start_new_session(app, conn, SessionStartReason::Logout) {
+            tracing::error!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "logout_session_restart_failed",
+                message = "failed to start replacement session after logout",
+                outcome = "failure",
+                error_message = %e,
+            );
             clear_pending_command(app);
             push_system_message_with_severity(
                 app,
@@ -208,7 +268,13 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
             );
         }
     } else {
-        tracing::warn!("No connection available after logout; cannot start new session");
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "logout_session_restart_unavailable",
+            message = "logout completed without a connection to start a replacement session",
+            outcome = "blocked",
+            reason = "missing_connection",
+        );
         clear_pending_command(app);
         push_system_message_with_severity(
             app,
@@ -227,6 +293,9 @@ pub(super) fn handle_session_replaced_event(
     mode: Option<super::super::ModeState>,
     history_updates: &[model::SessionUpdate],
 ) {
+    let session_id_for_log = session_id.to_string();
+    let history_update_count = history_updates.len();
+    let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
@@ -240,6 +309,17 @@ pub(super) fn handle_session_replaced_event(
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_replaced",
+        message = "replacement session applied",
+        outcome = "success",
+        session_id = %session_id_for_log,
+        cwd = %app.cwd_raw,
+        model_name = %app.model_name,
+        history_update_count,
+        available_model_count,
+    );
 }
 
 pub(super) fn handle_update_available_event(

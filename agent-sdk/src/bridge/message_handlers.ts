@@ -2,7 +2,12 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AvailableCommand, BridgeCommand, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { toPermissionMode, buildModeState } from "./commands.js";
-import { writeEvent, emitSessionUpdate, emitConnectEvent, refreshSessionsList } from "./events.js";
+import {
+  writeEvent,
+  emitSessionUpdate,
+  emitConnectEvent,
+  emitSessionReplacedEvent,
+} from "./events.js";
 import { TOOL_RESULT_TYPES, unwrapToolUseResult } from "./tooling.js";
 import {
   emitToolCall,
@@ -366,20 +371,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       if (!session.connected) {
         emitConnectEvent(session);
       } else if (previousSessionId !== session.sessionId) {
-        const historyUpdates = session.resumeUpdates;
-        writeEvent({
-          event: "session_replaced",
-          session_id: session.sessionId,
-          cwd: session.cwd,
-          model_name: session.model,
-          available_models: session.availableModels,
-          mode: session.mode ? buildModeState(session.mode) : null,
-          ...(historyUpdates && historyUpdates.length > 0
-            ? { history_updates: historyUpdates }
-            : {}),
-        });
-        session.resumeUpdates = undefined;
-        refreshSessionsList();
+        emitSessionReplacedEvent(session);
       } else {
         if (session.model !== previousModelName) {
           emitSessionUpdate(session.sessionId, {

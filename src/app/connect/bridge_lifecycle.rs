@@ -161,9 +161,43 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
     }
 }
 
+fn log_session_connect_command_sent(params: &StartConnectionParams, command: &BridgeCommand) {
+    let has_language = params.session_launch_settings.language.is_some();
+    let has_settings = params.session_launch_settings.settings.is_some();
+    let agent_progress_summaries_enabled =
+        params.session_launch_settings.agent_progress_summaries.unwrap_or(false);
+    match command {
+        BridgeCommand::ResumeSession { session_id, .. } => tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_connect_command_sent",
+            message = "session connect command sent to bridge",
+            outcome = "success",
+            request_kind = "resume",
+            resume_requested = true,
+            session_id = %session_id,
+            has_language,
+            has_settings,
+            agent_progress_summaries_enabled,
+        ),
+        BridgeCommand::CreateSession { .. } => tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_connect_command_sent",
+            message = "session connect command sent to bridge",
+            outcome = "success",
+            request_kind = "create",
+            resume_requested = false,
+            cwd = %params.cwd_raw,
+            has_language,
+            has_settings,
+            agent_progress_summaries_enabled,
+        ),
+        _ => {}
+    }
+}
+
 async fn send_session_command(params: &StartConnectionParams, bridge: &mut BridgeClient) -> bool {
     let command = build_session_command(params);
-    if let Err(err) = bridge.send(command).await {
+    if let Err(err) = bridge.send(command.clone()).await {
         emit_connection_failed(
             &params.event_tx,
             format!("Failed to create bridge session: {err}"),
@@ -171,6 +205,7 @@ async fn send_session_command(params: &StartConnectionParams, bridge: &mut Bridg
         );
         return false;
     }
+    log_session_connect_command_sent(params, &command.command);
     true
 }
 

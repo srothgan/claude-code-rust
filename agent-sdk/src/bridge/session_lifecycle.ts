@@ -114,6 +114,11 @@ const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_MODEL_NAME = "default";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
+type CloseSessionOptions = {
+  reason?: string;
+  requestId?: string;
+};
+
 function settingsObjectFromLaunchSettings(
   launchSettings: SessionLaunchSettings,
 ): Record<string, unknown> | undefined {
@@ -151,10 +156,42 @@ export async function closeSession(session: SessionState): Promise<void> {
   session.pendingElicitations.clear();
 }
 
-export async function closeAllSessions(): Promise<void> {
+export async function closeSessionWithLogging(
+  session: SessionState,
+  options: CloseSessionOptions = {},
+): Promise<void> {
+  await closeSession(session);
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "session_closed",
+    message: "session closed",
+    outcome: "success",
+    sessionId: session.sessionId,
+    ...(options.requestId ? { requestId: options.requestId } : {}),
+    fields: { reason: options.reason ?? "unspecified" },
+  });
+}
+
+export async function closeAllSessions(options: CloseSessionOptions = {}): Promise<void> {
   const active = Array.from(sessions.values());
   sessions.clear();
-  await Promise.all(active.map((session) => closeSession(session)));
+  await Promise.all(
+    active.map((session) =>
+      closeSessionWithLogging(session, {
+        reason: options.reason ?? "bulk_close",
+        requestId: options.requestId,
+      }),
+    ),
+  );
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "all_sessions_closed",
+    message: "all sessions closed",
+    outcome: "success",
+    ...(options.requestId ? { requestId: options.requestId } : {}),
+    count: active.length,
+    fields: { reason: options.reason ?? "bulk_close" },
+  });
 }
 
 export async function createSession(params: {
@@ -170,6 +207,8 @@ export async function createSession(params: {
   const provisionalSessionId = params.resume ?? randomUUID();
   const initialModel = initialSessionModel(params.launchSettings);
   const initialMode = initialSessionMode(params.launchSettings);
+  const historyUpdateCount = params.resumeUpdates?.length ?? 0;
+  const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
 
   let session!: SessionState;
   const canUseTool: CanUseTool = async (toolName, inputData, options) => {
@@ -218,6 +257,21 @@ export async function createSession(params: {
   }
 
   let queryHandle: Query;
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "session_create_started",
+    message: "session creation started",
+    outcome: "start",
+    ...(params.requestId ? { requestId: params.requestId } : {}),
+    sessionId: provisionalSessionId,
+    fields: {
+      cwd: params.cwd,
+      connect_event: params.connectEvent,
+      resume_requested: params.resume !== undefined,
+      history_update_count: historyUpdateCount,
+      stale_session_count: staleSessionCount,
+    },
+  });
   try {
     queryHandle = query({
       prompt: input,
@@ -237,6 +291,19 @@ export async function createSession(params: {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_query_failed",
+      message: "session query creation failed",
+      outcome: "failure",
+      ...(params.requestId ? { requestId: params.requestId } : {}),
+      sessionId: provisionalSessionId,
+      fields: {
+        cwd: params.cwd,
+        resume_requested: params.resume !== undefined,
+        error_message: message,
+      },
+    });
     throw new Error(
       `query() failed: node_executable=${process.execPath}; cwd=${params.cwd}; ` +
         `resume=${params.resume ?? "<none>"}; ` +
@@ -271,6 +338,32 @@ export async function createSession(params: {
       : {}),
   };
   sessions.set(provisionalSessionId, session);
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "session_query_started",
+    message: "session query started",
+    outcome: "success",
+    ...(params.requestId ? { requestId: params.requestId } : {}),
+    sessionId: session.sessionId,
+    fields: {
+      cwd: session.cwd,
+      connect_event: session.connectEvent,
+      resume_requested: params.resume !== undefined,
+    },
+  });
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "session_create_registered",
+    message: "session registered in bridge state",
+    outcome: "success",
+    ...(params.requestId ? { requestId: params.requestId } : {}),
+    sessionId: session.sessionId,
+    count: sessions.size,
+    fields: {
+      active_session_count: sessions.size,
+      connect_event: session.connectEvent,
+    },
+  });
 
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
@@ -278,6 +371,19 @@ export async function createSession(params: {
   void session.query
     .initializationResult()
     .then((result) => {
+      bridgeLogger.info({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "session_initialization_completed",
+        message: "session initialization completed",
+        outcome: "success",
+        ...(session.connectRequestId ? { requestId: session.connectRequestId } : {}),
+        sessionId: session.sessionId,
+        fields: {
+          available_model_count: Array.isArray(result.models) ? result.models.length : 0,
+          connect_event: session.connectEvent,
+          history_update_count: session.resumeUpdates?.length ?? 0,
+        },
+      });
       session.availableModels = mapAvailableModels(result.models);
       if (!session.connected) {
         emitConnectEvent(session);
@@ -312,9 +418,9 @@ export async function createSession(params: {
       }
       const message = error instanceof Error ? error.message : String(error);
       bridgeLogger.error({
-        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-        eventName: "bridge_session_initialization_failed",
-        message: "agent initialization failed before bridge connect",
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "session_initialization_failed",
+        message: "session initialization failed before connect",
         outcome: "failure",
         ...(session.connectRequestId ? { requestId: session.connectRequestId } : {}),
         sessionId: session.sessionId,
@@ -333,22 +439,24 @@ export async function createSession(params: {
       }
       if (!session.connected) {
         bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-          eventName: "bridge_session_stream_ended",
-          message: "agent stream ended before session initialization",
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "session_stream_ended_before_connect",
+          message: "session stream ended before connect",
           outcome: "failure",
           ...(params.requestId ? { requestId: params.requestId } : {}),
+          sessionId: session.sessionId,
         });
         failConnection("agent stream ended before session initialization", params.requestId);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       bridgeLogger.error({
-        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-        eventName: "bridge_session_stream_failed",
-        message: "agent stream failed before session initialization",
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "session_stream_failed_before_connect",
+        message: "session stream failed before connect",
         outcome: "failure",
         ...(params.requestId ? { requestId: params.requestId } : {}),
+        sessionId: session.sessionId,
         fields: { error_message: message },
       });
       failConnection(`agent stream failed: ${message}`, params.requestId);

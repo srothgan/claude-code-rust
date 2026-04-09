@@ -58,29 +58,56 @@ export function emitSessionUpdate(sessionId: string, update: SessionUpdate): voi
   writeEvent({ event: "session_update", session_id: sessionId, update });
 }
 
-export function emitConnectEvent(session: SessionState): void {
+function buildConnectBridgeEvent(
+  session: SessionState,
+  eventName: "connected" | "session_replaced",
+): BridgeEvent {
   const historyUpdates = session.resumeUpdates;
-  const connectEvent: BridgeEvent =
-    session.connectEvent === "session_replaced"
-      ? {
-          event: "session_replaced",
-          session_id: session.sessionId,
-          cwd: session.cwd,
-          model_name: session.model,
-          available_models: session.availableModels,
-          mode: session.mode ? buildModeState(session.mode) : null,
-          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
-        }
-      : {
-          event: "connected",
-          session_id: session.sessionId,
-          cwd: session.cwd,
-          model_name: session.model,
-          available_models: session.availableModels,
-          mode: session.mode ? buildModeState(session.mode) : null,
-          ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
-        };
-  writeEvent(connectEvent, session.connectRequestId);
+  return eventName === "session_replaced"
+    ? {
+        event: "session_replaced",
+        session_id: session.sessionId,
+        cwd: session.cwd,
+        model_name: session.model,
+        available_models: session.availableModels,
+        mode: session.mode ? buildModeState(session.mode) : null,
+        ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+      }
+    : {
+        event: "connected",
+        session_id: session.sessionId,
+        cwd: session.cwd,
+        model_name: session.model,
+        available_models: session.availableModels,
+        mode: session.mode ? buildModeState(session.mode) : null,
+        ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+      };
+}
+
+function logConnectEventEmission(
+  session: SessionState,
+  eventName: "connected" | "session_replaced",
+  requestId?: string,
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: eventName === "session_replaced" ? "session_replaced_emitted" : "session_connected_emitted",
+    message: eventName === "session_replaced" ? "session replaced event emitted" : "session connected event emitted",
+    outcome: "success",
+    ...(requestId ? { requestId } : {}),
+    sessionId: session.sessionId,
+    fields: {
+      history_update_count: session.resumeUpdates?.length ?? 0,
+      available_model_count: session.availableModels.length,
+      stale_session_count: session.sessionsToCloseAfterConnect?.length ?? 0,
+    },
+  });
+}
+
+export function emitConnectEvent(session: SessionState): void {
+  const bridgeEvent = buildConnectBridgeEvent(session, session.connectEvent);
+  logConnectEventEmission(session, session.connectEvent, session.connectRequestId);
+  writeEvent(bridgeEvent, session.connectRequestId);
   session.connectRequestId = undefined;
   session.connected = true;
   session.authHintSent = false;
@@ -94,7 +121,7 @@ export function emitConnectEvent(session: SessionState): void {
   }
   void (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
-    const { sessions, closeSession } = await import("./session_lifecycle.js");
+    const { sessions, closeSessionWithLogging } = await import("./session_lifecycle.js");
     for (const stale of staleSessions) {
       if (stale === session) {
         continue;
@@ -102,20 +129,49 @@ export function emitConnectEvent(session: SessionState): void {
       if (sessions.get(stale.sessionId) === stale) {
         sessions.delete(stale.sessionId);
       }
-      await closeSession(stale);
+      await closeSessionWithLogging(stale, { reason: "stale_after_connect" });
     }
     refreshSessionsList();
   })();
 }
 
+export function emitSessionReplacedEvent(session: SessionState, requestId?: string): void {
+  const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
+  logConnectEventEmission(session, "session_replaced", requestId);
+  writeEvent(bridgeEvent, requestId);
+  session.resumeUpdates = undefined;
+  refreshSessionsList();
+}
+
 export async function emitSessionsList(requestId?: string): Promise<void> {
+  bridgeLogger.debug({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "sessions_list_requested",
+    message: "sessions list requested",
+    outcome: "start",
+    ...(requestId ? { requestId } : {}),
+    fields: {
+      has_listing_dir: sessionListingDir !== undefined,
+      limit: SESSION_LIST_LIMIT,
+    },
+  });
   try {
     const sdkSessions = await listSessions(currentSessionListOptions());
-    writeEvent({ event: "sessions_listed", sessions: mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT) }, requestId);
+    const sessions = mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT);
+    bridgeLogger.info({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "sessions_list_completed",
+      message: "sessions list completed",
+      outcome: "success",
+      ...(requestId ? { requestId } : {}),
+      count: sessions.length,
+      fields: { session_count: sessions.length },
+    });
+    writeEvent({ event: "sessions_listed", sessions }, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
-      target: LOG_TARGETS.BRIDGE_SDK,
+      target: LOG_TARGETS.APP_SESSION,
       eventName: "sessions_list_failed",
       message: "failed to list SDK sessions",
       outcome: "failure",
