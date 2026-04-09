@@ -60,6 +60,9 @@ pub use state::{
     TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
     TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
     WelcomeBlock, is_execute_tool_name,
+    CachedMessageSegment, ChatRenderTraceState, MessageBlockRenderSignature, MessageRenderCache,
+    MessageRenderCacheKey, MessageRenderSignature, hash_text_block_content,
+    hash_welcome_block_content,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

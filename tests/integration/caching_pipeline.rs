@@ -52,11 +52,11 @@ fn complete_turn(app: &mut App) {
 
 /// Build a `ChatMessage` with a single text block for direct insertion.
 fn user_text_message(text: &str) -> ChatMessage {
-    ChatMessage {
-        role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
-        usage: None,
-    }
+    ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(TextBlock::from_complete(text))],
+        None,
+    )
 }
 
 /// Build an assistant message with a text block and pre-stored cache lines.
@@ -66,16 +66,16 @@ fn assistant_message_with_cache(text: &str) -> ChatMessage {
         text.lines().map(|l| Line::from(Span::raw(l.to_owned()))).collect();
     let mut cache = BlockCache::default();
     cache.store(lines);
-    ChatMessage {
-        role: MessageRole::Assistant,
-        blocks: vec![MessageBlock::Text(TextBlock {
+    ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::Text(TextBlock {
             text: text.to_owned(),
             cache,
             markdown: claude_code_rust::app::IncrementalMarkdown::from_complete(text),
             trailing_spacing: TextBlockSpacing::None,
         })],
-        usage: None,
-    }
+        None,
+    )
 }
 
 /// Extract the text content of all text blocks in a message.

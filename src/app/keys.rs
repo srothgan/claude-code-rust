@@ -1087,11 +1087,11 @@ mod tests {
     fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
-            usage: None,
-        });
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+            None,
+        ));
         app.bind_active_turn_assistant(0);
         app.rendered_chat_area = Rect::new(0, 0, 20, 6);
         app.rendered_chat_lines = vec!["hello".to_owned()];

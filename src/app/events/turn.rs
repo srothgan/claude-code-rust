@@ -386,11 +386,11 @@ pub(super) fn handle_turn_error_event(
 }
 
 fn push_interrupted_hint(app: &mut App) {
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::System(Some(SystemSeverity::Info)),
-        blocks: vec![MessageBlock::Text(TextBlock::from_complete(CONVERSATION_INTERRUPTED_HINT))],
-        usage: None,
-    });
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(SystemSeverity::Info)),
+        vec![MessageBlock::Text(TextBlock::from_complete(CONVERSATION_INTERRUPTED_HINT))],
+        None,
+    ));
     app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
@@ -476,15 +476,15 @@ mod tests {
     use crate::app::App;
 
     fn empty_assistant_message() -> ChatMessage {
-        ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None }
+        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
     }
 
     fn user_message(text: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            usage: None,
-        }
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        )
     }
 
     #[test]

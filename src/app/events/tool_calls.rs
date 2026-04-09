@@ -242,11 +242,11 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         let tc_id = tool_info.id.clone();
         let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         let new_idx = app.messages.len();
-        app.push_message_tracked(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
-            usage: None,
-        });
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tool_info))],
+            None,
+        ));
         app.bind_active_turn_assistant(new_idx);
         app.index_tool_call(tc_id, new_idx, 0);
         sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);

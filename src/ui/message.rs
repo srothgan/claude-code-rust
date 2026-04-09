@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::{
-    BlockCache, ChatMessage, IncrementalMarkdown, MarkdownRenderKey, MessageBlock, MessageRole,
-    SystemSeverity, TextBlock, WelcomeBlock,
+    BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
+    MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
+    MessageRenderSignature, MessageRole, SystemSeverity, TextBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content,
 };
 use crate::ui::tables;
 use crate::ui::theme;
@@ -88,6 +90,7 @@ impl MessageLayout {
     }
 }
 
+#[derive(Clone)]
 enum MessageLayoutSegment {
     Blank,
     Lines { lines: Vec<Line<'static>>, height: usize },
@@ -98,6 +101,13 @@ impl MessageLayoutSegment {
         match self {
             Self::Blank => out.push(Line::default()),
             Self::Lines { lines, .. } => out.extend(lines),
+        }
+    }
+
+    fn into_cached(self) -> CachedMessageSegment {
+        match self {
+            Self::Blank => CachedMessageSegment::Blank,
+            Self::Lines { lines, height } => CachedMessageSegment::Lines { lines, height },
         }
     }
 }
@@ -137,9 +147,10 @@ pub fn render_message_with_tools_collapsed(
     tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    render_message_internal(msg, spinner, width, tools_collapsed, true, out);
+    render_message_internal(msg, spinner, width, 0, tools_collapsed, true, out);
 }
 
+#[allow(dead_code)]
 pub fn render_message_with_tools_collapsed_and_separator(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -148,25 +159,54 @@ pub fn render_message_with_tools_collapsed_and_separator(
     include_trailing_separator: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    render_message_internal(msg, spinner, width, tools_collapsed, include_trailing_separator, out);
+    render_message_internal(
+        msg,
+        spinner,
+        width,
+        0,
+        tools_collapsed,
+        include_trailing_separator,
+        out,
+    );
+}
+
+pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_generation(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    tools_collapsed: bool,
+    include_trailing_separator: bool,
+    out: &mut Vec<Line<'static>>,
+) {
+    render_message_internal(
+        msg,
+        spinner,
+        width,
+        layout_generation,
+        tools_collapsed,
+        include_trailing_separator,
+        out,
+    );
 }
 
 fn render_message_internal(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
+    layout_generation: u64,
     tools_collapsed: bool,
     include_trailing_separator: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    build_message_layout(
+    let cache = get_or_build_message_render_cache(
         msg,
         spinner,
         width,
+        layout_generation,
         MessageRenderOptions { tools_collapsed, include_trailing_separator },
-        None,
-    )
-    .render_into(out);
+    );
+    out.extend_from_slice(cache.lines());
 }
 
 fn build_message_layout(
@@ -495,14 +535,14 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
     tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
-    let layout = build_message_layout(
+    let cache = get_or_build_message_render_cache(
         msg,
         spinner,
         width,
+        layout_generation,
         MessageRenderOptions { tools_collapsed, include_trailing_separator },
-        Some(layout_generation),
     );
-    (layout.height, layout.wrapped_lines)
+    (cache.height(), cache.wrapped_lines())
 }
 
 /// Render a message while consuming as many whole leading rows as possible.
@@ -555,39 +595,43 @@ pub(crate) fn render_message_from_offset_internal(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
-    _layout_generation: u64,
+    layout_generation: u64,
     options: MessageRenderOptions,
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
     let mut remaining_skip = skip_rows;
+    let cache = get_or_build_message_render_cache(msg, spinner, width, layout_generation, options);
     let mut can_consume_skip = true;
-
-    let layout = build_message_layout(msg, spinner, width, options, None);
-    render_message_layout_from_offset(layout, out, &mut remaining_skip, &mut can_consume_skip);
+    render_cached_message_from_offset(
+        cache.segments(),
+        out,
+        &mut remaining_skip,
+        &mut can_consume_skip,
+    );
     remaining_skip
 }
 
-fn render_message_layout_from_offset(
-    layout: MessageLayout,
+fn render_cached_message_from_offset(
+    segments: &[CachedMessageSegment],
     out: &mut Vec<Line<'static>>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
 ) {
-    for segment in layout.segments {
+    for segment in segments {
         match segment {
-            MessageLayoutSegment::Blank => {
+            CachedMessageSegment::Blank => {
                 if *can_consume_skip && *remaining_skip > 0 {
                     *remaining_skip -= 1;
                 } else {
                     out.push(Line::default());
                 }
             }
-            MessageLayoutSegment::Lines { lines, height, .. } => {
-                if should_skip_whole_block(height, remaining_skip, can_consume_skip) {
+            CachedMessageSegment::Lines { lines, height } => {
+                if should_skip_whole_block(*height, remaining_skip, can_consume_skip) {
                     continue;
                 }
-                out.extend(lines);
+                out.extend(lines.iter().cloned());
             }
         }
     }
@@ -597,6 +641,109 @@ fn render_message_layout_from_offset(
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
+}
+
+fn get_or_build_message_render_cache<'a>(
+    msg: &'a mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    options: MessageRenderOptions,
+) -> &'a MessageRenderCache {
+    let key = build_message_render_cache_key(msg, spinner, width, layout_generation, options);
+    if !msg.render_cache.matches(&key) {
+        let layout = build_message_layout(msg, spinner, width, options, Some(layout_generation));
+        let height = layout.height;
+        let wrapped_lines = layout.wrapped_lines;
+        let segments =
+            layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
+        let mut lines = Vec::new();
+        layout.render_into(&mut lines);
+        msg.render_cache.store(key, segments, lines, height, wrapped_lines);
+    }
+    &msg.render_cache
+}
+
+fn build_message_render_cache_key(
+    msg: &ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    layout_generation: u64,
+    options: MessageRenderOptions,
+) -> MessageRenderCacheKey {
+    MessageRenderCacheKey {
+        width,
+        layout_generation,
+        tools_collapsed: options.tools_collapsed,
+        include_trailing_separator: options.include_trailing_separator,
+        render_signature: build_message_render_signature(msg, spinner),
+    }
+}
+
+fn build_message_render_signature(
+    msg: &ChatMessage,
+    spinner: &SpinnerState,
+) -> MessageRenderSignature {
+    let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
+        Some(spinner.frame)
+    } else {
+        None
+    };
+    let blocks = msg
+        .blocks
+        .iter()
+        .map(|block| build_message_block_render_signature(block, spinner))
+        .collect();
+    MessageRenderSignature {
+        role: msg.role.clone(),
+        show_empty_thinking: spinner.show_empty_thinking,
+        show_thinking: spinner.show_thinking,
+        show_subagent_thinking: spinner.show_subagent_thinking,
+        show_compacting: spinner.show_compacting,
+        assistant_frame,
+        blocks,
+    }
+}
+
+fn build_message_block_render_signature(
+    block: &MessageBlock,
+    spinner: &SpinnerState,
+) -> MessageBlockRenderSignature {
+    match block {
+        MessageBlock::Text(block) => MessageBlockRenderSignature::Text {
+            text_hash: hash_text_block_content(&block.text, block.trailing_spacing),
+            trailing_spacing: block.trailing_spacing,
+        },
+        MessageBlock::ToolCall(tc) => MessageBlockRenderSignature::ToolCall {
+            render_epoch: tc.render_epoch,
+            layout_epoch: tc.layout_epoch,
+            hidden: tc.hidden,
+            status: tc.status,
+            sdk_tool_name: tc.sdk_tool_name.clone(),
+            pending_permission: tc.pending_permission.is_some(),
+            pending_question: tc.pending_question.is_some(),
+            frame: tool_call_needs_spinner_frame(tc).then_some(spinner.frame),
+        },
+        MessageBlock::Welcome(block) => {
+            MessageBlockRenderSignature::Welcome { content_hash: hash_welcome_block_content(block) }
+        }
+    }
+}
+
+fn message_has_frame_dependent_assistant_lines(msg: &ChatMessage, spinner: &SpinnerState) -> bool {
+    matches!(msg.role, MessageRole::Assistant)
+        && (spinner.show_empty_thinking
+            || spinner.show_thinking
+            || spinner.show_subagent_thinking
+            || spinner.show_compacting)
+}
+
+fn tool_call_needs_spinner_frame(tc: &crate::app::ToolCallInfo) -> bool {
+    matches!(
+        tc.status,
+        crate::agent::model::ToolCallStatus::Pending
+            | crate::agent::model::ToolCallStatus::InProgress
+    )
 }
 
 fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
@@ -689,8 +836,6 @@ fn should_skip_whole_block(
         return true;
     }
     if *remaining_skip > 0 {
-        // We have to render this block, but keep the remaining intra-block skip
-        // for Paragraph::scroll().
         *can_consume_skip = false;
     }
     false
@@ -1198,25 +1343,21 @@ mod tests {
     }
 
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
-        ChatMessage {
-            role,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            usage: None,
-        }
+        ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))], None)
     }
 
     fn make_assistant_split_message(first: &str, second: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
                 MessageBlock::Text(
                     TextBlock::from_complete(first)
                         .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
                 ),
                 MessageBlock::Text(TextBlock::from_complete(second)),
             ],
-            usage: None,
-        }
+            None,
+        )
     }
 
     fn make_assistant_notice_message() -> ChatMessage {
@@ -1292,6 +1433,10 @@ mod tests {
             show_subagent_thinking: false,
             show_compacting: false,
         }
+    }
+
+    fn default_options() -> MessageRenderOptions {
+        MessageRenderOptions { tools_collapsed: false, include_trailing_separator: true }
     }
 
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
@@ -1461,7 +1606,7 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut lines = Vec::new();
 
         render_message_with_tools_collapsed_and_separator(
@@ -1486,10 +1631,8 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut measured_msg =
-            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
-        let mut truth_msg =
-            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut measured_msg,
@@ -1522,7 +1665,7 @@ mod tests {
             show_compacting: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut lines = Vec::new();
 
         render_message_with_tools_collapsed_and_separator(
@@ -1547,7 +1690,7 @@ mod tests {
             show_empty_thinking: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut out = Vec::new();
 
         let remaining = render_message_from_offset_internal(
@@ -1574,7 +1717,7 @@ mod tests {
             show_compacting: true,
             ..idle_spinner()
         };
-        let mut msg = ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut out = Vec::new();
 
         let remaining = render_message_from_offset_internal(
@@ -1673,16 +1816,16 @@ mod tests {
     #[test]
     fn assistant_message_shows_subagent_indicator_when_enabled() {
         let spinner = SpinnerState { show_subagent_thinking: true, ..idle_spinner() };
-        let mut msg = ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(make_tool_call_info(
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_tool_call_info(
                 "task-only",
                 "Task",
                 crate::agent::model::ToolCallStatus::InProgress,
                 "Research project",
             )))],
-            usage: None,
-        };
+            None,
+        );
 
         let mut lines = Vec::new();
         render_message(&mut msg, &spinner, 120, &mut lines);
@@ -1735,9 +1878,9 @@ mod tests {
     #[test]
     fn assistant_message_hides_subagent_indicator_when_disabled() {
         let spinner = idle_spinner();
-        let mut msg = ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
                 MessageBlock::ToolCall(Box::new(make_tool_call_info(
                     "task-main",
                     "Task",
@@ -1751,8 +1894,8 @@ mod tests {
                     "",
                 ))),
             ],
-            usage: None,
-        };
+            None,
+        );
 
         let mut lines = Vec::new();
         render_message(&mut msg, &spinner, 120, &mut lines);
@@ -1764,9 +1907,9 @@ mod tests {
     #[test]
     fn assistant_message_places_subagent_indicator_after_visible_tool_blocks() {
         let spinner = SpinnerState { show_subagent_thinking: true, ..idle_spinner() };
-        let mut msg = ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![
                 MessageBlock::ToolCall(Box::new(make_tool_call_info(
                     "task-main",
                     "Task",
@@ -1780,8 +1923,8 @@ mod tests {
                     "",
                 ))),
             ],
-            usage: None,
-        };
+            None,
+        );
 
         let mut lines = Vec::new();
         render_message(&mut msg, &spinner, 120, &mut lines);
@@ -1847,5 +1990,63 @@ mod tests {
         assert_eq!(remaining, 0);
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
         assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
+    }
+
+    #[test]
+    fn message_render_cache_hits_for_repeated_render_with_same_signature() {
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "cached");
+        let options = default_options();
+        let key = build_message_render_cache_key(&msg, &spinner, 80, 1, options);
+
+        assert!(!msg.render_cache.matches(&key));
+
+        let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
+        assert!(cache.matches(&key));
+        let first_lines = cache.lines().to_vec();
+
+        let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
+        assert!(cache.matches(&key));
+        assert_eq!(cache.lines(), first_lines.as_slice());
+    }
+
+    #[test]
+    fn message_render_cache_misses_when_indicator_visibility_changes() {
+        let mut msg = make_text_message(MessageRole::Assistant, "cached");
+        let base_spinner = idle_spinner();
+        let thinking_spinner = SpinnerState { show_thinking: true, frame: 1, ..idle_spinner() };
+        let options = default_options();
+
+        let base_key = build_message_render_cache_key(&msg, &base_spinner, 80, 1, options);
+        let thinking_key = build_message_render_cache_key(&msg, &thinking_spinner, 80, 1, options);
+        assert_ne!(base_key, thinking_key);
+
+        let _ = get_or_build_message_render_cache(&mut msg, &base_spinner, 80, 1, options);
+        assert!(msg.render_cache.matches(&base_key));
+
+        let _ = get_or_build_message_render_cache(&mut msg, &thinking_spinner, 80, 1, options);
+        assert!(msg.render_cache.matches(&thinking_key));
+        assert!(!msg.render_cache.matches(&base_key));
+    }
+
+    #[test]
+    fn message_render_cache_misses_when_trailing_separator_changes() {
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "cached");
+        let with_separator =
+            MessageRenderOptions { include_trailing_separator: true, ..default_options() };
+        let without_separator =
+            MessageRenderOptions { include_trailing_separator: false, ..default_options() };
+
+        let with_key = build_message_render_cache_key(&msg, &spinner, 80, 1, with_separator);
+        let without_key = build_message_render_cache_key(&msg, &spinner, 80, 1, without_separator);
+        assert_ne!(with_key, without_key);
+
+        let _ = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, with_separator);
+        assert!(msg.render_cache.matches(&with_key));
+
+        let _ = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, without_separator);
+        assert!(msg.render_cache.matches(&without_key));
+        assert!(!msg.render_cache.matches(&with_key));
     }
 }

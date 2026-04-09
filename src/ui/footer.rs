@@ -461,9 +461,9 @@ mod tests {
         let mut app = App::test_default();
         app.update_check_hint = Some("Update available".to_owned());
         let (response_tx, _response_rx) = oneshot::channel();
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "perm-1".into(),
                 title: "Read".into(),
                 sdk_tool_name: "Read".into(),
@@ -494,8 +494,8 @@ mod tests {
                 }),
                 pending_question: None,
             }))],
-            usage: None,
-        });
+            None,
+        ));
         app.index_tool_call("perm-1".into(), 0, 0);
         app.pending_interaction_ids.push("perm-1".into());
 
@@ -557,11 +557,11 @@ mod tests {
     #[test]
     fn mcp_auth_hint_shows_needs_auth_count_before_real_chat() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage {
-            role: MessageRole::Welcome,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
-            usage: None,
-        });
+        app.messages.push(ChatMessage::new(
+            MessageRole::Welcome,
+            vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
+            None,
+        ));
         app.mcp.servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
@@ -581,11 +581,11 @@ mod tests {
     #[test]
     fn mcp_auth_hint_hides_after_assistant_message() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
-            usage: None,
-        });
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
+            None,
+        ));
         app.mcp.servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,

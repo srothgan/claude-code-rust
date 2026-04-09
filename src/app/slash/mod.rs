@@ -89,22 +89,22 @@ fn normalize_slash_name(name: &str) -> String {
 
 fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::System(None),
-        blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        usage: None,
-    });
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(None),
+        vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        None,
+    ));
     app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        usage: None,
-    });
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        None,
+    ));
     app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
@@ -645,11 +645,11 @@ mod tests {
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage {
-            role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
-            usage: None,
-        });
+        app.messages.push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
+            None,
+        ));
 
         let consumed = try_handle_submit(&mut app, "/compact now");
         assert!(consumed);

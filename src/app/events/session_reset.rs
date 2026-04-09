@@ -147,16 +147,16 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
     let mut incr = IncrementalMarkdown::default();
     incr.append(&text.text);
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(TextBlock {
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(TextBlock {
             text: text.text.clone(),
             cache: BlockCache::default(),
             markdown: incr,
             trailing_spacing: TextBlockSpacing::default(),
         })],
-        usage: None,
-    });
+        None,
+    ));
 }
 
 pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {

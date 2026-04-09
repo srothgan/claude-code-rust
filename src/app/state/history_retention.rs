@@ -514,11 +514,11 @@ impl super::App {
         );
         self.insert_message_tracked(
             insert_idx,
-            ChatMessage {
-                role: MessageRole::System(None),
-                blocks: vec![MessageBlock::Text(TextBlock::from_complete(&marker_text))],
-                usage: None,
-            },
+            ChatMessage::new(
+                MessageRole::System(None),
+                vec![MessageBlock::Text(TextBlock::from_complete(&marker_text))],
+                None,
+            ),
         );
         Self::remap_anchor_for_insert(preserved_anchor, insert_idx)
     }

@@ -489,11 +489,7 @@ mod tests {
     }
 
     fn assistant_tool_msg(tc: ToolCallInfo) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(tc))],
-            usage: None,
-        }
+        ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))], None)
     }
 
     fn add_question(

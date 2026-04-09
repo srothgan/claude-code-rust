@@ -16,7 +16,9 @@ pub use cache_metrics::CacheMetrics;
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock,
+    RateLimitIncidentKey, CachedMessageSegment, MessageBlockRenderSignature, MessageRenderCache,
+    MessageRenderCacheKey, MessageRenderSignature, SystemSeverity, TextBlock, TextBlockSpacing,
+    WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
@@ -95,6 +97,27 @@ pub struct TurnNoticeRef {
     pub dedup_key: NoticeDedupKey,
     pub stage: NoticeStage,
     pub location: TurnNoticeLocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatRenderTraceState {
+    pub width: u16,
+    pub content_height: usize,
+    pub viewport_height: usize,
+    pub auto_scroll: bool,
+    pub pinned_to_bottom: bool,
+    pub scroll_target: usize,
+    pub scroll_offset: usize,
+    pub max_scroll: usize,
+    pub first_visible: usize,
+    pub render_start: usize,
+    pub local_scroll: usize,
+    pub rendered_msgs: usize,
+    pub last_rendered_idx: Option<usize>,
+    pub rendered_line_count: usize,
+    pub last_message_idx: Option<usize>,
+    pub last_message_height: Option<usize>,
+    pub selection_snapshot_active: bool,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -318,6 +341,10 @@ pub struct App {
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
+    /// Last emitted chat render trace snapshot to suppress identical per-frame summaries.
+    pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
+    /// Height-affecting active assistant indicator state from the previous frame.
+    pub(crate) last_active_turn_height_state: Option<(usize, bool, bool)>,
     pub startup_connection_requested: bool,
     pub connection_started: bool,
     pub startup_bridge_script: Option<PathBuf>,
@@ -622,8 +649,12 @@ impl App {
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
         self.note_render_cache_structure_changed();
+        if let Some(message) = self.messages.get_mut(msg_idx) {
+            message.invalidate_render_cache();
+        }
         self.sync_render_cache_message(msg_idx);
         self.recompute_message_retained_bytes(msg_idx);
+        self.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
     }
 
     /// Invalidate message layout caches at the given level.
@@ -923,6 +954,8 @@ impl App {
             cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
+            last_chat_render_trace_state: None,
+            last_active_turn_height_state: None,
             startup_connection_requested: false,
             connection_started: false,
             startup_bridge_script: None,
@@ -1493,17 +1526,13 @@ mod tests {
     }
 
     fn user_text_message(text: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::User,
-            blocks: vec![assistant_text_block(text)],
-            usage: None,
-        }
+        ChatMessage::new(MessageRole::User, vec![assistant_text_block(text)], None)
     }
 
     fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
@@ -1529,8 +1558,8 @@ mod tests {
                 pending_permission: None,
                 pending_question: None,
             }))],
-            usage: None,
-        }
+            None,
+        )
     }
 
     fn assistant_bash_tool_message(
@@ -1538,9 +1567,9 @@ mod tests {
         status: model::ToolCallStatus,
         terminal_id: &str,
     ) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Bash".to_owned(),
@@ -1566,15 +1595,15 @@ mod tests {
                 pending_permission: None,
                 pending_question: None,
             }))],
-            usage: None,
-        }
+            None,
+        )
     }
 
     fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
@@ -1609,24 +1638,16 @@ mod tests {
                 }),
                 pending_question: None,
             }))],
-            usage: None,
-        }
+            None,
+        )
     }
 
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("a")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("b")],
-                usage: None,
-            },
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
         ];
 
         let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
@@ -1666,11 +1687,11 @@ mod tests {
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![assistant_text_block("streaming tail")],
-            usage: None,
-        }];
+        app.messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![assistant_text_block("streaming tail")],
+            None,
+        )];
 
         let before = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(4096))]);
@@ -1696,16 +1717,16 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.messages = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("old message")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("streaming tail")],
-                usage: None,
-            },
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block("old message")],
+                None,
+            ),
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block("streaming tail")],
+                None,
+            ),
         ];
 
         let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
@@ -1745,21 +1766,21 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.messages = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("old message")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("active streaming owner")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::System(Some(SystemSeverity::Info)),
-                blocks: vec![assistant_text_block("late trailing system row")],
-                usage: None,
-            },
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block("old message")],
+                None,
+            ),
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block("active streaming owner")],
+                None,
+            ),
+            ChatMessage::new(
+                MessageRole::System(Some(SystemSeverity::Info)),
+                vec![assistant_text_block("late trailing system row")],
+                None,
+            ),
         ];
         app.bind_active_turn_assistant(1);
 
@@ -1787,21 +1808,9 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.messages = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("old-a")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("old-b")],
-                usage: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("streaming")],
-                usage: None,
-            },
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
+            ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
@@ -1841,11 +1850,11 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        app.messages = vec![ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![assistant_text_block("done")],
-            usage: None,
-        }];
+        app.messages = vec![ChatMessage::new(
+            MessageRole::Assistant,
+            vec![assistant_text_block("done")],
+            None,
+        )];
 
         if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
@@ -1979,7 +1988,7 @@ mod tests {
         app.messages = vec![
             ChatMessage::welcome("model", "/cwd"),
             user_text_message("drop this"),
-            ChatMessage { role: MessageRole::Assistant, blocks: Vec::new(), usage: None },
+            ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
         ];
         app.bind_active_turn_assistant(2);
         app.history_retention.max_bytes = 1;
@@ -1997,11 +2006,11 @@ mod tests {
         app.status = AppStatus::Thinking;
         app.messages = vec![
             user_text_message("drop this"),
-            ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![assistant_text_block("streaming reply")],
-                usage: None,
-            },
+            ChatMessage::new(
+                MessageRole::Assistant,
+                vec![assistant_text_block("streaming reply")],
+                None,
+            ),
         ];
         app.bind_active_turn_assistant(1);
         app.history_retention.max_bytes = App::measure_message_bytes(&app.messages[1]);

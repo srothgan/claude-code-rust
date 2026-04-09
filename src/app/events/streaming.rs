@@ -36,7 +36,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
 
     let mut blocks = Vec::new();
     append_agent_stream_text(&mut blocks, &text.text);
-    app.push_message_tracked(ChatMessage { role: MessageRole::Assistant, blocks, usage: None });
+    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
     app.bind_active_turn_assistant_to_tail();
 }
 

@@ -274,11 +274,11 @@ pub(crate) fn push_system_message_with_severity(
     severity: Option<SystemSeverity>,
     message: &str,
 ) {
-    app.push_message_tracked(ChatMessage {
-        role: MessageRole::System(severity),
-        blocks: vec![MessageBlock::Text(TextBlock::from_complete(message))],
-        usage: None,
-    });
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(severity),
+        vec![MessageBlock::Text(TextBlock::from_complete(message))],
+        None,
+    ));
     app.enforce_history_retention_tracked();
     app.viewport.engage_auto_scroll();
 }
@@ -416,15 +416,15 @@ mod tests {
     }
 
     fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage { role: MessageRole::Assistant, blocks, usage: None }
+        ChatMessage::new(MessageRole::Assistant, blocks, None)
     }
 
     fn user_msg(text: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            usage: None,
-        }
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        )
     }
 
     fn first_block_text(msg: &ChatMessage) -> &str {

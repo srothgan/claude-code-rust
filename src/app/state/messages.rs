@@ -6,15 +6,23 @@ use super::tool_call_info::ToolCallInfo;
 use super::types::{MessageUsage, RecentSessionInfo};
 use ratatui::style::Color;
 use ratatui::text::Line;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
     pub usage: Option<MessageUsage>,
+    pub render_cache: MessageRenderCache,
 }
 
 impl ChatMessage {
+    #[must_use]
+    pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
+        Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
+    }
+
     #[must_use]
     pub fn welcome(model_name: &str, cwd: &str) -> Self {
         Self::welcome_with_recent(model_name, cwd, &[])
@@ -26,17 +34,154 @@ impl ChatMessage {
         cwd: &str,
         recent_sessions: &[RecentSessionInfo],
     ) -> Self {
-        Self {
-            role: MessageRole::Welcome,
-            blocks: vec![MessageBlock::Welcome(WelcomeBlock {
+        Self::new(
+            MessageRole::Welcome,
+            vec![MessageBlock::Welcome(WelcomeBlock {
                 model_name: model_name.to_owned(),
                 cwd: cwd.to_owned(),
                 recent_sessions: recent_sessions.to_vec(),
                 cache: BlockCache::default(),
             })],
-            usage: None,
-        }
+            None,
+        )
     }
+
+    pub fn invalidate_render_cache(&mut self) {
+        self.render_cache.invalidate();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRenderCacheKey {
+    pub width: u16,
+    pub layout_generation: u64,
+    pub tools_collapsed: bool,
+    pub include_trailing_separator: bool,
+    pub render_signature: MessageRenderSignature,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRenderSignature {
+    pub role: MessageRole,
+    pub show_empty_thinking: bool,
+    pub show_thinking: bool,
+    pub show_subagent_thinking: bool,
+    pub show_compacting: bool,
+    pub assistant_frame: Option<usize>,
+    pub blocks: Vec<MessageBlockRenderSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageBlockRenderSignature {
+    Text {
+        text_hash: u64,
+        trailing_spacing: TextBlockSpacing,
+    },
+    ToolCall {
+        render_epoch: u64,
+        layout_epoch: u64,
+        hidden: bool,
+        status: crate::agent::model::ToolCallStatus,
+        sdk_tool_name: String,
+        pending_permission: bool,
+        pending_question: bool,
+        frame: Option<usize>,
+    },
+    Welcome {
+        content_hash: u64,
+    },
+}
+
+#[derive(Default)]
+pub struct MessageRenderCache {
+    key: Option<MessageRenderCacheKey>,
+    segments: Vec<CachedMessageSegment>,
+    lines: Vec<Line<'static>>,
+    height: usize,
+    wrapped_lines: usize,
+}
+
+#[derive(Clone)]
+pub enum CachedMessageSegment {
+    Blank,
+    Lines { lines: Vec<Line<'static>>, height: usize },
+}
+
+impl MessageRenderCache {
+    #[must_use]
+    pub fn matches(&self, key: &MessageRenderCacheKey) -> bool {
+        self.key.as_ref() == Some(key)
+    }
+
+    #[must_use]
+    pub fn lines(&self) -> &[Line<'static>] {
+        &self.lines
+    }
+
+    #[must_use]
+    pub fn segments(&self) -> &[CachedMessageSegment] {
+        &self.segments
+    }
+
+    #[must_use]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    #[must_use]
+    pub fn wrapped_lines(&self) -> usize {
+        self.wrapped_lines
+    }
+
+    pub fn store(
+        &mut self,
+        key: MessageRenderCacheKey,
+        segments: Vec<CachedMessageSegment>,
+        lines: Vec<Line<'static>>,
+        height: usize,
+        wrapped_lines: usize,
+    ) {
+        self.key = Some(key);
+        self.segments = segments;
+        self.lines = lines;
+        self.height = height;
+        self.wrapped_lines = wrapped_lines;
+    }
+
+    pub fn invalidate(&mut self) {
+        self.key = None;
+        self.segments.clear();
+        self.lines.clear();
+        self.height = 0;
+        self.wrapped_lines = 0;
+    }
+}
+
+#[must_use]
+pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    trailing_spacing.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[must_use]
+pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    block.model_name.hash(&mut hasher);
+    block.cwd.hash(&mut hasher);
+    for recent in &block.recent_sessions {
+        recent.session_id.hash(&mut hasher);
+        recent.summary.hash(&mut hasher);
+        recent.last_modified_ms.hash(&mut hasher);
+        recent.file_size_bytes.hash(&mut hasher);
+        recent.cwd.hash(&mut hasher);
+        recent.git_branch.hash(&mut hasher);
+        recent.custom_title.hash(&mut hasher);
+        recent.first_prompt.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Text holder for a single message block's markdown source.
@@ -215,7 +360,7 @@ fn find_first_stable_split(text: &str) -> Option<usize> {
     None
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TextBlockSpacing {
     #[default]
     None,
@@ -342,7 +487,7 @@ impl ImageAttachmentBlock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageRole {
     User,
     Assistant,

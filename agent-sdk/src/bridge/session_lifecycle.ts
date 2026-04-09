@@ -212,6 +212,7 @@ export async function createSession(params: {
   const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
 
   let session!: SessionState;
+  const sessionIdForLogs = () => session?.sessionId ?? provisionalSessionId;
   const canUseTool: CanUseTool = async (toolName, inputData, options) => {
     const toolUseId = options.toolUseID;
     if (toolName === EXIT_PLAN_MODE_TOOL_NAME) {
@@ -297,7 +298,7 @@ export async function createSession(params: {
         sdkDebugFile,
         enableSdkDebug,
         enableSpawnDebug,
-        sessionIdForLogs: () => session.sessionId,
+        sessionIdForLogs,
       }),
     });
   } catch (error) {

@@ -365,7 +365,7 @@ fn log_tool_call_update_applied(
     };
 
     let session_id = current_session_id(app);
-    let log_spec = tool_update_log_spec(tc, tcu);
+    let log_spec = tool_update_log_spec(tc, tcu, previous_status);
     let scope_name = tool_scope.map_or("unknown", tool_scope_name);
     let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
         serde_json::Value::String(text) => Some(text.chars().count()),
@@ -446,15 +446,39 @@ struct ToolUpdateLogSpec {
     outcome: &'static str,
 }
 
-fn tool_update_log_spec(tc: &ToolCallInfo, tcu: &model::ToolCallUpdate) -> ToolUpdateLogSpec {
+fn tool_update_log_spec(
+    tc: &ToolCallInfo,
+    tcu: &model::ToolCallUpdate,
+    previous_status: Option<model::ToolCallStatus>,
+) -> ToolUpdateLogSpec {
     match tc.status {
         model::ToolCallStatus::Completed => ToolUpdateLogSpec {
-            level: ToolUpdateLogLevel::Info,
-            event_name: "tool_call_completed",
-            message: "tool call completed",
+            level: if entered_final_status(previous_status, tc.status) {
+                ToolUpdateLogLevel::Info
+            } else {
+                ToolUpdateLogLevel::Debug
+            },
+            event_name: if entered_final_status(previous_status, tc.status) {
+                "tool_call_completed"
+            } else {
+                "tool_call_updated"
+            },
+            message: if entered_final_status(previous_status, tc.status) {
+                "tool call completed"
+            } else {
+                "tool call updated after completion"
+            },
             outcome: "success",
         },
         model::ToolCallStatus::Failed => {
+            if !entered_final_status(previous_status, tc.status) {
+                return ToolUpdateLogSpec {
+                    level: ToolUpdateLogLevel::Debug,
+                    event_name: "tool_call_updated",
+                    message: "tool call updated after failure",
+                    outcome: "failure",
+                };
+            }
             if let Some(raw_output) = tcu.fields.raw_output.as_ref() {
                 let text = match raw_output {
                     serde_json::Value::String(text) => text.to_ascii_lowercase(),
@@ -495,6 +519,14 @@ fn tool_update_log_spec(tc: &ToolCallInfo, tcu: &model::ToolCallUpdate) -> ToolU
             outcome: "success",
         },
     }
+}
+
+fn entered_final_status(
+    previous_status: Option<model::ToolCallStatus>,
+    current_status: model::ToolCallStatus,
+) -> bool {
+    matches!(current_status, model::ToolCallStatus::Completed | model::ToolCallStatus::Failed)
+        && !matches!(previous_status, Some(status) if status == current_status)
 }
 
 fn log_command_update_applied(
@@ -629,15 +661,15 @@ mod tests {
     fn completed_execute_update_detaches_terminal_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
                 model::ToolCallStatus::InProgress,
                 Some("term-1"),
             )))],
-            usage: None,
-        });
+            None,
+        ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
@@ -664,15 +696,15 @@ mod tests {
     fn repeated_terminal_updates_do_not_duplicate_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
                 model::ToolCallStatus::InProgress,
                 None,
             )))],
-            usage: None,
-        });
+            None,
+        ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
 
         let update = model::ToolCallUpdate::new(
@@ -692,15 +724,15 @@ mod tests {
     fn terminal_update_replaces_stale_subscription_for_same_tool_call() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
                 model::ToolCallStatus::InProgress,
                 Some("term-1"),
             )))],
-            usage: None,
-        });
+            None,
+        ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
@@ -718,5 +750,32 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
+    }
+
+    #[test]
+    fn repeated_completed_status_update_does_not_log_a_second_completion() {
+        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
+        let update = model::ToolCallUpdate::new("tool-1", model::ToolCallUpdateFields::new());
+
+        let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::Completed));
+
+        assert!(matches!(spec.level, ToolUpdateLogLevel::Debug));
+        assert_eq!(spec.event_name, "tool_call_updated");
+        assert_eq!(spec.outcome, "success");
+    }
+
+    #[test]
+    fn first_completed_status_update_logs_completion() {
+        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
+        let update = model::ToolCallUpdate::new(
+            "tool-1",
+            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+        );
+
+        let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::InProgress));
+
+        assert!(matches!(spec.level, ToolUpdateLogLevel::Info));
+        assert_eq!(spec.event_name, "tool_call_completed");
+        assert_eq!(spec.outcome, "success");
     }
 }

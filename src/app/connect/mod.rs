@@ -219,6 +219,8 @@ pub fn create_app(cli: &Cli) -> App {
         cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
+        last_chat_render_trace_state: None,
+        last_active_turn_height_state: None,
         startup_connection_requested: false,
         connection_started: false,
         startup_bridge_script: cli.bridge_script.clone(),

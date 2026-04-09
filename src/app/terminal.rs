@@ -156,9 +156,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn bash_tool_message(id: &str, terminal_id: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+        ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Bash".to_owned(),
@@ -184,16 +184,16 @@ mod tests {
                 pending_permission: None,
                 pending_question: None,
             }))],
-            usage: None,
-        }
+            None,
+        )
     }
 
     fn user_message(text: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::User,
-            blocks: vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            usage: None,
-        }
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        )
     }
 
     #[test]
