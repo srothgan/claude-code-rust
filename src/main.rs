@@ -22,10 +22,13 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
+    let perf_path = claude_code_rust::logging::resolve_perf_path(&cli)?;
 
     #[cfg(not(feature = "perf"))]
-    if cli.perf_log.is_some() {
-        return Err(anyhow::anyhow!("`--perf-log` requires a binary built with `--features perf`"));
+    if perf_path.is_some() {
+        return Err(anyhow::anyhow!(
+            "perf telemetry requires a binary built with `--features perf`"
+        ));
     }
 
     {
@@ -33,7 +36,7 @@ fn run() -> anyhow::Result<()> {
             target: claude_code_rust::logging::targets::APP_LIFECYCLE,
             "startup_bootstrap",
             resume_requested = cli.resume.is_some(),
-            perf_telemetry_requested = cli.perf_log.is_some(),
+            perf_telemetry_requested = perf_path.is_some(),
             explicit_bridge_script = cli.bridge_script.is_some(),
         );
         let _entered = startup_bootstrap_span.enter();

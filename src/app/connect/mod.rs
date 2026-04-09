@@ -76,7 +76,23 @@ pub fn create_app(cli: &Cli) -> App {
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let terminals: crate::agent::events::TerminalMap =
         Rc::new(std::cell::RefCell::new(HashMap::new()));
-    let perf = cli.perf_log.as_deref().and_then(|path| {
+    let perf_path = match crate::logging::resolve_perf_path(cli) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERF,
+                event_name = "perf_telemetry_unavailable",
+                message = "failed to resolve perf telemetry sidecar path",
+                outcome = "failure",
+                telemetry_channel = "perf_sidecar",
+                perf_schema = "claude-rs-perf/v1",
+                perf_append = cli.perf_append,
+                error = %err,
+            );
+            None
+        }
+    };
+    let perf = perf_path.as_deref().and_then(|path| {
         let logger = crate::perf::PerfLogger::open(path, cli.perf_append);
         if logger.is_some() {
             tracing::info!(
