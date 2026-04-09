@@ -9,6 +9,7 @@ mod connect;
 mod dialog;
 mod events;
 mod focus;
+mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
@@ -181,6 +182,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         mention::tick(app, Instant::now());
+        app.tick_git_context(Instant::now());
 
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and

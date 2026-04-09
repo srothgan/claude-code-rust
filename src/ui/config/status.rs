@@ -33,7 +33,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 
     kv_line(&mut lines, "cwd", &app.cwd);
 
-    if let Some(ref branch) = app.git_branch {
+    if let Some(branch) = app.git_branch() {
         kv_line(&mut lines, "Git branch", branch);
     }
 

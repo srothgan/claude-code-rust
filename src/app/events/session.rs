@@ -313,7 +313,7 @@ fn sync_welcome_cwd(app: &mut App) {
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cwd_raw = cwd_raw;
     app.cwd = shorten_cwd_display(&app.cwd_raw);
-    app.refresh_git_branch();
+    app.sync_git_context();
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();
 }

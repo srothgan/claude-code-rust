@@ -45,6 +45,7 @@ use tokio::sync::mpsc;
 use super::config::ConfigState;
 use super::dialog;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
+use super::git_context::GitContextState;
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::plugins::PluginsState;
@@ -235,8 +236,8 @@ pub struct App {
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
-    /// Current git branch (refreshed on focus gain + turn complete).
-    pub git_branch: Option<String>,
+    /// Git repo context used by footer/status rendering and live branch tracking.
+    pub(crate) git_context: GitContextState,
     /// Optional startup update-check hint rendered at the footer's right edge.
     pub update_check_hint: Option<String>,
     /// Session-wide usage and cost telemetry from the bridge.
@@ -859,7 +860,7 @@ impl App {
             next_paste_session_id: 1,
             pending_images: Vec::new(),
             cached_todo_compact: None,
-            git_branch: None,
+            git_context: GitContextState::default(),
             update_check_hint: None,
             session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
@@ -895,24 +896,22 @@ impl App {
         }
     }
 
-    /// Detect the current git branch.
-    pub fn refresh_git_branch(&mut self) {
-        let new_branch = std::process::Command::new("git")
-            .args(["branch", "--show-current"])
-            .current_dir(&self.cwd_raw)
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                    if s.is_empty() { None } else { Some(s) }
-                } else {
-                    None
-                }
-            });
-        if new_branch != self.git_branch {
-            self.git_branch = new_branch;
-        }
+    #[must_use]
+    pub fn git_branch(&self) -> Option<&str> {
+        self.git_context.branch_name()
+    }
+
+    pub fn sync_git_context(&mut self) {
+        self.needs_redraw |= self.git_context.sync_to_cwd(Path::new(&self.cwd_raw));
+    }
+
+    pub fn tick_git_context(&mut self, now: Instant) {
+        self.needs_redraw |= self.git_context.tick(Path::new(&self.cwd_raw), now);
+    }
+
+    #[cfg(test)]
+    pub fn set_git_branch_for_test(&mut self, branch: Option<&str>) {
+        self.git_context.set_branch_for_test(branch);
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.

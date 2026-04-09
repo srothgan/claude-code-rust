@@ -162,7 +162,7 @@ pub fn create_app(cli: &Cli) -> App {
         next_paste_session_id: 1,
         pending_images: Vec::new(),
         cached_todo_compact: None,
-        git_branch: None,
+        git_context: super::git_context::GitContextState::default(),
         update_check_hint: None,
         session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),
@@ -217,7 +217,7 @@ pub fn create_app(cli: &Cli) -> App {
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);
-    app.refresh_git_branch();
+    app.sync_git_context();
     app
 }
 

@@ -33,7 +33,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         Event::Paste(text) => dispatch_paste_by_view(app, &text),
         Event::FocusGained => {
             app.notifications.on_focus_gained();
-            app.refresh_git_branch();
+            app.sync_git_context();
             true
         }
         Event::FocusLost => {

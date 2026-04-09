@@ -224,7 +224,7 @@ fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>
     const BRANCH_LABEL_WIDTH: usize = 8;
 
     let location_only_width = max_width.saturating_sub(LOCATION_LABEL_WIDTH);
-    let branch = app.git_branch.as_deref().filter(|branch| !branch.is_empty());
+    let branch = app.git_branch().filter(|branch| !branch.is_empty());
 
     if let Some(branch) = branch {
         let fixed_width = LOCATION_LABEL_WIDTH + CONTEXT_SEPARATOR_WIDTH + BRANCH_LABEL_WIDTH;
@@ -522,7 +522,7 @@ mod tests {
     fn context_line_includes_branch_when_present() {
         let mut app = App::test_default();
         app.cwd = "~/repo".into();
-        app.git_branch = Some("main".into());
+        app.set_git_branch_for_test(Some("main"));
 
         let text: String =
             build_context_line(&app, 80).spans.iter().map(|span| span.content.as_ref()).collect();
@@ -533,7 +533,7 @@ mod tests {
     fn context_line_shortens_location_before_dropping_branch() {
         let mut app = App::test_default();
         app.cwd = "~/work/company/claude_rust".into();
-        app.git_branch = Some("feature/footer".into());
+        app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
             build_context_line(&app, 46).spans.iter().map(|span| span.content.as_ref()).collect();
@@ -546,7 +546,7 @@ mod tests {
     fn context_line_drops_branch_when_width_is_too_tight() {
         let mut app = App::test_default();
         app.cwd = "~/work/company/claude_rust".into();
-        app.git_branch = Some("feature/footer".into());
+        app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
             build_context_line(&app, 24).spans.iter().map(|span| span.content.as_ref()).collect();

@@ -189,7 +189,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.finalize_turn_runtime_artifacts(tool_status);
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
-    app.refresh_git_branch();
+    app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
     if exit.show_interrupted_hint {
