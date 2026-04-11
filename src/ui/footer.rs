@@ -210,9 +210,9 @@ fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
     ];
 
     if let Some(branch_value) = branch_value {
-        spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled("Branch: ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(" (", Style::default().fg(theme::DIM)));
         spans.push(Span::styled(branch_value, Style::default().fg(FOOTER_CONTEXT_VALUE)));
+        spans.push(Span::styled(")", Style::default().fg(theme::DIM)));
     }
 
     Line::from(spans)
@@ -220,14 +220,13 @@ fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
 
 fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>)> {
     const LOCATION_LABEL_WIDTH: usize = 5;
-    const CONTEXT_SEPARATOR_WIDTH: usize = 5;
-    const BRANCH_LABEL_WIDTH: usize = 8;
+    const BRANCH_WRAP_WIDTH: usize = 3;
 
     let location_only_width = max_width.saturating_sub(LOCATION_LABEL_WIDTH);
     let branch = app.git_branch().filter(|branch| !branch.is_empty());
 
     if let Some(branch) = branch {
-        let fixed_width = LOCATION_LABEL_WIDTH + CONTEXT_SEPARATOR_WIDTH + BRANCH_LABEL_WIDTH;
+        let fixed_width = LOCATION_LABEL_WIDTH + BRANCH_WRAP_WIDTH;
         let available_values = max_width.saturating_sub(fixed_width);
         if available_values >= MIN_CONTEXT_LOCATION_WIDTH + MIN_CONTEXT_BRANCH_WIDTH {
             let branch_width = UnicodeWidthStr::width(branch)
@@ -526,7 +525,7 @@ mod tests {
 
         let text: String =
             build_context_line(&app, 80).spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(text, "Loc: ~/repo  |  Branch: main");
+        assert_eq!(text, "Loc: ~/repo (main)");
     }
 
     #[test]
@@ -537,7 +536,7 @@ mod tests {
 
         let text: String =
             build_context_line(&app, 46).spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("Branch:"));
+        assert!(text.contains("(feature/footer)"));
         assert!(text.starts_with("Loc: "));
         assert!(!text.contains("~/work/company/claude_rust"));
     }
