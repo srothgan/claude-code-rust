@@ -26,6 +26,7 @@ pub(super) fn submit_input(app: &mut App) {
     if slash::is_cancel_command(&text) {
         app.pending_auto_submit_after_cancel = false;
         app.input.clear();
+        app.sync_help_open_with_input();
         dispatch_submission(app, text);
         return;
     }
@@ -59,6 +60,7 @@ pub(super) fn submit_input(app: &mut App) {
 
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
+    app.sync_help_open_with_input();
     dispatch_submission(app, text);
 }
 

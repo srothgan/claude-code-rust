@@ -729,6 +729,40 @@ mod tests {
     }
 
     #[test]
+    fn sending_lone_question_mark_closes_help_overlay() {
+        let (mut app, mut rx) = app_with_connection();
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "?");
+        assert!(app.is_help_active());
+
+        events::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(app.pending_submit.is_some());
+
+        finalize_deferred_submit(&mut app);
+
+        assert!(app.pending_submit.is_none());
+        assert!(app.input.text().is_empty());
+        assert!(!app.is_help_active());
+        assert!(matches!(
+            app.messages[0].blocks.as_slice(),
+            [MessageBlock::Text(block)] if block.text == "?"
+        ));
+        let envelope = rx.try_recv().expect("prompt command should be sent");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
     fn paste_event_cancels_deferred_submit_snapshot() {
         let mut app = App::test_default();
         app.input.set_text("draft");

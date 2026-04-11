@@ -305,7 +305,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     let changed = handle_normal_key_actions(app, key);
 
     if app.input.version != input_version_before {
-        sync_help_open_after_input_change(app);
+        app.sync_help_open_with_input();
     }
 
     if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
@@ -748,12 +748,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         subagent::activate(app);
     }
     true
-}
-
-fn sync_help_open_after_input_change(app: &mut App) {
-    if app.is_help_active() && app.input.text().trim() != "?" {
-        app.help_open = false;
-    }
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {

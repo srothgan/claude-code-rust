@@ -1141,6 +1141,13 @@ impl App {
         self.help_open
     }
 
+    pub fn sync_help_open_with_input(&mut self) {
+        if self.help_open && self.input.text().trim() != "?" {
+            self.help_open = false;
+            self.release_focus_target(FocusTarget::Help);
+        }
+    }
+
     #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
         self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
