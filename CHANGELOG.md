@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-04-11 [Changes][v0.10.0]
+
+### Features
+
+- **Clipboard image pasting** (#104, @shyal): Paste images with `Ctrl+V`, send them as PNG image blocks, and render renumbered inline `[Image #N]` badges in the draft
+- **Live git branch tracking** (#114, @srothgan): Replace `git branch --show-current` shell-outs with in-process HEAD parsing and a filesystem watcher so the footer updates while the app stays focused
+- **Terminal tab activity indicator** (#115, @srothgan): Drive the OSC 2 tab title from app state with active and idle indicators and restore the plain cwd title on shutdown
+- **Resume subcommand and startup picker** (#116, @srothgan): Replace the `--resume` flag with `claude-rs resume`, add a dedicated startup picker, and cap it to recent project sessions
+- **App-owned file index with live updates** (#117, @srothgan): Move `@` mention search to a shared file index with scan streaming, prewarm, and incremental watcher updates across cwd and gitignore changes
+
+### Fixes
+
+- **Inline turn-scoped limit notices** (#118, @srothgan): Dedup rate-limit and plan-limit notices inside the active assistant turn instead of appending duplicate trailing system rows
+- **Rename watcher convergence** (#120, @srothgan): Re-scan parent subtrees on file-index rename events, handle root-level renames, and refresh the yanked `unicode-segmentation` lockfile entry
+
+### Performance
+
+- **Structured logging and render-path optimization** (#119, @srothgan): Standardize Rust and Agent SDK diagnostics, switch to JSON rolling logs, and cut chat hot-path cost with assembled render caching and cheaper spinner frames
+
+### Documentation
+
+- **Legal notice expansion** (#113, @srothgan): Clarify the project's relationship to Claude Code, the Agent SDK, Anthropic terms, and the recent source leak
+
+### CI and Dependencies
+
+- Bump `uuid` from 1.22.0 to 1.23.0 (#106, @dependabot)
+- Bump `notify-rust` from 4.12.0 to 4.13.1 (#109, @dependabot)
+- Bump `similar` from 2.7.0 to 3.0.0 (#110, @dependabot)
+- Bump `tokio` from 1.50.0 to 1.51.0 (#111, @dependabot)
+
+### Project
+
+- **Collaboration template cleanup** (#121, @srothgan): Simplify PR and issue templates, collapse `CODEOWNERS`, and align `CONTRIBUTING.md` with the current workflow
+
 ## [0.9.0] - 2026-03-26 [Changes][v0.9.0]
 
 ### Features
@@ -422,6 +456,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.10.0]: https://github.com/srothgan/claude-code-rust/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/srothgan/claude-code-rust/compare/v0.8.4...v0.9.0
 [v0.8.4]: https://github.com/srothgan/claude-code-rust/compare/v0.8.3...v0.8.4
 [v0.8.3]: https://github.com/srothgan/claude-code-rust/compare/v0.8.2...v0.8.3
