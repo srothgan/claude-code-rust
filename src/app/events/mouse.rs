@@ -3,11 +3,10 @@
 
 use super::super::selection::clear_selection;
 use super::super::state::ScrollbarDragState;
-use super::super::{App, SelectionKind, SelectionPoint};
+use super::super::{App, ScrollbarGeometry, SelectionKind, SelectionPoint};
 use crossterm::event::{MouseEvent, MouseEventKind};
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
-const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 
 struct MouseSelectionPoint {
     kind: SelectionKind,
@@ -69,9 +68,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
 #[derive(Clone, Copy)]
 pub(super) struct ScrollbarMetrics {
     pub viewport_height: usize,
-    pub max_scroll: usize,
-    pub thumb_size: usize,
-    pub track_space: usize,
+    pub target: ScrollbarGeometry,
 }
 
 fn start_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
@@ -85,7 +82,9 @@ fn start_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
 
-    let (thumb_top, thumb_size) = current_thumb_geometry(app, metrics);
+    let geometry = current_thumb_geometry(app, metrics);
+    let thumb_top = geometry.thumb_top;
+    let thumb_size = geometry.thumb_size;
     let thumb_end = thumb_top.saturating_add(thumb_size);
     let grab_offset = if (thumb_top..thumb_end).contains(&local_row) {
         local_row.saturating_sub(thumb_top)
@@ -93,8 +92,17 @@ fn start_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
         thumb_size / 2
     };
 
-    set_scroll_from_thumb_top(app, local_row.saturating_sub(grab_offset), metrics);
-    app.scrollbar_drag = Some(ScrollbarDragState { thumb_grab_offset: grab_offset });
+    set_scroll_from_thumb_top(
+        app,
+        local_row.saturating_sub(grab_offset),
+        geometry.track_space,
+        geometry.max_scroll,
+    );
+    app.scrollbar_drag = Some(ScrollbarDragState {
+        thumb_grab_offset: grab_offset,
+        track_space: geometry.track_space,
+        max_scroll: geometry.max_scroll,
+    });
     clear_selection(app);
     true
 }
@@ -103,15 +111,20 @@ fn update_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
     let Some(drag) = app.scrollbar_drag else {
         return false;
     };
-    let Some(metrics) = scrollbar_metrics(app) else {
+    if scrollbar_metrics(app).is_none() {
         app.scrollbar_drag = None;
         return false;
-    };
+    }
     let Some(local_row) = mouse_row_on_chat_track(app, mouse) else {
         return false;
     };
 
-    set_scroll_from_thumb_top(app, local_row.saturating_sub(drag.thumb_grab_offset), metrics);
+    set_scroll_from_thumb_top(
+        app,
+        local_row.saturating_sub(drag.thumb_grab_offset),
+        drag.track_space,
+        drag.max_scroll,
+    );
     true
 }
 
@@ -123,44 +136,45 @@ fn scrollbar_metrics(app: &App) -> Option<ScrollbarMetrics> {
 
     let viewport_height = area.height as usize;
     let content_height = app.viewport.total_message_height();
-    if content_height <= viewport_height {
-        return None;
-    }
-
-    let max_scroll = content_height.saturating_sub(viewport_height);
-    let thumb_size = viewport_height
-        .saturating_mul(viewport_height)
-        .checked_div(content_height)
-        .unwrap_or(0)
-        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
-        .min(viewport_height);
-    let track_space = viewport_height.saturating_sub(thumb_size);
-
-    Some(ScrollbarMetrics { viewport_height, max_scroll, thumb_size, track_space })
+    let target = crate::app::compute_scrollbar_geometry(
+        content_height,
+        viewport_height,
+        app.viewport.scroll_pos,
+    )?;
+    Some(ScrollbarMetrics { viewport_height, target })
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> (usize, usize) {
+fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> ScrollbarGeometry {
     let mut thumb_size = app.viewport.scrollbar_thumb_size.round() as usize;
     if thumb_size == 0 {
-        thumb_size = metrics.thumb_size;
+        thumb_size = metrics.target.thumb_size;
     }
-    thumb_size = thumb_size.max(SCROLLBAR_MIN_THUMB_HEIGHT).min(metrics.viewport_height);
+    thumb_size = thumb_size.max(1).min(metrics.viewport_height);
     let max_top = metrics.viewport_height.saturating_sub(thumb_size);
     let thumb_top = app.viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
-    (thumb_top, thumb_size)
+    ScrollbarGeometry {
+        thumb_top,
+        thumb_size,
+        track_space: metrics.viewport_height.saturating_sub(thumb_size),
+        max_scroll: metrics.target.max_scroll,
+    }
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-fn set_scroll_from_thumb_top(app: &mut App, thumb_top: usize, metrics: ScrollbarMetrics) {
-    let thumb_top = thumb_top.min(metrics.track_space);
-    let target = if metrics.track_space == 0 {
+fn set_scroll_from_thumb_top(
+    app: &mut App,
+    thumb_top: usize,
+    track_space: usize,
+    max_scroll: usize,
+) {
+    let thumb_top = thumb_top.min(track_space);
+    let target = if track_space == 0 {
         0
     } else {
-        ((thumb_top as f32 / metrics.track_space as f32) * metrics.max_scroll as f32).round()
-            as usize
+        ((thumb_top as f32 / track_space as f32) * max_scroll as f32).round() as usize
     }
-    .min(metrics.max_scroll);
+    .min(max_scroll);
 
     app.viewport.auto_scroll = false;
     app.viewport.scroll_target = target;

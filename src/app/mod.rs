@@ -57,11 +57,12 @@ pub use state::{
     MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
     MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
-    RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
-    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
+    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
+    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
+    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

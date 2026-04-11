@@ -4074,6 +4074,36 @@ mod tests {
     }
 
     #[test]
+    fn dragging_uses_displayed_thumb_track_when_scrollbar_is_smoothed() {
+        let mut app = make_test_app();
+        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.viewport.height_prefix_sums = vec![30];
+        app.viewport.scrollbar_thumb_top = 2.0;
+        app.viewport.scrollbar_thumb_size = 6.0;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 9,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert_eq!(app.viewport.scroll_target, 20);
+    }
+
+    #[test]
     fn mention_owner_overrides_todo_focus_then_releases_back() {
         let mut app = make_test_app();
         app.todos.push(TodoItem {

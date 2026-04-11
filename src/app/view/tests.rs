@@ -18,7 +18,8 @@ fn busy_view_test_app() -> App {
         end: SelectionPoint { row: 0, col: 4 },
         dragging: true,
     });
-    app.scrollbar_drag = Some(ScrollbarDragState { thumb_grab_offset: 1 });
+    app.scrollbar_drag =
+        Some(ScrollbarDragState { thumb_grab_offset: 1, track_space: 4, max_scroll: 12 });
     app.pending_submit = Some(app.input.snapshot());
     app.pending_paste_text = "blocked".to_owned();
     app.pending_paste_session = Some(PasteSessionState {

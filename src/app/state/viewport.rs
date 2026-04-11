@@ -43,6 +43,48 @@ impl FrameGeometryChange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarGeometry {
+    pub thumb_top: usize,
+    pub thumb_size: usize,
+    pub track_space: usize,
+    pub max_scroll: usize,
+}
+
+impl ScrollbarGeometry {
+    #[must_use]
+    pub fn viewport_height(self) -> usize {
+        self.thumb_size.saturating_add(self.track_space)
+    }
+}
+
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn compute_scrollbar_geometry(
+    content_height: usize,
+    viewport_height: usize,
+    scroll_pos: f32,
+) -> Option<ScrollbarGeometry> {
+    if viewport_height == 0 || content_height <= viewport_height {
+        return None;
+    }
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    let thumb_size = viewport_height
+        .saturating_mul(viewport_height)
+        .checked_div(content_height)
+        .unwrap_or(0)
+        .max(1)
+        .min(viewport_height);
+    let track_space = viewport_height.saturating_sub(thumb_size);
+    let thumb_top = if max_scroll == 0 || track_space == 0 {
+        0
+    } else {
+        ((scroll_pos.clamp(0.0, max_scroll as f32) / max_scroll as f32) * track_space as f32)
+            .round() as usize
+    };
+    Some(ScrollbarGeometry { thumb_top, thumb_size, track_space, max_scroll })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PreservedScrollAnchor {
     reason: LayoutRemeasureReason,
     index: usize,
@@ -450,12 +492,15 @@ impl ChatViewport {
             return;
         }
         let (anchor_index, anchor_offset) = self.current_scroll_anchor();
-        let preserved_scroll_anchor =
-            if matches!(reason, LayoutRemeasureReason::Resize | LayoutRemeasureReason::Global) {
-                Some(PreservedScrollAnchor { reason, index: anchor_index, offset: anchor_offset })
-            } else {
-                self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
-            };
+        let preserved_scroll_anchor = if self.auto_scroll {
+            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
+        } else if let Some(anchor) =
+            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
+        {
+            Some(anchor)
+        } else {
+            Some(PreservedScrollAnchor { reason, index: anchor_index, offset: anchor_offset })
+        };
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
             reason,
             anchor_index,
@@ -538,8 +583,10 @@ impl ChatViewport {
     /// Resume outward remeasurement from the current visible anchor.
     pub fn next_remeasure_index(&mut self, message_count: usize) -> Option<usize> {
         let prioritize_above_for_anchor = self.remeasure_plan.is_some_and(|plan| {
-            plan.preserved_scroll_anchor
-                .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index))
+            matches!(plan.reason, LayoutRemeasureReason::Resize) && plan.next_above.is_some()
+                || plan
+                    .preserved_scroll_anchor
+                    .is_some_and(|anchor| !self.prefix_is_exact_through(anchor.index))
         });
         let plan = self.remeasure_plan.as_mut()?;
         let choose_above = match (plan.next_above, plan.next_below < message_count) {

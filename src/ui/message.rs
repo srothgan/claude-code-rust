@@ -592,6 +592,7 @@ pub(crate) fn render_message_from_offset_internal(
     let mut can_consume_skip = true;
     render_cached_message_from_offset(
         cache.segments(),
+        width,
         out,
         &mut remaining_skip,
         &mut can_consume_skip,
@@ -601,6 +602,7 @@ pub(crate) fn render_message_from_offset_internal(
 
 fn render_cached_message_from_offset(
     segments: &[CachedMessageSegment],
+    width: u16,
     out: &mut Vec<Line<'static>>,
     remaining_skip: &mut usize,
     can_consume_skip: &mut bool,
@@ -618,8 +620,44 @@ fn render_cached_message_from_offset(
                 if should_skip_whole_block(*height, remaining_skip, can_consume_skip) {
                     continue;
                 }
-                out.extend(lines.iter().cloned());
+                render_cached_lines_from_offset(
+                    lines,
+                    width,
+                    out,
+                    remaining_skip,
+                    can_consume_skip,
+                );
             }
+        }
+    }
+}
+
+fn render_cached_lines_from_offset(
+    lines: &[Line<'static>],
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) {
+    if !*can_consume_skip || *remaining_skip == 0 {
+        out.extend(lines.iter().cloned());
+        return;
+    }
+
+    for line in lines {
+        let logical_lines = split_line_on_newlines(line);
+        for logical_line in logical_lines {
+            if !*can_consume_skip {
+                out.push(logical_line);
+                continue;
+            }
+            let line_height = rendered_line_height(&logical_line, width);
+            if *remaining_skip >= line_height {
+                *remaining_skip -= line_height;
+                continue;
+            }
+            *can_consume_skip = false;
+            out.push(logical_line);
         }
     }
 }
@@ -753,6 +791,36 @@ fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
         return 0;
     }
     Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
+}
+
+fn rendered_line_height(line: &Line<'static>, width: u16) -> usize {
+    Paragraph::new(Text::from(vec![line.clone()]))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+        .max(1)
+}
+
+fn split_line_on_newlines(line: &Line<'static>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut current_spans = Vec::new();
+
+    for span in &line.spans {
+        for chunk in span.content.as_ref().split_inclusive('\n') {
+            let ends_with_newline = chunk.ends_with('\n');
+            let content = chunk.strip_suffix('\n').unwrap_or(chunk);
+            if !content.is_empty() {
+                let mut next_span = span.clone();
+                next_span.content = content.to_owned().into();
+                current_spans.push(next_span);
+            }
+            if ends_with_newline {
+                lines.push(Line::from(std::mem::take(&mut current_spans)));
+            }
+        }
+    }
+
+    lines.push(Line::from(current_spans));
+    lines
 }
 
 fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLayout {
@@ -1787,6 +1855,35 @@ mod tests {
 
         assert!(out.is_empty());
         assert_eq!(rem, 3);
+    }
+
+    #[test]
+    fn render_cached_lines_from_offset_consumes_skip_across_cached_lines() {
+        let skip = usize::from(u16::MAX) + 5;
+        let lines =
+            (0..skip + 3).map(|idx| Line::from(format!("line {idx:05}"))).collect::<Vec<_>>();
+        let mut out = Vec::new();
+        let mut remaining = skip;
+        let mut can_consume_skip = true;
+
+        render_cached_lines_from_offset(
+            &lines,
+            40,
+            &mut out,
+            &mut remaining,
+            &mut can_consume_skip,
+        );
+
+        assert_eq!(remaining, 0);
+        assert!(!can_consume_skip);
+        assert_eq!(
+            render_lines_to_strings(&out),
+            vec![
+                format!("line {skip:05}"),
+                format!("line {:05}", skip + 1),
+                format!("line {:05}", skip + 2),
+            ]
+        );
     }
 
     #[test]

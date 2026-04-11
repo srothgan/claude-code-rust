@@ -33,7 +33,7 @@ pub use types::{
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
-    LayoutRemeasureReason,
+    LayoutRemeasureReason, ScrollbarGeometry, compute_scrollbar_geometry,
 };
 
 use crate::agent::events::ClientEvent;
@@ -2748,6 +2748,39 @@ mod tests {
         assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
         assert_eq!(vp.resize_scroll_anchor(), Some(resize_anchor));
         assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    #[test]
+    fn viewport_message_change_preserves_manual_anchor() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        vp.rebuild_prefix_sums();
+
+        vp.auto_scroll = false;
+        vp.scroll_offset = 7;
+        vp.scroll_target = 7;
+        vp.scroll_pos = 7.0;
+
+        vp.invalidate_message(0);
+
+        let anchor =
+            vp.scroll_anchor_to_restore().expect("manual scroll should preserve an anchor");
+        assert_eq!(anchor, (1, 2));
+
+        vp.set_message_height(0, 12);
+        vp.mark_message_height_measured(0);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.ready_scroll_anchor_to_restore(), Some(anchor));
+
+        vp.restore_scroll_anchor(anchor.0, anchor.1);
+        assert_eq!(vp.scroll_offset, 14);
+        assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
     #[allow(clippy::cast_precision_loss)]

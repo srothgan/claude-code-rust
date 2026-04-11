@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::cache_metrics;
-use crate::app::{App, AppStatus, MessageBlock, MessageRole, SelectionKind, SelectionState};
+use crate::app::{
+    App, AppStatus, MessageBlock, MessageRole, ScrollbarGeometry, SelectionKind, SelectionState,
+};
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -63,12 +65,6 @@ struct CulledRenderStats {
     rendered_msgs: usize,
     last_rendered_idx: Option<usize>,
     rendered_line_count: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ScrollbarGeometry {
-    thumb_top: usize,
-    thumb_size: usize,
 }
 
 struct ScrolledRenderData {
@@ -526,34 +522,6 @@ fn clamp_scroll_to_content(
     }
 }
 
-/// Compute overlay scrollbar geometry for a single-column track.
-///
-/// Returns None when content fits in the viewport.
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn compute_scrollbar_geometry(
-    content_height: usize,
-    viewport_height: usize,
-    scroll_pos: f32,
-) -> Option<ScrollbarGeometry> {
-    if viewport_height == 0 || content_height <= viewport_height {
-        return None;
-    }
-    let max_scroll = content_height.saturating_sub(viewport_height) as f32;
-    let thumb_size = viewport_height
-        .saturating_mul(viewport_height)
-        .checked_div(content_height)
-        .unwrap_or(0)
-        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
-        .min(viewport_height);
-    let track_space = viewport_height.saturating_sub(thumb_size) as f32;
-    let thumb_top = if max_scroll <= f32::EPSILON || track_space <= 0.0 {
-        0
-    } else {
-        ((scroll_pos.clamp(0.0, max_scroll) / max_scroll) * track_space).round() as usize
-    };
-    Some(ScrollbarGeometry { thumb_top, thumb_size })
-}
-
 fn ease_value(current: &mut f32, target: f32, factor: f32) {
     let delta = target - *current;
     if delta.abs() < SCROLLBAR_EASE_EPSILON {
@@ -586,7 +554,12 @@ fn smooth_scrollbar_geometry(
     let max_top = viewport_height.saturating_sub(thumb_size);
     let thumb_top = viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
 
-    ScrollbarGeometry { thumb_top, thumb_size }
+    ScrollbarGeometry {
+        thumb_top,
+        thumb_size,
+        track_space: viewport_height.saturating_sub(thumb_size),
+        max_scroll: target.max_scroll,
+    }
 }
 #[allow(clippy::cast_possible_truncation)]
 fn render_scrollbar_overlay(
@@ -597,9 +570,11 @@ fn render_scrollbar_overlay(
     content_height: usize,
     viewport_height: usize,
 ) {
-    let Some(target) =
-        compute_scrollbar_geometry(content_height, viewport_height, viewport.scroll_pos)
-    else {
+    let Some(target) = crate::app::compute_scrollbar_geometry(
+        content_height,
+        viewport_height,
+        viewport.scroll_pos,
+    ) else {
         viewport.scrollbar_thumb_top = 0.0;
         viewport.scrollbar_thumb_size = 0.0;
         return;
@@ -952,14 +927,14 @@ fn render_lines_from_paragraph(
 #[cfg(test)]
 mod tests {
     use super::{
-        SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
-        compute_scrollbar_geometry, paragraph_scroll_offset, render_culled_messages,
-        render_lines_from_paragraph, render_scrolled, smooth_scrollbar_geometry,
-        sync_active_turn_height_state, update_visual_heights,
+        SCROLLBAR_MIN_THUMB_HEIGHT, clamp_scroll_to_content, paragraph_scroll_offset,
+        render_culled_messages, render_lines_from_paragraph, render_scrolled,
+        smooth_scrollbar_geometry, sync_active_turn_height_state, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
-        SelectionKind, SelectionPoint, SelectionState, SystemSeverity, TextBlock,
+        ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SystemSeverity,
+        TextBlock, compute_scrollbar_geometry,
     };
     use crate::ui::message::{self, SpinnerState};
     use ratatui::Terminal;
@@ -1076,36 +1051,41 @@ mod tests {
     fn scrollbar_thumb_positions_are_stable() {
         assert_eq!(
             compute_scrollbar_geometry(50, 10, 0.0),
-            Some(ScrollbarGeometry { thumb_top: 0, thumb_size: 2 })
+            Some(ScrollbarGeometry { thumb_top: 0, thumb_size: 2, track_space: 8, max_scroll: 40 })
         );
         assert_eq!(
             compute_scrollbar_geometry(50, 10, 20.0),
-            Some(ScrollbarGeometry { thumb_top: 4, thumb_size: 2 })
+            Some(ScrollbarGeometry { thumb_top: 4, thumb_size: 2, track_space: 8, max_scroll: 40 })
         );
         assert_eq!(
             compute_scrollbar_geometry(50, 10, 40.0),
-            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2 })
+            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2, track_space: 8, max_scroll: 40 })
         );
     }
     #[test]
     fn scrollbar_scroll_offset_is_clamped() {
         assert_eq!(
             compute_scrollbar_geometry(50, 10, 999.0),
-            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2 })
+            Some(ScrollbarGeometry { thumb_top: 8, thumb_size: 2, track_space: 8, max_scroll: 40 })
         );
     }
     #[test]
     fn scrollbar_handles_small_overflow() {
         assert_eq!(
             compute_scrollbar_geometry(11, 10, 1.0),
-            Some(ScrollbarGeometry { thumb_top: 1, thumb_size: 9 })
+            Some(ScrollbarGeometry { thumb_top: 1, thumb_size: 9, track_space: 1, max_scroll: 1 })
         );
     }
     #[test]
     fn scrollbar_respects_min_thumb_height() {
         assert_eq!(
             compute_scrollbar_geometry(10_000, 10, 0.0),
-            Some(ScrollbarGeometry { thumb_top: 0, thumb_size: SCROLLBAR_MIN_THUMB_HEIGHT })
+            Some(ScrollbarGeometry {
+                thumb_top: 0,
+                thumb_size: SCROLLBAR_MIN_THUMB_HEIGHT,
+                track_space: 9,
+                max_scroll: 9_990,
+            })
         );
     }
 
@@ -1620,12 +1600,15 @@ mod tests {
 
         let geometry = smooth_scrollbar_geometry(
             &mut viewport,
-            ScrollbarGeometry { thumb_top: 9, thumb_size: 5 },
+            ScrollbarGeometry { thumb_top: 9, thumb_size: 5, track_space: 15, max_scroll: 40 },
             20,
             true,
         );
 
-        assert_eq!(geometry, ScrollbarGeometry { thumb_top: 9, thumb_size: 5 });
+        assert_eq!(
+            geometry,
+            ScrollbarGeometry { thumb_top: 9, thumb_size: 5, track_space: 15, max_scroll: 40 }
+        );
         assert!((viewport.scrollbar_thumb_top - 9.0).abs() < f32::EPSILON);
         assert!((viewport.scrollbar_thumb_size - 5.0).abs() < f32::EPSILON);
     }
