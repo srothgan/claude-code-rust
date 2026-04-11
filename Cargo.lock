@@ -520,6 +520,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-markdown",
  "tui-textarea-2",
+ "unicode-segmentation",
  "unicode-width",
  "uuid",
  "which",

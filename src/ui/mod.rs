@@ -6,6 +6,7 @@ mod chat;
 mod chat_view;
 mod config;
 mod diff;
+mod document_table;
 mod footer;
 pub(crate) mod help;
 mod highlight;
@@ -14,11 +15,12 @@ mod layout;
 mod markdown;
 mod message;
 mod session_picker;
-mod tables;
 pub mod theme;
 mod todo;
 mod tool_call;
 mod trusted;
+mod two_column_list;
+mod wrap;
 
 pub use message::{SpinnerState, measure_message_height_cached};
 

@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::markdown;
+use super::wrap::{
+    StyledChunk, blank_line, display_width, line_display_width, pad_line_to_width,
+    wrap_styled_chunks,
+};
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ColumnAlignment {
@@ -14,34 +17,26 @@ enum ColumnAlignment {
     Right,
 }
 
-#[derive(Clone, Debug, Default)]
-struct TableRowAst {
-    cells: Vec<TableCellAst>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableLayoutMode {
+    Grid,
+    DenseGrid,
+    Stacked,
 }
 
-#[derive(Clone, Debug)]
-struct TableCellAst {
-    chunks: Vec<StyledChunk>,
-    preferred_width: usize,
-    soft_min_width: usize,
+#[derive(Clone, Copy, Debug)]
+struct TableRenderPolicy {
+    preferred_spacing: usize,
+    min_spacing: usize,
+    min_column_width: usize,
+    allow_stacked_fallback: bool,
 }
 
-#[derive(Clone, Debug, Default)]
-struct TableAst {
-    header: TableRowAst,
-    rows: Vec<TableRowAst>,
-    alignments: Vec<ColumnAlignment>,
-}
-
-#[derive(Clone, Debug)]
-struct StyledChunk {
-    text: String,
-    style: Style,
-}
-
-enum MarkdownBlock {
-    Text(String),
-    Table(TableAst),
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedTableLayout {
+    mode: TableLayoutMode,
+    column_widths: Vec<usize>,
+    spacing: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -50,22 +45,61 @@ struct ColumnMetrics {
     soft_min: usize,
 }
 
-impl TableAst {
+#[derive(Clone, Debug, Default)]
+struct TableRowAst {
+    cells: Vec<TableCellAst>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TableCellAst {
+    chunks: Vec<StyledChunk>,
+    plain_text: String,
+    preferred_width: usize,
+    soft_min_width: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DocumentTable {
+    header: TableRowAst,
+    rows: Vec<TableRowAst>,
+    alignments: Vec<ColumnAlignment>,
+}
+
+enum MarkdownBlock {
+    Text(String),
+    Table(DocumentTable),
+}
+
+impl DocumentTable {
     fn column_count(&self) -> usize {
         let body_cols = self.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
         self.header.cells.len().max(self.alignments.len()).max(body_cols)
+    }
+
+    fn render_lines(&self, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
+        if self.column_count() == 0 || width == 0 {
+            return Vec::new();
+        }
+
+        let policy = TableRenderPolicy {
+            preferred_spacing: 3,
+            min_spacing: 1,
+            min_column_width: 4,
+            allow_stacked_fallback: true,
+        };
+        let layout = resolve_layout(self, usize::from(width), policy);
+        match layout.mode {
+            TableLayoutMode::Grid | TableLayoutMode::DenseGrid => {
+                render_grid_lines(self, &layout, bg)
+            }
+            TableLayoutMode::Stacked => render_stacked_lines(self, usize::from(width), bg),
+        }
     }
 }
 
 impl TableCellAst {
     fn empty() -> Self {
-        Self { chunks: Vec::new(), preferred_width: 1, soft_min_width: 1 }
-    }
-}
-
-impl Default for TableCellAst {
-    fn default() -> Self {
-        Self::empty()
+        Self::default()
     }
 }
 
@@ -88,7 +122,7 @@ pub fn render_markdown_with_tables(
                 if !out.is_empty() {
                     out.push(Line::default());
                 }
-                out.extend(render_table_lines(&table, width, bg));
+                out.extend(table.render_lines(width, bg));
                 out.push(Line::default());
             }
         }
@@ -134,7 +168,7 @@ fn parse_table_ast<'input, I>(
     alignments: Vec<Alignment>,
     parser: &mut std::iter::Peekable<I>,
     table_end: &mut usize,
-) -> TableAst
+) -> DocumentTable
 where
     I: Iterator<Item = (Event<'input>, std::ops::Range<usize>)>,
 {
@@ -230,7 +264,7 @@ where
         }
     }
 
-    TableAst {
+    DocumentTable {
         header: header.unwrap_or_default(),
         rows,
         alignments: alignments.into_iter().map(ColumnAlignment::from).collect(),
@@ -302,60 +336,93 @@ impl CellBuilder {
 
     fn finish(mut self) -> TableCellAst {
         self.flush_current();
-        let plain: String = self.chunks.iter().map(|chunk| chunk.text.as_str()).collect();
-        let (preferred_width, soft_min_width) = measure_cell_widths(&plain);
+        let plain_text: String = self.chunks.iter().map(|chunk| chunk.text.as_str()).collect();
+        let (preferred_width, soft_min_width) = measure_cell_widths(&plain_text);
         TableCellAst {
             chunks: self.chunks,
+            plain_text,
             preferred_width: preferred_width.max(1),
             soft_min_width: soft_min_width.max(1),
         }
     }
 }
 
+fn resolve_layout(
+    table: &DocumentTable,
+    total_width: usize,
+    policy: TableRenderPolicy,
+) -> ResolvedTableLayout {
+    let cols = table.column_count();
+    if cols == 0 {
+        return ResolvedTableLayout {
+            mode: TableLayoutMode::Stacked,
+            column_widths: Vec::new(),
+            spacing: 0,
+        };
+    }
+
+    let metrics = collect_column_metrics(table, cols);
+    if let Some(layout) = resolve_grid_layout(
+        &metrics,
+        total_width,
+        policy.preferred_spacing,
+        TableLayoutMode::Grid,
+        policy.min_column_width,
+    ) {
+        return layout;
+    }
+    if let Some(layout) = resolve_grid_layout(
+        &metrics,
+        total_width,
+        policy.min_spacing,
+        TableLayoutMode::DenseGrid,
+        policy.min_column_width,
+    ) {
+        return layout;
+    }
+
+    let _ = policy.allow_stacked_fallback;
+    ResolvedTableLayout { mode: TableLayoutMode::Stacked, column_widths: Vec::new(), spacing: 0 }
+}
+
+fn resolve_grid_layout(
+    metrics: &[ColumnMetrics],
+    total_width: usize,
+    spacing: usize,
+    mode: TableLayoutMode,
+    min_column_width: usize,
+) -> Option<ResolvedTableLayout> {
+    if metrics.is_empty() {
+        return Some(ResolvedTableLayout { mode, column_widths: Vec::new(), spacing });
+    }
+
+    let spacing_budget = spacing.saturating_mul(metrics.len().saturating_sub(1));
+    let available = total_width.saturating_sub(spacing_budget);
+    let soft_floor_total: usize =
+        metrics.iter().map(|metric| metric.soft_min.max(min_column_width)).sum();
+    if available < soft_floor_total {
+        return None;
+    }
+    if available < min_column_width.saturating_mul(metrics.len()) {
+        return None;
+    }
+
+    let column_widths = solve_column_widths(metrics, available, min_column_width);
+    Some(ResolvedTableLayout { mode, column_widths, spacing })
+}
+
 fn measure_cell_widths(text: &str) -> (usize, usize) {
-    let preferred = text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
+    let preferred = text.lines().map(display_width).max().unwrap_or(0);
     let soft_min = text
         .lines()
         .flat_map(|line| line.split_whitespace())
-        .map(UnicodeWidthStr::width)
+        .map(display_width)
         .max()
         .unwrap_or(preferred);
     (preferred, soft_min)
 }
 
-fn render_table_lines(table: &TableAst, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
-    let cols = table.column_count();
-    if cols == 0 || width == 0 {
-        return Vec::new();
-    }
-
-    let spacing = 3usize;
-    let available = (width as usize).saturating_sub(spacing.saturating_mul(cols.saturating_sub(1)));
-    if available == 0 {
-        return Vec::new();
-    }
-
-    let metrics = collect_column_metrics(table, cols);
-    let widths = solve_column_widths(&metrics, available);
-
-    let header_style = bg.map_or_else(
-        || Style::default().add_modifier(Modifier::BOLD),
-        |bg_color| Style::default().bg(bg_color).add_modifier(Modifier::BOLD),
-    );
-    let row_style = bg.map_or_else(Style::default, |bg_color| Style::default().bg(bg_color));
-
-    let mut lines =
-        render_row_lines(&table.header, &widths, &table.alignments, header_style, spacing);
-    if !lines.is_empty() {
-        lines.push(render_separator_line(&widths, spacing, row_style));
-    }
-    for row in &table.rows {
-        lines.extend(render_row_lines(row, &widths, &table.alignments, row_style, spacing));
-    }
-    lines
-}
-
-fn collect_column_metrics(table: &TableAst, cols: usize) -> Vec<ColumnMetrics> {
+fn collect_column_metrics(table: &DocumentTable, cols: usize) -> Vec<ColumnMetrics> {
     let mut metrics = vec![ColumnMetrics { preferred: 1, soft_min: 1 }; cols];
     for row in std::iter::once(&table.header).chain(table.rows.iter()) {
         for (idx, cell) in row.cells.iter().enumerate() {
@@ -366,21 +433,26 @@ fn collect_column_metrics(table: &TableAst, cols: usize) -> Vec<ColumnMetrics> {
     metrics
 }
 
-fn solve_column_widths(metrics: &[ColumnMetrics], available: usize) -> Vec<usize> {
+fn solve_column_widths(
+    metrics: &[ColumnMetrics],
+    available: usize,
+    min_column_width: usize,
+) -> Vec<usize> {
     if metrics.is_empty() {
         return Vec::new();
     }
 
-    let mut widths: Vec<usize> = metrics.iter().map(|metric| metric.preferred.max(1)).collect();
+    let mut widths: Vec<usize> =
+        metrics.iter().map(|metric| metric.preferred.max(min_column_width)).collect();
     let soft_floor: Vec<usize> = metrics
         .iter()
         .zip(widths.iter())
-        .map(|(metric, width)| metric.soft_min.clamp(1, *width))
+        .map(|(metric, width)| metric.soft_min.clamp(min_column_width, *width))
         .collect();
 
     reduce_widths(&mut widths, available, &soft_floor);
     if widths.iter().sum::<usize>() > available {
-        let hard_floor = vec![1; widths.len()];
+        let hard_floor = vec![min_column_width; widths.len()];
         reduce_widths(&mut widths, available, &hard_floor);
     }
     widths
@@ -400,6 +472,39 @@ fn reduce_widths(widths: &mut [usize], available: usize, floor: &[usize]) {
     }
 }
 
+fn render_grid_lines(
+    table: &DocumentTable,
+    layout: &ResolvedTableLayout,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    let header_style = bg.map_or_else(
+        || Style::default().add_modifier(Modifier::BOLD),
+        |bg_color| Style::default().bg(bg_color).add_modifier(Modifier::BOLD),
+    );
+    let row_style = bg.map_or_else(Style::default, |bg_color| Style::default().bg(bg_color));
+
+    let mut lines = render_row_lines(
+        &table.header,
+        &layout.column_widths,
+        &table.alignments,
+        header_style,
+        layout.spacing,
+    );
+    if !lines.is_empty() {
+        lines.push(render_separator_line(&layout.column_widths, layout.spacing, row_style));
+    }
+    for row in &table.rows {
+        lines.extend(render_row_lines(
+            row,
+            &layout.column_widths,
+            &table.alignments,
+            row_style,
+            layout.spacing,
+        ));
+    }
+    lines
+}
+
 fn render_row_lines(
     row: &TableRowAst,
     widths: &[usize],
@@ -412,7 +517,7 @@ fn render_row_lines(
 
     for (idx, width) in widths.iter().copied().enumerate() {
         let alignment = alignments.get(idx).copied().unwrap_or(ColumnAlignment::Left);
-        let cell = row.cells.get(idx).cloned().unwrap_or_default();
+        let cell = row.cells.get(idx).cloned().unwrap_or_else(TableCellAst::empty);
         let rendered = render_cell_lines(&cell, width, alignment, base_style);
         row_height = row_height.max(rendered.len());
         cell_lines.push(rendered);
@@ -420,7 +525,7 @@ fn render_row_lines(
 
     for (idx, width) in widths.iter().copied().enumerate() {
         while cell_lines[idx].len() < row_height {
-            cell_lines[idx].push(blank_cell_line(width, base_style));
+            cell_lines[idx].push(blank_line(width, base_style));
         }
     }
 
@@ -457,207 +562,37 @@ fn render_cell_lines(
     base_style: Style,
 ) -> Vec<Line<'static>> {
     if width == 0 {
-        return Vec::new();
+        return vec![Line::default()];
     }
     if cell.chunks.is_empty() {
-        return vec![blank_cell_line(width, base_style)];
+        return vec![blank_line(width, base_style)];
     }
 
-    let tokens = tokenize_chunks(&cell.chunks, base_style);
-    let mut lines = Vec::new();
-    let mut spans = Vec::new();
-    let mut line_width = 0usize;
-    let mut pending_spaces = Vec::<StyledToken>::new();
-
-    for token in tokens {
-        match token {
-            WrapToken::Newline => {
-                finish_wrapped_line(
-                    &mut lines,
-                    &mut spans,
-                    &mut line_width,
-                    width,
-                    alignment,
-                    base_style,
-                );
-                pending_spaces.clear();
-            }
-            WrapToken::Space(space) => {
-                if line_width > 0 {
-                    pending_spaces.push(space);
-                }
-            }
-            WrapToken::Text(text) => {
-                let pending_width: usize = pending_spaces.iter().map(|space| space.width).sum();
-                if line_width > 0 && line_width + pending_width + text.width > width {
-                    finish_wrapped_line(
-                        &mut lines,
-                        &mut spans,
-                        &mut line_width,
-                        width,
-                        alignment,
-                        base_style,
-                    );
-                    pending_spaces.clear();
-                }
-
-                if line_width > 0 {
-                    for space in pending_spaces.drain(..) {
-                        push_styled_text(&mut spans, &space.text, space.style);
-                        line_width += space.width;
-                    }
-                }
-
-                if text.width <= width.saturating_sub(line_width) {
-                    push_styled_text(&mut spans, &text.text, text.style);
-                    line_width += text.width;
-                    continue;
-                }
-
-                wrap_long_token(
-                    &text,
-                    width,
-                    alignment,
-                    base_style,
-                    &mut lines,
-                    &mut spans,
-                    &mut line_width,
-                );
-            }
-        }
-    }
-
-    finish_wrapped_line(&mut lines, &mut spans, &mut line_width, width, alignment, base_style);
-    if lines.is_empty() {
-        lines.push(blank_cell_line(width, base_style));
-    }
-    lines
+    wrap_styled_chunks(
+        &cell
+            .chunks
+            .iter()
+            .map(|chunk| StyledChunk {
+                text: chunk.text.clone(),
+                style: base_style.patch(chunk.style),
+            })
+            .collect::<Vec<_>>(),
+        width,
+    )
+    .into_iter()
+    .map(|line| align_line_to_width(line, width, alignment, base_style))
+    .collect()
 }
 
-#[derive(Clone)]
-struct StyledToken {
-    text: String,
-    style: Style,
-    width: usize,
-}
-
-enum WrapToken {
-    Text(StyledToken),
-    Space(StyledToken),
-    Newline,
-}
-
-fn tokenize_chunks(chunks: &[StyledChunk], base_style: Style) -> Vec<WrapToken> {
-    let mut tokens = Vec::new();
-    for chunk in chunks {
-        let mut current = String::new();
-        let mut is_space = None;
-        let style = base_style.patch(chunk.style);
-
-        let flush_current = |tokens: &mut Vec<WrapToken>,
-                             current: &mut String,
-                             is_space: &mut Option<bool>,
-                             style: Style| {
-            if current.is_empty() {
-                return;
-            }
-            let text = std::mem::take(current);
-            let width = UnicodeWidthStr::width(text.as_str());
-            let token = StyledToken { text, style, width };
-            if is_space.unwrap_or(false) {
-                tokens.push(WrapToken::Space(token));
-            } else {
-                tokens.push(WrapToken::Text(token));
-            }
-        };
-
-        for ch in chunk.text.chars() {
-            if ch == '\n' {
-                flush_current(&mut tokens, &mut current, &mut is_space, style);
-                is_space = None;
-                tokens.push(WrapToken::Newline);
-                continue;
-            }
-
-            let ch_is_space = ch.is_whitespace();
-            if is_space.is_some_and(|value| value != ch_is_space) {
-                flush_current(&mut tokens, &mut current, &mut is_space, style);
-            }
-
-            is_space = Some(ch_is_space);
-            current.push(ch);
-        }
-
-        flush_current(&mut tokens, &mut current, &mut is_space, style);
-    }
-    tokens
-}
-
-fn wrap_long_token(
-    token: &StyledToken,
+fn align_line_to_width(
+    mut line: Line<'static>,
     width: usize,
     alignment: ColumnAlignment,
     base_style: Style,
-    lines: &mut Vec<Line<'static>>,
-    spans: &mut Vec<Span<'static>>,
-    line_width: &mut usize,
-) {
-    let mut segment = String::new();
-    let mut segment_width = 0usize;
-
-    for ch in token.text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if *line_width > 0 && *line_width + segment_width + ch_width > width {
-            if !segment.is_empty() {
-                push_styled_text(spans, &segment, token.style);
-                *line_width += segment_width;
-                segment.clear();
-                segment_width = 0;
-            }
-            finish_wrapped_line(lines, spans, line_width, width, alignment, base_style);
-        }
-
-        if segment_width + ch_width > width && !segment.is_empty() {
-            push_styled_text(spans, &segment, token.style);
-            *line_width += segment_width;
-            segment.clear();
-            segment_width = 0;
-            finish_wrapped_line(lines, spans, line_width, width, alignment, base_style);
-        }
-
-        segment.push(ch);
-        segment_width += ch_width;
-    }
-
-    if !segment.is_empty() {
-        push_styled_text(spans, &segment, token.style);
-        *line_width += segment_width;
-    }
-}
-
-fn finish_wrapped_line(
-    lines: &mut Vec<Line<'static>>,
-    spans: &mut Vec<Span<'static>>,
-    line_width: &mut usize,
-    width: usize,
-    alignment: ColumnAlignment,
-    base_style: Style,
-) {
-    let line =
-        align_spans_to_width(std::mem::take(spans), *line_width, width, alignment, base_style);
-    lines.push(Line::from(line));
-    *line_width = 0;
-}
-
-fn align_spans_to_width(
-    mut spans: Vec<Span<'static>>,
-    content_width: usize,
-    width: usize,
-    alignment: ColumnAlignment,
-    base_style: Style,
-) -> Vec<Span<'static>> {
+) -> Line<'static> {
+    let content_width = line_display_width(&line);
     if content_width >= width {
-        return spans;
+        return line;
     }
 
     let padding = width - content_width;
@@ -668,29 +603,111 @@ fn align_spans_to_width(
     };
 
     if left_pad > 0 {
-        spans.insert(0, Span::styled(" ".repeat(left_pad), base_style));
+        line.spans.insert(0, Span::styled(" ".repeat(left_pad), base_style));
     }
     if right_pad > 0 {
-        spans.push(Span::styled(" ".repeat(right_pad), base_style));
+        line.spans.push(Span::styled(" ".repeat(right_pad), base_style));
     }
-    spans
+    line
 }
 
-fn blank_cell_line(width: usize, style: Style) -> Line<'static> {
-    Line::from(Span::styled(" ".repeat(width), style))
+fn render_stacked_lines(
+    table: &DocumentTable,
+    width: usize,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    let header_style = bg.map_or_else(
+        || Style::default().add_modifier(Modifier::BOLD),
+        |bg_color| Style::default().bg(bg_color).add_modifier(Modifier::BOLD),
+    );
+    let row_style = bg.map_or_else(Style::default, |bg_color| Style::default().bg(bg_color));
+    let indent = 2usize;
+    let mut lines = Vec::new();
+
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        if row_idx > 0 {
+            lines.push(Line::default());
+        }
+        for col_idx in 0..table.column_count() {
+            let label = table
+                .header
+                .cells
+                .get(col_idx)
+                .map(|cell| cell.plain_text.trim())
+                .filter(|text| !text.is_empty())
+                .map_or_else(|| format!("Column {}", col_idx + 1), str::to_owned);
+            let value = row.cells.get(col_idx).cloned().unwrap_or_else(TableCellAst::empty);
+            lines.extend(render_stacked_pair(
+                &label,
+                &value,
+                width,
+                indent,
+                header_style,
+                row_style,
+            ));
+        }
+    }
+
+    lines
 }
 
-fn push_styled_text(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
-    if text.is_empty() {
-        return;
+fn render_stacked_pair(
+    label: &str,
+    value: &TableCellAst,
+    width: usize,
+    indent: usize,
+    label_style: Style,
+    value_style: Style,
+) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![Line::default()];
     }
-    if let Some(last) = spans.last_mut()
-        && last.style == style
-    {
-        last.content.to_mut().push_str(text);
-        return;
+
+    let inline_prefix = format!("{label}: ");
+    let inline_width = display_width(&inline_prefix);
+    let inline_value_width = width.saturating_sub(inline_width).max(1);
+    let multiline_value_width = width.saturating_sub(indent).max(1);
+    let styled_value = value
+        .chunks
+        .iter()
+        .map(|chunk| StyledChunk {
+            text: chunk.text.clone(),
+            style: value_style.patch(chunk.style),
+        })
+        .collect::<Vec<_>>();
+
+    if inline_value_width >= 8 {
+        let value_lines = if styled_value.is_empty() {
+            vec![Line::default()]
+        } else {
+            wrap_styled_chunks(&styled_value, inline_value_width)
+        };
+        let mut lines = Vec::new();
+        for (idx, value_line) in value_lines.into_iter().enumerate() {
+            let mut line = if idx == 0 {
+                Line::from(vec![Span::styled(inline_prefix.clone(), label_style)])
+            } else {
+                Line::from(Span::styled(" ".repeat(inline_width), label_style))
+            };
+            line.spans.extend(value_line.spans);
+            lines.push(pad_line_to_width(line, width, value_style));
+        }
+        return lines;
     }
-    spans.push(Span::styled(text.to_owned(), style));
+
+    let mut lines = vec![Line::from(Span::styled(format!("{label}:"), label_style))];
+    let indent_prefix = " ".repeat(indent);
+    let value_lines = if styled_value.is_empty() {
+        vec![Line::default()]
+    } else {
+        wrap_styled_chunks(&styled_value, multiline_value_width)
+    };
+    for value_line in value_lines {
+        let mut line = Line::from(Span::styled(indent_prefix.clone(), value_style));
+        line.spans.extend(value_line.spans);
+        lines.push(pad_line_to_width(line, width, value_style));
+    }
+    lines
 }
 
 impl From<Alignment> for ColumnAlignment {
@@ -740,7 +757,7 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("Intro")));
         assert!(rendered.iter().any(|line| line.contains("Outro")));
         assert!(rendered.iter().any(|line| line.contains('A')));
-        assert!(rendered.iter().any(|line| line.contains("─")));
+        assert!(rendered.iter().any(|line| line.contains('─')));
     }
 
     #[test]
@@ -785,5 +802,15 @@ mod tests {
         let body = &rendered[2];
         assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
         assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::REVERSED)));
+    }
+
+    #[test]
+    fn narrow_tables_fall_back_to_stacked_layout() {
+        let input = "| Name | Description |\n| --- | --- |\n| foo | long wrapped value |\n";
+        let rendered = render_strings(input, 12);
+        assert!(rendered.iter().any(|line| line.contains("Name:")));
+        assert!(rendered.iter().any(|line| line.contains("foo")));
+        assert!(rendered.iter().any(|line| line.contains("Description")));
+        assert!(!rendered.iter().any(|line| line.contains('─')));
     }
 }

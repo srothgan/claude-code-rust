@@ -3,13 +3,13 @@
 
 use crate::app::{App, AppStatus, FocusOwner, HelpView};
 use crate::ui::theme;
+use crate::ui::two_column_list::{self, TwoColumnItem};
+use crate::ui::wrap::{display_width, take_prefix_by_width, truncate_to_width};
 use ratatui::Frame;
-use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
-use unicode_width::UnicodeWidthStr;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 const COLUMN_GAP: usize = 4;
 /// Content lines available in the help panel (excluding padding and borders).
@@ -80,12 +80,10 @@ fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, 
     let col_width = (inner_width.saturating_sub(COLUMN_GAP)) / 2;
     let left_width = col_width;
     let right_width = col_width;
-
-    let mut table_rows: Vec<Row<'static>> =
-        Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2);
+    let mut lines = Vec::with_capacity(rows + HELP_VERTICAL_PADDING_LINES * 2);
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
-        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+        lines.push(Line::default());
     }
 
     for row in 0..rows {
@@ -97,31 +95,23 @@ fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, 
 
         let left_lines = format_item_cell_lines(&left, left_width);
         let right_lines = format_item_cell_lines(&right, right_width);
-        let row_height = left_lines.len().max(right_lines.len()).max(1);
-
-        table_rows.push(
-            Row::new(vec![Cell::from(Text::from(left_lines)), Cell::from(Text::from(right_lines))])
-                .height(row_height as u16),
-        );
+        lines.extend(two_column_list::join_column_lines(
+            left_lines,
+            right_lines,
+            left_width,
+            COLUMN_GAP,
+        ));
     }
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
-        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+        lines.push(Line::default());
     }
 
     let block = Block::default()
         .title(help_title(app.help_view))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
-
-    let table = Table::new(
-        table_rows,
-        [Constraint::Length(left_width as u16), Constraint::Length(right_width as u16)],
-    )
-    .column_spacing(COLUMN_GAP as u16)
-    .block(block);
-
-    frame.render_widget(table, area);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -137,64 +127,28 @@ fn render_two_column_help(
 
     let start = app.help_dialog.scroll_offset;
     let end = (start + visible_count).min(items.len());
-    let visible_items = &items[start..end];
     let selected = app.help_dialog.selected;
-
-    // Capacity: items + spacers between items + vertical padding.
-    let mut table_rows: Vec<Row<'static>> = Vec::with_capacity(
+    let visible_items = &items[start..end];
+    let list_items = build_two_column_items(visible_items, selected, start);
+    let mut lines = Vec::with_capacity(
         visible_count + visible_count.saturating_sub(1) + HELP_VERTICAL_PADDING_LINES * 2,
     );
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
-        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+        lines.push(Line::default());
     }
 
-    for (view_index, (name, description)) in visible_items.iter().enumerate() {
-        let abs_index = start + view_index;
-        let is_selected = abs_index == selected;
-
-        let name_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().add_modifier(Modifier::BOLD)
-        };
-        let desc_style =
-            if is_selected { Style::default().fg(theme::RUST_ORANGE) } else { Style::default() };
-
-        let name_lines = wrap_text_lines_styled(name, name_width, name_style);
-        let desc_lines = wrap_text_lines_styled(description, desc_width, desc_style);
-        let row_height = name_lines.len().max(desc_lines.len()).max(1);
-
-        table_rows.push(
-            Row::new(vec![Cell::from(Text::from(name_lines)), Cell::from(Text::from(desc_lines))])
-                .height(row_height as u16),
-        );
-
-        // Spacer row between items for readability.
-        if view_index + 1 < visible_count {
-            table_rows.push(
-                Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]).height(1),
-            );
-        }
-    }
+    lines.extend(two_column_list::render_lines(&list_items, name_width, desc_width, COLUMN_GAP, 1));
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
-        table_rows.push(Row::new(vec![Cell::from(Line::default()), Cell::from(Line::default())]));
+        lines.push(Line::default());
     }
 
     let block = Block::default()
         .title(help_title(app.help_view))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
-
-    let table = Table::new(
-        table_rows,
-        [Constraint::Length(name_width as u16), Constraint::Length(desc_width as u16)],
-    )
-    .column_spacing(COLUMN_GAP as u16)
-    .block(block);
-
-    frame.render_widget(table, area);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
 fn visible_count_for_view(app: &App, items: &[(String, String)], panel_width: u16) -> usize {
@@ -207,12 +161,22 @@ fn visible_count_for_view(app: &App, items: &[(String, String)], panel_width: u1
         HelpView::SlashCommands | HelpView::Subagents => {
             let inner_width = panel_width.saturating_sub(2) as usize;
             let (name_width, desc_width) = help_item_column_widths(items, inner_width);
-            compute_visible_count(
-                items,
+            let count_items = items
+                .iter()
+                .map(|(left, right)| TwoColumnItem {
+                    left: left.clone(),
+                    right: right.clone(),
+                    left_style: Style::default().add_modifier(Modifier::BOLD),
+                    right_style: Style::default(),
+                })
+                .collect::<Vec<_>>();
+            two_column_list::visible_item_count(
+                &count_items,
                 app.help_dialog.scroll_offset,
                 MAX_ROWS,
                 name_width,
                 desc_width,
+                1,
             )
         }
     }
@@ -465,62 +429,6 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     rows
 }
 
-/// Count how many terminal lines `text` wraps into at the given column `width`.
-/// Uses the same splitting logic as `take_prefix_by_width` / `wrap_text_lines_styled`.
-fn wrapped_line_count(text: &str, width: usize) -> usize {
-    if width == 0 || text.is_empty() {
-        return 1;
-    }
-    let mut count = 0;
-    for segment in text.split('\n') {
-        if segment.is_empty() {
-            count += 1;
-            continue;
-        }
-        let mut rest = segment.to_owned();
-        while !rest.is_empty() {
-            let (chunk, remaining) = take_prefix_by_width(&rest, width);
-            if chunk.is_empty() {
-                break;
-            }
-            count += 1;
-            rest = remaining;
-        }
-    }
-    count.max(1)
-}
-
-/// Compute how many items (starting from `start`) fit within `available_lines`,
-/// accounting for each item's actual wrapped height and 1-line spacers between items.
-fn compute_visible_count(
-    items: &[(String, String)],
-    start: usize,
-    available_lines: usize,
-    name_width: usize,
-    desc_width: usize,
-) -> usize {
-    let mut used = 0;
-    let mut count = 0;
-
-    for (name, desc) in items.iter().skip(start) {
-        let name_h = wrapped_line_count(name, name_width);
-        let desc_h = wrapped_line_count(desc, desc_width);
-        let item_h = name_h.max(desc_h).max(1);
-
-        // 1-line spacer before every item except the first.
-        let spacer = usize::from(count > 0);
-
-        if used + spacer + item_h > available_lines {
-            break;
-        }
-
-        used += spacer + item_h;
-        count += 1;
-    }
-
-    count.max(1)
-}
-
 fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (usize, usize) {
     if inner_width == 0 {
         return (0, 0);
@@ -530,7 +438,7 @@ fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (u
     }
 
     let max_name_width =
-        items.iter().map(|(name, _)| UnicodeWidthStr::width(name.as_str())).max().unwrap_or(0);
+        items.iter().map(|(name, _)| display_width(name.as_str())).max().unwrap_or(0);
     let share_cap =
         inner_width.saturating_mul(SUBAGENT_NAME_MAX_SHARE_NUM) / SUBAGENT_NAME_MAX_SHARE_DEN;
     let min_name_width = SUBAGENT_NAME_MIN_WIDTH.min(share_cap.max(1));
@@ -541,32 +449,6 @@ fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (u
     let desc_width = inner_width.saturating_sub(name_width + COLUMN_GAP).max(1);
 
     (name_width, desc_width)
-}
-
-fn wrap_text_lines_styled(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
-    if width == 0 || text.is_empty() {
-        return vec![Line::default()];
-    }
-
-    let mut lines = Vec::new();
-    for segment in text.split('\n') {
-        if segment.is_empty() {
-            lines.push(Line::default());
-            continue;
-        }
-
-        let mut rest = segment.to_owned();
-        while !rest.is_empty() {
-            let (chunk, remaining) = take_prefix_by_width(&rest, width);
-            if chunk.is_empty() {
-                break;
-            }
-            lines.push(Line::from(Span::styled(chunk, style)));
-            rest = remaining;
-        }
-    }
-
-    if lines.is_empty() { vec![Line::default()] } else { lines }
 }
 
 fn help_title(view: HelpView) -> Line<'static> {
@@ -618,9 +500,9 @@ fn format_item_cell_lines(item: &(String, String), width: usize) -> Vec<Line<'st
     }
 
     let label = truncate_to_width(label, width);
-    let label_width = UnicodeWidthStr::width(label.as_str());
+    let label_width = display_width(label.as_str());
     let sep = " : ";
-    let sep_width = UnicodeWidthStr::width(sep);
+    let sep_width = display_width(sep);
 
     if desc.is_empty() {
         return vec![Line::from(Span::styled(
@@ -657,47 +539,35 @@ fn format_item_cell_lines(item: &(String, String), width: usize) -> Vec<Line<'st
     if lines.is_empty() { vec![Line::default()] } else { lines }
 }
 
-fn take_prefix_by_width(text: &str, width: usize) -> (String, String) {
-    if width == 0 || text.is_empty() {
-        return (String::new(), text.to_owned());
-    }
-
-    let mut used = 0usize;
-    let mut split_at = 0usize;
-    for (idx, ch) in text.char_indices() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width {
-            break;
-        }
-        used += w;
-        split_at = idx + ch.len_utf8();
-    }
-
-    if split_at == 0 {
-        return (String::new(), text.to_owned());
-    }
-
-    (text[..split_at].to_owned(), text[split_at..].to_owned())
-}
-
-fn truncate_to_width(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text) <= width {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in text.chars() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width {
-            break;
-        }
-        out.push(ch);
-        used += w;
-    }
-    out
+fn build_two_column_items(
+    items: &[(String, String)],
+    selected: usize,
+    absolute_start: usize,
+) -> Vec<TwoColumnItem> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(view_index, (name, description))| {
+            let abs_index = absolute_start + view_index;
+            let is_selected = abs_index == selected;
+            let left_style = if is_selected {
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            };
+            let right_style = if is_selected {
+                Style::default().fg(theme::RUST_ORANGE)
+            } else {
+                Style::default()
+            };
+            TwoColumnItem {
+                left: name.clone(),
+                right: description.clone(),
+                left_style,
+                right_style,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

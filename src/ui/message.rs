@@ -7,7 +7,6 @@ use crate::app::{
     MessageRenderSignature, MessageRole, SystemSeverity, TextBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
-use crate::ui::tables;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
@@ -1072,7 +1071,7 @@ pub(super) fn render_text_cached(
         if preserve_newlines {
             preprocessed = force_markdown_line_breaks(&preprocessed);
         }
-        tables::render_markdown_with_tables(&preprocessed, width, bg)
+        super::document_table::render_markdown_with_tables(&preprocessed, width, bg)
     };
     let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
 
