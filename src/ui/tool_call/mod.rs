@@ -65,16 +65,6 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
 /// For other tool calls, the title is rendered live and the expanded body is cached
 /// independently, so session collapse preference can change without invalidating
 /// every completed tool-call cache.
-#[allow(dead_code)]
-pub fn render_tool_call_cached(
-    tc: &mut ToolCallInfo,
-    width: u16,
-    spinner_frame: usize,
-    out: &mut Vec<Line<'static>>,
-) {
-    render_tool_call_cached_with_tools_collapsed(tc, width, spinner_frame, false, out);
-}
-
 pub fn render_tool_call_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     width: u16,
@@ -133,22 +123,6 @@ pub fn render_tool_call_cached_with_tools_collapsed(
 
 /// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.
 /// Returns `(height, lines_wrapped_for_measurement)`.
-#[allow(dead_code)]
-pub fn measure_tool_call_height_cached(
-    tc: &mut ToolCallInfo,
-    width: u16,
-    spinner_frame: usize,
-    layout_generation: u64,
-) -> (usize, usize) {
-    measure_tool_call_height_cached_with_tools_collapsed(
-        tc,
-        width,
-        spinner_frame,
-        layout_generation,
-        false,
-    )
-}
-
 pub fn measure_tool_call_height_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     width: u16,
@@ -481,11 +455,13 @@ mod tests {
         tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello\nworld".to_owned());
 
-        let (h1, lines1) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        let (h1, lines1) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert!(h1 > 0);
         assert!(lines1 > 0);
 
-        let (h2, lines2) = measure_tool_call_height_cached(&mut tc, 80, 4, 1);
+        let (h2, lines2) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 4, 1, false);
         assert_eq!(h2, h1);
         assert_eq!(lines2, 0);
     }
@@ -496,9 +472,11 @@ mod tests {
         tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello".to_owned());
 
-        let (_, first_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        let (_, first_lines) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert!(first_lines > 0);
-        let (_, second_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 2);
+        let (_, second_lines) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 2, false);
         assert!(second_lines > 0);
     }
 
@@ -507,13 +485,16 @@ mod tests {
         let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
         tc.content = vec![model::ToolCallContent::from("one line")];
 
-        let (_, first_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        let (_, first_lines) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert!(first_lines > 0);
-        let (_, fast_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        let (_, fast_lines) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert_eq!(fast_lines, 0);
 
         tc.mark_tool_call_layout_dirty();
-        let (_, recompute_lines) = measure_tool_call_height_cached(&mut tc, 80, 0, 1);
+        let (_, recompute_lines) =
+            measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert!(recompute_lines > 0);
     }
 
