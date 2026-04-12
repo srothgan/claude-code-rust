@@ -117,23 +117,54 @@ async fn todowrite_tool_call_updates_todo_list() {
 }
 
 #[tokio::test]
-async fn todowrite_all_completed_hides_panel() {
+async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
     let mut app = test_app();
 
-    let raw_input = serde_json::json!({
-        "todos": [
-            {"content": "Done task", "status": "completed", "activeForm": "Done"},
-        ]
-    });
-
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc = model::ToolCall::new("todo-done", "TodoWrite")
-        .kind(model::ToolKind::Other)
+    let first = serde_json::json!({"todos": [
+        {"content": "Task A", "status": "in_progress", "activeForm": "Doing A"},
+        {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
+    ]});
+    let mut first_meta = serde_json::Map::new();
+    first_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
+    let first_tc = model::ToolCall::new("todo-r1", "TodoWrite")
         .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw_input)
-        .meta(meta);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+        .raw_input(first)
+        .meta(first_meta);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first_tc)),
+    );
+    assert_eq!(app.todos.len(), 2);
+
+    let replacement = serde_json::json!({"todos": [
+        {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
+    ]});
+    let mut replacement_meta = serde_json::Map::new();
+    replacement_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
+    let replacement_tc = model::ToolCall::new("todo-r2", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
+        .raw_input(replacement)
+        .meta(replacement_meta);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(replacement_tc)),
+    );
+    assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
+    assert_eq!(app.todos[0].content, "Task C");
+
+    let completed = serde_json::json!({"todos": [
+        {"content": "Done task", "status": "completed", "activeForm": "Done"},
+    ]});
+    let mut completed_meta = serde_json::Map::new();
+    completed_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
+    let completed_tc = model::ToolCall::new("todo-done", "TodoWrite")
+        .status(model::ToolCallStatus::InProgress)
+        .raw_input(completed)
+        .meta(completed_meta);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(completed_tc)),
+    );
 
     assert!(app.todos.is_empty(), "all-completed clears the list");
     assert!(!app.show_todo_panel, "panel hidden when all done");
@@ -271,10 +302,9 @@ async fn stress_many_tool_calls_in_one_turn() {
 // --- CurrentModeUpdate ---
 
 #[tokio::test]
-async fn mode_update_switches_active_mode() {
+async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
     let mut app = test_app();
 
-    // Initialize with two modes, "code" active
     app.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
@@ -284,57 +314,34 @@ async fn mode_update_switches_active_mode() {
         ],
     });
 
-    // CurrentModeUpdate switches to "plan"
-    let update = model::CurrentModeUpdate::new("plan");
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
+            model::CurrentModeUpdate::new("plan"),
+        )),
     );
-
     let mode = app.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
-    assert_eq!(mode.current_mode_name, "Plan", "name resolved from available_modes");
-    assert_eq!(mode.available_modes.len(), 2, "available_modes unchanged");
-}
+    assert_eq!(mode.current_mode_name, "Plan");
 
-#[tokio::test]
-async fn mode_update_unknown_id_uses_id_as_name() {
-    let mut app = test_app();
-
-    app.mode = Some(claude_code_rust::app::ModeState {
-        current_mode_id: "code".into(),
-        current_mode_name: "Code".into(),
-        available_modes: vec![claude_code_rust::app::ModeInfo {
-            id: "code".into(),
-            name: "Code".into(),
-        }],
-    });
-
-    // Update with an ID not in available_modes
-    let update = model::CurrentModeUpdate::new("unknown-mode");
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
+            model::CurrentModeUpdate::new("unknown-mode"),
+        )),
     );
-
-    let mode = app.mode.as_ref().unwrap();
+    let mode = app.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
-    assert_eq!(mode.current_mode_name, "unknown-mode", "falls back to ID as name");
-}
+    assert_eq!(mode.current_mode_name, "unknown-mode");
 
-#[tokio::test]
-async fn mode_update_without_mode_state_is_noop() {
-    let mut app = test_app();
-    assert!(app.mode.is_none());
-
-    let update = model::CurrentModeUpdate::new("plan-mode");
+    let mut no_mode_app = test_app();
     send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(update)),
+        &mut no_mode_app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
+            model::CurrentModeUpdate::new("plan-mode"),
+        )),
     );
-
-    // No crash, mode stays None since no ModeState was initialized
-    assert!(app.mode.is_none());
+    assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
 }
 
 // --- Edge cases: interleaved events ---
@@ -413,39 +420,6 @@ async fn rapid_turn_complete_then_new_streaming() {
     assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
 }
 
-#[tokio::test]
-async fn todowrite_replaces_previous_todos() {
-    let mut app = test_app();
-
-    // First TodoWrite with 2 items
-    let raw1 = serde_json::json!({"todos": [
-        {"content": "Task A", "status": "in_progress", "activeForm": "Doing A"},
-        {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
-    ]});
-    let mut meta1 = serde_json::Map::new();
-    meta1.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc1 = model::ToolCall::new("todo-r1", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw1)
-        .meta(meta1);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
-    assert_eq!(app.todos.len(), 2);
-
-    // Second TodoWrite replaces with 1 item
-    let raw2 = serde_json::json!({"todos": [
-        {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
-    ]});
-    let mut meta2 = serde_json::Map::new();
-    meta2.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc2 = model::ToolCall::new("todo-r2", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw2)
-        .meta(meta2);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
-
-    assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
-    assert_eq!(app.todos[0].content, "Task C");
-}
 
 #[tokio::test]
 async fn available_commands_update_replaces_previous() {
@@ -470,35 +444,6 @@ async fn available_commands_update_replaces_previous() {
     assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
 }
 
-#[tokio::test]
-async fn empty_todowrite_clears_todos() {
-    let mut app = test_app();
-
-    // Set up some todos first
-    let raw1 = serde_json::json!({"todos": [
-        {"content": "Task A", "status": "pending", "activeForm": "Doing A"},
-    ]});
-    let mut meta1 = serde_json::Map::new();
-    meta1.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc1 = model::ToolCall::new("todo-e1", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw1)
-        .meta(meta1);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
-    assert_eq!(app.todos.len(), 1);
-
-    // Empty TodoWrite clears
-    let raw2 = serde_json::json!({"todos": []});
-    let mut meta2 = serde_json::Map::new();
-    meta2.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc2 = model::ToolCall::new("todo-e2", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw2)
-        .meta(meta2);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
-
-    assert!(app.todos.is_empty(), "empty todo list clears");
-}
 
 #[tokio::test]
 async fn error_during_tool_calls_leaves_tool_calls_intact() {

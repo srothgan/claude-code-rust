@@ -7,43 +7,47 @@
 
 use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
-use claude_code_rust::app::{AppStatus, MessageBlock};
+use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_client_event, test_app};
 
-// --- ToolCallUpdate status transitions ---
+fn task_meta() -> serde_json::Map<String, serde_json::Value> {
+    let mut meta = serde_json::Map::new();
+    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
+    meta
+}
+
+fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
+    let (message_index, block_index) = app.tool_call_index[id];
+    let Some(MessageBlock::ToolCall(tool_call)) =
+        app.messages.get(message_index).and_then(|message| message.blocks.get(block_index))
+    else {
+        panic!("expected ToolCall block for {id}");
+    };
+    tool_call
+}
+
+// --- ToolCallUpdate lifecycle ---
 
 #[tokio::test]
-async fn tool_call_update_changes_status_to_completed() {
+async fn tool_call_updates_apply_terminal_statuses_and_title_fields() {
     let mut app = test_app();
     app.status = AppStatus::Running;
 
-    // Create tool call
-    let tc = model::ToolCall::new("tc-1", "Read file")
+    let tc = model::ToolCall::new("tc-update", "Read file")
         .kind(model::ToolKind::Read)
         .status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    // Complete it
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    let update = model::ToolCallUpdate::new("tc-1", fields);
+    let fields = model::ToolCallUpdateFields::new()
+        .title("Read src/lib.rs".to_owned())
+        .status(model::ToolCallStatus::Completed);
+    let update = model::ToolCallUpdate::new("tc-update", fields);
     send_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
-
-    let (mi, bi) = app.tool_call_index["tc-1"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::Completed));
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
-
-#[tokio::test]
-async fn tool_call_update_changes_status_to_failed() {
-    let mut app = test_app();
 
     let tc = model::ToolCall::new("tc-fail", "Write file")
         .kind(model::ToolKind::Edit)
@@ -57,45 +61,21 @@ async fn tool_call_update_changes_status_to_failed() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-fail"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::Failed));
-    } else {
-        panic!("expected ToolCall block");
-    }
+    let updated = tool_call_block(&app, "tc-update");
+    assert_eq!(updated.title, "Read src/lib.rs");
+    assert!(matches!(updated.status, model::ToolCallStatus::Completed));
+
+    let failed = tool_call_block(&app, "tc-fail");
+    assert!(matches!(failed.status, model::ToolCallStatus::Failed));
 }
 
-#[tokio::test]
-async fn tool_call_update_changes_title() {
-    let mut app = test_app();
-
-    let tc =
-        model::ToolCall::new("tc-title", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let fields = model::ToolCallUpdateFields::new().title("Read src/lib.rs".to_owned());
-    let update = model::ToolCallUpdate::new("tc-title", fields);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
-
-    let (mi, bi) = app.tool_call_index["tc-title"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert_eq!(tc.title, "Read src/lib.rs");
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
-
-// --- All tools complete -> Thinking ---
+// --- All tools terminal -> Thinking ---
 
 #[tokio::test]
-async fn all_tools_completed_transitions_to_thinking() {
+async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_finish() {
     let mut app = test_app();
     app.status = AppStatus::Running;
 
-    // Create two tool calls
     let tc1 = model::ToolCall::new("tc-a", "Read A").status(model::ToolCallStatus::InProgress);
     let tc2 = model::ToolCall::new("tc-b", "Read B").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
@@ -103,7 +83,6 @@ async fn all_tools_completed_transitions_to_thinking() {
 
     assert!(matches!(app.status, AppStatus::Running));
 
-    // Complete first
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
@@ -113,7 +92,6 @@ async fn all_tools_completed_transitions_to_thinking() {
     );
     assert!(matches!(app.status, AppStatus::Running), "one still in progress");
 
-    // Complete second
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
@@ -121,126 +99,109 @@ async fn all_tools_completed_transitions_to_thinking() {
             model::ToolCallUpdate::new("tc-b", fields),
         )),
     );
-    assert!(matches!(app.status, AppStatus::Thinking), "all done -> Thinking");
-}
+    assert!(matches!(app.status, AppStatus::Thinking), "all-complete should resume thinking");
 
-#[tokio::test]
-async fn mixed_completed_and_failed_also_transitions() {
-    let mut app = test_app();
-    app.status = AppStatus::Running;
+    let mut mixed_app = test_app();
+    mixed_app.status = AppStatus::Running;
 
     let tc1 = model::ToolCall::new("tc-x", "Op 1").status(model::ToolCallStatus::InProgress);
     let tc2 = model::ToolCall::new("tc-y", "Op 2").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
+    send_client_event(
+        &mut mixed_app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)),
+    );
+    send_client_event(
+        &mut mixed_app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)),
+    );
 
-    // First completed, second failed
     let f1 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     let f2 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     send_client_event(
-        &mut app,
+        &mut mixed_app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
             model::ToolCallUpdate::new("tc-x", f1),
         )),
     );
     send_client_event(
-        &mut app,
+        &mut mixed_app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
             model::ToolCallUpdate::new("tc-y", f2),
         )),
     );
 
-    assert!(matches!(app.status, AppStatus::Thinking));
+    assert!(matches!(mixed_app.status, AppStatus::Thinking), "mixed terminal outcomes should also resume thinking");
 }
 
 // --- Task tool call tracking ---
 
 #[tokio::test]
-async fn task_tool_call_tracked_in_active_ids() {
+async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
     let mut app = test_app();
 
-    // A Task tool call has kind=Think and meta with claudeCode.toolName="Task"
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
-    let tc = model::ToolCall::new("task-1", "Running subtask")
+    let tc = model::ToolCall::new("task-pend", "Running subtask")
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
-        .meta(meta);
+        .meta(task_meta());
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    assert!(app.active_task_ids.contains("task-pend"), "new Task should be tracked");
 
-    assert!(app.active_task_ids.contains("task-1"), "Task tool call should be tracked");
-}
+    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+            model::ToolCallUpdate::new("task-pend", fields),
+        )),
+    );
+    assert!(app.active_task_ids.contains("task-pend"), "Pending should stay active");
 
-#[tokio::test]
-async fn task_completion_removes_from_active_ids() {
-    let mut app = test_app();
-
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
-    let tc = model::ToolCall::new("task-2", "Subtask")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(meta);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.active_task_ids.contains("task-2"));
-
-    // Complete the task
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-2", fields),
+            model::ToolCallUpdate::new("task-pend", fields),
         )),
     );
+    assert!(!app.active_task_ids.contains("task-pend"), "completed Task should be removed");
 
-    assert!(!app.active_task_ids.contains("task-2"), "completed Task removed from active set");
+    let tc = model::ToolCall::new("task-fail", "Subtask")
+        .kind(model::ToolKind::Think)
+        .status(model::ToolCallStatus::InProgress)
+        .meta(task_meta());
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    assert!(app.active_task_ids.contains("task-fail"));
+
+    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+            model::ToolCallUpdate::new("task-fail", fields),
+        )),
+    );
+    assert!(!app.active_task_ids.contains("task-fail"), "failed Task should also be removed");
 }
 
 // --- Collapsed tool calls ---
 
 #[tokio::test]
-async fn new_tool_call_starts_expanded_when_tools_not_collapsed() {
-    let mut app = test_app();
-    app.tools_collapsed = false;
-
-    let tc =
-        model::ToolCall::new("tc-init-exp", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let (mi, bi) = app.tool_call_index["tc-init-exp"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::InProgress));
-        assert!(!app.tools_collapsed, "session collapse preference should stay expanded");
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
-
-#[tokio::test]
-async fn new_tool_call_starts_collapsed_when_tools_collapsed() {
-    let mut app = test_app();
-    app.tools_collapsed = true;
-
-    let tc =
-        model::ToolCall::new("tc-init-col", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let (mi, bi) = app.tool_call_index["tc-init-col"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::InProgress));
-        assert!(app.tools_collapsed, "session collapse preference should stay collapsed");
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
-
-#[tokio::test]
-async fn completed_tool_calls_inherit_collapsed_state() {
+async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
     let mut app = test_app();
     app.tools_collapsed = true;
 
     let tc = model::ToolCall::new("tc-col", "Read file").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    assert!(app.tools_collapsed, "session preference should remain collapsed");
+    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
+
+    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress);
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
+            model::ToolCallUpdate::new("tc-col", fields),
+        )),
+    );
+    assert!(app.tools_collapsed, "in-progress updates should not flip the preference");
+    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
@@ -249,39 +210,32 @@ async fn completed_tool_calls_inherit_collapsed_state() {
             model::ToolCallUpdate::new("tc-col", fields),
         )),
     );
+    assert!(app.tools_collapsed, "completed updates should keep the preference");
+    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::Completed));
 
-    let (mi, bi) = app.tool_call_index["tc-col"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::Completed));
-        assert!(app.tools_collapsed, "completed tool call should follow session preference");
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
+    let mut expanded_app = test_app();
+    expanded_app.tools_collapsed = false;
 
-#[tokio::test]
-async fn uncollapsed_tool_calls_stay_expanded() {
-    let mut app = test_app();
-    app.tools_collapsed = false;
-
-    let tc = model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    let tc =
+        model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
+    send_client_event(
+        &mut expanded_app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+    );
+    assert!(!expanded_app.tools_collapsed, "expanded preference should remain expanded");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
-        &mut app,
+        &mut expanded_app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
             model::ToolCallUpdate::new("tc-exp", fields),
         )),
     );
-
-    let (mi, bi) = app.tool_call_index["tc-exp"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(matches!(tc.status, model::ToolCallStatus::Completed));
-        assert!(!app.tools_collapsed);
-    } else {
-        panic!("expected ToolCall block");
-    }
+    assert!(!expanded_app.tools_collapsed);
+    assert!(matches!(
+        tool_call_block(&expanded_app, "tc-exp").status,
+        model::ToolCallStatus::Completed
+    ));
 }
 
 // --- Multiple tool calls indexed correctly ---
@@ -354,85 +308,6 @@ async fn todowrite_via_update_raw_input_parses_todos() {
 
     assert_eq!(app.todos.len(), 1);
     assert_eq!(app.todos[0].content, "Step 1");
-}
-
-#[tokio::test]
-async fn task_failed_also_removes_from_active_ids() {
-    let mut app = test_app();
-
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
-    let tc = model::ToolCall::new("task-fail", "Subtask")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(meta);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.active_task_ids.contains("task-fail"));
-
-    // Fail (not complete) - should still remove
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-fail", fields),
-        )),
-    );
-
-    assert!(!app.active_task_ids.contains("task-fail"), "failed Task removed");
-}
-
-#[tokio::test]
-async fn pending_status_update_does_not_remove_task() {
-    let mut app = test_app();
-
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
-    let tc = model::ToolCall::new("task-pend", "Subtask")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(meta);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Update with Pending status - should NOT remove from active set
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-pend", fields),
-        )),
-    );
-
-    assert!(app.active_task_ids.contains("task-pend"), "Pending does not remove");
-}
-
-#[tokio::test]
-async fn in_progress_status_does_not_collapse_tool_call() {
-    let mut app = test_app();
-    app.tools_collapsed = true;
-
-    let tc =
-        model::ToolCall::new("tc-inprog", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Update to InProgress again - should NOT set collapsed
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-inprog", fields),
-        )),
-    );
-
-    let (mi, bi) = app.tool_call_index["tc-inprog"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
-        assert!(
-            matches!(tc.status, model::ToolCallStatus::InProgress),
-            "status should be InProgress"
-        );
-        assert!(app.tools_collapsed);
-    } else {
-        panic!("expected ToolCall block");
-    }
 }
 
 #[tokio::test]

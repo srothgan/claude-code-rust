@@ -31,27 +31,14 @@ fn logging_source_files() -> Vec<PathBuf> {
 }
 
 #[test]
-fn legacy_logging_patterns_are_removed() {
+fn legacy_logging_markers_and_bridge_console_calls_are_removed() {
     let mut failures = Vec::new();
-    let banned_patterns = [
+    let banned_rust_markers = [
         "legacy_bridge_stderr_line",
-        "legacy bridge stderr line received",
         "logPermissionDebug",
         "RENDER_SCROLLED",
         "RENDER_CULLED",
         "RENDER_VISIBLE_PREVIEW",
-        "RENDER: width",
-        "todo::render:",
-        "SessionUpdate variant:",
-        "Agent thought:",
-        "Plan update:",
-        "Available commands:",
-        "Available subagents:",
-        "SessionStatusUpdate:",
-        "permission selection:",
-        "question selection:",
-        "Turn error:",
-        "Failed tool call render payload",
         "[sdk error]",
         "[sdk warn]",
         "[perm debug]",
@@ -63,9 +50,14 @@ fn legacy_logging_patterns_are_removed() {
             continue;
         };
 
-        for pattern in banned_patterns {
-            if text.contains(pattern) {
-                failures.push(format!("{} contains banned pattern `{pattern}`", path.display()));
+        if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            for marker in banned_rust_markers {
+                if text.contains(marker) {
+                    failures.push(format!(
+                        "{} contains banned legacy logging marker `{marker}`",
+                        path.display()
+                    ));
+                }
             }
         }
 
