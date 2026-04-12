@@ -702,52 +702,34 @@ mod tests {
     // char_to_byte_index
 
     #[test]
-    fn char_to_byte_index_ascii() {
-        assert_eq!(char_to_byte_index("hello", 0), 0);
-        assert_eq!(char_to_byte_index("hello", 2), 2);
-        assert_eq!(char_to_byte_index("hello", 5), 5); // past end
-    }
+    fn char_to_byte_index_handles_ascii_unicode_and_bounds() {
+        let cases = [
+            ("hello", 0, 0),
+            ("hello", 2, 2),
+            ("hello", 5, 5),
+            ("cafe\u{0301}", 4, 4),
+            ("\u{1F600}hello", 0, 0),
+            ("\u{1F600}hello", 1, 4),
+            ("ab", 10, 2),
+            ("", 0, 0),
+            ("", 5, 0),
+        ];
 
-    #[test]
-    fn char_to_byte_index_multibyte_utf8() {
-        // 'e' with accent: 2 bytes in UTF-8
-        let s = "cafe\u{0301}"; // "cafe" + combining accent = 5 chars, but accent is 2 bytes
-        assert_eq!(char_to_byte_index(s, 4), 4); // the combining char starts at byte 4
-    }
-
-    #[test]
-    fn char_to_byte_index_emoji() {
-        let s = "\u{1F600}hello"; // grinning face (4 bytes) + "hello"
-        assert_eq!(char_to_byte_index(s, 0), 0);
-        assert_eq!(char_to_byte_index(s, 1), 4); // after emoji
-    }
-
-    #[test]
-    fn char_to_byte_index_beyond_string() {
-        assert_eq!(char_to_byte_index("ab", 10), 2); // returns s.len()
-    }
-
-    #[test]
-    fn char_to_byte_index_empty_string() {
-        assert_eq!(char_to_byte_index("", 0), 0);
-        assert_eq!(char_to_byte_index("", 5), 0);
+        for (text, char_index, expected) in cases {
+            assert_eq!(char_to_byte_index(text, char_index), expected, "{text:?} at {char_index}");
+        }
     }
 
     // InputState::new / Default
 
     #[test]
-    fn new_creates_empty_state() {
-        let input = InputState::new();
-        assert_eq!(input.lines(), vec![String::new()]);
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 0);
-        assert_eq!(input.version, 0);
-    }
-
-    #[test]
-    fn default_equals_new() {
+    fn new_and_default_create_the_same_empty_state() {
         let a = InputState::new();
         let b = InputState::default();
+        assert_eq!(a.lines(), vec![String::new()]);
+        assert_eq!(a.cursor_row(), 0);
+        assert_eq!(a.cursor_col(), 0);
+        assert_eq!(a.version, 0);
         assert_eq!(a.lines(), b.lines());
         assert_eq!(a.cursor_row(), b.cursor_row());
         assert_eq!(a.cursor_col(), b.cursor_col());
@@ -757,13 +739,10 @@ mod tests {
     // text()
 
     #[test]
-    fn text_single_empty_line() {
+    fn text_reflects_empty_and_multiline_state() {
         let input = InputState::new();
         assert_eq!(input.text(), "");
-    }
 
-    #[test]
-    fn text_joins_lines_with_newline() {
         let mut input = InputState::new();
         input.insert_str("line1\nline2\nline3");
         assert_eq!(input.text(), "line1\nline2\nline3");
@@ -772,23 +751,16 @@ mod tests {
     // is_empty()
 
     #[test]
-    fn is_empty_true_for_new() {
+    fn is_empty_only_for_single_empty_line() {
         assert!(InputState::new().is_empty());
-    }
 
-    #[test]
-    fn is_empty_false_after_insert() {
-        let mut input = InputState::new();
-        input.insert_char('a');
-        assert!(!input.is_empty());
-    }
+        let mut with_text = InputState::new();
+        with_text.insert_char('a');
+        assert!(!with_text.is_empty());
 
-    #[test]
-    fn is_empty_false_for_empty_multiline() {
-        // Two empty lines: not considered "empty" by the method
-        let mut input = InputState::new();
-        input.insert_newline();
-        assert!(!input.is_empty());
+        let mut multiline = InputState::new();
+        multiline.insert_newline();
+        assert!(!multiline.is_empty());
     }
 
     // clear()

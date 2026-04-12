@@ -3109,17 +3109,15 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_v_not_inserted_as_text() {
-        let mut app = make_test_app();
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
-        assert_eq!(app.input.text(), "");
-    }
-
-    #[test]
-    fn ctrl_v_not_inserted_when_mention_key_handler_is_active() {
-        let mut app = make_test_app();
-        handle_mention_key(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
-        assert_eq!(app.input.text(), "");
+    fn ctrl_v_not_inserted_by_chat_key_handlers() {
+        for handler in [
+            handle_normal_key as fn(&mut App, KeyEvent),
+            handle_mention_key as fn(&mut App, KeyEvent),
+        ] {
+            let mut app = make_test_app();
+            handler(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+            assert_eq!(app.input.text(), "");
+        }
     }
 
     #[test]

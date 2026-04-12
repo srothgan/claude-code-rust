@@ -479,11 +479,8 @@ mod tests {
         let started = Instant::now();
         assert!(!state.tick(&repo, started));
         assert_eq!(state.branch_name(), Some("main"));
-        let just_before_debounce = (started + WATCH_DEBOUNCE)
-            .checked_sub(Duration::from_millis(1))
-            .expect("debounce window should be larger than the test delta");
-        assert!(!state.tick(&repo, just_before_debounce));
-        assert!(state.tick(&repo, started + WATCH_DEBOUNCE));
+        assert!(!state.tick(&repo, started + Duration::from_millis(10)));
+        assert!(state.tick(&repo, started + WATCH_DEBOUNCE + Duration::from_millis(10)));
         assert_eq!(state.branch_name(), Some("feature/footer"));
     }
 

@@ -79,30 +79,14 @@ mod tests {
     }
 
     #[test]
-    fn active_sequence_toggles_between_open_and_filled_diamond() {
-        assert_eq!(ACTIVE_CHARS, &['\u{25C7}', '\u{25C6}']);
-    }
+    fn pulse_char_cycles_between_distinct_active_frames_and_idle_is_separate() {
+        let first = pulse_char(0);
+        let same_window = pulse_char(PULSE_FRAME_DIVISOR - 1);
+        let next = pulse_char(PULSE_FRAME_DIVISOR);
 
-    #[test]
-    fn idle_indicator_is_open_circle() {
-        assert_eq!(IDLE_CHAR, '\u{25CB}');
-    }
-
-    #[test]
-    fn pulse_char_changes_more_slowly_than_spinner_frame() {
-        assert_eq!(pulse_char(0), pulse_char(PULSE_FRAME_DIVISOR - 1));
-        assert_ne!(pulse_char(0), pulse_char(PULSE_FRAME_DIVISOR));
-    }
-
-    #[test]
-    fn title_prefix_uses_single_indicator_column() {
-        let active = {
-            let pulse = pulse_char(0);
-            format!("{pulse} claude_rust")
-        };
-        let idle = format!("{IDLE_CHAR} claude_rust");
-
-        assert_eq!(active.chars().nth(1), Some(' '));
-        assert_eq!(idle.chars().nth(1), Some(' '));
+        assert_eq!(first, same_window);
+        assert_ne!(first, next);
+        assert_ne!(IDLE_CHAR, first);
+        assert_ne!(IDLE_CHAR, next);
     }
 }

@@ -510,186 +510,81 @@ mod tests {
     }
 
     #[test]
-    fn save_preserves_unknown_keys_and_updates_fast_mode() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut document = serde_json::json!({
-            "fastMode": false,
-            "unknown": {
-                "keep": true
-            }
-        });
-        set_fast_mode(&mut document, true);
-
-        save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
-        assert!(raw.contains("\"fastMode\": true"));
-        assert!(raw.contains("\"keep\": true"));
-    }
-
-    #[test]
-    fn default_permission_mode_defaults_to_default() {
+    fn persisted_setting_readers_apply_defaults() {
         let document = Value::Object(Map::new());
 
         assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Default));
-    }
-
-    #[test]
-    fn respect_gitignore_defaults_to_true() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(respect_gitignore(&document), Ok(true));
-    }
-
-    #[test]
-    fn terminal_progress_bar_defaults_to_true() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(terminal_progress_bar_enabled(&document), Ok(true));
-    }
-
-    #[test]
-    fn output_style_defaults_to_default() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(output_style(&document), Ok(OutputStyle::Default));
-    }
-
-    #[test]
-    fn model_defaults_to_none() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(model(&document), Ok(None));
-    }
-
-    #[test]
-    fn language_defaults_to_none() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(language(&document), Ok(None));
-    }
-
-    #[test]
-    fn preferred_notification_channel_defaults_to_iterm2() {
-        let document = Value::Object(Map::new());
-
         assert_eq!(preferred_notification_channel(&document), Ok(PreferredNotifChannel::Iterm2));
     }
 
     #[test]
-    fn preferred_notification_channel_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+    fn persisted_setting_readers_reject_invalid_values() {
+        let invalid_notification = serde_json::json!({
             "preferredNotifChannel": "not-a-channel"
         });
-
-        assert_eq!(preferred_notification_channel(&document), Err(()));
-    }
-
-    #[test]
-    fn output_style_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+        let invalid_output_style = serde_json::json!({
             "outputStyle": "Verbose"
         });
-
-        assert_eq!(output_style(&document), Err(()));
-    }
-
-    #[test]
-    fn respect_gitignore_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+        let invalid_gitignore = serde_json::json!({
             "respectGitignore": "yes"
         });
-
-        assert_eq!(respect_gitignore(&document), Err(()));
-    }
-
-    #[test]
-    fn model_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+        let invalid_model = serde_json::json!({
             "model": true
         });
-
-        assert_eq!(model(&document), Err(()));
-    }
-
-    #[test]
-    fn language_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+        let invalid_language = serde_json::json!({
             "language": true
         });
-
-        assert_eq!(language(&document), Err(()));
-    }
-
-    #[test]
-    fn default_permission_mode_rejects_invalid_stored_value() {
-        let document = serde_json::json!({
+        let invalid_permission_mode = serde_json::json!({
             "permissions": {
                 "defaultMode": "not-a-mode"
             }
         });
 
-        assert_eq!(default_permission_mode(&document), Err(()));
+        assert_eq!(preferred_notification_channel(&invalid_notification), Err(()));
+        assert_eq!(output_style(&invalid_output_style), Err(()));
+        assert_eq!(respect_gitignore(&invalid_gitignore), Err(()));
+        assert_eq!(model(&invalid_model), Err(()));
+        assert_eq!(language(&invalid_language), Err(()));
+        assert_eq!(default_permission_mode(&invalid_permission_mode), Err(()));
     }
 
     #[test]
-    fn save_preserves_unknown_keys_and_updates_default_permission_mode() {
+    fn save_persists_settings_values_without_dropping_neighboring_keys() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("settings.json");
         let mut document = serde_json::json!({
+            "fastMode": false,
             "permissions": {
                 "defaultMode": "default",
                 "keep": true
             },
-            "unknown": {
-                "keep": true
-            }
-        });
-        set_default_permission_mode(&mut document, DefaultPermissionMode::Plan);
-
-        save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
-
-        assert!(raw.contains("\"defaultMode\": \"plan\""));
-        assert!(raw.contains("\"keep\": true"));
-    }
-
-    #[test]
-    fn save_preserves_unknown_keys_and_updates_model() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut document = serde_json::json!({
             "model": "old-model",
-            "unknown": {
-                "keep": true
-            }
-        });
-        set_model(&mut document, Some("sonnet"));
-
-        save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
-
-        assert!(raw.contains("\"model\": \"sonnet\""));
-        assert!(raw.contains("\"keep\": true"));
-    }
-
-    #[test]
-    fn save_preserves_unknown_keys_and_updates_language() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut document = serde_json::json!({
             "language": "English",
             "unknown": {
                 "keep": true
             }
         });
+
+        set_fast_mode(&mut document, true);
+        set_default_permission_mode(&mut document, DefaultPermissionMode::Plan);
+        set_model(&mut document, Some("sonnet"));
         set_language(&mut document, Some("German"));
 
         save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
 
-        assert!(raw.contains("\"language\": \"German\""));
-        assert!(raw.contains("\"keep\": true"));
+        assert_eq!(fast_mode(&saved), Ok(true));
+        assert_eq!(default_permission_mode(&saved), Ok(DefaultPermissionMode::Plan));
+        assert_eq!(model(&saved), Ok(Some("sonnet".to_owned())));
+        assert_eq!(language(&saved), Ok(Some("German".to_owned())));
+        assert_eq!(saved["permissions"]["keep"], Value::Bool(true));
+        assert_eq!(saved["unknown"]["keep"], Value::Bool(true));
     }
 
     #[test]
@@ -700,23 +595,6 @@ mod tests {
 
         set_language(&mut document, Some("   "));
         assert_eq!(language(&document), Ok(None));
-    }
-
-    #[test]
-    fn save_preserves_unknown_keys_and_updates_notifications() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude.json");
-        let mut document = serde_json::json!({
-            "preferredNotifChannel": "iterm2",
-            "theme": "dark"
-        });
-        set_preferred_notification_channel(&mut document, PreferredNotifChannel::TerminalBell);
-
-        save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
-
-        assert!(raw.contains("\"preferredNotifChannel\": \"terminal_bell\""));
-        assert!(raw.contains("\"theme\": \"dark\""));
     }
 
     #[test]
@@ -731,44 +609,39 @@ mod tests {
         set_output_style(&mut document, OutputStyle::Learning);
 
         save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
 
-        assert!(raw.contains("\"outputStyle\": \"Learning\""));
-        assert!(raw.contains("\"spinnerTipsEnabled\": true"));
+        assert_eq!(output_style(&saved), Ok(OutputStyle::Learning));
+        assert_eq!(saved["spinnerTipsEnabled"], Value::Bool(true));
     }
 
     #[test]
-    fn save_preserves_unknown_keys_and_updates_respect_gitignore() {
+    fn save_persists_preferences_values_without_dropping_neighboring_keys() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".claude.json");
         let mut document = serde_json::json!({
+            "preferredNotifChannel": "iterm2",
             "respectGitignore": true,
-            "preferredNotifChannel": "iterm2"
-        });
-        set_respect_gitignore(&mut document, false);
-
-        save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
-
-        assert!(raw.contains("\"respectGitignore\": false"));
-        assert!(raw.contains("\"preferredNotifChannel\": \"iterm2\""));
-    }
-
-    #[test]
-    fn save_preserves_unknown_keys_and_updates_terminal_progress_bar() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude.json");
-        let mut document = serde_json::json!({
             "terminalProgressBarEnabled": true,
-            "preferredNotifChannel": "iterm2"
+            "theme": "dark"
         });
+
+        set_preferred_notification_channel(&mut document, PreferredNotifChannel::TerminalBell);
+        set_respect_gitignore(&mut document, false);
         set_terminal_progress_bar_enabled(&mut document, false);
 
         save(&path, &document).expect("save");
-        let raw = std::fs::read_to_string(path).expect("read");
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
 
-        assert!(raw.contains("\"terminalProgressBarEnabled\": false"));
-        assert!(raw.contains("\"preferredNotifChannel\": \"iterm2\""));
+        assert_eq!(
+            preferred_notification_channel(&saved),
+            Ok(PreferredNotifChannel::TerminalBell)
+        );
+        assert_eq!(respect_gitignore(&saved), Ok(false));
+        assert_eq!(terminal_progress_bar_enabled(&saved), Ok(false));
+        assert_eq!(saved["theme"], Value::String("dark".to_owned()));
     }
 
     #[test]

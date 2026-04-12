@@ -1232,52 +1232,23 @@ mod tests {
     // BlockCache
 
     #[test]
-    fn cache_default_returns_none() {
-        let cache = BlockCache::default();
+    fn cache_lifecycle_covers_default_store_invalidate_and_restore() {
+        let mut cache = BlockCache::default();
         assert!(cache.get().is_none());
-    }
 
-    #[test]
-    fn cache_store_then_get() {
-        let mut cache = BlockCache::default();
-        cache.store(vec![Line::from("hello")]);
-        assert!(cache.get().is_some());
-        assert_eq!(cache.get().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn cache_invalidate_then_get_returns_none() {
-        let mut cache = BlockCache::default();
-        cache.store(vec![Line::from("data")]);
-        cache.invalidate();
-        assert!(cache.get().is_none());
-    }
-
-    // BlockCache
-
-    #[test]
-    fn cache_store_after_invalidate() {
-        let mut cache = BlockCache::default();
         cache.store(vec![Line::from("old")]);
+        assert_eq!(cache.get().unwrap().len(), 1);
+
+        cache.invalidate();
+        cache.invalidate();
         cache.invalidate();
         assert!(cache.get().is_none());
+
         cache.store(vec![Line::from("new")]);
         let lines = cache.get().unwrap();
         assert_eq!(lines.len(), 1);
         let span_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(span_content, "new");
-    }
-
-    #[test]
-    fn cache_multiple_invalidations() {
-        let mut cache = BlockCache::default();
-        cache.store(vec![Line::from("data")]);
-        cache.invalidate();
-        cache.invalidate();
-        cache.invalidate();
-        assert!(cache.get().is_none());
-        cache.store(vec![Line::from("fresh")]);
-        assert!(cache.get().is_some());
     }
 
     #[test]
@@ -3000,14 +2971,7 @@ mod tests {
         assert_eq!(a.message_heights.len(), b.message_heights.len());
     }
 
-    #[test]
-    fn focus_owner_defaults_to_input() {
-        let app = make_test_app();
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    #[test]
-    fn focus_owner_todo_when_panel_open_and_focused() {
+    fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
         app.todos.push(TodoItem {
             content: "Task".into(),
@@ -3015,37 +2979,7 @@ mod tests {
             active_form: String::new(),
         });
         app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-    }
-
-    #[test]
-    fn focus_owner_permission_overrides_todo() {
-        let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
         app.pending_interaction_ids.push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
-        assert_eq!(app.focus_owner(), FocusOwner::Permission);
-    }
-
-    #[test]
-    fn focus_owner_mention_overrides_permission_and_todo() {
-        let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        app.pending_interaction_ids.push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
@@ -3058,54 +2992,14 @@ mod tests {
             }],
             dialog: dialog::DialogState::default(),
         });
-        app.claim_focus_target(FocusTarget::Mention);
-        assert_eq!(app.focus_owner(), FocusOwner::Mention);
+        app
     }
 
     #[test]
-    fn focus_owner_falls_back_to_input_when_claim_is_not_available() {
-        let mut app = make_test_app();
-        app.claim_focus_target(FocusTarget::TodoList);
+    fn focus_owner_respects_target_priority_and_release_order() {
+        let mut app = focus_test_app_with_available_targets();
+
         assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    #[test]
-    fn claim_and_release_focus_target() {
-        let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-        app.release_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    #[test]
-    fn latest_claim_wins_across_equal_targets() {
-        let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.slash = Some(SlashState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            context: SlashContext::CommandName,
-            candidates: vec![SlashCandidate {
-                insert_value: "/config".into(),
-                primary: "/config".into(),
-                secondary: Some("Open settings".into()),
-            }],
-            dialog: dialog::DialogState::default(),
-        });
-        app.pending_interaction_ids.push("perm-1".into());
 
         app.claim_focus_target(FocusTarget::TodoList);
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
@@ -3118,6 +3012,19 @@ mod tests {
 
         app.release_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
+
+        app.release_focus_target(FocusTarget::Permission);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+
+        app.release_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn focus_owner_falls_back_to_input_when_claimed_target_is_unavailable() {
+        let mut app = make_test_app();
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
     // --- InvalidationLevel tests ---

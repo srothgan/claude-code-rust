@@ -3,13 +3,14 @@ use crate::agent::model::AvailableModel;
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
 
-fn open_settings_test_app() -> (TempDir, App) {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn open_settings_app_in_dir(dir: &TempDir) -> App {
     std::fs::write(
         dir.path().join(".claude.json"),
         format!(
@@ -22,6 +23,12 @@ fn open_settings_test_app() -> (TempDir, App) {
     app.settings_home_override = Some(dir.path().to_path_buf());
     app.cwd_raw = dir.path().to_string_lossy().to_string();
     open(&mut app).expect("open");
+    app
+}
+
+fn open_settings_test_app() -> (TempDir, App) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = open_settings_app_in_dir(&dir);
     (dir, app)
 }
 
@@ -48,6 +55,18 @@ fn app_with_status_connection()
         first_prompt: Some("First prompt".to_owned()),
     }];
     (app, rx)
+}
+
+fn read_json_file(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json")
+}
+
+fn json_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.as_object()?.get(*segment)?;
+    }
+    Some(current)
 }
 
 #[test]
@@ -163,20 +182,40 @@ fn reopen_clears_stale_transient_feedback() {
 }
 
 #[test]
-fn space_persists_toggled_fast_mode_immediately() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join(".claude").join("settings.json");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+fn space_persists_setting_toggles_to_the_expected_document() {
+    let cases = [
+        (
+            SettingId::FastMode,
+            ".claude/settings.json",
+            vec!["fastMode"],
+            Value::Bool(true),
+        ),
+        (
+            SettingId::AlwaysThinking,
+            ".claude/settings.json",
+            vec!["alwaysThinkingEnabled"],
+            Value::Bool(true),
+        ),
+        (
+            SettingId::TerminalProgressBar,
+            ".claude.json",
+            vec!["terminalProgressBarEnabled"],
+            Value::Bool(false),
+        ),
+    ];
 
-    open(&mut app).expect("open");
-    select_setting(&mut app, SettingId::FastMode);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for (setting_id, relative_path, json_path, expected) in cases {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(relative_path);
+        let mut app = open_settings_app_in_dir(&dir);
 
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"fastMode\": true"));
-    assert!(app.config.last_error.is_none());
+        select_setting(&mut app, setting_id);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        let saved = read_json_file(&path);
+        assert_eq!(json_at(&saved, &json_path), Some(&expected));
+        assert!(app.config.last_error.is_none());
+    }
 }
 
 #[test]
@@ -1019,9 +1058,9 @@ fn space_persists_local_project_settings_immediately() {
     select_setting(&mut app, SettingId::ShowTips);
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"prefersReducedMotion\": true"));
-    assert!(raw.contains("\"spinnerTipsEnabled\": false"));
+    let saved = read_json_file(&path);
+    assert_eq!(json_at(&saved, &["prefersReducedMotion"]), Some(&Value::Bool(true)));
+    assert_eq!(json_at(&saved, &["spinnerTipsEnabled"]), Some(&Value::Bool(false)));
 }
 
 #[test]
@@ -1071,56 +1110,27 @@ fn output_style_overlay_escape_cancels_without_persisting() {
 }
 
 #[test]
-fn language_overlay_confirm_persists_project_setting() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join(".claude").join("settings.json");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+fn language_overlay_confirm_persists_trimmed_project_setting() {
+    for input in ["German", "  German  "] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude").join("settings.json");
+        let mut app = open_settings_app_in_dir(&dir);
 
-    open(&mut app).expect("open");
-    select_setting(&mut app, SettingId::Language);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    for ch in "German".chars() {
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        select_setting(&mut app, SettingId::Language);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        for ch in input.chars() {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let saved = read_json_file(&path);
+        assert_eq!(json_at(&saved, &["language"]), Some(&Value::String("German".to_owned())));
+        assert_eq!(
+            store::language(&app.config.committed_settings_document),
+            Ok(Some("German".to_owned()))
+        );
+        assert!(app.config.overlay.is_none());
     }
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"language\": \"German\""));
-    assert_eq!(
-        store::language(&app.config.committed_settings_document),
-        Ok(Some("German".to_owned()))
-    );
-    assert!(app.config.overlay.is_none());
-}
-
-#[test]
-fn language_overlay_confirm_trims_project_setting() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join(".claude").join("settings.json");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    open(&mut app).expect("open");
-    select_setting(&mut app, SettingId::Language);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    for ch in "German".chars() {
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
-    }
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"language\": \"German\""));
-    assert_eq!(
-        store::language(&app.config.committed_settings_document),
-        Ok(Some("German".to_owned()))
-    );
-    assert!(app.config.overlay.is_none());
 }
 
 #[test]
@@ -1231,38 +1241,6 @@ fn language_overlay_supports_cursor_aware_editing() {
         store::language(&app.config.committed_settings_document),
         Ok(Some("Gerian".to_owned()))
     );
-}
-
-#[test]
-fn space_persists_always_thinking_in_user_settings() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join(".claude").join("settings.json");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    open(&mut app).expect("open");
-    select_setting(&mut app, SettingId::AlwaysThinking);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"alwaysThinkingEnabled\": true"));
-}
-
-#[test]
-fn space_persists_terminal_progress_bar_in_preferences() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join(".claude.json");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    open(&mut app).expect("open");
-    select_setting(&mut app, SettingId::TerminalProgressBar);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-
-    let raw = std::fs::read_to_string(path).expect("read");
-    assert!(raw.contains("\"terminalProgressBarEnabled\": false"));
 }
 
 #[test]

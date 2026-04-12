@@ -484,42 +484,100 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::app::file_index::FileCandidate;
+    use std::time::{Duration, Instant, SystemTime};
+
+    fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            crate::app::file_index::drain_events(app);
+            if predicate(app) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        crate::app::file_index::drain_events(app);
+        assert!(predicate(app), "condition not met before timeout");
+    }
+
+    fn candidate(rel_path: &str) -> FileCandidate {
+        FileCandidate {
+            rel_path: rel_path.to_owned(),
+            rel_path_lower: rel_path.to_lowercase(),
+            basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
+            depth: rel_path.matches('/').count(),
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: rel_path.ends_with('/'),
+        }
+    }
 
     #[test]
-    fn connected_prewarms_file_index_for_new_cwd() {
+    fn connected_refreshes_file_index_candidates_for_new_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("new.rs"), "").expect("write file");
         let mut app = App::test_default();
+        app.file_index.generation = 3;
+        app.file_index.entries.insert("stale.rs".to_owned(), candidate("stale.rs"));
+        app.file_index.scan_finished = true;
 
         handle_connected_client_event(
             &mut app,
             model::SessionId::new("session-1"),
-            "/replacement".to_owned(),
+            dir.path().to_string_lossy().into_owned(),
             "model".to_owned(),
             Vec::new(),
             None,
             &[],
         );
 
-        assert_eq!(app.file_index.root.as_deref(), Some(std::path::Path::new("/replacement")));
+        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
+        assert!(app.file_index.generation > 3);
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
+        assert!(app.file_index.entries.is_empty());
+        assert!(app.mention.is_none());
+        wait_for(&mut app, Duration::from_secs(2), |app| {
+            app.file_index.scan_finished
+                && app.file_index.entries.contains_key("new.rs")
+        });
+        assert_eq!(
+            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["new.rs"]
+        );
     }
 
     #[test]
-    fn session_replaced_prewarms_file_index_for_replaced_cwd() {
+    fn session_replaced_refreshes_file_index_candidates_for_replaced_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("after.rs"), "").expect("write file");
         let mut app = App::test_default();
+        app.file_index.generation = 8;
+        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
+        app.file_index.scan_finished = true;
 
         handle_session_replaced_event(
             &mut app,
             model::SessionId::new("session-2"),
-            "/replaced".to_owned(),
+            dir.path().to_string_lossy().into_owned(),
             "model".to_owned(),
             Vec::new(),
             None,
             &[],
         );
 
-        assert_eq!(app.file_index.root.as_deref(), Some(std::path::Path::new("/replaced")));
+        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
+        assert!(app.file_index.generation > 8);
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
+        assert!(app.file_index.entries.is_empty());
+        assert!(app.mention.is_none());
+        wait_for(&mut app, Duration::from_secs(2), |app| {
+            app.file_index.scan_finished
+                && app.file_index.entries.contains_key("after.rs")
+        });
+        assert_eq!(
+            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["after.rs"]
+        );
     }
 }

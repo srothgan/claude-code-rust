@@ -181,8 +181,10 @@ pub(crate) fn begin_resume_session(
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
     use crate::agent::model::EffortLevel;
+    use crate::agent::wire::SessionLaunchSettings;
     use crate::app::App;
     use crate::app::config::{DefaultPermissionMode, store};
+    use serde_json::{Map, Value};
 
     #[test]
     fn persisted_launch_settings_include_model_and_permission_mode() {
@@ -202,18 +204,17 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language.as_deref(), Some("German"));
-        assert_eq!(
-            launch_settings.settings,
-            Some(serde_json::json!({
-                "alwaysThinkingEnabled": true,
-                "model": "haiku",
-                "permissions": { "defaultMode": "plan" },
-                "fastMode": false,
-                "effortLevel": "high",
-                "outputStyle": "Default",
-                "spinnerTipsEnabled": true,
-                "terminalProgressBarEnabled": true
-            }))
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(true));
+        assert_setting_value(&launch_settings, "model", Value::String("haiku".to_owned()));
+        assert_permission_mode(&launch_settings, "plan");
+        assert_setting_value(&launch_settings, "fastMode", Value::Bool(false));
+        assert_setting_value(&launch_settings, "effortLevel", Value::String("high".to_owned()));
+        assert_setting_value(&launch_settings, "outputStyle", Value::String("Default".to_owned()));
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(true));
+        assert_setting_value(
+            &launch_settings,
+            "terminalProgressBarEnabled",
+            Value::Bool(true),
         );
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
@@ -236,17 +237,21 @@ mod tests {
             session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
 
         assert_eq!(launch_settings.language, None);
-        assert_eq!(
-            launch_settings.settings,
-            Some(serde_json::json!({
-                "alwaysThinkingEnabled": false,
-                "permissions": { "defaultMode": "default" },
-                "fastMode": false,
-                "effortLevel": "medium",
-                "outputStyle": "Default",
-                "spinnerTipsEnabled": true,
-                "terminalProgressBarEnabled": true
-            }))
+        assert_setting_absent(&launch_settings, "model");
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(false));
+        assert_permission_mode(&launch_settings, "default");
+        assert_setting_value(&launch_settings, "fastMode", Value::Bool(false));
+        assert_setting_value(
+            &launch_settings,
+            "effortLevel",
+            Value::String("medium".to_owned()),
+        );
+        assert_setting_value(&launch_settings, "outputStyle", Value::String("Default".to_owned()));
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(true));
+        assert_setting_value(
+            &launch_settings,
+            "terminalProgressBarEnabled",
+            Value::Bool(true),
         );
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
@@ -273,17 +278,21 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language, None);
-        assert_eq!(
-            launch_settings.settings,
-            Some(serde_json::json!({
-                "alwaysThinkingEnabled": true,
-                "permissions": { "defaultMode": "default" },
-                "fastMode": true,
-                "effortLevel": "high",
-                "outputStyle": "Learning",
-                "spinnerTipsEnabled": false,
-                "terminalProgressBarEnabled": false
-            }))
+        assert_setting_absent(&launch_settings, "model");
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(true));
+        assert_permission_mode(&launch_settings, "default");
+        assert_setting_value(&launch_settings, "fastMode", Value::Bool(true));
+        assert_setting_value(&launch_settings, "effortLevel", Value::String("high".to_owned()));
+        assert_setting_value(
+            &launch_settings,
+            "outputStyle",
+            Value::String("Learning".to_owned()),
+        );
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(false));
+        assert_setting_value(
+            &launch_settings,
+            "terminalProgressBarEnabled",
+            Value::Bool(false),
         );
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
@@ -321,5 +330,39 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Logout);
 
         assert!(launch_settings.is_empty());
+    }
+
+    fn settings_object(launch_settings: &SessionLaunchSettings) -> &Map<String, Value> {
+        launch_settings
+            .settings
+            .as_ref()
+            .and_then(Value::as_object)
+            .expect("settings object")
+    }
+
+    fn assert_setting_value(
+        launch_settings: &SessionLaunchSettings,
+        key: &str,
+        expected: Value,
+    ) {
+        assert_eq!(settings_object(launch_settings).get(key), Some(&expected));
+    }
+
+    fn assert_setting_absent(launch_settings: &SessionLaunchSettings, key: &str) {
+        assert!(
+            !settings_object(launch_settings).contains_key(key),
+            "expected `{key}` to be absent"
+        );
+    }
+
+    fn assert_permission_mode(launch_settings: &SessionLaunchSettings, expected: &str) {
+        let permissions = settings_object(launch_settings)
+            .get("permissions")
+            .and_then(Value::as_object)
+            .expect("permissions object");
+        assert_eq!(
+            permissions.get("defaultMode"),
+            Some(&Value::String(expected.to_owned()))
+        );
     }
 }

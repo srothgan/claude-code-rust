@@ -639,6 +639,17 @@ mod tests {
         assert!(predicate(app), "condition not met before timeout");
     }
 
+    fn candidate(rel_path: &str) -> FileCandidate {
+        FileCandidate {
+            rel_path: rel_path.to_owned(),
+            rel_path_lower: rel_path.to_lowercase(),
+            basename_lower: candidate_basename(rel_path).to_lowercase(),
+            depth: rel_path.matches('/').count(),
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: rel_path.ends_with('/'),
+        }
+    }
+
     #[test]
     fn reopening_mention_reuses_existing_generation() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
@@ -796,39 +807,58 @@ mod tests {
     }
 
     #[test]
-    fn watcher_create_updates_visible_candidates() {
-        let (mut app, tmp) = app_with_temp_files(&["existing.rs"]);
-        app.input.set_text("@new");
-        let _ = app.input.set_cursor(0, 4);
-        mention::activate(&mut app);
-        wait_for(&mut app, Duration::from_secs(2), |app| app.file_index.scan_finished);
+    fn fs_batch_create_updates_visible_candidates_without_real_watcher() {
+        let mut app = App::test_default();
+        app.file_index.generation = 5;
+        app.file_index.scan_finished = true;
+        app.file_index.entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
+        app.mention = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
 
-        std::fs::write(tmp.path().join("new.rs"), "").expect("create watched file");
-
-        wait_for(&mut app, Duration::from_secs(4), |app| {
-            app.mention.as_ref().is_some_and(|mention| {
-                mention.candidates.iter().any(|candidate| candidate.rel_path == "new.rs")
+        app.file_index_event_tx
+            .send(FileIndexEvent::FsBatch {
+                generation: 5,
+                changes: vec![FileIndexChange::Upsert(candidate("new.rs"))],
             })
-        });
+            .expect("send fs batch");
+
+        drain_events(&mut app);
+
+        assert!(app.needs_redraw);
+        let mention = app.mention.as_ref().expect("mention");
+        assert_eq!(
+            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect::<Vec<_>>(),
+            vec!["new.rs"]
+        );
     }
 
     #[test]
-    fn watcher_rename_replaces_old_path() {
-        let (mut app, tmp) = app_with_temp_files(&["before.rs"]);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-        mention::activate(&mut app);
-        wait_for(&mut app, Duration::from_secs(2), |app| app.file_index.scan_finished);
+    fn fs_batch_rename_replaces_old_path_without_real_watcher() {
+        let (mut app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        app.file_index.generation = 9;
+        app.file_index.scan_finished = true;
+        app.file_index.root = Some(root.clone());
+        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
+        app.file_index.entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
+        app.mention = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
 
-        std::fs::rename(tmp.path().join("before.rs"), tmp.path().join("after.rs"))
-            .expect("rename watched file");
+        std::fs::rename(root.join("before.rs"), root.join("after.rs")).expect("rename watched file");
+        let changes = collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
+        app.file_index_event_tx
+            .send(FileIndexEvent::FsBatch { generation: 9, changes })
+            .expect("send rename fs batch");
 
-        wait_for(&mut app, Duration::from_secs(4), |app| {
-            app.mention.as_ref().is_some_and(|mention| {
-                mention.candidates.iter().any(|candidate| candidate.rel_path == "after.rs")
-                    && !mention.candidates.iter().any(|candidate| candidate.rel_path == "before.rs")
-            })
-        });
+        drain_events(&mut app);
+
+        assert!(!app.file_index.entries.contains_key("before.rs"));
+        assert!(app.file_index.entries.contains_key("after.rs"));
+        assert!(app.file_index.entries.contains_key("keep.rs"));
+        let mention = app.mention.as_ref().expect("mention");
+        let visible =
+            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect::<Vec<_>>();
+        assert!(visible.contains(&"after.rs"));
+        assert!(visible.contains(&"keep.rs"));
+        assert!(!visible.contains(&"before.rs"));
     }
 
     #[test]
