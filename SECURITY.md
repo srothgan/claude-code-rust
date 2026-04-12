@@ -35,6 +35,6 @@ reported to their respective maintainers.
 
 ## Security Measures
 
-- Dependencies are audited weekly via `cargo audit` (automated in CI)
+- Dependencies are audited weekly via `cargo audit` (scheduled GitHub Actions workflow, every Monday)
 - Dependency updates are managed via Dependabot
-- All PRs require CI checks including security audit
+- All PRs require CI checks (test, clippy, fmt, MSRV, lockfile)

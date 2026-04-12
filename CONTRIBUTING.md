@@ -33,6 +33,11 @@ By participating, you agree to uphold this code.
    cargo fmt --all -- --check
    cargo clippy --all-targets --all-features -- -D warnings
    cargo test --all-features
+   cargo fetch --locked
+   ```
+   If you have the MSRV toolchain (`1.88.0`) installed, also verify:
+   ```bash
+   cargo +1.88.0 check --all-features
    ```
 6. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
    ```
@@ -44,31 +49,48 @@ By participating, you agree to uphold this code.
 
 ## Development Setup
 
-```bash
-# Prerequisites
-# - Rust 1.88.0+ (install via https://rustup.rs)
-# - Node.js 18+ (for the in-repo agent bridge)
-# - npx (included with Node.js)
+### Prerequisites
 
-# Clone and build
+- Rust 1.88.0+ (install via https://rustup.rs)
+- Node.js 18+ (for the in-repo agent bridge)
+- npx (included with Node.js)
+
+### Clone and Build
+
+```bash
 git clone https://github.com/srothgan/claude-code-rust.git
 cd claude_rust
 cargo build
+```
 
-# Run
+### Run
+
+```bash
 cargo run
 
 # Run with debug logging
 RUST_LOG=debug cargo run
+```
 
-# Run tests
-cargo test
+### Running CI Checks Locally
 
-# Check formatting
+These match the checks in `.github/workflows/ci.yml`:
+
+```bash
+# Formatting
 cargo fmt --all -- --check
 
-# Run lints
+# Linting
 cargo clippy --all-targets --all-features -- -D warnings
+
+# Tests
+cargo test --all-features
+
+# Lockfile integrity
+cargo fetch --locked
+
+# MSRV (requires the 1.88.0 toolchain)
+cargo +1.88.0 check --all-features
 ```
 
 ## Coding Standards
@@ -82,12 +104,32 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## Architecture
 
-See [detailed-plan.md](notes/detailed-plan.md) for the full architecture and implementation plan.
+The project is split into a Rust binary and an in-repo TypeScript bridge:
 
-Key architectural decisions:
-- Bridge/runtime tasks that are `!Send` run on `tokio::task::LocalSet`
-- UI and the agent bridge communicate via `tokio::sync::mpsc` channels
-- The TUI uses Ratatui with Crossterm backend (cross-platform)
+```
+src/
+├── main.rs          # Entry point – CLI parsing, tokio runtime + LocalSet
+├── agent/           # Bridge spawning, NDJSON client, wire types, event handling
+├── app/             # Application state, event loop, config, permissions, input
+└── ui/              # Ratatui widgets – chat view, markdown, diffs, footer, themes
+
+agent-sdk/
+└── src/             # TypeScript NDJSON stdio bridge wrapping @anthropic-ai/claude-agent-sdk
+```
+
+**How the pieces connect:**
+
+1. `main.rs` boots a `tokio::task::LocalSet` (required because the bridge child
+   process handles are `!Send`) and hands control to `app::run_tui`.
+2. `agent::client::BridgeClient` spawns `agent-sdk/dist/bridge.mjs` as a child
+   process and communicates over **NDJSON on stdin/stdout**.
+3. The Rust side sends `CommandEnvelope`s (start session, submit prompt,
+   permission responses, …) and receives `EventEnvelope`s (assistant messages,
+   tool calls, errors, …).
+4. `app/` ties everything together: it owns the `App` state, routes terminal
+   events and bridge events through `tokio::sync::mpsc` channels, and drives the
+   TUI render loop.
+5. `ui/` is a pure rendering layer built on **Ratatui + Crossterm** (cross-platform).
 
 ## License
 

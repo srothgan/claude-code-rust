@@ -1,6 +1,6 @@
 # claude-rs agent-sdk bridge
 
-Initial scaffold for the NDJSON stdio bridge that will connect Rust (`claude-code-rust`) with `@anthropic-ai/claude-agent-sdk`.
+NDJSON stdio bridge that connects the Rust TUI (`claude-code-rust`) with `@anthropic-ai/claude-agent-sdk`. Spawned as a child process by the Rust binary and communicates via line-delimited JSON envelopes over stdin/stdout.
 
 ## Local build
 
