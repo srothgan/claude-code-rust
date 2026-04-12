@@ -18,14 +18,17 @@ fn task_meta() -> serde_json::Map<String, serde_json::Value> {
     meta
 }
 
+#[allow(clippy::expect_used)]
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.tool_call_index[id];
-    let Some(MessageBlock::ToolCall(tool_call)) =
-        app.messages.get(message_index).and_then(|message| message.blocks.get(block_index))
-    else {
-        panic!("expected ToolCall block for {id}");
-    };
-    tool_call
+    app.messages
+        .get(message_index)
+        .and_then(|message| message.blocks.get(block_index))
+        .and_then(|block| match block {
+            MessageBlock::ToolCall(tool_call) => Some(tool_call.as_ref()),
+            _ => None,
+        })
+        .expect("expected ToolCall block")
 }
 
 // --- ToolCallUpdate lifecycle ---
@@ -130,7 +133,10 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
         )),
     );
 
-    assert!(matches!(mixed_app.status, AppStatus::Thinking), "mixed terminal outcomes should also resume thinking");
+    assert!(
+        matches!(mixed_app.status, AppStatus::Thinking),
+        "mixed terminal outcomes should also resume thinking"
+    );
 }
 
 // --- Task tool call tracking ---
@@ -216,8 +222,7 @@ async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
     let mut expanded_app = test_app();
     expanded_app.tools_collapsed = false;
 
-    let tc =
-        model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
+    let tc = model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
     send_client_event(
         &mut expanded_app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),

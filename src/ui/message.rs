@@ -1992,7 +1992,8 @@ mod tests {
         let rendered = render_lines_to_strings(&lines);
 
         assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        let heading_idx = rendered.iter().position(|line| line.contains("Heading")).expect("heading");
+        let heading_idx =
+            rendered.iter().position(|line| line.contains("Heading")).expect("heading");
         assert_eq!(heading_idx, 1);
         assert!(!rendered[heading_idx].is_empty());
     }
@@ -2020,7 +2021,8 @@ mod tests {
 
         assert_eq!(remaining, 0);
         assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        let heading_idx = rendered.iter().position(|line| line.contains("Heading")).expect("heading");
+        let heading_idx =
+            rendered.iter().position(|line| line.contains("Heading")).expect("heading");
         assert_eq!(heading_idx, 1);
         assert!(!rendered[heading_idx].is_empty());
     }
@@ -2187,7 +2189,8 @@ mod tests {
         let without_separator =
             MessageRenderOptions { include_trailing_separator: false, ..default_options() };
 
-        let with_cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, with_separator);
+        let with_cache =
+            get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, with_separator);
         let with_height = with_cache.height();
         let with_segments = with_cache.segments().len();
 
@@ -2195,7 +2198,8 @@ mod tests {
             get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, without_separator);
         assert!(without_cache.height() <= with_height);
         assert!(
-            without_cache.height() != with_height || without_cache.segments().len() != with_segments
+            without_cache.height() != with_height
+                || without_cache.segments().len() != with_segments
         );
     }
 

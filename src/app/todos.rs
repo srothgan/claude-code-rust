@@ -81,8 +81,8 @@ pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use crate::app::App;
+    use serde_json::json;
 
     fn todo(content: &str, status: TodoStatus) -> TodoItem {
         TodoItem { content: content.to_owned(), status, active_form: String::new() }
@@ -228,8 +228,16 @@ mod tests {
     fn apply_plan_todos_maps_bridge_statuses_and_hides_completed_plans() {
         let mut app = App::test_default();
         let active_plan = model::Plan::new(vec![
-            model::PlanEntry::new("pending", model::PlanEntryPriority::Medium, model::PlanEntryStatus::Pending),
-            model::PlanEntry::new("running", model::PlanEntryPriority::High, model::PlanEntryStatus::InProgress),
+            model::PlanEntry::new(
+                "pending",
+                model::PlanEntryPriority::Medium,
+                model::PlanEntryStatus::Pending,
+            ),
+            model::PlanEntry::new(
+                "running",
+                model::PlanEntryPriority::High,
+                model::PlanEntryStatus::InProgress,
+            ),
         ]);
 
         apply_plan_todos(&mut app, &active_plan);
@@ -238,9 +246,11 @@ mod tests {
         assert_eq!(app.todos[0].status, TodoStatus::Pending);
         assert_eq!(app.todos[1].status, TodoStatus::InProgress);
 
-        let completed_plan = model::Plan::new(vec![
-            model::PlanEntry::new("done", model::PlanEntryPriority::Low, model::PlanEntryStatus::Completed),
-        ]);
+        let completed_plan = model::Plan::new(vec![model::PlanEntry::new(
+            "done",
+            model::PlanEntryPriority::Low,
+            model::PlanEntryStatus::Completed,
+        )]);
 
         apply_plan_todos(&mut app, &completed_plan);
 

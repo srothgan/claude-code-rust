@@ -703,7 +703,9 @@ mod tests {
         app.status = AppStatus::Connecting;
 
         let items = build_help_items(&app);
-        assert!(items.iter().any(|(name, _)| name.contains("Loading") && name.contains("commands")));
+        assert!(
+            items.iter().any(|(name, _)| name.contains("Loading") && name.contains("commands"))
+        );
         assert!(!has_item(
             &items,
             "No slash commands advertised",
@@ -759,6 +761,8 @@ mod tests {
         app.status = AppStatus::Connecting;
 
         let items = build_help_items(&app);
-        assert!(items.iter().any(|(name, _)| name.contains("Loading") && name.contains("subagents")));
+        assert!(
+            items.iter().any(|(name, _)| name.contains("Loading") && name.contains("subagents"))
+        );
     }
 }

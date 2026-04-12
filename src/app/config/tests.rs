@@ -184,12 +184,7 @@ fn reopen_clears_stale_transient_feedback() {
 #[test]
 fn space_persists_setting_toggles_to_the_expected_document() {
     let cases = [
-        (
-            SettingId::FastMode,
-            ".claude/settings.json",
-            vec!["fastMode"],
-            Value::Bool(true),
-        ),
+        (SettingId::FastMode, ".claude/settings.json", vec!["fastMode"], Value::Bool(true)),
         (
             SettingId::AlwaysThinking,
             ".claude/settings.json",

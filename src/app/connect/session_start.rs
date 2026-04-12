@@ -204,18 +204,14 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language.as_deref(), Some("German"));
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(true));
-        assert_setting_value(&launch_settings, "model", Value::String("haiku".to_owned()));
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
+        assert_setting_value(&launch_settings, "model", &Value::String("haiku".to_owned()));
         assert_permission_mode(&launch_settings, "plan");
-        assert_setting_value(&launch_settings, "fastMode", Value::Bool(false));
-        assert_setting_value(&launch_settings, "effortLevel", Value::String("high".to_owned()));
-        assert_setting_value(&launch_settings, "outputStyle", Value::String("Default".to_owned()));
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(true));
-        assert_setting_value(
-            &launch_settings,
-            "terminalProgressBarEnabled",
-            Value::Bool(true),
-        );
+        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
+        assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
+        assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
+        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
@@ -238,21 +234,13 @@ mod tests {
 
         assert_eq!(launch_settings.language, None);
         assert_setting_absent(&launch_settings, "model");
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(false));
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
         assert_permission_mode(&launch_settings, "default");
-        assert_setting_value(&launch_settings, "fastMode", Value::Bool(false));
-        assert_setting_value(
-            &launch_settings,
-            "effortLevel",
-            Value::String("medium".to_owned()),
-        );
-        assert_setting_value(&launch_settings, "outputStyle", Value::String("Default".to_owned()));
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(true));
-        assert_setting_value(
-            &launch_settings,
-            "terminalProgressBarEnabled",
-            Value::Bool(true),
-        );
+        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
+        assert_setting_value(&launch_settings, "effortLevel", &Value::String("medium".to_owned()));
+        assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
+        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
@@ -279,21 +267,17 @@ mod tests {
 
         assert_eq!(launch_settings.language, None);
         assert_setting_absent(&launch_settings, "model");
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", Value::Bool(true));
+        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
         assert_permission_mode(&launch_settings, "default");
-        assert_setting_value(&launch_settings, "fastMode", Value::Bool(true));
-        assert_setting_value(&launch_settings, "effortLevel", Value::String("high".to_owned()));
+        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));
+        assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
         assert_setting_value(
             &launch_settings,
             "outputStyle",
-            Value::String("Learning".to_owned()),
+            &Value::String("Learning".to_owned()),
         );
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", Value::Bool(false));
-        assert_setting_value(
-            &launch_settings,
-            "terminalProgressBarEnabled",
-            Value::Bool(false),
-        );
+        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(false));
+        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(false));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
     }
 
@@ -333,19 +317,11 @@ mod tests {
     }
 
     fn settings_object(launch_settings: &SessionLaunchSettings) -> &Map<String, Value> {
-        launch_settings
-            .settings
-            .as_ref()
-            .and_then(Value::as_object)
-            .expect("settings object")
+        launch_settings.settings.as_ref().and_then(Value::as_object).expect("settings object")
     }
 
-    fn assert_setting_value(
-        launch_settings: &SessionLaunchSettings,
-        key: &str,
-        expected: Value,
-    ) {
-        assert_eq!(settings_object(launch_settings).get(key), Some(&expected));
+    fn assert_setting_value(launch_settings: &SessionLaunchSettings, key: &str, expected: &Value) {
+        assert_eq!(settings_object(launch_settings).get(key), Some(expected));
     }
 
     fn assert_setting_absent(launch_settings: &SessionLaunchSettings, key: &str) {
@@ -360,9 +336,6 @@ mod tests {
             .get("permissions")
             .and_then(Value::as_object)
             .expect("permissions object");
-        assert_eq!(
-            permissions.get("defaultMode"),
-            Some(&Value::String(expected.to_owned()))
-        );
+        assert_eq!(permissions.get("defaultMode"), Some(&Value::String(expected.to_owned())));
     }
 }

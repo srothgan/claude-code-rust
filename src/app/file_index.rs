@@ -826,7 +826,11 @@ mod tests {
         assert!(app.needs_redraw);
         let mention = app.mention.as_ref().expect("mention");
         assert_eq!(
-            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect::<Vec<_>>(),
+            mention
+                .candidates
+                .iter()
+                .map(|candidate| candidate.rel_path.as_str())
+                .collect::<Vec<_>>(),
             vec!["new.rs"]
         );
     }
@@ -842,8 +846,10 @@ mod tests {
         app.file_index.entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
         app.mention = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
 
-        std::fs::rename(root.join("before.rs"), root.join("after.rs")).expect("rename watched file");
-        let changes = collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
+        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
+            .expect("rename watched file");
+        let changes =
+            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch { generation: 9, changes })
             .expect("send rename fs batch");
@@ -854,8 +860,11 @@ mod tests {
         assert!(app.file_index.entries.contains_key("after.rs"));
         assert!(app.file_index.entries.contains_key("keep.rs"));
         let mention = app.mention.as_ref().expect("mention");
-        let visible =
-            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect::<Vec<_>>();
+        let visible = mention
+            .candidates
+            .iter()
+            .map(|candidate| candidate.rel_path.as_str())
+            .collect::<Vec<_>>();
         assert!(visible.contains(&"after.rs"));
         assert!(visible.contains(&"keep.rs"));
         assert!(!visible.contains(&"before.rs"));

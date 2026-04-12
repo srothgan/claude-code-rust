@@ -635,10 +635,7 @@ mod tests {
         let saved: Value =
             serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
 
-        assert_eq!(
-            preferred_notification_channel(&saved),
-            Ok(PreferredNotifChannel::TerminalBell)
-        );
+        assert_eq!(preferred_notification_channel(&saved), Ok(PreferredNotifChannel::TerminalBell));
         assert_eq!(respect_gitignore(&saved), Ok(false));
         assert_eq!(terminal_progress_bar_enabled(&saved), Ok(false));
         assert_eq!(saved["theme"], Value::String("dark".to_owned()));

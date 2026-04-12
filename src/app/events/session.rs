@@ -537,8 +537,7 @@ mod tests {
         assert!(app.file_index.entries.is_empty());
         assert!(app.mention.is_none());
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished
-                && app.file_index.entries.contains_key("new.rs")
+            app.file_index.scan_finished && app.file_index.entries.contains_key("new.rs")
         });
         assert_eq!(
             app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -572,8 +571,7 @@ mod tests {
         assert!(app.file_index.entries.is_empty());
         assert!(app.mention.is_none());
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished
-                && app.file_index.entries.contains_key("after.rs")
+            app.file_index.scan_finished && app.file_index.entries.contains_key("after.rs")
         });
         assert_eq!(
             app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),

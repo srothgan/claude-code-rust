@@ -112,9 +112,11 @@ mod tests {
     #[test]
     fn explicit_script_path_builds_launcher_with_supplied_runtime() {
         let fixture = runtime_fixture().expect("runtime fixture");
-        let launcher =
-            resolve_bridge_launcher_with_runtime(fixture.runtime_path.clone(), Some(&fixture.script_path))
-                .expect("launcher");
+        let launcher = resolve_bridge_launcher_with_runtime(
+            fixture.runtime_path.clone(),
+            Some(&fixture.script_path),
+        )
+        .expect("launcher");
 
         assert_eq!(
             launcher,
@@ -181,11 +183,7 @@ mod tests {
         fs::write(&script_path, "// bridge test fixture\n")?;
         make_executable(&runtime_path)?;
 
-        Ok(RuntimeFixture {
-            _dir: dir,
-            runtime_path,
-            script_path,
-        })
+        Ok(RuntimeFixture { _dir: dir, runtime_path, script_path })
     }
 
     #[cfg(windows)]
@@ -228,6 +226,7 @@ mod tests {
     }
 
     #[cfg(not(unix))]
+    #[allow(clippy::unnecessary_wraps)]
     fn make_executable(_path: &Path) -> std::io::Result<()> {
         Ok(())
     }

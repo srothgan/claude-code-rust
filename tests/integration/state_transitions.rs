@@ -420,7 +420,6 @@ async fn rapid_turn_complete_then_new_streaming() {
     assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
 }
 
-
 #[tokio::test]
 async fn available_commands_update_replaces_previous() {
     let mut app = test_app();
@@ -443,7 +442,6 @@ async fn available_commands_update_replaces_previous() {
     );
     assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
 }
-
 
 #[tokio::test]
 async fn error_during_tool_calls_leaves_tool_calls_intact() {
