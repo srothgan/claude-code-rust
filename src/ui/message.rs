@@ -1055,8 +1055,12 @@ pub(super) fn render_text_cached(
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    // Fast path: full block cache is valid (completed message, no changes)
-    if let Some(cached_lines) = cache.get() {
+    // Fast path only when the cached lines were measured at this width.
+    // Markdown tables produce width-dependent logical lines before paragraph
+    // wrapping, so a fresh cache from another width is not safe to reuse.
+    if cache.height_at(width).is_some()
+        && let Some(cached_lines) = cache.get()
+    {
         crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
         return;
@@ -1829,6 +1833,62 @@ mod tests {
         let (h_narrow, _) = measure_message_height_cached(&mut measured_msg, &spinner, 28, 2);
         let narrow_truth = ground_truth_height(&mut truth_narrow, &spinner, 28);
         assert_eq!(h_narrow, narrow_truth);
+    }
+
+    #[test]
+    fn markdown_table_rerenders_when_width_changes_in_both_directions() {
+        let spinner = idle_spinner();
+        let table = concat!(
+            "| Name | Description |\n",
+            "| --- | --- |\n",
+            "| foo | long wrapped value |\n",
+        );
+        let mut msg = make_text_message(MessageRole::Assistant, table);
+
+        let mut wide_lines = Vec::new();
+        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+            &mut msg,
+            &spinner,
+            40,
+            1,
+            false,
+            true,
+            &mut wide_lines,
+        );
+        let wide_rendered = render_lines_to_strings(&wide_lines);
+        assert!(wide_rendered.iter().any(|line| line.contains("Name")));
+        assert!(wide_rendered.iter().any(|line| line.contains('─')));
+        assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
+
+        let mut narrow_lines = Vec::new();
+        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+            &mut msg,
+            &spinner,
+            12,
+            2,
+            false,
+            true,
+            &mut narrow_lines,
+        );
+        let narrow_rendered = render_lines_to_strings(&narrow_lines);
+        assert!(narrow_rendered.iter().any(|line| line.contains("Name:")));
+        assert!(narrow_rendered.iter().any(|line| line.contains("Description")));
+        assert!(!narrow_rendered.iter().any(|line| line.contains('─')));
+
+        let mut wide_again_lines = Vec::new();
+        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+            &mut msg,
+            &spinner,
+            40,
+            3,
+            false,
+            true,
+            &mut wide_again_lines,
+        );
+        let wide_again_rendered = render_lines_to_strings(&wide_again_lines);
+        assert!(wide_again_rendered.iter().any(|line| line.contains("Name")));
+        assert!(wide_again_rendered.iter().any(|line| line.contains('─')));
+        assert!(!wide_again_rendered.iter().any(|line| line.contains("Name:")));
     }
 
     #[test]
