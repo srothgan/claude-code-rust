@@ -300,6 +300,22 @@ mod tests {
     }
 
     #[test]
+    fn local_slash_submit_marks_redraw() {
+        let (mut app, _rx) = app_with_connection();
+        app.input.set_text("/docs commands");
+        app.needs_redraw = false;
+
+        submit_input(&mut app);
+
+        assert!(app.needs_redraw);
+        assert!(app.input.text().is_empty());
+        let Some(last) = app.messages.last() else {
+            panic!("expected docs system message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
+    }
+
+    #[test]
     fn auto_submit_dispatches_draft_once_ready() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;

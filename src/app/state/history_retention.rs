@@ -288,6 +288,7 @@ impl super::App {
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
         self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
+        self.needs_redraw = true;
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
@@ -312,6 +313,7 @@ impl super::App {
         } else {
             self.sync_after_message_topology_change(insert_idx);
         }
+        self.needs_redraw = true;
     }
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
@@ -335,6 +337,7 @@ impl super::App {
         } else {
             self.viewport.sync_message_count(0);
         }
+        self.needs_redraw = true;
         Some(removed)
     }
 
@@ -347,6 +350,7 @@ impl super::App {
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.viewport.sync_message_count(0);
+        self.needs_redraw = true;
     }
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {

@@ -20,6 +20,13 @@ use std::rc::Rc;
 
 pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
+const DOCS_TOPICS: [(&str, &str); 5] = [
+    ("mode", "Show current and available session modes"),
+    ("models", "Show advertised models and capabilities"),
+    ("shortcuts", "Show live keyboard shortcuts for the current app state"),
+    ("commands", "Show app and SDK slash commands"),
+    ("agents", "Show advertised subagents"),
+];
 
 // Re-export public API
 pub use executors::try_handle_submit;
@@ -187,6 +194,7 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
+        assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
         assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
         assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
@@ -371,6 +379,100 @@ mod tests {
     }
 
     #[test]
+    fn docs_argument_candidates_are_static_topics() {
+        let app = App::test_default();
+        let candidates = argument_candidates(&app, "/docs", 0);
+        assert!(candidates.iter().any(|c| c.insert_value == "mode"));
+        assert!(candidates.iter().any(|c| c.insert_value == "models"));
+        assert!(candidates.iter().any(|c| c.insert_value == "shortcuts"));
+        assert!(candidates.iter().any(|c| c.insert_value == "commands"));
+        assert!(candidates.iter().any(|c| c.insert_value == "agents"));
+    }
+
+    #[test]
+    fn docs_without_args_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/docs");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
+    }
+
+    #[test]
+    fn docs_commands_reuse_help_rows() {
+        let mut app = App::test_default();
+        app.available_commands =
+            vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
+
+        let consumed = try_handle_submit(&mut app, "/docs commands");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("| Command | Description |"));
+        assert!(block.text.contains("/config"));
+        assert!(block.text.contains("/docs"));
+        assert!(block.text.contains("/help"));
+    }
+
+    #[test]
+    fn docs_shortcuts_use_live_help_state() {
+        let mut app = App::test_default();
+        app.show_todo_panel = true;
+        app.todos.push(crate::app::TodoItem {
+            content: "Task".into(),
+            status: crate::app::TodoStatus::Pending,
+            active_form: String::new(),
+        });
+
+        let consumed = try_handle_submit(&mut app, "/docs shortcuts");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("| Shortcut | Action |"));
+        assert!(block.text.contains("Toggle todo focus"));
+    }
+
+    #[test]
+    fn docs_with_unknown_topic_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/docs nope");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("Unknown docs topic: nope"));
+        assert!(block.text.contains("Usage: /docs <mode|models|shortcuts|commands|agents>"));
+    }
+
+    #[test]
+    fn docs_with_extra_args_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/docs commands extra");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
+    }
+
+    #[test]
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
         app.input.set_text("/cancel now");
@@ -458,6 +560,20 @@ mod tests {
     fn resume_with_missing_id_returns_usage() {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /resume <session_id>");
+    }
+
+    #[test]
+    fn resume_with_extra_args_returns_usage() {
+        let mut app = App::test_default();
+        let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
         assert!(consumed);
         let Some(last) = app.messages.last() else {
             panic!("expected usage message");
@@ -681,6 +797,36 @@ mod tests {
     }
 
     #[test]
+    fn model_with_missing_id_returns_usage_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/model");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /model <id>");
+    }
+
+    #[test]
+    fn model_with_extra_args_returns_usage_message() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/model sonnet extra");
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected system usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /model <id>");
+    }
+
+    #[test]
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
         app.input.set_text("/mode");
@@ -700,6 +846,74 @@ mod tests {
         confirm_selection(&mut app);
 
         assert_eq!(app.input.text(), "/mode");
+    }
+
+    #[test]
+    fn docs_command_confirm_enters_argument_mode() {
+        let mut app = App::test_default();
+        app.input.set_text("/do");
+        let _ = app.input.set_cursor(0, "/do".chars().count());
+        app.slash = Some(SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: "do".into(),
+            context: SlashContext::CommandName,
+            candidates: vec![SlashCandidate {
+                insert_value: "/docs".into(),
+                primary: "/docs".into(),
+                secondary: Some("Show in-chat help topics".into()),
+            }],
+            dialog: DialogState::default(),
+        });
+
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.text(), "/docs ");
+        let slash = app.slash.as_ref().expect("topic autocomplete should activate");
+        match &slash.context {
+            SlashContext::Argument { command, arg_index, .. } => {
+                assert_eq!(command, "/docs");
+                assert_eq!(*arg_index, 0);
+            }
+            SlashContext::CommandName => panic!("expected argument autocomplete"),
+        }
+        assert!(slash.candidates.iter().any(|candidate| candidate.insert_value == "mode"));
+    }
+
+    #[test]
+    fn single_argument_builtin_selection_closes_autocomplete() {
+        for (command, value) in [
+            ("/docs", "commands"),
+            ("/mode", "plan"),
+            ("/model", "sonnet"),
+            ("/resume", "session-1"),
+        ] {
+            let mut app = App::test_default();
+            let input = format!("{command} ");
+            app.input.set_text(&input);
+            let _ = app.input.set_cursor(0, input.chars().count());
+            app.slash = Some(SlashState {
+                trigger_row: 0,
+                trigger_col: input.chars().count(),
+                query: String::new(),
+                context: SlashContext::Argument {
+                    command: command.to_owned(),
+                    arg_index: 0,
+                    token_range: (input.chars().count(), input.chars().count()),
+                },
+                candidates: vec![SlashCandidate {
+                    insert_value: value.to_owned(),
+                    primary: value.to_owned(),
+                    secondary: None,
+                }],
+                dialog: DialogState::default(),
+            });
+
+            confirm_selection(&mut app);
+
+            assert_eq!(app.input.text(), format!("{command} {value} "));
+            assert!(app.slash.is_none(), "{command} should close after first argument");
+        }
     }
 
     #[test]

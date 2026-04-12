@@ -11,6 +11,7 @@ use crate::agent::events::ClientEvent;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use crate::app::events::push_system_message_with_severity;
 use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
+use std::fmt::Write as _;
 
 /// Handle slash command submission.
 ///
@@ -25,6 +26,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/docs" => handle_docs_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
@@ -77,6 +79,31 @@ fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open settings: {err}"));
     }
+    true
+}
+
+fn handle_docs_submit(app: &mut App, args: &[&str]) -> bool {
+    let topic = match args {
+        [topic] if !topic.trim().is_empty() => topic.trim(),
+        _ => {
+            push_system_message(app, docs_usage());
+            return true;
+        }
+    };
+
+    let body = match topic {
+        "mode" => build_docs_mode_markdown(app),
+        "models" => build_docs_models_markdown(app),
+        "shortcuts" => build_docs_shortcuts_markdown(app),
+        "commands" => build_docs_commands_markdown(app),
+        "agents" => build_docs_agents_markdown(app),
+        other => {
+            push_system_message(app, format!("Unknown docs topic: {other}\n{}", docs_usage()));
+            return true;
+        }
+    };
+
+    push_system_message_with_severity(app, Some(SystemSeverity::Info), &body);
     true
 }
 
@@ -388,9 +415,13 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
-    let model_name = args.join(" ");
-    if model_name.trim().is_empty() {
-        push_system_message(app, "Usage: /model <name>");
+    let [model_name_arg] = args else {
+        push_system_message(app, "Usage: /model <id>");
+        return true;
+    };
+    let model_name = model_name_arg.trim();
+    if model_name.is_empty() {
+        push_system_message(app, "Usage: /model <id>");
         return true;
     }
 
@@ -416,6 +447,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     );
 
     let tx = app.event_tx.clone();
+    let model_name = model_name.to_owned();
     tokio::task::spawn_local(async move {
         match conn.set_model(sid.to_string(), model_name) {
             Ok(()) => {}
@@ -483,4 +515,144 @@ fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
     }
     push_system_message(app, format!("{command_name} is not yet supported"));
     true
+}
+
+fn docs_usage() -> &'static str {
+    "Usage: /docs <mode|models|shortcuts|commands|agents>"
+}
+
+fn build_docs_mode_markdown(app: &App) -> String {
+    let rows = app.mode.as_ref().map_or_else(
+        || vec![("Unavailable".to_owned(), "Connect to load the current session mode.".to_owned())],
+        |mode| {
+            let mut rows: Vec<(String, String)> = mode
+                .available_modes
+                .iter()
+                .map(|entry| {
+                    let mut details = format!("ID `{}`", entry.id);
+                    if entry.id == mode.current_mode_id {
+                        details.push_str("; current");
+                    }
+                    (entry.name.clone(), details)
+                })
+                .collect();
+            if rows.is_empty() {
+                rows.push((
+                    mode.current_mode_name.clone(),
+                    format!("ID `{}`; current", mode.current_mode_id),
+                ));
+            }
+            rows
+        },
+    );
+
+    render_docs_table(
+        "Docs: Mode",
+        "Current and available session modes.",
+        ("Mode", "Details"),
+        rows,
+    )
+}
+
+fn build_docs_models_markdown(app: &App) -> String {
+    let rows = if app.available_models.is_empty() {
+        vec![("Unavailable".to_owned(), "Connect to load advertised models.".to_owned())]
+    } else {
+        app.available_models
+            .iter()
+            .map(|model| {
+                let name = if model.display_name.trim().is_empty() {
+                    model.id.clone()
+                } else {
+                    model.display_name.clone()
+                };
+                (name, model_details(model))
+            })
+            .collect()
+    };
+
+    render_docs_table(
+        "Docs: Models",
+        "Advertised models and capabilities for the current session.",
+        ("Model", "Details"),
+        rows,
+    )
+}
+
+fn build_docs_shortcuts_markdown(app: &App) -> String {
+    render_docs_table(
+        "Docs: Shortcuts",
+        "Live keyboard shortcuts for the current app state.",
+        ("Shortcut", "Action"),
+        crate::ui::help::key_help_items(app),
+    )
+}
+
+fn build_docs_commands_markdown(app: &App) -> String {
+    render_docs_table(
+        "Docs: Commands",
+        "App-owned and advertised slash commands.",
+        ("Command", "Description"),
+        crate::ui::help::docs_command_items(app),
+    )
+}
+
+fn build_docs_agents_markdown(app: &App) -> String {
+    render_docs_table(
+        "Docs: Agents",
+        "Advertised subagents for the current session.",
+        ("Agent", "Description"),
+        crate::ui::help::subagent_help_items(app),
+    )
+}
+
+fn model_details(model: &crate::agent::model::AvailableModel) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("ID `{}`", model.id));
+    if let Some(description) = model.description.as_deref()
+        && !description.trim().is_empty()
+    {
+        parts.push(description.trim().to_owned());
+    }
+    if model.supports_effort {
+        parts.push("Effort".to_owned());
+    }
+    if model.supports_adaptive_thinking == Some(true) {
+        parts.push("Adaptive thinking".to_owned());
+    }
+    if model.supports_fast_mode == Some(true) {
+        parts.push("Fast mode".to_owned());
+    }
+    if model.supports_auto_mode == Some(true) {
+        parts.push("Auto mode".to_owned());
+    }
+    parts.join("; ")
+}
+
+fn render_docs_table(
+    title: &str,
+    intro: &str,
+    headers: (&str, &str),
+    rows: Vec<(String, String)>,
+) -> String {
+    let mut markdown = String::new();
+    let _ = writeln!(&mut markdown, "# {title}");
+    let _ = writeln!(&mut markdown);
+    let _ = writeln!(&mut markdown, "{intro}");
+    let _ = writeln!(&mut markdown);
+    let _ = writeln!(&mut markdown, "| {} | {} |", headers.0, headers.1);
+    let _ = writeln!(&mut markdown, "| --- | --- |");
+    for (left, right) in rows {
+        let _ = writeln!(
+            &mut markdown,
+            "| {} | {} |",
+            markdown_table_cell(&left),
+            markdown_table_cell(&right),
+        );
+    }
+    markdown
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value.trim().replace('|', "\\|").replace('\r', "").replace('\n', " - ")
 }

@@ -20,6 +20,16 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 8] = [
+    ("/config", "Open settings"),
+    ("/docs", "Show in-chat help topics"),
+    ("/login", "Authenticate with Claude"),
+    ("/logout", "Sign out of Claude"),
+    ("/mcp", "Open MCP"),
+    ("/plugins", "Open plugins"),
+    ("/status", "Show session status"),
+    ("/usage", "Open usage"),
+];
 
 pub fn is_active(app: &App) -> bool {
     app.is_help_active()
@@ -323,19 +333,30 @@ fn pending_command_help_label(app: &App) -> String {
     app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
-fn builtin_slash_help_commands() -> [(&'static str, &'static str); 7] {
-    [
-        ("/config", "Open settings"),
-        ("/login", "Authenticate with Claude"),
-        ("/logout", "Sign out of Claude"),
-        ("/mcp", "Open MCP"),
-        ("/plugins", "Open plugins"),
-        ("/status", "Show session status"),
-        ("/usage", "Open usage"),
-    ]
+pub(crate) fn key_help_items(app: &App) -> Vec<(String, String)> {
+    build_key_help_items(app)
+}
+
+pub(crate) fn slash_help_items(app: &App) -> Vec<(String, String)> {
+    build_slash_command_items(app, &HELP_BUILTIN_SLASH_COMMANDS)
+}
+
+pub(crate) fn docs_command_items(app: &App) -> Vec<(String, String)> {
+    slash_help_items(app)
+}
+
+pub(crate) fn subagent_help_items(app: &App) -> Vec<(String, String)> {
+    build_subagent_help_items(app)
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
+    slash_help_items(app)
+}
+
+fn build_slash_command_items(
+    app: &App,
+    builtin_commands: &[(&str, &str)],
+) -> Vec<(String, String)> {
     use std::collections::BTreeMap;
 
     let mut rows = Vec::new();
@@ -348,9 +369,9 @@ fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
         return rows;
     }
 
-    let mut commands: BTreeMap<String, String> = builtin_slash_help_commands()
-        .into_iter()
-        .map(|(name, description)| (name.to_owned(), description.to_owned()))
+    let mut commands: BTreeMap<String, String> = builtin_commands
+        .iter()
+        .map(|(name, description)| ((*name).to_owned(), (*description).to_owned()))
         .collect();
 
     for cmd in &app.available_commands {
@@ -650,6 +671,7 @@ mod tests {
 
         let items = build_help_items(&app);
         assert!(has_item(&items, "/config", "Open settings"));
+        assert!(has_item(&items, "/docs", "Show in-chat help topics"));
         assert!(has_item(&items, "/login", "Authenticate with Claude"));
         assert!(has_item(&items, "/logout", "Sign out of Claude"));
         assert!(has_item(&items, "/mcp", "Open MCP"));

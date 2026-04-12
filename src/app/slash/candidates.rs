@@ -109,7 +109,11 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(command_name, "/mode" | "/model" | "/resume")
+    matches!(command_name, "/docs" | "/mode" | "/model" | "/resume")
+}
+
+pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
+    arg_index == 0 && matches!(command_name, "/docs" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -129,6 +133,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/cancel".into(), "Cancel active turn".into());
     by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/config".into(), "Open settings".into());
+    by_name.insert("/docs".into(), "Show in-chat help topics".into());
     by_name.insert("/login".into(), "Authenticate with Claude".into());
     by_name.insert("/logout".into(), "Sign out of Claude".into());
     by_name.insert("/mcp".into(), "Open MCP".into());
@@ -253,6 +258,14 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
+        "/docs" => super::DOCS_TOPICS
+            .iter()
+            .map(|(topic, description)| SlashCandidate {
+                insert_value: (*topic).to_owned(),
+                primary: (*topic).to_owned(),
+                secondary: Some((*description).to_owned()),
+            })
+            .collect(),
         "/resume" => app
             .recent_sessions
             .iter()

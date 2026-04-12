@@ -4,9 +4,56 @@
 //! Slash command autocomplete navigation: activate, deactivate, sync,
 //! move selection, and confirm.
 
-use super::candidates::build_slash_state;
-use super::{MAX_VISIBLE, SlashContext};
+use super::candidates::{build_slash_state, builtin_argument_confirmation_closes};
+use super::{MAX_VISIBLE, SlashContext, SlashState};
 use crate::app::{App, FocusTarget};
+
+fn release_autocomplete_focus_if_idle(app: &mut App) {
+    if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {
+        app.release_focus_target(FocusTarget::Mention);
+    }
+}
+
+fn replacement_range(slash: &SlashState, chars: &[char]) -> Option<(usize, usize)> {
+    match &slash.context {
+        SlashContext::CommandName => {
+            if slash.trigger_col >= chars.len() {
+                tracing::debug!(
+                    trigger_col = slash.trigger_col,
+                    line_len = chars.len(),
+                    "Slash confirm aborted: trigger column out of bounds"
+                );
+                return None;
+            }
+            if chars[slash.trigger_col] != '/' {
+                tracing::debug!(
+                    trigger_col = slash.trigger_col,
+                    found = ?chars[slash.trigger_col],
+                    "Slash confirm aborted: trigger column is not slash"
+                );
+                return None;
+            }
+
+            let token_end = (slash.trigger_col + 1..chars.len())
+                .find(|&i| chars[i].is_whitespace())
+                .unwrap_or(chars.len());
+            Some((slash.trigger_col, token_end))
+        }
+        SlashContext::Argument { token_range, .. } => {
+            let (start, end) = *token_range;
+            if start > end || end > chars.len() {
+                tracing::debug!(
+                    start,
+                    end,
+                    line_len = chars.len(),
+                    "Slash confirm aborted: invalid argument token range"
+                );
+                return None;
+            }
+            Some((start, end))
+        }
+    }
+}
 
 pub fn activate(app: &mut App) {
     let Some(state) = build_slash_state(app) else {
@@ -52,9 +99,7 @@ pub fn sync_with_cursor(app: &mut App) {
 
 pub fn deactivate(app: &mut App) {
     app.slash = None;
-    if app.mention.is_none() && app.subagent.is_none() {
-        app.release_focus_target(FocusTarget::Mention);
-    }
+    release_autocomplete_focus_if_idle(app);
 }
 
 pub fn move_up(app: &mut App) {
@@ -76,9 +121,7 @@ pub fn confirm_selection(app: &mut App) {
     };
 
     let Some(candidate) = slash.candidates.get(slash.dialog.selected) else {
-        if app.mention.is_none() && app.subagent.is_none() {
-            app.release_focus_target(FocusTarget::Mention);
-        }
+        release_autocomplete_focus_if_idle(app);
         return;
     };
 
@@ -89,59 +132,20 @@ pub fn confirm_selection(app: &mut App) {
             line_count = app.input.lines().len(),
             "Slash confirm aborted: trigger row out of bounds"
         );
-        if app.mention.is_none() && app.subagent.is_none() {
-            app.release_focus_target(FocusTarget::Mention);
-        }
+        release_autocomplete_focus_if_idle(app);
         return;
     };
 
     let chars: Vec<char> = line.chars().collect();
-    let (replace_start, replace_end) = match slash.context {
-        SlashContext::CommandName => {
-            if slash.trigger_col >= chars.len() {
-                tracing::debug!(
-                    trigger_col = slash.trigger_col,
-                    line_len = chars.len(),
-                    "Slash confirm aborted: trigger column out of bounds"
-                );
-                if app.mention.is_none() && app.subagent.is_none() {
-                    app.release_focus_target(FocusTarget::Mention);
-                }
-                return;
-            }
-            if chars[slash.trigger_col] != '/' {
-                tracing::debug!(
-                    trigger_col = slash.trigger_col,
-                    found = ?chars[slash.trigger_col],
-                    "Slash confirm aborted: trigger column is not slash"
-                );
-                if app.mention.is_none() && app.subagent.is_none() {
-                    app.release_focus_target(FocusTarget::Mention);
-                }
-                return;
-            }
-
-            let token_end = (slash.trigger_col + 1..chars.len())
-                .find(|&i| chars[i].is_whitespace())
-                .unwrap_or(chars.len());
-            (slash.trigger_col, token_end)
+    let closes_after_confirmation = match &slash.context {
+        SlashContext::Argument { command, arg_index, .. } => {
+            builtin_argument_confirmation_closes(command, *arg_index)
         }
-        SlashContext::Argument { token_range, .. } => {
-            let (start, end) = token_range;
-            if start > end || end > chars.len() {
-                tracing::debug!(
-                    start,
-                    end,
-                    line_len = chars.len(),
-                    "Slash confirm aborted: invalid argument token range"
-                );
-                if app.mention.is_none() && app.subagent.is_none() {
-                    app.release_focus_target(FocusTarget::Mention);
-                }
-                return;
-            }
-            (start, end)
-        }
+        SlashContext::CommandName => false,
+    };
+    let Some((replace_start, replace_end)) = replacement_range(&slash, &chars) else {
+        release_autocomplete_focus_if_idle(app);
+        return;
     };
 
     let before: String = chars[..replace_start].iter().collect();
@@ -164,8 +168,10 @@ pub fn confirm_selection(app: &mut App) {
     lines[slash.trigger_row] = new_line;
     app.input.replace_lines_and_cursor(lines, slash.trigger_row, new_cursor_col.min(new_line_len));
 
-    sync_with_cursor(app);
-    if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {
-        app.release_focus_target(FocusTarget::Mention);
+    if closes_after_confirmation {
+        deactivate(app);
+    } else {
+        sync_with_cursor(app);
     }
+    release_autocomplete_focus_if_idle(app);
 }
