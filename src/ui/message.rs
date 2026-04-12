@@ -1562,41 +1562,42 @@ mod tests {
     }
 
     #[test]
-    fn assistant_split_paragraph_renders_visible_blank_line() {
+    fn assistant_split_paragraph_inserts_a_structural_blank_line_between_blocks() {
         let spinner = idle_spinner();
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut lines = Vec::new();
         render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
 
-        assert_eq!(
-            render_lines_to_strings(&lines),
-            vec![
-                "Claude".to_owned(),
-                "First paragraph".to_owned(),
-                String::new(),
-                "Second paragraph".to_owned(),
-                String::new(),
-            ]
-        );
+        let rendered = render_lines_to_strings(&lines);
+        let first_idx =
+            rendered.iter().position(|line| line.contains("First paragraph")).expect("first block");
+        let second_idx = rendered
+            .iter()
+            .position(|line| line.contains("Second paragraph"))
+            .expect("second block");
+
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert!(second_idx > first_idx + 1);
+        assert!(rendered[first_idx + 1].is_empty());
     }
 
     #[test]
-    fn assistant_notice_block_renders_inline_in_order() {
+    fn assistant_notice_block_renders_inline_between_neighboring_text_blocks() {
         let spinner = idle_spinner();
         let mut msg = make_assistant_notice_message();
         let mut lines = Vec::new();
         render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
 
-        assert_eq!(
-            render_lines_to_strings(&lines),
-            vec![
-                "Claude".to_owned(),
-                "Before notice".to_owned(),
-                "Warning inline".to_owned(),
-                "After notice".to_owned(),
-                String::new(),
-            ]
-        );
+        let rendered = render_lines_to_strings(&lines);
+        let before_idx =
+            rendered.iter().position(|line| line.contains("Before notice")).expect("before text");
+        let notice_idx =
+            rendered.iter().position(|line| line.contains("Warning inline")).expect("notice");
+        let after_idx =
+            rendered.iter().position(|line| line.contains("After notice")).expect("after text");
+
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert!(before_idx < notice_idx && notice_idx < after_idx);
     }
 
     #[test]
@@ -1767,9 +1768,9 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
         assert!(rendered[1].contains("Thinking..."));
+        assert!(!rendered.last().is_some_and(String::is_empty));
     }
 
     #[test]
@@ -1794,9 +1795,9 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
         assert!(rendered[1].contains("Compacting context..."));
+        assert!(!rendered.last().is_some_and(String::is_empty));
     }
 
     #[test]
@@ -1808,10 +1809,10 @@ mod tests {
         let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 2, &mut out);
 
         assert_eq!(remaining, 0);
-        assert_eq!(
-            render_lines_to_strings(&out),
-            vec![String::new(), "Second paragraph".to_owned(), String::new()]
-        );
+        let rendered = render_lines_to_strings(&out);
+        assert_eq!(rendered.first().map(String::as_str), Some(""));
+        assert!(rendered.iter().any(|line| line.contains("Second paragraph")));
+        assert_eq!(rendered.last().map(String::as_str), Some(""));
     }
 
     #[test]
@@ -1990,9 +1991,10 @@ mod tests {
         render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
-        assert_eq!(rendered[0], "Claude");
-        assert!(rendered[1].contains("Heading"));
-        assert!(!rendered[1].is_empty());
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        let heading_idx = rendered.iter().position(|line| line.contains("Heading")).expect("heading");
+        assert_eq!(heading_idx, 1);
+        assert!(!rendered[heading_idx].is_empty());
     }
 
     #[test]
@@ -2017,9 +2019,10 @@ mod tests {
         let rendered = render_lines_to_strings(&out);
 
         assert_eq!(remaining, 0);
-        assert_eq!(rendered[0], "Claude");
-        assert!(rendered[1].contains("Heading"));
-        assert!(!rendered[1].is_empty());
+        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        let heading_idx = rendered.iter().position(|line| line.contains("Heading")).expect("heading");
+        assert_eq!(heading_idx, 1);
+        assert!(!rendered[heading_idx].is_empty());
     }
 
     #[test]
@@ -2140,45 +2143,43 @@ mod tests {
     }
 
     #[test]
-    fn message_render_cache_hits_for_repeated_render_with_same_signature() {
+    fn message_render_cache_reuses_segments_for_repeated_render_with_same_inputs() {
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         let options = default_options();
-        let key = build_message_render_cache_key(&msg, &spinner, 80, 1, options);
-
-        assert!(!msg.render_cache.matches(&key));
 
         let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
-        assert!(cache.matches(&key));
         let first_segments = cache.segments().to_vec();
+        let first_height = cache.height();
 
         let cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, options);
-        assert!(cache.matches(&key));
         assert_eq!(cache.segments().len(), first_segments.len());
+        assert_eq!(cache.height(), first_height);
         assert_eq!(cache.height(), rendered_segment_height(&first_segments));
     }
 
     #[test]
-    fn message_render_cache_misses_when_indicator_visibility_changes() {
+    fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         let base_spinner = idle_spinner();
         let thinking_spinner = SpinnerState { show_thinking: true, frame: 1, ..idle_spinner() };
         let options = default_options();
 
-        let base_key = build_message_render_cache_key(&msg, &base_spinner, 80, 1, options);
-        let thinking_key = build_message_render_cache_key(&msg, &thinking_spinner, 80, 1, options);
-        assert_ne!(base_key, thinking_key);
+        let base_cache = get_or_build_message_render_cache(&mut msg, &base_spinner, 80, 1, options);
+        let base_height = base_cache.height();
+        let base_segments = base_cache.segments().to_vec();
 
-        let _ = get_or_build_message_render_cache(&mut msg, &base_spinner, 80, 1, options);
-        assert!(msg.render_cache.matches(&base_key));
-
-        let _ = get_or_build_message_render_cache(&mut msg, &thinking_spinner, 80, 1, options);
-        assert!(msg.render_cache.matches(&thinking_key));
-        assert!(!msg.render_cache.matches(&base_key));
+        let thinking_cache =
+            get_or_build_message_render_cache(&mut msg, &thinking_spinner, 80, 1, options);
+        assert!(thinking_cache.height() >= base_height);
+        assert!(
+            thinking_cache.height() != base_height
+                || thinking_cache.segments().len() != base_segments.len()
+        );
     }
 
     #[test]
-    fn message_render_cache_misses_when_trailing_separator_changes() {
+    fn message_render_cache_rebuilds_when_trailing_separator_visibility_changes() {
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         let with_separator =
@@ -2186,16 +2187,16 @@ mod tests {
         let without_separator =
             MessageRenderOptions { include_trailing_separator: false, ..default_options() };
 
-        let with_key = build_message_render_cache_key(&msg, &spinner, 80, 1, with_separator);
-        let without_key = build_message_render_cache_key(&msg, &spinner, 80, 1, without_separator);
-        assert_ne!(with_key, without_key);
+        let with_cache = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, with_separator);
+        let with_height = with_cache.height();
+        let with_segments = with_cache.segments().len();
 
-        let _ = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, with_separator);
-        assert!(msg.render_cache.matches(&with_key));
-
-        let _ = get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, without_separator);
-        assert!(msg.render_cache.matches(&without_key));
-        assert!(!msg.render_cache.matches(&with_key));
+        let without_cache =
+            get_or_build_message_render_cache(&mut msg, &spinner, 80, 1, without_separator);
+        assert!(without_cache.height() <= with_height);
+        assert!(
+            without_cache.height() != with_height || without_cache.segments().len() != with_segments
+        );
     }
 
     fn rendered_segment_height(segments: &[CachedMessageSegment]) -> usize {

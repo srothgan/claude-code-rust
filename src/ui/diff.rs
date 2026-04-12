@@ -176,97 +176,39 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    // strip_outer_code_fence
-
     #[test]
-    fn strip_fenced_code() {
-        let input = "```rust\nfn main() {}\n```";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "fn main() {}");
+    fn strip_outer_code_fence_handles_supported_and_passthrough_shapes() {
+        let cases = [
+            ("```rust\nfn main() {}\n```", "fn main() {}"),
+            ("```\nhello world\n```", "hello world"),
+            ("```\ncontent\n```  \n", "content"),
+            ("```\n```\n", ""),
+            ("```python\nline1\nline2\nline3\n```", "line1\nline2\nline3"),
+            ("  ```\ncontent\n```", "content"),
+            ("just plain text", "just plain text"),
+            ("~~~\ncontent\n~~~", "~~~\ncontent\n~~~"),
+            ("```rust\nfn main() {}", "```rust\nfn main() {}"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(strip_outer_code_fence(input), expected, "input: {input:?}");
+        }
     }
 
     #[test]
-    fn strip_fenced_no_lang_tag() {
-        let input = "```\nhello world\n```";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "hello world");
-    }
+    fn strip_outer_code_fence_preserves_inner_fences_and_large_blocks() {
+        let nested = "```\nsome code\n```\nmore code\n```";
+        let nested_result = strip_outer_code_fence(nested);
+        assert!(nested_result.contains("some code"));
+        assert!(nested_result.contains("more code"));
 
-    #[test]
-    fn strip_not_fenced_passthrough() {
-        let input = "just plain text";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "just plain text");
-    }
+        let quadruple = "````\ncontent here\n````";
+        assert!(strip_outer_code_fence(quadruple).contains("content here"));
 
-    #[test]
-    fn strip_fenced_with_trailing_whitespace() {
-        let input = "```\ncontent\n```  \n";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "content");
-    }
+        let blank_lines = "```\n\n\n\n```";
+        let blank_result = strip_outer_code_fence(blank_lines);
+        assert!(blank_result.is_empty() || blank_result.chars().all(|c| c == '\n'));
 
-    #[test]
-    fn strip_nested_fences_only_outer() {
-        let input = "```\ninner ```\nstuff\n```";
-        let result = strip_outer_code_fence(input);
-        assert!(result.contains("inner ```"));
-    }
-
-    #[test]
-    fn strip_only_opening_fence() {
-        let input = "```rust\nfn main() {}";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, input);
-    }
-
-    #[test]
-    fn strip_empty_fenced_block() {
-        let input = "```\n```";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn strip_multiline_content() {
-        let input = "```python\nline1\nline2\nline3\n```";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, "line1\nline2\nline3");
-    }
-
-    /// Quadruple backtick fence -- starts with 4 backticks which starts with 3, so it should still work.
-    #[test]
-    fn strip_quadruple_backtick_fence() {
-        let input = "````\ncontent here\n````";
-        let result = strip_outer_code_fence(input);
-        // Starts with ```, so it enters the stripping path.
-        // Closing is ```` - strip_suffix("```") matches the last 3 backticks
-        // leaving one ` in the body. Let's just verify it doesn't panic
-        // and returns something reasonable.
-        assert!(result.contains("content here"));
-    }
-
-    /// Tilde fences -- NOT handled by `strip_outer_code_fence` (only checks triple backticks).
-    #[test]
-    fn strip_tilde_fence_passthrough() {
-        let input = "~~~\ncontent\n~~~";
-        let result = strip_outer_code_fence(input);
-        assert_eq!(result, input);
-    }
-
-    /// Content with inner code fences that look like closing fences.
-    #[test]
-    fn strip_inner_fence_in_content() {
-        let input = "```\nsome code\n```\nmore code\n```";
-        let result = strip_outer_code_fence(input);
-        // The function finds the first newline, then looks for ``` at the end
-        // of the remaining text. The last ``` is the closing fence.
-        assert!(result.contains("some code"));
-    }
-
-    /// Very large content inside fence - stress test.
-    #[test]
-    fn strip_large_fenced_content() {
         let big: String = (0..10_000).fold(String::new(), |mut s, i| {
             use std::fmt::Write;
             writeln!(s, "line {i}").unwrap();
@@ -276,24 +218,6 @@ mod tests {
         let result = strip_outer_code_fence(&input);
         assert!(result.contains("line 0"));
         assert!(result.contains("line 9999"));
-    }
-
-    /// Fence with blank content line.
-    #[test]
-    fn strip_fence_with_blank_lines() {
-        let input = "```\n\n\n\n```";
-        let result = strip_outer_code_fence(input);
-        // Content is three blank lines, trimmed to empty
-        assert!(result.is_empty() || result.chars().all(|c| c == '\n'));
-    }
-
-    /// Text starting with triple backticks but not at the beginning (leading whitespace).
-    #[test]
-    fn strip_fence_with_leading_whitespace() {
-        let input = "  ```\ncontent\n```";
-        let result = strip_outer_code_fence(input);
-        // After trim(), starts with ```, so should strip
-        assert_eq!(result, "content");
     }
 
     #[test]
@@ -324,130 +248,48 @@ mod tests {
         assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
     }
 
-    // lang_from_title
-
     #[test]
-    fn lang_rust_file() {
-        assert_eq!(lang_from_title("src/main.rs"), "rs");
+    fn lang_from_title_handles_common_paths_and_edge_cases() {
+        let cases = [
+            ("src/main.rs", "rs"),
+            ("Read foo.py", "py"),
+            ("Cargo.toml", "toml"),
+            ("Makefile", ""),
+            ("", ""),
+            ("file.RS", "rs"),
+            ("archive.tar.gz", "gz"),
+            ("Read some/dir/file.tsx", "tsx"),
+            (".gitignore", "gitignore"),
+            ("Read a.test.spec.ts", "ts"),
+            ("file.", ""),
+            ("   ", ""),
+            ("Read src\\main.rs", "rs"),
+        ];
+
+        for (title, expected) in cases {
+            assert_eq!(lang_from_title(title), expected, "title: {title:?}");
+        }
     }
 
     #[test]
-    fn lang_python_with_prefix() {
-        assert_eq!(lang_from_title("Read foo.py"), "py");
-    }
+    fn is_markdown_file_matches_supported_extensions_only() {
+        let supported = [
+            "README.md",
+            "component.mdx",
+            "doc.markdown",
+            "README.MD",
+            "file.Md",
+            "docs/getting-started.md",
+            "Read /home/user/notes.md",
+            "FILE.MARKDOWN",
+        ];
+        for path in supported {
+            assert!(is_markdown_file(path), "path should be markdown: {path:?}");
+        }
 
-    #[test]
-    fn lang_toml_file() {
-        assert_eq!(lang_from_title("Cargo.toml"), "toml");
-    }
-
-    #[test]
-    fn lang_no_extension() {
-        assert_eq!(lang_from_title("Makefile"), "");
-    }
-
-    #[test]
-    fn lang_empty_title() {
-        assert_eq!(lang_from_title(""), "");
-    }
-
-    #[test]
-    fn lang_mixed_case() {
-        assert_eq!(lang_from_title("file.RS"), "rs");
-    }
-
-    #[test]
-    fn lang_multiple_dots() {
-        assert_eq!(lang_from_title("archive.tar.gz"), "gz");
-    }
-
-    #[test]
-    fn lang_path_with_spaces() {
-        assert_eq!(lang_from_title("Read some/dir/file.tsx"), "tsx");
-    }
-
-    #[test]
-    fn lang_hidden_file() {
-        assert_eq!(lang_from_title(".gitignore"), "gitignore");
-    }
-
-    /// Multiple extensions chained: picks the final one.
-    #[test]
-    fn lang_chained_extensions() {
-        assert_eq!(lang_from_title("Read a.test.spec.ts"), "ts");
-    }
-
-    /// Dot at end of title: extension is empty string.
-    #[test]
-    fn lang_dot_at_end() {
-        // "file." - rsplit('.').next() returns "", which is shorter than token
-        assert_eq!(lang_from_title("file."), "");
-    }
-
-    /// Title with only whitespace.
-    #[test]
-    fn lang_whitespace_only() {
-        assert_eq!(lang_from_title("   "), "");
-    }
-
-    /// Title with backslash path (Windows).
-    #[test]
-    fn lang_windows_backslash_path() {
-        // Backslashes are not split by split_whitespace, so the whole path is one token
-        assert_eq!(lang_from_title("Read src\\main.rs"), "rs");
-    }
-
-    // is_markdown_file
-
-    #[test]
-    fn is_md_file() {
-        assert!(is_markdown_file("README.md"));
-    }
-
-    #[test]
-    fn is_mdx_file() {
-        assert!(is_markdown_file("component.mdx"));
-    }
-
-    #[test]
-    fn is_markdown_ext() {
-        assert!(is_markdown_file("doc.markdown"));
-    }
-
-    #[test]
-    fn is_markdown_case_insensitive() {
-        assert!(is_markdown_file("README.MD"));
-        assert!(is_markdown_file("file.Md"));
-    }
-
-    #[test]
-    fn is_not_markdown() {
-        assert!(!is_markdown_file("main.rs"));
-        assert!(!is_markdown_file("style.css"));
-        assert!(!is_markdown_file(""));
-    }
-
-    #[test]
-    fn is_not_markdown_partial() {
-        assert!(!is_markdown_file("somemdx"));
-    }
-
-    /// `.md` in the middle of the name is NOT a markdown extension.
-    #[test]
-    fn is_not_markdown_md_in_middle() {
-        assert!(!is_markdown_file("file.md.bak"));
-    }
-
-    /// Path with .md extension.
-    #[test]
-    fn is_markdown_with_path() {
-        assert!(is_markdown_file("docs/getting-started.md"));
-        assert!(is_markdown_file("Read /home/user/notes.md"));
-    }
-
-    /// `.MARKDOWN` all caps.
-    #[test]
-    fn is_markdown_uppercase_full() {
-        assert!(is_markdown_file("FILE.MARKDOWN"));
+        let unsupported = ["main.rs", "style.css", "", "somemdx", "file.md.bak"];
+        for path in unsupported {
+            assert!(!is_markdown_file(path), "path should not be markdown: {path:?}");
+        }
     }
 }

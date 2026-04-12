@@ -61,21 +61,9 @@ mod tests {
     use std::panic::catch_unwind;
 
     #[test]
-    fn render_markdown_safe_handles_checklist_content() {
-        let lines = render_markdown_safe("- [ ] one\n- [x] two", None);
-        assert!(!lines.is_empty());
-    }
-
-    #[test]
-    fn render_markdown_safe_handles_requested_task_line() {
-        let input = "- [ ] Move todos below input top line";
-        let lines = render_markdown_safe(input, None);
-        assert!(!lines.is_empty());
-    }
-
-    #[test]
-    fn render_markdown_safe_does_not_panic_on_weird_inputs() {
-        let weird_inputs = [
+    fn render_markdown_safe_handles_common_and_edge_case_inputs_without_panicking() {
+        let inputs = [
+            "- [ ] one\n- [x] two",
             "- [ ] Move todos below input top line",
             "- [ ]\n- [x]\n- [ ]",
             "- [x] done\n  - [ ] child",
@@ -88,7 +76,7 @@ mod tests {
             "- [ ] \u{200d}\u{200d}\u{200d}",
         ];
 
-        for input in weird_inputs {
+        for input in inputs {
             let result = catch_unwind(|| render_markdown_safe(input, None));
             assert!(result.is_ok(), "input triggered panic: {input}");
             assert!(!result.unwrap().is_empty(), "input rendered zero lines: {input}");
@@ -96,12 +84,14 @@ mod tests {
     }
 
     #[test]
-    fn render_markdown_safe_falls_back_when_renderer_panics() {
-        let lines = render_markdown_safe_with("line1\nline2", None, |_text, _bg| {
+    fn render_markdown_safe_falls_back_to_plain_text_and_preserves_requested_bg() {
+        let lines = render_markdown_safe_with("line1\nline2", Some(Color::Blue), |_text, _bg| {
             panic!("forced renderer panic for fallback path")
         });
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].spans[0].content.as_ref(), "line1");
         assert_eq!(lines[1].spans[0].content.as_ref(), "line2");
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
+        assert_eq!(lines[1].spans[0].style.bg, Some(Color::Blue));
     }
 }

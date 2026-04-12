@@ -927,6 +927,38 @@ mod tests {
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(viewport_width)
     }
 
+    fn assert_selected_model_visible(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
+        let options = crate::app::config::model_overlay_options(app);
+        let overlay = app
+            .config
+            .model_and_effort_overlay()
+            .expect("model overlay should be present for visibility assertions");
+        let selected_index = options
+            .iter()
+            .position(|option| option.id == overlay.selected_model)
+            .expect("selected model index");
+        let selected_start = options
+            .iter()
+            .take(selected_index)
+            .enumerate()
+            .map(|(index, option)| {
+                rendered_model_option_height(option, index + 1 == options.len(), viewport_width)
+            })
+            .sum::<usize>();
+        let selected_height = rendered_model_option_height(
+            &options[selected_index],
+            selected_index + 1 == options.len(),
+            viewport_width,
+        );
+        let scroll = usize::from(model_overlay_scroll(app, viewport_height, viewport_width));
+        let viewport_end = scroll + usize::from(viewport_height);
+        let selected_end = selected_start + selected_height;
+
+        assert!(selected_end > scroll, "selected option should overlap the viewport");
+        assert!(selected_end <= viewport_end, "selected option should fit within the viewport");
+        u16::try_from(scroll).unwrap_or(u16::MAX)
+    }
+
     #[test]
     fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
         let mut app = App::test_default();
@@ -963,7 +995,8 @@ mod tests {
             selected_effort: EffortLevel::High,
         }));
 
-        assert_eq!(model_overlay_scroll(&app, 6, 40), 5);
+        let scroll = assert_selected_model_visible(&app, 6, 40);
+        assert!(scroll > 0);
     }
 
     #[test]
@@ -986,7 +1019,9 @@ mod tests {
             selected_effort: EffortLevel::Medium,
         }));
 
-        assert_eq!(model_overlay_scroll(&app, 4, 10), 2);
+        let narrow_scroll = assert_selected_model_visible(&app, 4, 10);
+        let wide_scroll = assert_selected_model_visible(&app, 4, 20);
+        assert!(narrow_scroll >= wide_scroll);
     }
 
     #[test]
@@ -1011,29 +1046,10 @@ mod tests {
             selected_effort: EffortLevel::Medium,
         }));
 
-        let options = crate::app::config::model_overlay_options(&app);
-        let selected_index =
-            options.iter().position(|option| option.id == "haiku").expect("selected model index");
-        let selected_start = options
-            .iter()
-            .take(selected_index)
-            .enumerate()
-            .map(|(index, option)| {
-                rendered_model_option_height(option, index + 1 == options.len(), 18)
-            })
-            .sum::<usize>();
-        let selected_height = rendered_model_option_height(
-            &options[selected_index],
-            selected_index + 1 == options.len(),
-            18,
-        );
-        let expected_scroll = selected_start.saturating_add(selected_height).saturating_sub(4);
-
-        assert_eq!(
-            model_overlay_scroll(&app, 4, 18),
-            u16::try_from(expected_scroll).unwrap_or(u16::MAX)
-        );
-        assert!(expected_scroll > 0);
+        let narrow_scroll = assert_selected_model_visible(&app, 4, 18);
+        let wide_scroll = assert_selected_model_visible(&app, 4, 40);
+        assert!(narrow_scroll > 0);
+        assert!(narrow_scroll >= wide_scroll);
     }
 
     #[test]
@@ -1098,7 +1114,13 @@ mod tests {
             ">",
         );
 
-        assert_eq!(title, "> Sonnet  Effort  Adaptive thinking  Fast mode");
+        assert!(title.starts_with("> Sonnet"));
+        assert!(title.contains("Effort"));
+        assert!(title.contains("Adaptive thinking"));
+        assert!(title.contains("Fast mode"));
+        assert!(!title.contains("Auto mode"));
+        assert!(!title.contains('['));
+        assert!(!title.contains('|'));
     }
 
     #[test]

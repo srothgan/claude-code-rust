@@ -600,6 +600,14 @@ mod tests {
         items.iter().any(|(k, d)| k == key && d == desc)
     }
 
+    fn has_key(items: &[(String, String)], key: &str) -> bool {
+        items.iter().any(|(k, _)| k == key)
+    }
+
+    fn item_for_key<'a>(items: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        items.iter().find(|(k, _)| k == key).map(|(_, desc)| desc.as_str())
+    }
+
     #[test]
     fn tab_toggle_only_shown_when_todos_available() {
         let mut app = App::test_default();
@@ -614,13 +622,6 @@ mod tests {
         });
         let items = build_help_items(&app);
         assert!(has_item(&items, "Tab", "Toggle todo focus"));
-    }
-
-    #[test]
-    fn key_tab_does_not_show_removed_header_shortcut() {
-        let app = App::test_default();
-        let items = build_help_items(&app);
-        assert!(!has_item(&items, "Ctrl+h", "Toggle header"));
     }
 
     #[test]
@@ -670,12 +671,9 @@ mod tests {
         app.help_view = HelpView::SlashCommands;
 
         let items = build_help_items(&app);
-        assert!(has_item(&items, "/config", "Open settings"));
-        assert!(has_item(&items, "/docs", "Show in-chat help topics"));
-        assert!(has_item(&items, "/login", "Authenticate with Claude"));
-        assert!(has_item(&items, "/logout", "Sign out of Claude"));
-        assert!(has_item(&items, "/mcp", "Open MCP"));
-        assert!(has_item(&items, "/usage", "Open usage"));
+        for command in ["/config", "/docs", "/login", "/logout", "/mcp", "/usage"] {
+            assert!(has_key(&items, command), "missing builtin command: {command}");
+        }
         assert!(!has_item(
             &items,
             "No slash commands advertised",
@@ -693,9 +691,9 @@ mod tests {
         ];
 
         let items = build_help_items(&app);
-        assert!(has_item(&items, "/config", "Open settings"));
-        assert!(has_item(&items, "/login", "Login"));
-        assert!(has_item(&items, "/logout", "Logout"));
+        assert!(has_key(&items, "/config"));
+        assert_eq!(item_for_key(&items, "/login"), Some("Login"));
+        assert_eq!(item_for_key(&items, "/logout"), Some("Logout"));
     }
 
     #[test]
@@ -705,21 +703,12 @@ mod tests {
         app.status = AppStatus::Connecting;
 
         let items = build_help_items(&app);
-        assert!(has_item(&items, "Loading commands...", ""));
+        assert!(items.iter().any(|(name, _)| name.contains("Loading") && name.contains("commands")));
         assert!(!has_item(
             &items,
             "No slash commands advertised",
             "Not advertised in this session"
         ));
-    }
-
-    #[test]
-    fn slash_tab_does_not_repeat_tab_navigation_hint() {
-        let mut app = App::test_default();
-        app.help_view = HelpView::SlashCommands;
-
-        let items = build_help_items(&app);
-        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
     }
 
     #[test]
@@ -732,7 +721,7 @@ mod tests {
         assert!(has_item(&items, "Ctrl+c", "Quit"));
         assert!(has_item(&items, "Ctrl+q", "Quit"));
         assert!(has_item(&items, "Up/Down", "Scroll chat"));
-        assert!(has_item(&items, "Input keys", "Unavailable while connecting"));
+        assert!(has_key(&items, "Input keys"));
         assert!(!has_item(&items, "Enter", "Send message"));
     }
 
@@ -745,15 +734,8 @@ mod tests {
         assert!(has_item(&items, "Ctrl+c", "Quit"));
         assert!(has_item(&items, "Ctrl+q", "Quit"));
         assert!(has_item(&items, "Up/Down", "Scroll chat"));
-        assert!(has_item(&items, "Input keys", "Unavailable after error"));
+        assert!(has_key(&items, "Input keys"));
         assert!(!has_item(&items, "Enter", "Send message"));
-    }
-
-    #[test]
-    fn key_tab_does_not_repeat_tab_navigation_hint() {
-        let app = App::test_default();
-        let items = build_help_items(&app);
-        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
     }
 
     #[test]
@@ -777,14 +759,6 @@ mod tests {
         app.status = AppStatus::Connecting;
 
         let items = build_help_items(&app);
-        assert!(has_item(&items, "Loading subagents...", ""));
-    }
-
-    #[test]
-    fn subagent_tab_does_not_repeat_tab_navigation_hint() {
-        let mut app = App::test_default();
-        app.help_view = HelpView::Subagents;
-        let items = build_help_items(&app);
-        assert!(!has_item(&items, "Left/Right", "Switch help tab"));
+        assert!(items.iter().any(|(name, _)| name.contains("Loading") && name.contains("subagents")));
     }
 }

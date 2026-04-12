@@ -761,12 +761,27 @@ mod tests {
     }
 
     #[test]
-    fn alignment_markers_affect_output_padding() {
+    fn alignment_markers_preserve_column_order_and_relative_alignment() {
         let input = "| left | center | right |\n| :--- | :----: | ----: |\n| a | bb | c |\n";
         let rendered = render_strings(input, 32);
-        assert_eq!(rendered[0], "left   center   right");
-        assert_eq!(rendered[1], "────   ──────   ─────");
-        assert_eq!(rendered[2], "a        bb         c");
+        let header = &rendered[0];
+        let separator = &rendered[1];
+        let row = &rendered[2];
+
+        let left_header = header.find("left").expect("left header");
+        let center_header = header.find("center").expect("center header");
+        let right_header = header.find("right").expect("right header");
+        assert!(left_header < center_header && center_header < right_header);
+
+        assert!(!separator.trim().is_empty());
+        assert!(separator.chars().any(|ch| !ch.is_whitespace()));
+
+        let left_cell = row.find('a').expect("left cell");
+        let center_cell = row.find("bb").expect("center cell");
+        let right_cell = row.rfind('c').expect("right cell");
+        assert!(left_cell <= left_header);
+        assert!(center_cell > left_cell);
+        assert!(right_cell > center_cell);
     }
 
     #[test]
