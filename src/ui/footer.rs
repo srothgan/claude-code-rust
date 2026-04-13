@@ -45,7 +45,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         PRIMARY_ROW_LEFT_MIN_WIDTH,
     );
 
-    let second_hint = footer_mcp_auth_hint(app);
+    let second_hint = footer_secondary_hint(app);
     let (second_left, second_right) = split_footer_columns_hint(
         second_row,
         second_hint.as_ref().map(|(text, _)| text.as_str()),
@@ -72,6 +72,17 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
     let needs_auth_count = mcp_needs_auth_count(app);
     (needs_auth_count > 0 && should_show_startup_mcp_hint(app))
         .then(|| (format!("{needs_auth_count} MCP NEEDS AUTH"), Color::Yellow))
+}
+
+fn footer_context_usage_hint(app: &App) -> FooterItem {
+    app.session_usage.context_usage_percent.map(|percentage| {
+        let remaining = 100_u8.saturating_sub(percentage);
+        (format!("{remaining}%"), FOOTER_CONTEXT_VALUE)
+    })
+}
+
+fn footer_secondary_hint(app: &App) -> FooterItem {
+    footer_mcp_auth_hint(app).or_else(|| footer_context_usage_hint(app))
 }
 
 fn render_footer_row(
@@ -136,23 +147,47 @@ fn build_primary_line(app: &App) -> Line<'static> {
     if let Some(ref mode) = app.mode {
         let color = mode_color(&mode.current_mode_id);
         let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
-        Line::from(vec![
-            Span::styled("[", Style::default().fg(color)),
-            Span::styled(mode.current_mode_name.clone(), Style::default().fg(color)),
-            Span::styled("]", Style::default().fg(color)),
-            Span::raw("  "),
-            Span::styled("[", Style::default().fg(fast_mode_color)),
-            Span::styled(fast_mode_text, Style::default().fg(fast_mode_color)),
-            Span::styled("]", Style::default().fg(fast_mode_color)),
-            Span::raw("  "),
-            Span::styled("?", Style::default().fg(Color::White)),
-            Span::styled(" : Help", Style::default().fg(theme::DIM)),
-        ])
+        let mut spans = Vec::new();
+        push_badge(&mut spans, mode.current_mode_name.clone(), color);
+        if let Some(model_badge) = footer_model_badge(app) {
+            spans.push(Span::raw("  "));
+            push_badge(&mut spans, model_badge, FOOTER_CONTEXT_VALUE);
+        }
+        spans.push(Span::raw("  "));
+        push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("?", Style::default().fg(Color::White)));
+        spans.push(Span::styled(" : Help", Style::default().fg(theme::DIM)));
+        Line::from(spans)
     } else {
         Line::from(vec![
             Span::styled("?", Style::default().fg(Color::White)),
             Span::styled(" : Help", Style::default().fg(theme::DIM)),
         ])
+    }
+}
+
+fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
+    spans.push(Span::styled("[", Style::default().fg(color)));
+    spans.push(Span::styled(text, Style::default().fg(color)));
+    spans.push(Span::styled("]", Style::default().fg(color)));
+}
+
+fn footer_model_badge(app: &App) -> Option<String> {
+    let current_model = app.current_model.as_ref()?;
+    let mut badge = current_model.display_name_short.clone();
+    if current_model.supports_effort {
+        badge.push('/');
+        badge.push_str(footer_effort_label(app.config.thinking_effort_effective()));
+    }
+    Some(badge)
+}
+
+const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
+    match effort {
+        model::EffortLevel::Low => "Low",
+        model::EffortLevel::Medium => "Med",
+        model::EffortLevel::High => "High",
     }
 }
 
@@ -469,6 +504,7 @@ mod tests {
                 raw_input: None,
                 raw_input_bytes: 0,
                 output_metadata: None,
+                task_metadata: None,
                 status: model::ToolCallStatus::Pending,
                 content: vec![],
                 hidden: false,
@@ -510,6 +546,46 @@ mod tests {
     #[test]
     fn mode_color_handles_auto_explicitly() {
         assert_eq!(mode_color("auto"), Color::Yellow);
+    }
+
+    #[test]
+    fn footer_model_badge_uses_resolved_model_and_effort() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            model::CurrentModel::new("claude-sonnet-4-6", "Sonnet", "Sonnet 4.6")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    model::EffortLevel::Low,
+                    model::EffortLevel::Medium,
+                    model::EffortLevel::High,
+                ])
+                .authoritative(true),
+        );
+
+        assert_eq!(footer_model_badge(&app), Some("Sonnet/Med".to_owned()));
+    }
+
+    #[test]
+    fn footer_model_badge_hides_effort_for_models_without_support() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            model::CurrentModel::new("claude-haiku-4-5", "Haiku", "Haiku 4.5").authoritative(true),
+        );
+
+        assert_eq!(footer_model_badge(&app), Some("Haiku".to_owned()));
+    }
+
+    #[test]
+    fn footer_model_badge_falls_back_to_runtime_name_for_unknown_model() {
+        let mut app = App::test_default();
+        app.current_model = None;
+        assert_eq!(footer_model_badge(&app), None);
+
+        app.current_model = Some(
+            model::CurrentModel::new("unknown-model", "unknown-model", "unknown-model")
+                .authoritative(true),
+        );
+        assert_eq!(footer_model_badge(&app), Some("unknown-model".to_owned()));
     }
 
     #[test]
@@ -601,5 +677,38 @@ mod tests {
         });
 
         assert_eq!(footer_mcp_auth_hint(&app), None);
+    }
+
+    #[test]
+    fn footer_context_usage_hint_shows_percentage_only() {
+        let mut app = App::test_default();
+        app.session_usage.context_usage_percent = Some(62);
+
+        assert_eq!(footer_context_usage_hint(&app), Some(("38%".to_owned(), FOOTER_CONTEXT_VALUE)));
+    }
+
+    #[test]
+    fn footer_secondary_hint_prefers_mcp_auth_over_context_usage() {
+        let mut app = App::test_default();
+        app.session_usage.context_usage_percent = Some(62);
+        app.messages.push(ChatMessage::new(
+            MessageRole::Welcome,
+            vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
+            None,
+        ));
+        app.mcp.servers.push(McpServerStatus {
+            name: "calendar".into(),
+            status: McpServerConnectionStatus::NeedsAuth,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            tools: vec![],
+        });
+
+        assert_eq!(
+            footer_secondary_hint(&app),
+            Some(("1 MCP NEEDS AUTH".to_owned(), Color::Yellow))
+        );
     }
 }

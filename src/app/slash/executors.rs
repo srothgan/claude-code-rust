@@ -394,11 +394,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    set_command_pending(
-        app,
-        "Switching mode...",
-        Some(crate::app::PendingCommandAck::CurrentModeUpdate),
-    );
+    set_command_pending(app, "Switching mode...", Some(crate::app::PendingCommandAck::CurrentMode));
 
     let tx = app.event_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
@@ -443,7 +439,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(
         app,
         "Switching model...",
-        Some(crate::app::PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() }),
+        Some(crate::app::PendingCommandAck::CurrentModel),
     );
 
     let tx = app.event_tx.clone();

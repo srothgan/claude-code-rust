@@ -296,6 +296,7 @@ pub(super) fn handle_turn_complete_event(
         model::ToolCallStatus::Completed
     };
     finish_ready_turn_exit(app, exit, tool_status);
+    crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
@@ -327,6 +328,7 @@ pub(super) fn handle_turn_error_event(
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
+        crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
         }
@@ -398,6 +400,7 @@ pub(super) fn handle_turn_error_event(
     }
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    crate::app::session_runtime::request_context_usage_refresh(app);
 }
 
 fn push_interrupted_hint(app: &mut App) {

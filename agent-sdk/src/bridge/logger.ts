@@ -136,6 +136,8 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "new_session":
     case "elicitation_response":
     case "get_status_snapshot":
+    case "get_context_usage":
+    case "reload_plugins":
     case "mcp_status":
     case "mcp_reconnect":
     case "mcp_toggle":
@@ -164,10 +166,13 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "turn_complete":
     case "turn_error":
     case "slash_error":
+    case "runtime_reload_completed":
+    case "runtime_reload_failed":
     case "session_replaced":
     case "initialized":
     case "sessions_listed":
     case "status_snapshot":
+    case "context_usage":
     case "mcp_snapshot":
       return undefined;
   }
@@ -198,6 +203,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "mcp_operation_error":
     case "turn_error":
     case "slash_error":
+    case "runtime_reload_failed":
       return "warn";
     case "session_update":
     case "permission_request":
@@ -209,6 +215,8 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
       return "trace";
     case "sessions_listed":
     case "status_snapshot":
+    case "context_usage":
+    case "runtime_reload_completed":
     case "mcp_snapshot":
       return "debug";
   }

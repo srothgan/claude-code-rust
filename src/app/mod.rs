@@ -24,6 +24,7 @@ mod questions;
 mod selection;
 mod service_status_check;
 pub(crate) mod session_picker;
+mod session_runtime;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;

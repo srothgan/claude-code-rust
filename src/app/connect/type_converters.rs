@@ -101,6 +101,37 @@ pub(super) fn map_available_models(
         .collect()
 }
 
+pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
+    let mut mapped = model::CurrentModel::new(
+        current_model.resolved_id,
+        current_model.display_name_short,
+        current_model.display_name_long,
+    )
+    .supports_effort(current_model.supports_effort)
+    .supported_effort_levels(
+        current_model
+            .supported_effort_levels
+            .into_iter()
+            .map(|level| match level {
+                types::EffortLevel::Low => model::EffortLevel::Low,
+                types::EffortLevel::Medium => model::EffortLevel::Medium,
+                types::EffortLevel::High => model::EffortLevel::High,
+            })
+            .collect(),
+    )
+    .supports_fast_mode(current_model.supports_fast_mode)
+    .supports_auto_mode(current_model.supports_auto_mode)
+    .supports_adaptive_thinking(current_model.supports_adaptive_thinking)
+    .authoritative(current_model.is_authoritative);
+    if let Some(requested_id) = current_model.requested_id {
+        mapped = mapped.requested_id(requested_id);
+    }
+    if let Some(catalog_id) = current_model.catalog_id {
+        mapped = mapped.catalog_id(catalog_id);
+    }
+    mapped
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
@@ -137,6 +168,11 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
             Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
                 model::SessionModeId::new(current_mode_id),
+            )))
+        }
+        types::SessionUpdate::CurrentModelUpdate { current_model } => {
+            Some(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+                convert_current_model(current_model),
             )))
         }
         types::SessionUpdate::ConfigOptionUpdate { option_id, value } => {
@@ -312,6 +348,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         raw_input,
         raw_output,
         output_metadata,
+        task_metadata,
         locations,
         meta,
     } = tool_call;
@@ -342,6 +379,9 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     }
     if let Some(output_metadata) = output_metadata {
         tc = tc.output_metadata(convert_tool_output_metadata(output_metadata));
+    }
+    if let Some(task_metadata) = task_metadata {
+        tc = tc.task_metadata(convert_task_metadata(task_metadata));
     }
     if let Some(meta) = meta {
         tc = tc.meta(meta);
@@ -396,6 +436,9 @@ pub(super) fn convert_tool_call_to_fields(
     if let Some(output_metadata) = tool_call.output_metadata {
         fields = fields.output_metadata(convert_tool_output_metadata(output_metadata));
     }
+    if let Some(task_metadata) = tool_call.task_metadata {
+        fields = fields.task_metadata(convert_task_metadata(task_metadata));
+    }
 
     fields
 }
@@ -426,6 +469,9 @@ pub(super) fn convert_tool_call_update_fields(
     }
     if let Some(output_metadata) = fields.output_metadata {
         out = out.output_metadata(convert_tool_output_metadata(output_metadata));
+    }
+    if let Some(task_metadata) = fields.task_metadata {
+        out = out.task_metadata(convert_task_metadata(task_metadata));
     }
     if let Some(locations) = fields.locations {
         out = out.locations(
@@ -461,6 +507,14 @@ fn convert_tool_output_metadata(
             model::TodoWriteOutputMetadata::new()
                 .verification_nudge_needed(todo_write.verification_nudge_needed)
         }))
+}
+
+fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetadata {
+    model::TaskMetadata::new()
+        .end_time(task_metadata.end_time)
+        .total_paused_ms(task_metadata.total_paused_ms)
+        .error(task_metadata.error)
+        .backgrounded(task_metadata.is_backgrounded)
 }
 
 fn convert_tool_call_content(
@@ -507,6 +561,7 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
         "in_progress" => model::ToolCallStatus::InProgress,
         "completed" => model::ToolCallStatus::Completed,
         "failed" => model::ToolCallStatus::Failed,
+        "killed" => model::ToolCallStatus::Killed,
         _ => model::ToolCallStatus::Pending,
     }
 }
@@ -603,6 +658,7 @@ mod tests {
                     raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
                     raw_output: None,
                     output_metadata: None,
+                    task_metadata: None,
                     locations: Vec::new(),
                     meta: Some(
                         serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } }),
@@ -706,6 +762,69 @@ mod tests {
     }
 
     #[test]
+    fn convert_tool_status_maps_killed() {
+        assert_eq!(super::convert_tool_status("killed"), model::ToolCallStatus::Killed);
+    }
+
+    #[test]
+    fn convert_tool_call_update_fields_preserves_task_metadata() {
+        let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
+            task_metadata: Some(types::TaskMetadata {
+                end_time: Some(123),
+                total_paused_ms: Some(45),
+                error: Some("Task stopped".to_owned()),
+                is_backgrounded: Some(true),
+            }),
+            ..types::ToolCallUpdateFields::default()
+        });
+
+        assert_eq!(
+            fields.task_metadata,
+            Some(
+                model::TaskMetadata::new()
+                    .end_time(Some(123))
+                    .total_paused_ms(Some(45))
+                    .error(Some("Task stopped".to_owned()))
+                    .backgrounded(Some(true)),
+            )
+        );
+    }
+
+    #[test]
+    fn convert_tool_call_preserves_task_metadata() {
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-task".to_owned(),
+            title: "Agent task".to_owned(),
+            kind: "think".to_owned(),
+            status: "killed".to_owned(),
+            content: Vec::new(),
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: Some(types::TaskMetadata {
+                end_time: Some(77),
+                total_paused_ms: Some(11),
+                error: Some("Task stopped".to_owned()),
+                is_backgrounded: Some(false),
+            }),
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(tool_call.status, model::ToolCallStatus::Killed);
+        assert_eq!(
+            tool_call.task_metadata,
+            Some(
+                model::TaskMetadata::new()
+                    .end_time(Some(77))
+                    .total_paused_ms(Some(11))
+                    .error(Some("Task stopped".to_owned()))
+                    .backgrounded(Some(false)),
+            )
+        );
+    }
+
+    #[test]
     fn convert_tool_call_preserves_diff_repository() {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-1".to_owned(),
@@ -722,6 +841,7 @@ mod tests {
             raw_input: None,
             raw_output: None,
             output_metadata: None,
+            task_metadata: None,
             locations: Vec::new(),
             meta: None,
         });
@@ -755,6 +875,7 @@ mod tests {
             raw_input: None,
             raw_output: None,
             output_metadata: None,
+            task_metadata: None,
             locations: Vec::new(),
             meta: None,
         });

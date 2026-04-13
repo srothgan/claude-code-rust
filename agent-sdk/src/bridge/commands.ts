@@ -12,6 +12,7 @@ import type {
   SessionLaunchSettings,
 } from "../types.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { resolveCurrentModel } from "./session_lifecycle.js";
 
 const MODE_NAMES: Record<PermissionMode, string> = {
   default: "Default",
@@ -39,8 +40,8 @@ const BASE_SUPPORTED_MODE_IDS: PermissionMode[] = [
 ];
 
 function currentModelSupportsAutoMode(session: SessionState): boolean {
-  const currentModel = session.availableModels.find((entry) => entry.id === session.model);
-  return currentModel?.supports_auto_mode === true;
+  const currentModel = session.currentModel ?? resolveCurrentModel(session);
+  return currentModel.supports_auto_mode === true;
 }
 
 function modeInfoForId(mode: PermissionMode): ModeInfo {
@@ -351,6 +352,16 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "get_status_snapshot",
           session_id: expectString(raw, "session_id", "get_status_snapshot"),
+        };
+      case "get_context_usage":
+        return {
+          command: "get_context_usage",
+          session_id: expectString(raw, "session_id", "get_context_usage"),
+        };
+      case "reload_plugins":
+        return {
+          command: "reload_plugins",
+          session_id: expectString(raw, "session_id", "reload_plugins"),
         };
       case "mcp_status":
       case "get_mcp_snapshot":

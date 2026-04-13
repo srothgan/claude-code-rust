@@ -24,7 +24,7 @@ pub(super) fn handle_connected_client_event(
     app: &mut App,
     session_id: model::SessionId,
     cwd: String,
-    model_name: String,
+    current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_updates: &[model::SessionUpdate],
@@ -36,7 +36,7 @@ pub(super) fn handle_connected_client_event(
         app.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
-    reset_for_new_session(app, session_id, model_name, mode);
+    reset_for_new_session(app, session_id, current_model, mode);
     app.available_models = available_models;
     app.update_welcome_model_once();
     app.sync_welcome_recent_sessions();
@@ -56,7 +56,7 @@ pub(super) fn handle_connected_client_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        model_name = %app.model_name,
+        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
     );
@@ -294,7 +294,7 @@ pub(super) fn handle_session_replaced_event(
     app: &mut App,
     session_id: model::SessionId,
     cwd: String,
-    model_name: String,
+    current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_updates: &[model::SessionUpdate],
@@ -307,7 +307,7 @@ pub(super) fn handle_session_replaced_event(
     app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
-    reset_for_new_session(app, session_id, model_name, mode);
+    reset_for_new_session(app, session_id, current_model, mode);
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
@@ -322,7 +322,7 @@ pub(super) fn handle_session_replaced_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        model_name = %app.model_name,
+        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
     );
@@ -524,7 +524,7 @@ mod tests {
             &mut app,
             model::SessionId::new("session-1"),
             dir.path().to_string_lossy().into_owned(),
-            "model".to_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
             Vec::new(),
             None,
             &[],
@@ -558,7 +558,7 @@ mod tests {
             &mut app,
             model::SessionId::new("session-2"),
             dir.path().to_string_lossy().into_owned(),
-            "model".to_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
             Vec::new(),
             None,
             &[],

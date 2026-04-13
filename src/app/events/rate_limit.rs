@@ -5,6 +5,8 @@ use super::super::{App, NoticeDedupKey, NoticeStage, RateLimitIncidentKey, Syste
 use crate::agent::model;
 use std::time::Duration;
 
+const EXTRA_USAGE_REQUIRED_MESSAGE: &str = "Extra usage is required for 1M context. Run /extra-usage to enable it, or /model to switch to standard context.";
+
 fn format_rate_limit_type(raw: &str) -> &str {
     match raw {
         "five_hour" => "5-hour",
@@ -46,7 +48,22 @@ fn format_resets_at(epoch_secs: f64) -> String {
     format!("{countdown} at {h:02}:{m:02} UTC")
 }
 
+fn has_primary_rate_limit_context(update: &model::RateLimitUpdate) -> bool {
+    update.utilization.is_some() || update.rate_limit_type.is_some() || update.resets_at.is_some()
+}
+
+fn is_org_level_disabled_extra_usage_case(update: &model::RateLimitUpdate) -> bool {
+    matches!(update.status, model::RateLimitStatus::Rejected)
+        && !has_primary_rate_limit_context(update)
+        && update.is_using_overage == Some(false)
+        && update.overage_disabled_reason.as_deref() == Some("org_level_disabled")
+}
+
 pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
+    if is_org_level_disabled_extra_usage_case(update) {
+        return EXTRA_USAGE_REQUIRED_MESSAGE.to_owned();
+    }
+
     let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
 
     // Intro
@@ -108,6 +125,21 @@ fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
 
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
     app.last_rate_limit_update = Some(update.clone());
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "rate_limit_update_applied",
+        message = "rate limit update applied",
+        outcome = "success",
+        status = ?update.status,
+        utilization = update.utilization,
+        rate_limit_type = update.rate_limit_type.as_deref().unwrap_or(""),
+        resets_at = update.resets_at.unwrap_or_default(),
+        overage_status = ?update.overage_status,
+        overage_resets_at = update.overage_resets_at.unwrap_or_default(),
+        overage_disabled_reason = update.overage_disabled_reason.as_deref().unwrap_or(""),
+        is_using_overage = ?update.is_using_overage,
+        surpassed_threshold = update.surpassed_threshold.unwrap_or_default(),
+    );
 
     match update.status {
         model::RateLimitStatus::Allowed => {}
@@ -149,4 +181,50 @@ pub(super) fn handle_compaction_boundary_update(
         boundary.trigger,
         boundary.pre_tokens
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_rate_limit_summary;
+    use crate::agent::model::{RateLimitStatus, RateLimitUpdate};
+
+    #[test]
+    fn org_level_disabled_without_primary_context_uses_extra_usage_message() {
+        let update = RateLimitUpdate {
+            status: RateLimitStatus::Rejected,
+            resets_at: None,
+            utilization: None,
+            rate_limit_type: None,
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: Some("org_level_disabled".to_owned()),
+            is_using_overage: Some(false),
+            surpassed_threshold: None,
+        };
+
+        assert_eq!(
+            format_rate_limit_summary(&update),
+            "Extra usage is required for 1M context. Run /extra-usage to enable it, or /model to switch to standard context."
+        );
+    }
+
+    #[test]
+    fn org_level_disabled_with_primary_context_keeps_normal_rate_limit_message() {
+        let update = RateLimitUpdate {
+            status: RateLimitStatus::Rejected,
+            resets_at: Some(1_741_280_000.0),
+            utilization: None,
+            rate_limit_type: Some("five_hour".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: Some("org_level_disabled".to_owned()),
+            is_using_overage: Some(false),
+            surpassed_threshold: None,
+        };
+
+        let summary = format_rate_limit_summary(&update);
+        assert!(summary.contains("Rate limit reached"));
+        assert!(summary.contains("5-hour rate limit"));
+        assert!(!summary.contains("Extra usage is required for 1M context"));
+    }
 }

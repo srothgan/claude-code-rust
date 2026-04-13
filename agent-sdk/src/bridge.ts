@@ -21,6 +21,8 @@ import {
   writeEvent,
   failConnection,
   slashError,
+  emitRuntimeReloadCompleted,
+  emitRuntimeReloadFailed,
   emitSessionUpdate,
   emitSessionsList,
   currentSessionListOptions,
@@ -36,8 +38,12 @@ import {
   handleElicitationResponse,
   handlePermissionResponse,
   handleQuestionResponse,
+  emitCurrentModelUpdate,
+  refreshCurrentModel,
+  shouldInvalidateResolvedRuntimeModel,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
+import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   handleMcpAuthenticateCommand,
@@ -75,7 +81,11 @@ export {
 } from "./bridge/history.js";
 export { handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
-export { buildQueryOptions, mapAvailableModels } from "./bridge/session_lifecycle.js";
+export {
+  attachRequestUserDialogInterceptor,
+  buildQueryOptions,
+  mapAvailableModels,
+} from "./bridge/session_lifecycle.js";
 export {
   parseFastModeState,
   parseRateLimitStatus,
@@ -363,15 +373,57 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
+      bridgeLogger.info({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "set_model_started",
+        message: "set model started",
+        outcome: "start",
+        sessionId: session.sessionId,
+        requestId,
+        fields: {
+          requested_model: command.model,
+          previous_requested_model: session.requestedModelId,
+          previous_session_model: session.model,
+          previous_resolved_runtime_model: session.resolvedRuntimeModelId,
+          previous_current_model: session.currentModel?.resolved_id,
+        },
+      });
       try {
+        const previousRequestedModel = session.requestedModelId;
+        const previousSessionModel = session.model;
         await session.query.setModel(command.model);
+        session.requestedModelId = command.model;
         session.model = command.model;
-        refreshSupportedModesForSession(session);
-        emitSessionUpdate(session.sessionId, {
-          type: "config_option_update",
-          option_id: "model",
-          value: command.model,
+        const invalidatedResolvedRuntimeModel = shouldInvalidateResolvedRuntimeModel(
+          previousRequestedModel,
+          previousSessionModel,
+          command.model,
+        );
+        if (invalidatedResolvedRuntimeModel) {
+          session.resolvedRuntimeModelId = undefined;
+        }
+        const changed = refreshCurrentModel(session, true);
+        const forcedCurrentModelUpdate = !changed && emitCurrentModelUpdate(session);
+        bridgeLogger.info({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "set_model_succeeded",
+          message: "set model completed",
+          outcome: "success",
+          sessionId: session.sessionId,
+          requestId,
+          fields: {
+            requested_model: command.model,
+            session_model_after: session.model,
+            resolved_runtime_model_after: session.resolvedRuntimeModelId,
+            current_model_after: session.currentModel?.resolved_id,
+            current_model_display_short: session.currentModel?.display_name_short,
+            current_model_display_long: session.currentModel?.display_name_long,
+            current_model_update_emitted: changed || forcedCurrentModelUpdate,
+            current_model_update_forced: forcedCurrentModelUpdate,
+            resolved_runtime_model_invalidated: invalidatedResolvedRuntimeModel,
+          },
         });
+        refreshSupportedModesForSession(session);
         if (session.mode) {
           emitSessionUpdate(session.sessionId, {
             type: "mode_state_update",
@@ -380,6 +432,22 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "set_model_failed",
+          message: "set model failed",
+          outcome: "failure",
+          sessionId: session.sessionId,
+          requestId,
+          fields: {
+            requested_model: command.model,
+            error_message: message,
+            previous_requested_model: session.requestedModelId,
+            previous_session_model: session.model,
+            previous_resolved_runtime_model: session.resolvedRuntimeModelId,
+            previous_current_model: session.currentModel?.resolved_id,
+          },
+        });
         slashError(command.session_id, `failed to set model: ${message}`, requestId);
       }
       return;
@@ -507,6 +575,107 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           fields: { error_message: message },
         });
         throw error;
+      }
+      return;
+    }
+
+    case "get_context_usage": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        const usage = await session.query.getContextUsage();
+        if (typeof usage.model === "string" && usage.model.trim().length > 0) {
+          session.resolvedRuntimeModelId = usage.model.trim();
+          refreshCurrentModel(session, true);
+        }
+        const rawPercentage = typeof usage.percentage === "number" ? usage.percentage : undefined;
+        const normalizedPercentage =
+          rawPercentage === undefined || !Number.isFinite(rawPercentage)
+            ? undefined
+            : Math.max(0, Math.min(100, Math.round(rawPercentage)));
+        bridgeLogger.debug({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "context_usage_succeeded",
+          message: "session context usage received from SDK",
+          outcome: "success",
+          ...(requestId ? { requestId } : {}),
+          sessionId: session.sessionId,
+          fields: {
+            raw_percentage: rawPercentage,
+            normalized_percentage: normalizedPercentage,
+            total_tokens: typeof usage.totalTokens === "number" ? usage.totalTokens : undefined,
+            max_tokens: typeof usage.maxTokens === "number" ? usage.maxTokens : undefined,
+            raw_max_tokens: typeof usage.rawMaxTokens === "number" ? usage.rawMaxTokens : undefined,
+            model: typeof usage.model === "string" ? usage.model : undefined,
+          },
+        });
+        writeEvent(
+          {
+            event: "context_usage",
+            session_id: session.sessionId,
+            ...(normalizedPercentage !== undefined ? { percentage: normalizedPercentage } : {}),
+          },
+          requestId,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "context_usage_failed",
+          message: "failed to get session context usage",
+          outcome: "failure",
+          ...(requestId ? { requestId } : {}),
+          sessionId: session.sessionId,
+          fields: { error_message: message },
+        });
+        writeEvent(
+          {
+            event: "context_usage",
+            session_id: session.sessionId,
+          },
+          requestId,
+        );
+      }
+      return;
+    }
+
+    case "reload_plugins": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        const result = await session.query.reloadPlugins();
+        const commands = Array.isArray(result.commands)
+          ? result.commands.map((entry) => ({
+              name: entry.name,
+              description: entry.description ?? "",
+              input_hint: entry.argumentHint ?? undefined,
+            }))
+          : [];
+        emitSessionUpdate(session.sessionId, {
+          type: "available_commands_update",
+          commands,
+        });
+        emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
+        await handleMcpStatusCommand(session, requestId);
+        emitRuntimeReloadCompleted(session.sessionId, requestId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "reload_plugins_failed",
+          message: "failed to reload session plugins",
+          outcome: "failure",
+          ...(requestId ? { requestId } : {}),
+          sessionId: session.sessionId,
+          fields: { error_message: message },
+        });
+        emitRuntimeReloadFailed(session.sessionId, message, requestId);
       }
       return;
     }

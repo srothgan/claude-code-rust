@@ -123,6 +123,8 @@ pub struct PluginsState {
     pub last_error: Option<String>,
     pub last_inventory_refresh_at: Option<Instant>,
     pub claude_path: Option<PathBuf>,
+    pub runtime_reload_after_refresh: bool,
+    pub pending_runtime_reload_success_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +257,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Char(ch), modifiers)
+            if matches!(ch, 'r' | 'R')
+                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
+                && !app.plugins.search_focused =>
+        {
+            request_inventory_refresh_manual(app);
+            true
+        }
+        (KeyCode::Char(ch), modifiers)
             if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
         {
             if search_enabled(app.plugins.active_tab)
@@ -282,6 +292,11 @@ pub(crate) fn request_inventory_refresh_if_needed(app: &mut App) {
         clamp_selection(app);
         return;
     }
+    request_inventory_refresh(app);
+}
+
+pub(crate) fn request_inventory_refresh_manual(app: &mut App) {
+    app.plugins.runtime_reload_after_refresh = true;
     request_inventory_refresh(app);
 }
 
@@ -323,6 +338,7 @@ pub(crate) fn apply_inventory_refresh_success(
     snapshot: PluginsInventorySnapshot,
     claude_path: PathBuf,
 ) {
+    let should_reload_runtime = std::mem::take(&mut app.plugins.runtime_reload_after_refresh);
     app.plugins.installed = snapshot.installed;
     app.plugins.marketplace = snapshot.marketplace;
     app.plugins.marketplaces = snapshot.marketplaces;
@@ -330,12 +346,20 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.last_error = None;
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
-    app.plugins.status_message = Some("Plugin inventory refreshed".to_owned());
     clamp_selection(app);
+    if should_reload_runtime {
+        start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
+    } else {
+        app.plugins.status_message = Some("Plugin inventory refreshed".to_owned());
+        app.config.last_error = None;
+        app.config.status_message = Some("Plugin inventory refreshed".to_owned());
+    }
 }
 
 pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
     app.plugins.loading = false;
+    app.plugins.runtime_reload_after_refresh = false;
+    app.plugins.pending_runtime_reload_success_message = None;
     app.plugins.status_message = None;
     app.plugins.last_error = Some(message);
 }
@@ -349,6 +373,8 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.plugins.marketplace.clear();
     app.plugins.marketplaces.clear();
     app.plugins.claude_path = None;
+    app.plugins.runtime_reload_after_refresh = false;
+    app.plugins.pending_runtime_reload_success_message = None;
     clamp_selection(app);
 }
 
@@ -833,15 +859,58 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
 }
 
 pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSuccess) {
-    apply_inventory_refresh_success(app, result.snapshot, result.claude_path);
-    app.config.last_error = None;
-    app.config.status_message = Some(result.message);
+    app.plugins.installed = result.snapshot.installed;
+    app.plugins.marketplace = result.snapshot.marketplace;
+    app.plugins.marketplaces = result.snapshot.marketplaces;
+    app.plugins.last_error = None;
+    app.plugins.last_inventory_refresh_at = Some(Instant::now());
+    app.plugins.claude_path = Some(result.claude_path);
+    clamp_selection(app);
+    start_runtime_reload(app, result.message);
 }
 
 pub(crate) fn apply_cli_action_failure(app: &mut App, message: String) {
     app.plugins.loading = false;
+    app.plugins.pending_runtime_reload_success_message = None;
     app.config.status_message = None;
     app.config.last_error = Some(message);
+}
+
+pub(crate) fn apply_runtime_reload_success(app: &mut App) {
+    app.plugins.loading = false;
+    app.plugins.last_error = None;
+    if let Some(message) = app.plugins.pending_runtime_reload_success_message.take() {
+        app.plugins.status_message = Some(message.clone());
+        app.config.last_error = None;
+        app.config.status_message = Some(message);
+    }
+}
+
+pub(crate) fn apply_runtime_reload_failure(app: &mut App, message: &str) {
+    app.plugins.loading = false;
+    app.plugins.status_message = None;
+    app.plugins.last_error = Some(message.to_owned());
+    app.plugins.pending_runtime_reload_success_message = None;
+    app.config.status_message = None;
+    app.config.last_error = Some(format!("Failed to reload session plugins: {message}"));
+}
+
+fn start_runtime_reload(app: &mut App, success_message: String) {
+    app.plugins.loading = true;
+    app.plugins.status_message = Some("Reloading session plugins...".to_owned());
+    app.plugins.last_error = None;
+    app.plugins.pending_runtime_reload_success_message = Some(success_message);
+    app.config.last_error = None;
+    app.config.status_message = Some("Reloading session plugins...".to_owned());
+    match crate::app::session_runtime::request_runtime_reload(app) {
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Requested => {}
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Unavailable => {
+            apply_runtime_reload_success(app);
+        }
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Failed => {
+            apply_runtime_reload_failure(app, "failed to request session runtime plugin reload");
+        }
+    }
 }
 
 fn installed_action_command(
@@ -1227,6 +1296,36 @@ pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::model;
+    use crate::agent::wire::BridgeCommand;
+
+    fn app_with_connection()
+    -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>)
+    {
+        let mut app = crate::app::App::test_default();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+        (app, rx)
+    }
+
+    fn sample_snapshot() -> PluginsInventorySnapshot {
+        PluginsInventorySnapshot {
+            installed: vec![InstalledPluginEntry {
+                id: "frontend-design@claude-plugins-official".to_owned(),
+                version: Some("1.0.0".to_owned()),
+                scope: "user".to_owned(),
+                enabled: true,
+                installed_at: None,
+                last_updated: None,
+                project_path: None,
+                capability: PluginCapability::Skill,
+            }],
+            marketplace: vec![],
+            marketplaces: vec![],
+        }
+    }
+
     #[test]
     fn plugins_tabs_wrap_in_both_directions() {
         assert_eq!(PluginsViewTab::Installed.prev(), PluginsViewTab::Marketplace);
@@ -1379,5 +1478,103 @@ mod tests {
                 "other-local@claude-plugins-official",
             ]
         );
+    }
+
+    #[test]
+    fn inventory_refresh_success_triggers_runtime_reload_when_requested() {
+        let (mut app, mut rx) = app_with_connection();
+        app.plugins.runtime_reload_after_refresh = true;
+
+        apply_inventory_refresh_success(
+            &mut app,
+            sample_snapshot(),
+            std::path::PathBuf::from("C:\\tools\\claude.exe"),
+        );
+
+        let envelope = rx.try_recv().expect("reload command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        ));
+        assert!(!app.plugins.runtime_reload_after_refresh);
+        assert_eq!(app.config.status_message.as_deref(), Some("Reloading session plugins..."));
+        assert_eq!(
+            app.plugins.pending_runtime_reload_success_message.as_deref(),
+            Some("Plugin inventory refreshed")
+        );
+    }
+
+    #[test]
+    fn cli_action_success_triggers_runtime_reload() {
+        let (mut app, mut rx) = app_with_connection();
+
+        apply_cli_action_success(
+            &mut app,
+            PluginsCliActionSuccess {
+                snapshot: sample_snapshot(),
+                message: "Updated plugin".to_owned(),
+                claude_path: std::path::PathBuf::from("C:\\tools\\claude.exe"),
+            },
+        );
+
+        let envelope = rx.try_recv().expect("reload command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        ));
+        assert_eq!(
+            app.plugins.pending_runtime_reload_success_message.as_deref(),
+            Some("Updated plugin")
+        );
+    }
+
+    #[test]
+    fn runtime_reload_success_applies_pending_success_message() {
+        let mut app = App::test_default();
+        app.plugins.loading = true;
+        app.plugins.pending_runtime_reload_success_message = Some("Updated plugin".to_owned());
+
+        apply_runtime_reload_success(&mut app);
+
+        assert!(!app.plugins.loading);
+        assert_eq!(app.config.status_message.as_deref(), Some("Updated plugin"));
+        assert!(app.config.last_error.is_none());
+        assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+    }
+
+    #[test]
+    fn runtime_reload_failure_surfaces_visible_error() {
+        let mut app = App::test_default();
+        app.plugins.loading = true;
+        app.plugins.pending_runtime_reload_success_message = Some("Updated plugin".to_owned());
+
+        apply_runtime_reload_failure(&mut app, "boom");
+
+        assert!(!app.plugins.loading);
+        assert_eq!(
+            app.config.last_error.as_deref(),
+            Some("Failed to reload session plugins: boom")
+        );
+        assert!(app.config.status_message.is_none());
+        assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+    }
+
+    #[test]
+    fn cli_action_success_without_active_session_keeps_success_message() {
+        let mut app = App::test_default();
+
+        apply_cli_action_success(
+            &mut app,
+            PluginsCliActionSuccess {
+                snapshot: sample_snapshot(),
+                message: "Updated plugin".to_owned(),
+                claude_path: std::path::PathBuf::from("C:\\tools\\claude.exe"),
+            },
+        );
+
+        assert!(!app.plugins.loading);
+        assert_eq!(app.config.status_message.as_deref(), Some("Updated plugin"));
+        assert!(app.config.last_error.is_none());
+        assert!(app.plugins.pending_runtime_reload_success_message.is_none());
     }
 }

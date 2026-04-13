@@ -667,14 +667,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn model_sets_command_pending_and_config_ack_updates_model_and_restores_ready() {
+    async fn model_sets_command_pending_and_current_model_ack_updates_model_and_restores_ready() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
                 app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
                 app.session_id = Some("sess-1".into());
-                app.model_name = "old-model".to_owned();
+                app.current_model = Some(
+                    crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
+                        .authoritative(true),
+                );
 
                 let consumed = try_handle_submit(&mut app, "/model sonnet");
                 assert!(consumed);
@@ -684,25 +687,33 @@ mod tests {
                     app.status
                 );
                 assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
-                assert_eq!(app.model_name, "old-model");
+                assert_eq!(
+                    app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                    Some("old-model")
+                );
 
                 super::super::events::handle_client_event(
                     &mut app,
                     crate::agent::events::ClientEvent::SessionUpdate(
-                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
-                            crate::agent::model::ConfigOptionUpdate {
-                                option_id: "model".to_owned(),
-                                value: serde_json::Value::String("sonnet".to_owned()),
-                            },
+                        crate::agent::model::SessionUpdate::CurrentModelUpdate(
+                            crate::agent::model::CurrentModelUpdate::new(
+                                crate::agent::model::CurrentModel::new(
+                                    "sonnet", "sonnet", "sonnet",
+                                )
+                                .authoritative(true),
+                            ),
                         ),
                     ),
                 );
                 assert!(
                     matches!(app.status, AppStatus::Ready),
-                    "expected Ready after model config ack, got {:?}",
+                    "expected Ready after current model ack, got {:?}",
                     app.status
                 );
-                assert_eq!(app.model_name, "sonnet");
+                assert_eq!(
+                    app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                    Some("sonnet")
+                );
                 assert!(app.pending_command_label.is_none());
             })
             .await;

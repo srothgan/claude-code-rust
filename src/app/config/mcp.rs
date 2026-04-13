@@ -136,6 +136,7 @@ pub(super) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
             if matches!(ch, 'r' | 'R')
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
         {
+            crate::app::session_runtime::request_runtime_reload(app);
             refresh_mcp_snapshot(app);
             true
         }

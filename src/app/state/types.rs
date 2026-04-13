@@ -35,8 +35,9 @@ pub struct LoginHint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingCommandAck {
-    CurrentModeUpdate,
-    ConfigOptionUpdate { option_id: String },
+    CurrentMode,
+    CurrentModel,
+    ConfigOption { option_id: String },
 }
 
 /// A single todo item from Claude's `TodoWrite` tool call.
@@ -146,6 +147,9 @@ pub struct UsageState {
 pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
     pub last_compaction_pre_tokens: Option<u64>,
+    pub context_usage_percent: Option<u8>,
+    pub context_usage_in_flight: bool,
+    pub context_usage_refresh_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

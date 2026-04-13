@@ -421,6 +421,20 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetContextUsage { session_id },
+        })
+    }
+
+    pub fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadPlugins { session_id },
+        })
+    }
+
     pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -594,6 +608,34 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn get_context_usage_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.get_context_usage("session-1".to_owned()).expect("context usage");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::GetContextUsage { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn reload_plugins_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.reload_plugins("session-1".to_owned()).expect("reload plugins");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned() }
         );
     }
 

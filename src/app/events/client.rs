@@ -37,7 +37,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::Connected {
             session_id,
             cwd,
-            model_name,
+            current_model,
             available_models,
             mode,
             history_updates,
@@ -46,12 +46,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 app,
                 session_id,
                 cwd,
-                model_name,
+                current_model,
                 available_models,
                 mode,
                 &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_context_usage_refresh(app);
         }
         ClientEvent::SessionsListed { sessions } => {
             session::handle_sessions_listed_event(app, sessions);
@@ -65,10 +66,26 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SlashCommandError(msg) => {
             session::handle_slash_command_error_event(app, &msg);
         }
+        ClientEvent::RuntimeReloadCompleted { session_id } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
+            crate::app::plugins::apply_runtime_reload_success(app);
+        }
+        ClientEvent::RuntimeReloadFailed { session_id, message } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
+            crate::app::plugins::apply_runtime_reload_failure(app, &message);
+        }
         ClientEvent::SessionReplaced {
             session_id,
             cwd,
-            model_name,
+            current_model,
             available_models,
             mode,
             history_updates,
@@ -77,12 +94,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 app,
                 session_id,
                 cwd,
-                model_name,
+                current_model,
                 available_models,
                 mode,
                 &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_context_usage_refresh(app);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
             session::handle_update_available_event(app, &latest_version, &current_version);
@@ -129,6 +147,22 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 token_source = ?token_source,
                 api_key_source = ?api_key_source,
             );
+        }
+        ClientEvent::ContextUsageReceived { session_id, percentage } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "context_usage_dropped",
+                    message = "context usage dropped for a stale session",
+                    outcome = "dropped",
+                    session_id = %session_id,
+                    reason = "stale_session",
+                );
+                return;
+            }
+            crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
         ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()

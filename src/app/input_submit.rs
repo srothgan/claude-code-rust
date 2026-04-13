@@ -164,6 +164,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so the model can correlate user references with image attachments.
     match conn.prompt_with_images(sid.to_string(), text, images) {
         Ok(resp) => {
+            crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
                 event_name = "prompt_dispatched",

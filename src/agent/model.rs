@@ -140,6 +140,7 @@ pub enum ToolCallStatus {
     InProgress,
     Completed,
     Failed,
+    Killed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +266,7 @@ pub struct ToolCall {
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
     pub output_metadata: Option<ToolOutputMetadata>,
+    pub task_metadata: Option<TaskMetadata>,
     pub locations: Vec<ToolCallLocation>,
     pub meta: Option<serde_json::Value>,
 }
@@ -281,6 +283,7 @@ impl ToolCall {
             raw_input: None,
             raw_output: None,
             output_metadata: None,
+            task_metadata: None,
             locations: Vec::new(),
             meta: None,
         }
@@ -323,6 +326,12 @@ impl ToolCall {
     }
 
     #[must_use]
+    pub fn task_metadata(mut self, task_metadata: TaskMetadata) -> Self {
+        self.task_metadata = Some(task_metadata);
+        self
+    }
+
+    #[must_use]
     pub fn locations(mut self, locations: Vec<ToolCallLocation>) -> Self {
         self.locations = locations;
         self
@@ -344,6 +353,7 @@ pub struct ToolCallUpdateFields {
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
     pub output_metadata: Option<ToolOutputMetadata>,
+    pub task_metadata: Option<TaskMetadata>,
     pub locations: Option<Vec<ToolCallLocation>>,
 }
 
@@ -392,6 +402,12 @@ impl ToolCallUpdateFields {
     #[must_use]
     pub fn output_metadata(mut self, output_metadata: ToolOutputMetadata) -> Self {
         self.output_metadata = Some(output_metadata);
+        self
+    }
+
+    #[must_use]
+    pub fn task_metadata(mut self, task_metadata: TaskMetadata) -> Self {
+        self.task_metadata = Some(task_metadata);
         self
     }
 
@@ -492,6 +508,45 @@ pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
     pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskMetadata {
+    pub end_time: Option<u64>,
+    pub total_paused_ms: Option<u64>,
+    pub error: Option<String>,
+    pub is_backgrounded: Option<bool>,
+}
+
+impl TaskMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn end_time(mut self, end_time: Option<u64>) -> Self {
+        self.end_time = end_time;
+        self
+    }
+
+    #[must_use]
+    pub fn total_paused_ms(mut self, total_paused_ms: Option<u64>) -> Self {
+        self.total_paused_ms = total_paused_ms;
+        self
+    }
+
+    #[must_use]
+    pub fn error(mut self, error: Option<String>) -> Self {
+        self.error = error;
+        self
+    }
+
+    #[must_use]
+    pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
+        self.is_backgrounded = is_backgrounded;
+        self
+    }
 }
 
 impl ToolOutputMetadata {
@@ -729,6 +784,92 @@ impl AvailableModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentModel {
+    pub requested_id: Option<String>,
+    pub resolved_id: String,
+    pub display_name_short: String,
+    pub display_name_long: String,
+    pub catalog_id: Option<String>,
+    pub supports_effort: bool,
+    pub supported_effort_levels: Vec<EffortLevel>,
+    pub supports_fast_mode: Option<bool>,
+    pub supports_auto_mode: Option<bool>,
+    pub supports_adaptive_thinking: Option<bool>,
+    pub is_authoritative: bool,
+}
+
+impl CurrentModel {
+    #[must_use]
+    pub fn new(
+        resolved_id: impl Into<String>,
+        display_name_short: impl Into<String>,
+        display_name_long: impl Into<String>,
+    ) -> Self {
+        Self {
+            requested_id: None,
+            resolved_id: resolved_id.into(),
+            display_name_short: display_name_short.into(),
+            display_name_long: display_name_long.into(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: false,
+        }
+    }
+
+    #[must_use]
+    pub fn requested_id(mut self, requested_id: impl Into<String>) -> Self {
+        self.requested_id = Some(requested_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = Some(catalog_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    #[must_use]
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn authoritative(mut self, is_authoritative: bool) -> Self {
+        self.is_authoritative = is_authoritative;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgentsUpdate {
     pub available_agents: Vec<AvailableAgent>,
 }
@@ -749,6 +890,18 @@ impl CurrentModeUpdate {
     #[must_use]
     pub fn new(current_mode_id: impl Into<SessionModeId>) -> Self {
         Self { current_mode_id: current_mode_id.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentModelUpdate {
+    pub current_model: CurrentModel,
+}
+
+impl CurrentModelUpdate {
+    #[must_use]
+    pub fn new(current_model: CurrentModel) -> Self {
+        Self { current_model }
     }
 }
 
@@ -819,6 +972,7 @@ pub enum SessionUpdate {
     AvailableAgentsUpdate(AvailableAgentsUpdate),
     ModeStateUpdate(crate::app::ModeState),
     CurrentModeUpdate(CurrentModeUpdate),
+    CurrentModelUpdate(CurrentModelUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     FastModeUpdate(FastModeState),
     RateLimitUpdate(RateLimitUpdate),

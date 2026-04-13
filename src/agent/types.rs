@@ -53,6 +53,22 @@ pub struct AvailableModel {
     pub supports_auto_mode: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentModel {
+    pub requested_id: Option<String>,
+    pub resolved_id: String,
+    pub display_name_short: String,
+    pub display_name_long: String,
+    pub catalog_id: Option<String>,
+    pub supports_effort: bool,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<EffortLevel>,
+    pub supports_fast_mode: Option<bool>,
+    pub supports_auto_mode: Option<bool>,
+    pub supports_adaptive_thinking: Option<bool>,
+    pub is_authoritative: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
@@ -114,6 +130,7 @@ pub struct ToolCall {
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
     pub output_metadata: Option<ToolOutputMetadata>,
+    pub task_metadata: Option<TaskMetadata>,
     pub locations: Vec<ToolLocation>,
     pub meta: Option<serde_json::Value>,
 }
@@ -133,6 +150,7 @@ pub struct ToolCallUpdateFields {
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
     pub output_metadata: Option<ToolOutputMetadata>,
+    pub task_metadata: Option<TaskMetadata>,
     pub locations: Option<Vec<ToolLocation>>,
     pub meta: Option<serde_json::Value>,
 }
@@ -164,6 +182,14 @@ pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
     pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskMetadata {
+    pub end_time: Option<u64>,
+    pub total_paused_ms: Option<u64>,
+    pub error: Option<String>,
+    pub is_backgrounded: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +252,9 @@ pub enum SessionUpdate {
     },
     CurrentModeUpdate {
         current_mode_id: String,
+    },
+    CurrentModelUpdate {
+        current_model: CurrentModel,
     },
     ConfigOptionUpdate {
         option_id: String,

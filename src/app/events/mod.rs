@@ -218,7 +218,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
             app.mode = Some(mode);
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
+            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
             }
         }
@@ -233,9 +233,33 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                     mode.current_mode_id = mode_id;
                 }
             }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModeUpdate)) {
+            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
             }
+        }
+        model::SessionUpdate::CurrentModelUpdate(update) => {
+            let next_resolved_id = update.current_model.resolved_id.clone();
+            let next_display_short = update.current_model.display_name_short.clone();
+            let next_display_long = update.current_model.display_name_long.clone();
+            let pending_ack_before = format!("{:?}", app.pending_command_ack);
+            app.current_model = Some(update.current_model);
+            app.update_welcome_model_once();
+            let clearing_pending =
+                matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
+            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
+                session::clear_pending_command(app);
+            }
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "current_model_update_applied",
+                message = "current model update applied",
+                outcome = "success",
+                resolved_id = %next_resolved_id,
+                display_name_short = %next_display_short,
+                display_name_long = %next_display_long,
+                clearing_pending = clearing_pending,
+                pending_ack_before = %pending_ack_before,
+            );
         }
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             handle_config_option_update(app, config);
@@ -249,10 +273,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
+            let was_compacting = app.is_compacting;
             if matches!(status, model::SessionStatus::Compacting) {
                 app.is_compacting = true;
             } else {
                 clear_compaction_state(app, true);
+            }
+            if was_compacting && matches!(status, model::SessionStatus::Idle) {
+                crate::app::session_runtime::request_context_usage_refresh(app);
             }
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -302,8 +330,6 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
 fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
     let option_id = config.option_id;
     let value = config.value;
-    let model_name =
-        if option_id == "model" { value.as_str().map(ToOwned::to_owned) } else { None };
     let value_kind = match &value {
         serde_json::Value::Null => "null",
         serde_json::Value::Bool(_) => "bool",
@@ -322,23 +348,9 @@ fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate)
         value_kind,
     );
 
-    if let Some(model_name) = model_name {
-        app.model_name = model_name;
-        app.update_welcome_model_once();
-    } else if option_id == "model" {
-        tracing::warn!(
-            target: crate::logging::targets::APP_CONFIG,
-            event_name = "config_option_update_rejected",
-            message = "config option update carried an invalid model value",
-            outcome = "failure",
-            option_id = "model",
-            value_kind,
-        );
-    }
-
     if matches!(
         app.pending_command_ack.as_ref(),
-        Some(PendingCommandAck::ConfigOptionUpdate { option_id: expected }) if expected == &option_id
+        Some(PendingCommandAck::ConfigOption { option_id: expected }) if expected == &option_id
     ) {
         session::clear_pending_command(app);
     }
@@ -394,6 +406,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status,
             content: vec![],
             hidden: false,
@@ -750,11 +763,17 @@ mod tests {
         App::test_default()
     }
 
+    fn test_current_model(model_name: &str) -> model::CurrentModel {
+        let (short, long) =
+            if model_name == "default" { ("Default", "Default") } else { (model_name, model_name) };
+        model::CurrentModel::new(model_name, short, long).authoritative(model_name != "default")
+    }
+
     fn connected_event(model_name: &str) -> ClientEvent {
         ClientEvent::Connected {
             session_id: model::SessionId::new("test-session"),
             cwd: "/test".into(),
-            model_name: model_name.to_owned(),
+            current_model: test_current_model(model_name),
             available_models: Vec::new(),
             mode: None,
             history_updates: Vec::new(),
@@ -1308,7 +1327,6 @@ mod tests {
     #[test]
     fn connected_updates_welcome_model_while_pristine() {
         let mut app = make_test_app();
-        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
@@ -1325,7 +1343,6 @@ mod tests {
     #[test]
     fn connected_updates_welcome_to_default_for_provisional_default_model() {
         let mut app = make_test_app();
-        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
 
         handle_client_event(&mut app, connected_event("default"));
@@ -1337,7 +1354,6 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "default");
-        assert!(!app.welcome_model_resolved);
     }
 
     #[test]
@@ -1370,7 +1386,6 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
-        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.resuming_session_id = Some("resume-123".into());
 
@@ -1379,7 +1394,7 @@ mod tests {
             ClientEvent::Connected {
                 session_id: model::SessionId::new("session-cwd"),
                 cwd: "/changed".into(),
-                model_name: "claude-updated".into(),
+                current_model: test_current_model("claude-updated"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
@@ -1411,7 +1426,7 @@ mod tests {
             ClientEvent::Connected {
                 session_id: model::SessionId::new("session-trust"),
                 cwd: "/untrusted".into(),
-                model_name: "claude-updated".into(),
+                current_model: test_current_model("claude-updated"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
@@ -1428,7 +1443,6 @@ mod tests {
     #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
-        app.welcome_model_resolved = false;
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.messages.push(user_msg("hello"));
 
@@ -1441,14 +1455,13 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "claude-updated");
-        assert!(app.welcome_model_resolved);
     }
 
     #[test]
-    fn persisted_model_change_reopens_welcome_model_reconciliation() {
+    fn current_model_update_refreshes_welcome_after_settings_reconcile() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-1"));
-        app.model_name = "default".into();
+        app.current_model = Some(test_current_model("default"));
         app.messages = vec![ChatMessage::welcome("default", "/test")];
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
@@ -1456,22 +1469,17 @@ mod tests {
         );
 
         app.update_welcome_model_once();
-        assert!(app.welcome_model_resolved);
 
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
             Some("haiku"),
         );
         app.reconcile_runtime_from_persisted_settings_change();
-        assert!(!app.welcome_model_resolved);
 
         handle_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-                model::ConfigOptionUpdate {
-                    option_id: "model".into(),
-                    value: serde_json::Value::String("claude-opus-4-6".into()),
-                },
+            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-6")),
             )),
         );
 
@@ -1479,7 +1487,6 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "claude-opus-4-6");
-        assert!(app.welcome_model_resolved);
     }
 
     #[test]
@@ -1535,20 +1542,16 @@ mod tests {
     }
 
     #[test]
-    fn model_config_update_resolves_welcome_once_after_provisional_default() {
+    fn current_model_update_refreshes_welcome_after_provisional_default() {
         let mut app = make_test_app();
-        app.model_name = "default".into();
-        app.welcome_model_resolved = false;
+        app.current_model = Some(test_current_model("default"));
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
         app.messages.push(user_msg("hello"));
 
         handle_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-                model::ConfigOptionUpdate {
-                    option_id: "model".into(),
-                    value: serde_json::Value::String("claude-opus-4-6".into()),
-                },
+            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-6")),
             )),
         );
 
@@ -1559,15 +1562,11 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.model_name, "claude-opus-4-6");
-        assert!(app.welcome_model_resolved);
 
         handle_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-                model::ConfigOptionUpdate {
-                    option_id: "model".into(),
-                    value: serde_json::Value::String("claude-sonnet-4-5".into()),
-                },
+            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(test_current_model("claude-sonnet-4-5")),
             )),
         );
 
@@ -1577,7 +1576,7 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-opus-4-6");
+        assert_eq!(welcome.model_name, "claude-sonnet-4-5");
     }
 
     #[test]
@@ -1693,7 +1692,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
@@ -1705,7 +1704,10 @@ mod tests {
             app.session_id.as_ref().map(ToString::to_string).as_deref(),
             Some("replacement")
         );
-        assert_eq!(app.model_name, "new-model");
+        assert_eq!(
+            app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+            Some("new-model")
+        );
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
@@ -1741,7 +1743,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
@@ -2137,7 +2139,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
         app.pending_command_label = Some("Switching mode...".into());
-        app.pending_command_ack = Some(PendingCommandAck::CurrentModeUpdate);
+        app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
         app.mode = Some(crate::app::ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
@@ -2163,29 +2165,24 @@ mod tests {
     }
 
     #[test]
-    fn model_config_option_update_updates_state_and_clears_pending_when_expected() {
+    fn current_model_update_updates_state_and_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
         app.pending_command_label = Some("Switching model...".into());
-        app.pending_command_ack =
-            Some(PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() });
-        app.model_name = "old-model".to_owned();
+        app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
+        app.current_model = Some(test_current_model("old-model"));
 
         handle_client_event(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-                model::ConfigOptionUpdate {
-                    option_id: "model".to_owned(),
-                    value: serde_json::Value::String("sonnet".to_owned()),
-                },
+            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(test_current_model("sonnet")),
             )),
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.model_name, "sonnet");
         assert_eq!(
-            app.config_options.get("model"),
-            Some(&serde_json::Value::String("sonnet".to_owned()))
+            app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+            Some("sonnet")
         );
         assert!(app.pending_command_label.is_none());
         assert!(app.pending_command_ack.is_none());
@@ -2197,7 +2194,7 @@ mod tests {
         app.status = AppStatus::CommandPending;
         app.pending_command_label = Some("Switching model...".into());
         app.pending_command_ack =
-            Some(PendingCommandAck::ConfigOptionUpdate { option_id: "model".to_owned() });
+            Some(PendingCommandAck::ConfigOption { option_id: "model".to_owned() });
 
         handle_client_event(
             &mut app,
@@ -2214,7 +2211,7 @@ mod tests {
         assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
         assert!(matches!(
             app.pending_command_ack.as_ref(),
-            Some(PendingCommandAck::ConfigOptionUpdate { option_id }) if option_id == "model"
+            Some(PendingCommandAck::ConfigOption { option_id }) if option_id == "model"
         ));
     }
 
@@ -2228,7 +2225,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
@@ -2258,7 +2255,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates,
@@ -2288,7 +2285,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
@@ -2314,7 +2311,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("active-790"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::AgentMessageChunk(
@@ -2341,7 +2338,7 @@ mod tests {
             ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new("active-791"),
                 cwd: "/replacement".into(),
-                model_name: "new-model".into(),
+                current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
@@ -2600,7 +2597,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.session_id = Some(model::SessionId::new("session-auth"));
-        app.model_name = "claude-old".into();
+        app.current_model = Some(test_current_model("claude-old"));
         app.mode = Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
@@ -2634,7 +2631,7 @@ mod tests {
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
         assert!(app.session_id.is_none());
-        assert_eq!(app.model_name, "Connecting...");
+        assert!(app.current_model.is_none());
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
     }
@@ -2643,7 +2640,7 @@ mod tests {
     fn logout_completed_clears_session_runtime_identity_caches() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-x"));
-        app.model_name = "claude-old".into();
+        app.current_model = Some(test_current_model("claude-old"));
         app.mode = Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
@@ -2654,7 +2651,7 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::LogoutCompleted);
 
         assert!(app.session_id.is_none());
-        assert_eq!(app.model_name, "Connecting...");
+        assert!(app.current_model.is_none());
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
     }
@@ -3006,7 +3003,7 @@ mod tests {
             ClientEvent::Connected {
                 session_id: model::SessionId::new("new-session"),
                 cwd: "/test".into(),
-                model_name: "claude".into(),
+                current_model: test_current_model("claude"),
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),

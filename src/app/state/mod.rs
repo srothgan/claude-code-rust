@@ -149,9 +149,7 @@ pub struct App {
     pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
     /// Monotonic session authority epoch used to ignore stale async view data.
     pub session_scope_epoch: u64,
-    pub model_name: String,
-    /// True once the welcome banner has captured its one-time session model label.
-    pub welcome_model_resolved: bool,
+    pub current_model: Option<model::CurrentModel>,
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
@@ -447,54 +445,30 @@ impl App {
         self.insert_message_tracked(
             0,
             ChatMessage::welcome_with_recent(
-                self.welcome_model_display_name(),
+                self.model_display_name(),
                 &self.cwd,
                 &self.recent_sessions,
             ),
         );
-        self.welcome_model_resolved = self.model_name_is_authoritative();
-    }
-
-    fn model_name_is_authoritative(&self) -> bool {
-        let model_name = self.model_name.trim();
-        if model_name.is_empty() || model_name == "Connecting..." {
-            return false;
-        }
-        if model_name != "default" {
-            return true;
-        }
-        matches!(
-            crate::app::config::store::model(&self.config.committed_settings_document),
-            Ok(Some(configured_model)) if configured_model.trim() == "default"
-        )
     }
 
     #[must_use]
     pub fn model_display_name(&self) -> &str {
-        let model_name = self.model_name.trim();
-        if self.session_id.is_none()
-            && (model_name.is_empty() || model_name == "Connecting..." || model_name == "default")
-        {
-            "Connecting..."
-        } else if model_name.is_empty() || model_name == "Connecting..." {
-            "default"
-        } else {
-            &self.model_name
+        match self.current_model.as_ref() {
+            Some(current_model)
+                if current_model.is_authoritative
+                    || current_model.display_name_long.trim() != "Default" =>
+            {
+                &current_model.display_name_long
+            }
+            _ if self.session_id.is_none() => "Connecting...",
+            _ => "default",
         }
     }
 
-    #[must_use]
-    fn welcome_model_display_name(&self) -> &str {
-        self.model_display_name()
-    }
-
-    /// Update the welcome message's model name once, when the session model becomes authoritative.
+    /// Update the welcome message's model label from the current session model state.
     pub fn update_welcome_model_once(&mut self) {
-        if self.welcome_model_resolved {
-            return;
-        }
-        let welcome_model = self.welcome_model_display_name().to_owned();
-        let model_is_authoritative = self.model_name_is_authoritative();
+        let welcome_model = self.model_display_name().to_owned();
         let Some(first) = self.messages.first_mut() else {
             return;
         };
@@ -510,9 +484,6 @@ impl App {
             self.sync_render_cache_slot(0, 0);
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
-        }
-        if model_is_authoritative {
-            self.welcome_model_resolved = true;
         }
     }
 
@@ -866,8 +837,10 @@ impl App {
             session_id: None,
             conn: None,
             session_scope_epoch: 0,
-            model_name: "test-model".into(),
-            welcome_model_resolved: true,
+            current_model: Some(
+                model::CurrentModel::new("test-model", "test-model", "test-model")
+                    .authoritative(true),
+            ),
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
             files_accessed: 0,
@@ -1073,10 +1046,10 @@ impl App {
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_id = None;
-        "Connecting...".clone_into(&mut self.model_name);
+        self.current_model = None;
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;
-        self.welcome_model_resolved = false;
+        self.session_usage = SessionUsageState::default();
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
@@ -1099,7 +1072,6 @@ impl App {
     }
 
     pub fn reconcile_runtime_from_persisted_settings_change(&mut self) {
-        self.welcome_model_resolved = false;
         self.reconcile_trust_state_from_preferences_and_cwd();
         self.update_welcome_model_once();
     }
@@ -1394,6 +1366,32 @@ mod tests {
     }
 
     #[test]
+    fn clear_session_runtime_identity_resets_session_usage() {
+        let mut app = App::test_default();
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
+                .authoritative(true),
+        );
+        app.mode = Some(crate::app::ModeState {
+            current_mode_id: "plan".to_owned(),
+            current_mode_name: "Plan".to_owned(),
+            available_modes: Vec::new(),
+        });
+        app.session_usage.context_usage_percent = Some(62);
+        app.session_usage.context_usage_in_flight = true;
+        app.session_usage.context_usage_refresh_pending = true;
+        app.session_usage.last_compaction_pre_tokens = Some(123_456);
+
+        app.clear_session_runtime_identity();
+
+        assert!(app.session_id.is_none());
+        assert!(app.current_model.is_none());
+        assert!(app.mode.is_none());
+        assert_eq!(app.session_usage, SessionUsageState::default());
+    }
+
+    #[test]
     fn cache_store_without_height_has_no_height() {
         let mut cache = BlockCache::default();
         cache.store(vec![Line::from("hello")]);
@@ -1518,6 +1516,7 @@ mod tests {
                 raw_input: None,
                 raw_input_bytes: 0,
                 output_metadata: None,
+                task_metadata: None,
                 status,
                 content: Vec::new(),
                 hidden: false,
@@ -1555,6 +1554,7 @@ mod tests {
                 raw_input: None,
                 raw_input_bytes: 0,
                 output_metadata: None,
+                task_metadata: None,
                 status,
                 content: Vec::new(),
                 hidden: false,
@@ -1589,6 +1589,7 @@ mod tests {
                 raw_input: None,
                 raw_input_bytes: 0,
                 output_metadata: None,
+                task_metadata: None,
                 status: model::ToolCallStatus::Completed,
                 content: Vec::new(),
                 hidden: false,

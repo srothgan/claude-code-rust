@@ -121,18 +121,12 @@ pub fn create_app(cli: &Cli) -> App {
     });
 
     let cwd_display = shorten_cwd(&cwd);
-    let initial_model_name = "Connecting...".to_owned();
-
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        messages: vec![super::ChatMessage::welcome_with_recent(
-            &initial_model_name,
-            &cwd_display,
-            &[],
-        )],
+        messages: vec![super::ChatMessage::welcome_with_recent("Connecting...", &cwd_display, &[])],
         message_retained_bytes: Vec::new(),
         retained_history_bytes: 0,
         viewport: ChatViewport::new(),
@@ -146,8 +140,7 @@ pub fn create_app(cli: &Cli) -> App {
         session_id: None,
         conn: None,
         session_scope_epoch: 0,
-        model_name: initial_model_name,
-        welcome_model_resolved: false,
+        current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,

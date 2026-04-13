@@ -8,7 +8,7 @@ import type {
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
-import type { SessionState } from "./session_lifecycle.js";
+import { resolveCurrentModel, type SessionState } from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
@@ -44,6 +44,18 @@ export function failConnection(message: string, requestId?: string): void {
 
 export function slashError(sessionId: string, message: string, requestId?: string): void {
   writeEvent({ event: "slash_error", session_id: sessionId, message }, requestId);
+}
+
+export function emitRuntimeReloadCompleted(sessionId: string, requestId?: string): void {
+  writeEvent({ event: "runtime_reload_completed", session_id: sessionId }, requestId);
+}
+
+export function emitRuntimeReloadFailed(
+  sessionId: string,
+  message: string,
+  requestId?: string,
+): void {
+  writeEvent({ event: "runtime_reload_failed", session_id: sessionId, message }, requestId);
 }
 
 export function emitMcpOperationError(
@@ -131,7 +143,7 @@ function buildConnectBridgeEvent(
         event: "session_replaced",
         session_id: session.sessionId,
         cwd: session.cwd,
-        model_name: session.model,
+        current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
@@ -140,7 +152,7 @@ function buildConnectBridgeEvent(
         event: "connected",
         session_id: session.sessionId,
         cwd: session.cwd,
-        model_name: session.model,
+        current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),

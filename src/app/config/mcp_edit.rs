@@ -92,7 +92,10 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     }
 
     match action {
-        McpServerActionKind::RefreshSnapshot => refresh_mcp_snapshot(app),
+        McpServerActionKind::RefreshSnapshot => {
+            crate::app::session_runtime::request_runtime_reload(app);
+            refresh_mcp_snapshot(app);
+        }
         McpServerActionKind::Authenticate => {
             authenticate_mcp_server(app, &overlay.server_name);
         }
@@ -235,6 +238,7 @@ fn execute_mcp_auth_redirect_overlay_action(app: &mut App) {
     };
     match action {
         McpAuthRedirectAction::Refresh => {
+            crate::app::session_runtime::request_runtime_reload(app);
             refresh_mcp_snapshot(app);
             app.config.overlay = None;
         }

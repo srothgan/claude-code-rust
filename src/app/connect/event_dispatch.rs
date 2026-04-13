@@ -14,14 +14,14 @@ use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
-    convert_mode_state, map_available_models, map_permission_request, map_question_request,
-    map_session_update,
+    convert_current_model, convert_mode_state, map_available_models, map_permission_request,
+    map_question_request, map_session_update,
 };
 
 struct ConnectedEventData {
     session_id: String,
     cwd: String,
-    model_name: String,
+    current_model: types::CurrentModel,
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
     history_updates: Option<Vec<types::SessionUpdate>>,
@@ -39,7 +39,7 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::Connected {
             session_id,
             cwd,
-            model_name,
+            current_model,
             available_models,
             mode,
             history_updates,
@@ -50,7 +50,7 @@ pub(super) fn handle_bridge_event(
                 ConnectedEventData {
                     session_id,
                     cwd,
-                    model_name,
+                    current_model,
                     available_models,
                     mode,
                     history_updates,
@@ -117,10 +117,16 @@ pub(super) fn handle_bridge_event(
             }
             let _ = event_tx.send(ClientEvent::SlashCommandError(message));
         }
+        crate::agent::wire::BridgeEvent::RuntimeReloadCompleted { session_id } => {
+            let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id });
+        }
+        crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
+            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message });
+        }
         crate::agent::wire::BridgeEvent::SessionReplaced {
             session_id,
             cwd,
-            model_name,
+            current_model,
             available_models,
             mode,
             history_updates,
@@ -133,7 +139,7 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new(session_id),
                 cwd,
-                model_name,
+                current_model: convert_current_model(current_model),
                 available_models: map_available_models(available_models),
                 mode: mode.map(convert_mode_state),
                 history_updates,
@@ -145,6 +151,9 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
         crate::agent::wire::BridgeEvent::StatusSnapshot { session_id, account } => {
             let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
+        }
+        crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
+            let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
         }
         crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
@@ -168,7 +177,7 @@ fn handle_connected_event(
         let _ = event_tx.send(ClientEvent::SessionReplaced {
             session_id: model::SessionId::new(event.session_id),
             cwd: event.cwd,
-            model_name: event.model_name,
+            current_model: convert_current_model(event.current_model),
             available_models: map_available_models(event.available_models),
             mode,
             history_updates,
@@ -178,7 +187,7 @@ fn handle_connected_event(
         let _ = event_tx.send(ClientEvent::Connected {
             session_id: model::SessionId::new(event.session_id),
             cwd: event.cwd,
-            model_name: event.model_name,
+            current_model: convert_current_model(event.current_model),
             available_models: map_available_models(event.available_models),
             mode,
             history_updates,
