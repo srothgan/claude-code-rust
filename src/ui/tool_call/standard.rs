@@ -117,7 +117,7 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
             let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed)
+            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
                 && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 return if first_line.chars().count() > 80 {
@@ -173,8 +173,10 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
-                    if matches!(tc.status, model::ToolCallStatus::Failed)
-                        && let Some(msg) = extract_tool_use_error_message(&stripped)
+                    if matches!(
+                        tc.status,
+                        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+                    ) && let Some(msg) = extract_tool_use_error_message(&stripped)
                     {
                         return msg;
                     }
@@ -202,7 +204,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
             let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed)
+            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
                 && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 lines.push(Line::from(Span::styled(
@@ -247,13 +249,15 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
     let stripped = strip_outer_code_fence(text);
-    if matches!(tc.status, model::ToolCallStatus::Failed)
+    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
         && let Some(msg) = extract_tool_use_error_message(&stripped)
     {
         lines.extend(render_tool_use_error_content(&msg));
         return;
     }
-    if matches!(tc.status, model::ToolCallStatus::Failed) && looks_like_internal_error(&stripped) {
+    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
+        && looks_like_internal_error(&stripped)
+    {
         lines.extend(render_internal_failure_content(&stripped));
         return;
     }

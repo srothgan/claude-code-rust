@@ -144,7 +144,9 @@ pub(super) fn update_subagent_scope_state(
         ) => app.mark_subagent_tool_started(id),
         (
             ToolCallScope::Subagent,
-            model::ToolCallStatus::Completed | model::ToolCallStatus::Failed,
+            model::ToolCallStatus::Completed
+            | model::ToolCallStatus::Failed
+            | model::ToolCallStatus::Killed,
         ) => app.mark_subagent_tool_finished(id, Instant::now()),
         _ => app.refresh_subagent_idle_since(Instant::now()),
     }
@@ -175,6 +177,7 @@ fn build_tool_info_from_tool_call(
         raw_input: tc.raw_input,
         raw_input_bytes: 0,
         output_metadata: tc.output_metadata,
+        task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
         hidden: false,
@@ -267,6 +270,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
         changed |= existing.set_raw_input(tool_info.raw_input.clone());
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
+        changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
         if tool_info.terminal_id.is_some() {
             changed |= sync_if_changed(&mut existing.terminal_id, &tool_info.terminal_id);
         }
@@ -463,10 +467,18 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
             token_saver_active = tc.token_saver_active(),
         ),
-        model::ToolCallStatus::Failed => tracing::warn!(
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
             target: crate::logging::targets::APP_COMMAND,
-            event_name = "command_failed",
-            message = "command execution failed",
+            event_name = if matches!(tc.status, model::ToolCallStatus::Killed) {
+                "command_killed"
+            } else {
+                "command_failed"
+            },
+            message = if matches!(tc.status, model::ToolCallStatus::Killed) {
+                "command execution killed"
+            } else {
+                "command execution failed"
+            },
             outcome = "failure",
             session_id = %current_session_id(app),
             tool_call_id = %tc.id,

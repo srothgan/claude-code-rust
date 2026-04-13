@@ -47,7 +47,9 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
             (s, theme::RUST_ORANGE)
         }
         model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
-        model::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => {
+            (theme::ICON_FAILED, theme::STATUS_ERROR)
+        }
     }
 }
 
@@ -256,6 +258,13 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
+    if tc.task_is_backgrounded() {
+        badges.push(Span::styled(
+            "  [backgrounded]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     if tc.is_ultraplan() {
         badges.push(Span::styled(
             "  [ultraplan]",
@@ -295,6 +304,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status,
             content: Vec::new(),
             hidden: false,
@@ -342,6 +352,13 @@ mod tests {
     #[test]
     fn status_icon_failed() {
         let (icon, color) = status_icon(model::ToolCallStatus::Failed, 0);
+        assert_eq!(icon, theme::ICON_FAILED);
+        assert_eq!(color, theme::STATUS_ERROR);
+    }
+
+    #[test]
+    fn status_icon_killed() {
+        let (icon, color) = status_icon(model::ToolCallStatus::Killed, 0);
         assert_eq!(icon, theme::ICON_FAILED);
         assert_eq!(color, theme::STATUS_ERROR);
     }
@@ -401,6 +418,17 @@ mod tests {
     }
 
     #[test]
+    fn render_tool_call_title_shows_backgrounded_badge() {
+        let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
+        tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
+
+        let line = standard::render_tool_call_title(&tc, 80, 0);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        assert!(rendered.contains("[backgrounded]"));
+    }
+
+    #[test]
     fn execute_top_border_does_not_wrap_for_long_title() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
@@ -410,6 +438,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: model::ToolCallStatus::Pending,
             content: Vec::new(),
             hidden: false,
@@ -692,6 +721,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: model::ToolCallStatus::Completed,
             content: Vec::new(),
             hidden: false,
@@ -723,6 +753,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             hidden: false,
@@ -754,6 +785,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             hidden: false,
@@ -787,6 +819,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             hidden: false,

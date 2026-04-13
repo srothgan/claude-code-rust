@@ -26,13 +26,14 @@ import {
   ensureToolCallVisible,
   resolveTaskToolUseId,
   taskProgressText,
+  taskUpdatedFields,
 } from "./tool_calls.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgents, mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import { buildRateLimitUpdate, numberField } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
-import { updateSessionId } from "./session_lifecycle.js";
+import { refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
@@ -131,7 +132,12 @@ export function handleTaskSystemMessage(
   subtype: string,
   msg: Record<string, unknown>,
 ): void {
-  if (subtype !== "task_started" && subtype !== "task_progress" && subtype !== "task_notification") {
+  if (
+    subtype !== "task_started" &&
+    subtype !== "task_progress" &&
+    subtype !== "task_updated" &&
+    subtype !== "task_notification"
+  ) {
     return;
   }
 
@@ -141,7 +147,35 @@ export function handleTaskSystemMessage(
     session.taskToolUseIds.set(taskId, explicitToolUseId);
   }
   const toolUseId = resolveTaskToolUseId(session, msg);
+  if (subtype === "task_updated") {
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_TOOL,
+      eventName: "task_updated_received",
+      message: "task update received",
+      outcome: toolUseId ? "resolved" : "unresolved",
+      sessionId: session.sessionId,
+      toolCallId: toolUseId || undefined,
+      fields: {
+        task_id: taskId,
+        explicit_tool_use_id: explicitToolUseId || undefined,
+        patch_keys:
+          msg.patch && typeof msg.patch === "object"
+            ? Object.keys(msg.patch as Record<string, unknown>).sort()
+            : undefined,
+      },
+    });
+  }
   if (!toolUseId) {
+    if (subtype === "task_updated" && taskId) {
+      bridgeLogger.debug({
+        target: LOG_TARGETS.APP_TOOL,
+        eventName: "task_updated_unlinked",
+        message: "task update skipped because no visible tool call was linked",
+        outcome: "skipped",
+        sessionId: session.sessionId,
+        fields: { task_id: taskId, subtype },
+      });
+    }
     return;
   }
 
@@ -186,9 +220,33 @@ export function handleTaskSystemMessage(
     return;
   }
 
+  if (subtype === "task_updated") {
+    const fields = taskUpdatedFields(msg);
+    if (Object.keys(fields).length === 0) {
+      return;
+    }
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_TOOL,
+      eventName: "task_updated_emitted",
+      message: "task update mapped to tool call update",
+      outcome: "success",
+      sessionId: session.sessionId,
+      toolCallId: toolUseId,
+      fields: {
+        task_id: taskId,
+        mapped_status: fields.status,
+        has_description: fields.content !== undefined,
+        has_error: Boolean(fields.task_metadata?.error),
+        is_backgrounded: fields.task_metadata?.is_backgrounded,
+      },
+    });
+    emitToolCallUpdate(session, toolUseId, fields, "task_updated");
+    return;
+  }
+
   const status = typeof msg.status === "string" ? msg.status : "";
   const summary = typeof msg.summary === "string" ? msg.summary : "";
-  const finalStatus = status === "completed" ? "completed" : "failed";
+  const finalStatus = status === "completed" ? "completed" : status === "stopped" ? "killed" : "failed";
   const fields: ToolCallUpdateFields = { status: finalStatus };
   if (summary) {
     fields.raw_output = summary;
@@ -397,9 +455,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       const previousSessionId = session.sessionId;
       const incomingSessionId = typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
-      const previousModelName = session.model;
       const modelName = typeof msg.model === "string" ? msg.model : session.model;
       session.model = modelName;
+      const currentModelChanged = refreshCurrentModel(session, false);
 
       const incomingMode = typeof msg.permissionMode === "string" ? toPermissionMode(msg.permissionMode) : null;
       if (incomingMode) {
@@ -413,11 +471,10 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       } else if (previousSessionId !== session.sessionId) {
         emitSessionReplacedEvent(session);
       } else {
-        if (session.model !== previousModelName) {
+        if (currentModelChanged) {
           emitSessionUpdate(session.sessionId, {
-            type: "config_option_update",
-            option_id: "model",
-            value: session.model,
+            type: "current_model_update",
+            current_model: session.currentModel!,
           });
         }
         if (incomingMode) {
@@ -565,7 +622,46 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "rate_limit_event") {
+    const rateLimitInfo = asRecordOrNull(msg.rate_limit_info);
     const update = buildRateLimitUpdate(msg.rate_limit_info);
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "sdk_rate_limit_event_received",
+      message: "SDK rate limit event received",
+      outcome: update ? "success" : "dropped",
+      sessionId: session.sessionId,
+      fields: {
+        raw_status: typeof rateLimitInfo?.status === "string" ? rateLimitInfo.status : undefined,
+        raw_rate_limit_type:
+          typeof rateLimitInfo?.rateLimitType === "string" ? rateLimitInfo.rateLimitType : undefined,
+        raw_utilization: numberField(rateLimitInfo ?? {}, "utilization"),
+        raw_resets_at: numberField(rateLimitInfo ?? {}, "resetsAt"),
+        raw_overage_status:
+          typeof rateLimitInfo?.overageStatus === "string" ? rateLimitInfo.overageStatus : undefined,
+        raw_overage_resets_at: numberField(rateLimitInfo ?? {}, "overageResetsAt"),
+        raw_is_using_overage:
+          typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined,
+        raw_surpassed_threshold: numberField(rateLimitInfo ?? {}, "surpassedThreshold"),
+        parsed_status: update?.status,
+        parsed_rate_limit_type: update?.rate_limit_type,
+        parsed_utilization: update?.utilization,
+        parsed_resets_at: update?.resets_at,
+        parsed_overage_status: update?.overage_status,
+        parsed_overage_resets_at: update?.overage_resets_at,
+        parsed_is_using_overage: update?.is_using_overage,
+        parsed_surpassed_threshold: update?.surpassed_threshold,
+      },
+    });
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "sdk_rate_limit_event_raw",
+      message: "SDK rate limit event raw payload",
+      outcome: rateLimitInfo ? "success" : "dropped",
+      sessionId: session.sessionId,
+      fields: {
+        raw_rate_limit_info: msg.rate_limit_info,
+      },
+    });
     if (update) {
       emitSessionUpdate(session.sessionId, update);
     }

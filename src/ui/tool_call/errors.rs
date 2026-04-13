@@ -36,7 +36,7 @@ pub(super) fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>>
 }
 
 pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
-    if !matches!(tc.status, model::ToolCallStatus::Failed) {
+    if !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed) {
         return;
     }
 

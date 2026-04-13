@@ -47,7 +47,7 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     if let Some(ref output) = tc.terminal_output {
         let stripped_output = highlight::strip_ansi(output);
-        if matches!(tc.status, model::ToolCallStatus::Failed)
+        if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
             && let Some(first_line) = failed_execute_first_line(&stripped_output)
         {
             body_lines.push(Line::from(Span::styled(

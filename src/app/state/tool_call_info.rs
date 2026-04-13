@@ -13,6 +13,7 @@ pub struct ToolCallInfo {
     pub raw_input: Option<serde_json::Value>,
     pub raw_input_bytes: usize,
     pub output_metadata: Option<model::ToolOutputMetadata>,
+    pub task_metadata: Option<model::TaskMetadata>,
     pub status: model::ToolCallStatus,
     pub content: Vec<model::ToolCallContent>,
     /// Hidden tool calls are subagent children - not rendered directly.
@@ -110,6 +111,11 @@ impl ToolCallInfo {
             .and_then(|metadata| metadata.todo_write.as_ref())
             .and_then(|metadata| metadata.verification_nudge_needed)
             .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn task_is_backgrounded(&self) -> bool {
+        self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }
 
     /// Mark render cache for this tool call as stale.

@@ -392,6 +392,7 @@ mod tests {
             raw_input: None,
             raw_input_bytes: 0,
             output_metadata: None,
+            task_metadata: None,
             status: ToolCallStatus::InProgress,
             content: Vec::new(),
             hidden: false,

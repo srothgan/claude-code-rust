@@ -17,6 +17,7 @@ import {
   mapSessionMessagesToUpdates,
   mapSdkSessions,
   agentSdkVersionCompatibilityError,
+  attachRequestUserDialogInterceptor,
   looksLikeAuthRequired,
   normalizeToolResultText,
   parseFastModeState,
@@ -38,6 +39,12 @@ import {
   permissionModeFailureLooksUnsupported,
   refreshSupportedModesForSession,
 } from "./bridge/commands.js";
+import {
+  emitCurrentModelUpdate,
+  refreshCurrentModel,
+  resolveCurrentModel,
+  shouldInvalidateResolvedRuntimeModel,
+} from "./bridge/session_lifecycle.js";
 import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
@@ -99,6 +106,36 @@ test("buildModeState includes auto and bypassPermissions when supported", () => 
   assert.deepEqual(
     mode.available_modes.map((entry) => entry.id),
     ["default", "auto", "acceptEdits", "plan", "dontAsk", "bypassPermissions"],
+  );
+});
+
+test("refreshSupportedModesForSession uses resolved current model for auto-mode eligibility", () => {
+  const session = makeSessionState();
+  session.model = "sonnet";
+  session.availableModels = [
+    {
+      id: "sonnet",
+      display_name: "Claude Sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_auto_mode: true,
+    },
+  ];
+  session.currentModel = {
+    resolved_id: "claude-sonnet-4-6[1m]",
+    display_name_short: "Sonnet [1M]",
+    display_name_long: "Sonnet 4.6 [1M]",
+    supports_effort: true,
+    supported_effort_levels: ["low", "medium", "high"],
+    supports_auto_mode: false,
+    is_authoritative: true,
+  };
+
+  refreshSupportedModesForSession(session);
+
+  assert.deepEqual(
+    availableModesForSession(session).map((entry) => entry.id),
+    ["default", "acceptEdits", "plan", "dontAsk"],
   );
 });
 
@@ -378,6 +415,38 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
         "X-Test": "1",
       },
     },
+  });
+});
+
+test("parseCommandEnvelope validates reload_plugins command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-reload",
+      command: "reload_plugins",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-reload");
+  assert.deepEqual(parsed.command, {
+    command: "reload_plugins",
+    session_id: "session-123",
+  });
+});
+
+test("parseCommandEnvelope validates get_context_usage command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-usage",
+      command: "get_context_usage",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-usage");
+  assert.deepEqual(parsed.command, {
+    command: "get_context_usage",
+    session_id: "session-123",
   });
 });
 
@@ -818,6 +887,143 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
     },
   });
   assert.equal(session.taskToolUseIds.has("task-1"), false);
+});
+
+test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "task-1",
+      patch: {
+        status: "running",
+        description: "Refining the migration plan",
+        is_backgrounded: true,
+      },
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "in_progress",
+        raw_output: "Refining the migration plan",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Refining the migration plan" },
+          },
+        ],
+        task_metadata: {
+          is_backgrounded: true,
+        },
+      },
+    },
+  });
+});
+
+test("handleTaskSystemMessage uses task_updated terminal error text when description is absent", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "task-1",
+      patch: {
+        status: "killed",
+        error: "Task stopped by parent agent",
+        end_time: 1234,
+        total_paused_ms: 250,
+      },
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "killed",
+        raw_output: "Task stopped by parent agent",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Task stopped by parent agent" },
+          },
+        ],
+        task_metadata: {
+          error: "Task stopped by parent agent",
+          end_time: 1234,
+          total_paused_ms: 250,
+        },
+      },
+    },
+  });
+});
+
+test("handleTaskSystemMessage merges task metadata patches into the linked task state", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "task-1",
+      patch: {
+        status: "running",
+        is_backgrounded: true,
+      },
+    });
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "task-1",
+      patch: {
+        error: "Task stopped by parent agent",
+        end_time: 1234,
+      },
+    });
+  });
+
+  assert.deepEqual(session.toolCalls.get("tool-1")?.task_metadata, {
+    is_backgrounded: true,
+    error: "Task stopped by parent agent",
+    end_time: 1234,
+  });
+});
+
+test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "task-missing",
+      patch: {
+        status: "running",
+        description: "This should not be emitted",
+      },
+    });
+  });
+
+  assert.equal(events.length, 0);
 });
 
 test("emitToolProgressUpdate does not reopen completed tools", () => {
@@ -1926,4 +2132,248 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
       supported_effort_levels: [],
     },
   ]);
+});
+
+test("resolveCurrentModel keeps 1M context suffix in short and long display names", () => {
+  const session = makeSessionState();
+  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.display_name_short, "Opus [1M]");
+  assert.equal(currentModel.display_name_long, "Opus 4.6 [1M]");
+});
+
+test("resolveCurrentModel does not inherit standard Opus capabilities for 1M when sibling variants exist", () => {
+  const session = makeSessionState();
+  session.requestedModelId = "claude-opus-4-6";
+  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.availableModels = [
+    {
+      id: "claude-opus-4-6",
+      display_name: "Claude Opus",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+    },
+    {
+      id: "claude-opus-4-6[1m]",
+      display_name: "Claude Opus 1M",
+      supports_effort: false,
+      supported_effort_levels: [],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.catalog_id, "claude-opus-4-6[1m]");
+  assert.equal(currentModel.supports_effort, false);
+});
+
+test("resolveCurrentModel avoids suffix-insensitive fallback when sibling variants make it ambiguous", () => {
+  const session = makeSessionState();
+  session.requestedModelId = "claude-opus-4-6";
+  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.availableModels = [
+    {
+      id: "claude-opus-4-6",
+      display_name: "Claude Opus",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+    },
+    {
+      id: "claude-opus-4-6-alt[1m]",
+      display_name: "Claude Opus Alt 1M",
+      supports_effort: false,
+      supported_effort_levels: [],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.catalog_id, undefined);
+  assert.equal(currentModel.supports_effort, false);
+});
+
+test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () => {
+  const session = makeSessionState();
+  session.model = "default";
+  session.requestedModelId = "default";
+  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  refreshCurrentModel(session);
+
+  const events = captureBridgeEvents(() => {
+    const changed = refreshCurrentModel(session, true);
+    const forced = !changed && emitCurrentModelUpdate(session);
+    assert.equal(changed, false);
+    assert.equal(forced, true);
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "current_model_update",
+    current_model: {
+      requested_id: "default",
+      resolved_id: "claude-opus-4-6[1m]",
+      display_name_short: "Opus [1M]",
+      display_name_long: "Opus 4.6 [1M]",
+      supports_effort: false,
+      supported_effort_levels: [],
+      is_authoritative: true,
+    },
+  });
+});
+
+test("emitCurrentModelUpdate can publish catalog-enriched current model metadata after connect", () => {
+  const session = makeSessionState();
+  session.model = "sonnet";
+  refreshCurrentModel(session);
+  session.availableModels = [
+    {
+      id: "sonnet",
+      display_name: "Claude Sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_auto_mode: true,
+    },
+  ];
+
+  const events = captureBridgeEvents(() => {
+    const changed = refreshCurrentModel(session, false);
+    assert.equal(changed, true);
+    assert.equal(emitCurrentModelUpdate(session), true);
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "current_model_update",
+    current_model: {
+      resolved_id: "sonnet",
+      display_name_short: "Sonnet",
+      display_name_long: "Sonnet",
+      catalog_id: "sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_auto_mode: true,
+      is_authoritative: true,
+    },
+  });
+});
+
+test("shouldInvalidateResolvedRuntimeModel invalidates stale runtime identity only when the request changes", () => {
+  assert.equal(
+    shouldInvalidateResolvedRuntimeModel("default", "default", "sonnet"),
+    true,
+  );
+  assert.equal(
+    shouldInvalidateResolvedRuntimeModel("sonnet", "sonnet", "haiku"),
+    true,
+  );
+  assert.equal(
+    shouldInvalidateResolvedRuntimeModel("default", "default", "default"),
+    false,
+  );
+});
+
+test("resolveCurrentModel falls back to the requested model immediately after stale runtime identity is cleared", () => {
+  const session = makeSessionState();
+  session.requestedModelId = "sonnet";
+  session.model = "sonnet";
+  session.availableModels = [
+    {
+      id: "sonnet",
+      display_name: "Claude Sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.resolved_id, "sonnet");
+  assert.equal(currentModel.display_name_short, "Sonnet");
+  assert.equal(currentModel.display_name_long, "Sonnet");
+  assert.equal(currentModel.catalog_id, "sonnet");
+  assert.equal(currentModel.supports_effort, true);
+});
+
+test("attachRequestUserDialogInterceptor rejects request_user_dialog with a stable error", async () => {
+  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
+  const fakeQuery = {
+    async processControlRequest(
+      request: { request_id: string; request: Record<string, unknown> },
+      _signal: AbortSignal,
+    ): Promise<Record<string, unknown>> {
+      calls.push(request);
+      return { ok: true };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  assert.equal(
+    attachRequestUserDialogInterceptor(fakeQuery, () => "session-test"),
+    true,
+  );
+
+  await assert.rejects(
+    (fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
+      processControlRequest: (
+        request: { request_id: string; request: Record<string, unknown> },
+        signal: AbortSignal,
+      ) => Promise<Record<string, unknown> | undefined>;
+    }).processControlRequest(
+      {
+        request_id: "dialog-1",
+        request: {
+          subtype: "request_user_dialog",
+          dialog_kind: "computer_use_approval",
+          payload: { title: "Need approval", kind: "computer_use_approval" },
+          tool_use_id: "tool-1",
+        },
+      },
+      new AbortController().signal,
+    ),
+    /request_user_dialog is not supported by claude-rs yet \(dialog_kind: computer_use_approval\)/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("attachRequestUserDialogInterceptor preserves non-dialog control requests", async () => {
+  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
+  const fakeQuery = {
+    async processControlRequest(
+      request: { request_id: string; request: Record<string, unknown> },
+      _signal: AbortSignal,
+    ): Promise<Record<string, unknown>> {
+      calls.push(request);
+      return { ok: true };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  attachRequestUserDialogInterceptor(fakeQuery, () => "session-test");
+  const result = await (
+    fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
+      processControlRequest: (
+        request: { request_id: string; request: Record<string, unknown> },
+        signal: AbortSignal,
+      ) => Promise<Record<string, unknown> | undefined>;
+    }
+  ).processControlRequest(
+    {
+      request_id: "permission-1",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "Bash",
+        input: { command: "dir" },
+        tool_use_id: "tool-1",
+      },
+    },
+    new AbortController().signal,
+  );
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.request.subtype, "can_use_tool");
 });
