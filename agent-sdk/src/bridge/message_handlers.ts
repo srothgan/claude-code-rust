@@ -1,4 +1,5 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
 import type { AvailableCommand, BridgeCommand, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { toPermissionMode, buildModeState } from "./commands.js";
@@ -52,6 +53,8 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
+type SupportedImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
 /** Fast check that a string looks like valid base64 (non-empty, correct charset & padding). */
 function isValidBase64(data: string): boolean {
   if (!data) return false;
@@ -67,9 +70,9 @@ function isValidBase64(data: string): boolean {
  */
 export function contentFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
-): Array<Record<string, unknown>> {
+): ContentBlockParam[] {
   const chunks = command.chunks ?? [];
-  const content: Array<Record<string, unknown>> = [];
+  const content: ContentBlockParam[] = [];
 
   for (const chunk of chunks) {
     if (chunk.kind === "text") {
@@ -103,11 +106,12 @@ export function contentFromPrompt(
         });
         continue;
       }
+      const supportedMimeType = mimeType as SupportedImageMimeType;
       content.push({
         type: "image",
         source: {
           type: "base64",
-          media_type: mimeType,
+          media_type: supportedMimeType,
           data,
         },
       });

@@ -29,7 +29,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.74"
+    "@anthropic-ai/claude-agent-sdk": "0.2.104"
   },
   "scripts": {
     "postinstall": "node ./scripts/postinstall.js",

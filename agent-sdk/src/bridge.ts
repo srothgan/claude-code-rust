@@ -115,7 +115,7 @@ export async function generatePersistedSessionTitle(
   return title;
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.2.74";
+const EXPECTED_AGENT_SDK_VERSION = "0.2.104";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -327,7 +327,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       if (content.length === 0) {
         return;
       }
-      session.input.enqueue({
+      const message: import("@anthropic-ai/claude-agent-sdk").SDKUserMessage = {
         type: "user",
         session_id: session.sessionId,
         parent_tool_use_id: null,
@@ -335,7 +335,8 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           role: "user",
           content,
         },
-      } as import("@anthropic-ai/claude-agent-sdk").SDKUserMessage);
+      };
+      session.input.enqueue(message);
       return;
     }
 

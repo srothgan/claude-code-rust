@@ -79,7 +79,7 @@ export type PendingQuestion = {
 export type PendingElicitation = {
   resolve: (result: {
     action: ElicitationAction;
-    content?: Record<string, unknown>;
+    content?: Record<string, string | number | boolean | string[]>;
   }) => void;
   serverName: string;
   elicitationId?: string;
@@ -114,6 +114,30 @@ export const sessions = new Map<string, SessionState>();
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_MODEL_NAME = "default";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
+
+function isSdkElicitationContentValue(value: Json): value is string | number | boolean | string[] {
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    (Array.isArray(value) && value.every((entry) => typeof entry === "string"))
+  );
+}
+
+function normalizeSdkElicitationContent(
+  content: Record<string, Json> | undefined,
+): Record<string, string | number | boolean | string[]> | undefined {
+  if (!content) {
+    return undefined;
+  }
+  const normalized: Record<string, string | number | boolean | string[]> = {};
+  for (const [key, value] of Object.entries(content)) {
+    if (isSdkElicitationContentValue(value)) {
+      normalized[key] = value;
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
 
 type CloseSessionOptions = {
   reason?: string;
@@ -754,7 +778,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       emitElicitationRequestEvent(params.sessionIdForLogs(), normalized);
       return await new Promise<{
         action: ElicitationAction;
-        content?: Record<string, unknown>;
+        content?: Record<string, string | number | boolean | string[]>;
       }>((resolve) => {
         const currentSession = sessions.get(params.sessionIdForLogs());
         if (!currentSession) {
@@ -1042,6 +1066,8 @@ export function handleElicitationResponse(
   });
   pending.resolve({
     action: command.action,
-    ...(command.content ? { content: command.content } : {}),
+    ...(normalizeSdkElicitationContent(command.content) ? {
+      content: normalizeSdkElicitationContent(command.content),
+    } : {}),
   });
 }

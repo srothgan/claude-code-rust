@@ -970,6 +970,8 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     )));
 
     lines.push(Line::default());
+    // TODO: Replace the hard-coded tip text with a small array of welcome tips
+    // and randomized selection once this becomes a first-class surface.
     lines.push(Line::from(Span::styled(
         format!(
             "{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C copies selection or quits"

@@ -96,7 +96,7 @@ export function mapSdkSessionInfo(info: SDKSessionInfo): SessionListEntry {
     session_id: info.sessionId,
     summary: summaryFromSession(info),
     last_modified_ms: info.lastModified,
-    file_size_bytes: info.fileSize,
+    file_size_bytes: info.fileSize ?? 0,
     ...(nonEmptyTrimmed(info.cwd) ? { cwd: info.cwd?.trim() } : {}),
     ...(nonEmptyTrimmed(info.gitBranch) ? { git_branch: info.gitBranch?.trim() } : {}),
     ...(nonEmptyTrimmed(info.customTitle) ? { custom_title: info.customTitle?.trim() } : {}),

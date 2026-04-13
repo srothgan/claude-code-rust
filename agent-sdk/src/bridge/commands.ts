@@ -14,6 +14,7 @@ import type {
 
 const MODE_NAMES: Record<PermissionMode, string> = {
   default: "Default",
+  auto: "Auto",
   acceptEdits: "Accept Edits",
   bypassPermissions: "Bypass Permissions",
   plan: "Plan",
@@ -22,6 +23,7 @@ const MODE_NAMES: Record<PermissionMode, string> = {
 
 const MODE_OPTIONS: ModeInfo[] = [
   { id: "default", name: "Default", description: "Standard permission flow" },
+  { id: "auto", name: "Auto", description: "Model-classified permission approvals" },
   { id: "acceptEdits", name: "Accept Edits", description: "Auto-approve edit operations" },
   { id: "plan", name: "Plan", description: "No tool execution" },
   { id: "dontAsk", name: "Don't Ask", description: "Reject non-approved tools" },
@@ -435,6 +437,7 @@ function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: st
 export function toPermissionMode(mode: string): PermissionMode | null {
   if (
     mode === "default" ||
+    mode === "auto" ||
     mode === "acceptEdits" ||
     mode === "bypassPermissions" ||
     mode === "plan" ||
