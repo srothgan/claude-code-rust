@@ -1,8 +1,13 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
-import type { AvailableCommand, BridgeCommand, ToolCallUpdateFields } from "../types.js";
+import type {
+  AvailableCommand,
+  BridgeCommand,
+  TerminalReason,
+  ToolCallUpdateFields,
+} from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { toPermissionMode, buildModeState } from "./commands.js";
+import { toPermissionMode, buildModeState, refreshSupportedModesForSession } from "./commands.js";
 import {
   writeEvent,
   emitSessionUpdate,
@@ -321,12 +326,17 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
 
 export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
   emitFastModeUpdateIfChanged(session, message.fast_mode_state);
+  const terminalReason = terminalReasonFromValue(message.terminal_reason);
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
     session.lastAssistantError = undefined;
     finalizeOpenToolCalls(session, "completed");
-    writeEvent({ event: "turn_complete", session_id: session.sessionId });
+    writeEvent({
+      event: "turn_complete",
+      session_id: session.sessionId,
+      ...(terminalReason ? { terminal_reason: terminalReason } : {}),
+    });
     return;
   }
 
@@ -352,8 +362,29 @@ export function handleResultMessage(session: SessionState, message: Record<strin
     error_kind: errorKind,
     ...(subtype ? { sdk_result_subtype: subtype } : {}),
     ...(assistantError ? { assistant_error: assistantError } : {}),
+    ...(terminalReason ? { terminal_reason: terminalReason } : {}),
   });
   session.lastAssistantError = undefined;
+}
+
+function terminalReasonFromValue(value: unknown): TerminalReason | undefined {
+  switch (value) {
+    case "blocking_limit":
+    case "rapid_refill_breaker":
+    case "prompt_too_long":
+    case "image_error":
+    case "model_error":
+    case "aborted_streaming":
+    case "aborted_tools":
+    case "stop_hook_prevented":
+    case "hook_stopped":
+    case "tool_deferred":
+    case "max_turns":
+    case "completed":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 export function handleSdkMessage(session: SessionState, message: SDKMessage): void {
@@ -374,6 +405,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       if (incomingMode) {
         session.mode = incomingMode;
       }
+      refreshSupportedModesForSession(session);
       emitFastModeUpdateIfChanged(session, msg.fast_mode_state);
 
       if (!session.connected) {
@@ -391,7 +423,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         if (incomingMode) {
           emitSessionUpdate(session.sessionId, {
             type: "mode_state_update",
-            mode: buildModeState(incomingMode),
+            mode: buildModeState(session, incomingMode),
           });
         }
       }
@@ -431,6 +463,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         typeof msg.permissionMode === "string" ? toPermissionMode(msg.permissionMode) : null;
       if (mode) {
         session.mode = mode;
+        refreshSupportedModesForSession(session);
         emitSessionUpdate(session.sessionId, { type: "current_mode_update", current_mode_id: mode });
       }
       if (msg.status === "compacting") {

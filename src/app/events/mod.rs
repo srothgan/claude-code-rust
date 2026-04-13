@@ -489,7 +489,7 @@ mod tests {
 
         // User cancels then TurnComplete finalizes the turn
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         // Stale task ID must be gone after turn boundary
         assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
@@ -1254,7 +1254,7 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
         assert!(app.cancelled_turn_pending_hint);
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         assert!(!app.cancelled_turn_pending_hint);
         let last = app.messages.last().expect("expected interruption hint message");
@@ -1275,7 +1275,7 @@ mod tests {
         ))]));
         app.pending_cancel_origin = Some(CancelOrigin::Manual);
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(!app.viewport.message_height_is_current(1));
@@ -1295,7 +1295,7 @@ mod tests {
         ))]));
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(!app.viewport.message_height_is_current(1));
@@ -2356,7 +2356,7 @@ mod tests {
     #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
         assert!(app.messages.is_empty());
     }
 
@@ -2378,7 +2378,7 @@ mod tests {
         );
         assert!(app.pending_compact_clear);
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         assert!(!app.pending_compact_clear);
         assert_eq!(app.messages.len(), 3);
@@ -2442,7 +2442,10 @@ mod tests {
         app.pending_compact_clear = true;
         app.messages.push(user_msg("/compact"));
 
-        handle_client_event(&mut app, ClientEvent::TurnError("adapter failed".into()));
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError { message: "adapter failed".into(), terminal_reason: None },
+        );
 
         assert!(!app.pending_compact_clear);
         assert!(matches!(app.status, AppStatus::Error));
@@ -2489,7 +2492,10 @@ mod tests {
         app.is_compacting = true;
 
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
-        handle_client_event(&mut app, ClientEvent::TurnError("cancelled".into()));
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError { message: "cancelled".into(), terminal_reason: None },
+        );
 
         assert_eq!(app.messages.len(), 3);
         assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
@@ -2509,7 +2515,10 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError("HTTP 429 Too Many Requests: max turns exceeded".into()),
+            ClientEvent::TurnError {
+                message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
+                terminal_reason: None,
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2533,6 +2542,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "turn failed".into(),
                 class: TurnErrorClass::PlanLimit,
+                terminal_reason: None,
             },
         );
 
@@ -2556,6 +2566,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "auth required".into(),
                 class: TurnErrorClass::AuthRequired,
+                terminal_reason: None,
             },
         );
 
@@ -2574,7 +2585,10 @@ mod tests {
         app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
         app.insert_active_task("task-1".into());
 
-        handle_client_event(&mut app, ClientEvent::TurnError("boom".into()));
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError { message: "boom".into(), terminal_reason: None },
+        );
 
         assert!(app.active_task_ids.is_empty());
         assert!(app.active_subagent_tool_ids.is_empty());
@@ -2853,6 +2867,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                terminal_reason: None,
             },
         );
 
@@ -2892,6 +2907,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                terminal_reason: None,
             },
         );
         assert_eq!(app.messages.len(), 2);
@@ -2960,7 +2976,7 @@ mod tests {
         );
 
         assert_eq!(app.turn_notice_refs.len(), 1);
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
         assert!(app.turn_notice_refs.is_empty());
 
         app.status = AppStatus::Thinking;
@@ -3009,7 +3025,10 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError("Error: Request was aborted.\n    at stack line".into()),
+            ClientEvent::TurnError {
+                message: "Error: Request was aborted.\n    at stack line".into(),
+                terminal_reason: None,
+            },
         );
 
         assert!(!app.cancelled_turn_pending_hint);
@@ -3037,7 +3056,10 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError("Error: Request was aborted.\n    at stack line".into()),
+            ClientEvent::TurnError {
+                message: "Error: Request was aborted.\n    at stack line".into(),
+                terminal_reason: None,
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
@@ -3089,7 +3111,7 @@ mod tests {
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         ]));
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete);
+        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         let Some(last) = app.messages.last() else {
             panic!("missing assistant message");

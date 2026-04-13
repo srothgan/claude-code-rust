@@ -358,6 +358,43 @@ pub struct McpOperationError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalReason {
+    BlockingLimit,
+    RapidRefillBreaker,
+    PromptTooLong,
+    ImageError,
+    ModelError,
+    AbortedStreaming,
+    AbortedTools,
+    StopHookPrevented,
+    HookStopped,
+    ToolDeferred,
+    MaxTurns,
+    Completed,
+}
+
+impl TerminalReason {
+    #[must_use]
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::BlockingLimit => "blocking_limit",
+            Self::RapidRefillBreaker => "rapid_refill_breaker",
+            Self::PromptTooLong => "prompt_too_long",
+            Self::ImageError => "image_error",
+            Self::ModelError => "model_error",
+            Self::AbortedStreaming => "aborted_streaming",
+            Self::AbortedTools => "aborted_tools",
+            Self::StopHookPrevented => "stop_hook_prevented",
+            Self::HookStopped => "hook_stopped",
+            Self::ToolDeferred => "tool_deferred",
+            Self::MaxTurns => "max_turns",
+            Self::Completed => "completed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthMethod {
     pub id: String,

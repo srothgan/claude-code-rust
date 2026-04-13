@@ -9,7 +9,14 @@ import {
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "./types.js";
-import { parseCommandEnvelope, toPermissionMode } from "./bridge/commands.js";
+import {
+  buildModeState,
+  markModeUnavailableForSession,
+  parseCommandEnvelope,
+  permissionModeFailureLooksUnsupported,
+  refreshSupportedModesForSession,
+  toPermissionMode,
+} from "./bridge/commands.js";
 import {
   writeEvent,
   failConnection,
@@ -356,13 +363,25 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
-      await session.query.setModel(command.model);
-      session.model = command.model;
-      emitSessionUpdate(session.sessionId, {
-        type: "config_option_update",
-        option_id: "model",
-        value: command.model,
-      });
+      try {
+        await session.query.setModel(command.model);
+        session.model = command.model;
+        refreshSupportedModesForSession(session);
+        emitSessionUpdate(session.sessionId, {
+          type: "config_option_update",
+          option_id: "model",
+          value: command.model,
+        });
+        if (session.mode) {
+          emitSessionUpdate(session.sessionId, {
+            type: "mode_state_update",
+            mode: buildModeState(session, session.mode),
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set model: ${message}`, requestId);
+      }
       return;
     }
 
@@ -377,12 +396,27 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unsupported mode: ${command.mode}`, requestId);
         return;
       }
-      await session.query.setPermissionMode(mode);
-      session.mode = mode;
-      emitSessionUpdate(session.sessionId, {
-        type: "current_mode_update",
-        current_mode_id: mode,
-      });
+      try {
+        await session.query.setPermissionMode(mode);
+        session.mode = mode;
+        refreshSupportedModesForSession(session);
+        emitSessionUpdate(session.sessionId, {
+          type: "current_mode_update",
+          current_mode_id: mode,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (permissionModeFailureLooksUnsupported(mode, message)) {
+          const changed = markModeUnavailableForSession(session, mode);
+          if (changed && session.mode) {
+            emitSessionUpdate(session.sessionId, {
+              type: "mode_state_update",
+              mode: buildModeState(session, session.mode),
+            });
+          }
+        }
+        slashError(command.session_id, `failed to set mode to ${mode}: ${message}`, requestId);
+      }
       return;
     }
 

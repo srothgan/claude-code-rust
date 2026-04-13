@@ -25,10 +25,14 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }
         ClientEvent::TurnCancelled => turn::handle_turn_cancelled_event(app),
-        ClientEvent::TurnComplete => turn::handle_turn_complete_event(app),
-        ClientEvent::TurnError(msg) => turn::handle_turn_error_event(app, &msg, None),
-        ClientEvent::TurnErrorClassified { message, class } => {
-            turn::handle_turn_error_event(app, &message, Some(class));
+        ClientEvent::TurnComplete { terminal_reason } => {
+            turn::handle_turn_complete_event(app, terminal_reason);
+        }
+        ClientEvent::TurnError { message, terminal_reason } => {
+            turn::handle_turn_error_event(app, &message, None, terminal_reason);
+        }
+        ClientEvent::TurnErrorClassified { message, class, terminal_reason } => {
+            turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
         }
         ClientEvent::Connected {
             session_id,

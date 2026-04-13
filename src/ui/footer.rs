@@ -353,8 +353,8 @@ fn should_show_startup_mcp_hint(app: &App) -> bool {
 fn mode_color(mode_id: &str) -> Color {
     match mode_id {
         "default" => theme::DIM,
+        "auto" | "acceptEdits" => Color::Yellow,
         "plan" => Color::Blue,
-        "acceptEdits" => Color::Yellow,
         "bypassPermissions" | "dontAsk" => Color::Red,
         _ => Color::Magenta,
     }
@@ -505,6 +505,11 @@ mod tests {
     fn fast_mode_badge_maps_cooldown_to_cd() {
         let (label, _) = fast_mode_badge(model::FastModeState::Cooldown);
         assert_eq!(label, "FAST:CD");
+    }
+
+    #[test]
+    fn mode_color_handles_auto_explicitly() {
+        assert_eq!(mode_color("auto"), Color::Yellow);
     }
 
     #[test]

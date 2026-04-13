@@ -39,7 +39,7 @@ async fn full_turn_lifecycle_text_only() {
     assert!(matches!(app.status, AppStatus::Running));
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.messages.len(), 1);
 }
@@ -83,7 +83,7 @@ async fn full_turn_lifecycle_with_tool_calls() {
     );
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -176,7 +176,10 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
 async fn error_then_new_turn_recovers() {
     let mut app = test_app();
 
-    send_client_event(&mut app, ClientEvent::TurnError("timeout".into()));
+    send_client_event(
+        &mut app,
+        ClientEvent::TurnError { message: "timeout".into(), terminal_reason: None },
+    );
     assert!(matches!(app.status, AppStatus::Error));
 
     // New text chunk (simulates user retry) starts fresh
@@ -202,7 +205,7 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
     );
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert_eq!(app.messages.len(), 1);
 
     // Second turn: chunks append to the last assistant message (no user message between turns)
@@ -399,7 +402,7 @@ async fn rapid_turn_complete_then_new_streaming() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
     );
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0);
 
@@ -415,7 +418,7 @@ async fn rapid_turn_complete_then_new_streaming() {
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     assert_eq!(app.files_accessed, 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
 }
@@ -456,7 +459,10 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     let tc = model::ToolCall::new("tc-err", "Read file").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    send_client_event(&mut app, ClientEvent::TurnError("crashed".into()));
+    send_client_event(
+        &mut app,
+        ClientEvent::TurnError { message: "crashed".into(), terminal_reason: None },
+    );
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
@@ -488,6 +494,6 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     }
 
     assert_eq!(app.files_accessed, 3, "one per tool call");
-    send_client_event(&mut app, ClientEvent::TurnComplete);
+    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert_eq!(app.files_accessed, 0, "reset on turn complete");
 }

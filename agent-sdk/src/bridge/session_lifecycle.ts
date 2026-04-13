@@ -91,6 +91,9 @@ export type SessionState = {
   model: string;
   availableModels: AvailableModel[];
   mode: PermissionMode | null;
+  supportedModeIds: PermissionMode[];
+  runtimeUnavailableModeIds: PermissionMode[];
+  supportsBypassPermissionsMode: boolean;
   fastModeState: FastModeState;
   query: Query;
   input: AsyncQueue<SDKUserMessage>;
@@ -148,6 +151,31 @@ function settingsObjectFromLaunchSettings(
   launchSettings: SessionLaunchSettings,
 ): Record<string, unknown> | undefined {
   return launchSettings.settings;
+}
+
+function normalizedSettingsFromLaunchSettings(
+  launchSettings: SessionLaunchSettings,
+): Record<string, unknown> | undefined {
+  const settings = settingsObjectFromLaunchSettings(launchSettings);
+  if (!settings) {
+    return undefined;
+  }
+
+  const sandbox =
+    settings.sandbox && typeof settings.sandbox === "object" && !Array.isArray(settings.sandbox)
+      ? (settings.sandbox as Record<string, unknown>)
+      : undefined;
+  if (sandbox?.enabled === true && sandbox.failIfUnavailable === undefined) {
+    return {
+      ...settings,
+      sandbox: {
+        ...sandbox,
+        failIfUnavailable: false,
+      },
+    };
+  }
+
+  return settings;
 }
 
 export function sessionById(sessionId: string): SessionState | null {
@@ -232,6 +260,8 @@ export async function createSession(params: {
   const provisionalSessionId = params.resume ?? randomUUID();
   const initialModel = initialSessionModel(params.launchSettings);
   const initialMode = initialSessionMode(params.launchSettings);
+  const supportsBypassPermissionsMode =
+    startupPermissionModeOptions(params.launchSettings).allowDangerouslySkipPermissions === true;
   const historyUpdateCount = params.resumeUpdates?.length ?? 0;
   const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
 
@@ -353,6 +383,9 @@ export async function createSession(params: {
     model: initialModel,
     availableModels: [],
     mode: initialMode,
+    supportedModeIds: [],
+    runtimeUnavailableModeIds: [],
+    supportsBypassPermissionsMode,
     fastModeState: "off",
     query: queryHandle,
     input,
@@ -373,6 +406,8 @@ export async function createSession(params: {
       ? { sessionsToCloseAfterConnect: params.sessionsToCloseAfterConnect }
       : {}),
   };
+  const { refreshSupportedModesForSession } = await import("./commands.js");
+  refreshSupportedModesForSession(session);
   sessions.set(provisionalSessionId, session);
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
@@ -406,7 +441,7 @@ export async function createSession(params: {
   // before the first user prompt.
   void session.query
     .initializationResult()
-    .then((result) => {
+    .then(async (result) => {
       bridgeLogger.info({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "session_initialization_completed",
@@ -421,8 +456,15 @@ export async function createSession(params: {
         },
       });
       session.availableModels = mapAvailableModels(result.models);
+      const { buildModeState, refreshSupportedModesForSession } = await import("./commands.js");
+      refreshSupportedModesForSession(session);
       if (!session.connected) {
         emitConnectEvent(session);
+      } else if (session.mode) {
+        emitSessionUpdate(session.sessionId, {
+          type: "mode_state_update",
+          mode: buildModeState(session, session.mode),
+        });
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
@@ -580,6 +622,7 @@ function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | und
   }
   switch (rawMode) {
     case "default":
+    case "auto":
     case "acceptEdits":
     case "bypassPermissions":
     case "plan":
@@ -665,12 +708,13 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
   const modelOption = startupModelOption(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(params.launchSettings);
+  const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
-    ...(params.launchSettings.settings ? { settings: params.launchSettings.settings } : {}),
+    ...(settings ? { settings } : {}),
     ...modelOption,
     ...permissionModeOptions,
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },

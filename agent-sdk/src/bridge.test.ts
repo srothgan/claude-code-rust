@@ -31,8 +31,16 @@ import {
   unwrapToolUseResult,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
+import {
+  availableModesForSession,
+  buildModeState,
+  markModeUnavailableForSession,
+  permissionModeFailureLooksUnsupported,
+  refreshSupportedModesForSession,
+} from "./bridge/commands.js";
 import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
+import { handleResultMessage } from "./bridge/message_handlers.js";
 
 function makeSessionState(): SessionState {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
@@ -42,6 +50,9 @@ function makeSessionState(): SessionState {
     model: "haiku",
     availableModels: [],
     mode: null,
+    supportedModeIds: [],
+    runtimeUnavailableModeIds: [],
+    supportsBypassPermissionsMode: false,
     fastModeState: "off",
     query: {} as import("@anthropic-ai/claude-agent-sdk").Query,
     input,
@@ -56,6 +67,97 @@ function makeSessionState(): SessionState {
     authHintSent: false,
   };
 }
+
+test("availableModesForSession omits conditional modes when unsupported", () => {
+  const session = makeSessionState();
+  refreshSupportedModesForSession(session);
+
+  assert.deepEqual(
+    availableModesForSession(session).map((entry) => entry.id),
+    ["default", "acceptEdits", "plan", "dontAsk"],
+  );
+});
+
+test("buildModeState includes auto and bypassPermissions when supported", () => {
+  const session = makeSessionState();
+  session.mode = "default";
+  session.model = "sonnet";
+  session.supportsBypassPermissionsMode = true;
+  session.availableModels = [
+    {
+      id: "sonnet",
+      display_name: "Sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_auto_mode: true,
+    },
+  ];
+  refreshSupportedModesForSession(session);
+
+  const mode = buildModeState(session, "default");
+
+  assert.deepEqual(
+    mode.available_modes.map((entry) => entry.id),
+    ["default", "auto", "acceptEdits", "plan", "dontAsk", "bypassPermissions"],
+  );
+});
+
+test("refreshSupportedModesForSession retains current mode before capability data arrives", () => {
+  const session = makeSessionState();
+  session.mode = "auto";
+
+  refreshSupportedModesForSession(session);
+
+  assert.deepEqual(
+    session.supportedModeIds,
+    ["default", "auto", "acceptEdits", "plan", "dontAsk"],
+  );
+});
+
+test("markModeUnavailableForSession prunes rejected runtime mode from session list", () => {
+  const session = makeSessionState();
+  session.model = "sonnet";
+  session.availableModels = [
+    {
+      id: "sonnet",
+      display_name: "Sonnet",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high"],
+      supports_auto_mode: true,
+    },
+  ];
+  refreshSupportedModesForSession(session);
+
+  assert.equal(markModeUnavailableForSession(session, "auto"), true);
+  assert.deepEqual(
+    availableModesForSession(session).map((entry) => entry.id),
+    ["default", "acceptEdits", "plan", "dontAsk"],
+  );
+});
+
+test("permissionModeFailureLooksUnsupported detects SDK capability rejections", () => {
+  assert.equal(
+    permissionModeFailureLooksUnsupported(
+      "auto",
+      "Cannot set permission mode to auto: not available in my plan",
+    ),
+    true,
+  );
+  assert.equal(
+    permissionModeFailureLooksUnsupported(
+      "bypassPermissions",
+      "Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions",
+    ),
+    true,
+  );
+  assert.equal(
+    permissionModeFailureLooksUnsupported(
+      "auto",
+      "bridge disconnected before request completed",
+    ),
+    false,
+  );
+});
 
 function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
   const writes: string[] = [];
@@ -483,6 +585,27 @@ test("buildQueryOptions trims startup model before passing sdk option", () => {
   assert.equal(options.permissionMode, "plan");
 });
 
+test("buildQueryOptions maps auto startup permission mode", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        permissions: { defaultMode: "auto" },
+      },
+    },
+    provisionalSessionId: "session-auto",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-auto",
+  });
+
+  assert.equal(options.permissionMode, "auto");
+  assert.equal("allowDangerouslySkipPermissions" in options, false);
+});
+
 test("buildQueryOptions enables dangerous skip flag for bypass permissions startup mode", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
@@ -522,6 +645,61 @@ test("buildQueryOptions omits startup overrides for default logout path", () => 
   assert.equal("allowDangerouslySkipPermissions" in options, false);
   assert.equal("systemPrompt" in options, false);
   assert.equal("agentProgressSummaries" in options, false);
+});
+
+test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        sandbox: {
+          enabled: true,
+        },
+      },
+    },
+    provisionalSessionId: "session-sandbox",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-sandbox",
+  });
+
+  assert.deepEqual(options.settings, {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: false,
+    },
+  });
+});
+
+test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: true,
+        },
+      },
+    },
+    provisionalSessionId: "session-sandbox-explicit",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-sandbox-explicit",
+  });
+
+  assert.deepEqual(options.settings, {
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+    },
+  });
 });
 
 test("handleTaskSystemMessage prefers task_progress summary over fallback text", () => {
@@ -1553,6 +1731,48 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(variantCounts.get("agent_message_chunk"), 1);
   assert.equal(variantCounts.get("tool_call"), 1);
   assert.equal(variantCounts.get("tool_call_update"), 1);
+});
+
+test("handleResultMessage emits terminal reason on successful turn completion", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.deepEqual(lastEvent, {
+    event: "turn_complete",
+    session_id: "session-1",
+    terminal_reason: "completed",
+  });
+});
+
+test("handleResultMessage emits terminal reason on turn errors", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_max_turns",
+      terminal_reason: "max_turns",
+      errors: ["max turns exceeded"],
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.deepEqual(lastEvent, {
+    event: "turn_error",
+    session_id: "session-1",
+    message: "max turns exceeded",
+    error_kind: "plan_limit",
+    sdk_result_subtype: "error_max_turns",
+    terminal_reason: "max_turns",
+  });
 });
 
 test("mapSessionMessagesToUpdates ignores unsupported records", () => {

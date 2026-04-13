@@ -91,14 +91,20 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::McpOperationError { error, .. } => {
             let _ = event_tx.send(ClientEvent::McpOperationError { error });
         }
-        crate::agent::wire::BridgeEvent::TurnComplete { .. } => {
-            let _ = event_tx.send(ClientEvent::TurnComplete);
+        crate::agent::wire::BridgeEvent::TurnComplete { terminal_reason, .. } => {
+            let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
         }
-        crate::agent::wire::BridgeEvent::TurnError { message, error_kind, .. } => {
+        crate::agent::wire::BridgeEvent::TurnError {
+            message, error_kind, terminal_reason, ..
+        } => {
             if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
-                let _ = event_tx.send(ClientEvent::TurnErrorClassified { message, class });
+                let _ = event_tx.send(ClientEvent::TurnErrorClassified {
+                    message,
+                    class,
+                    terminal_reason,
+                });
             } else {
-                let _ = event_tx.send(ClientEvent::TurnError(message));
+                let _ = event_tx.send(ClientEvent::TurnError { message, terminal_reason });
             }
         }
         crate::agent::wire::BridgeEvent::SlashError { message, .. } => {

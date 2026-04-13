@@ -133,7 +133,7 @@ function buildConnectBridgeEvent(
         cwd: session.cwd,
         model_name: session.model,
         available_models: session.availableModels,
-        mode: session.mode ? buildModeState(session.mode) : null,
+        mode: session.mode ? buildModeState(session, session.mode) : null,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
       }
     : {
@@ -142,7 +142,7 @@ function buildConnectBridgeEvent(
         cwd: session.cwd,
         model_name: session.model,
         available_models: session.availableModels,
-        mode: session.mode ? buildModeState(session.mode) : null,
+        mode: session.mode ? buildModeState(session, session.mode) : null,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
       };
 }

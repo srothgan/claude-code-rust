@@ -11,6 +11,7 @@ import type {
   QuestionOutcome,
   SessionLaunchSettings,
 } from "../types.js";
+import type { SessionState } from "./session_lifecycle.js";
 
 const MODE_NAMES: Record<PermissionMode, string> = {
   default: "Default",
@@ -29,6 +30,82 @@ const MODE_OPTIONS: ModeInfo[] = [
   { id: "dontAsk", name: "Don't Ask", description: "Reject non-approved tools" },
   { id: "bypassPermissions", name: "Bypass Permissions", description: "Auto-approve all tools" },
 ];
+
+const BASE_SUPPORTED_MODE_IDS: PermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "dontAsk",
+];
+
+function currentModelSupportsAutoMode(session: SessionState): boolean {
+  const currentModel = session.availableModels.find((entry) => entry.id === session.model);
+  return currentModel?.supports_auto_mode === true;
+}
+
+function modeInfoForId(mode: PermissionMode): ModeInfo {
+  return MODE_OPTIONS.find((entry) => entry.id === mode) ?? {
+    id: mode,
+    name: MODE_NAMES[mode],
+  };
+}
+
+function uniqueModeIds(modeIds: PermissionMode[]): PermissionMode[] {
+  const unique = new Set(modeIds);
+  const ordered = MODE_OPTIONS.map((entry) => entry.id as PermissionMode).filter((mode) =>
+    unique.has(mode),
+  );
+  const extras = Array.from(unique).filter((mode) => !ordered.includes(mode));
+  return [...ordered, ...extras];
+}
+
+function computedSupportedModeIds(session: SessionState): PermissionMode[] {
+  const supported = [...BASE_SUPPORTED_MODE_IDS];
+  if (currentModelSupportsAutoMode(session)) {
+    supported.push("auto");
+  }
+  if (session.supportsBypassPermissionsMode) {
+    supported.push("bypassPermissions");
+  }
+  if (session.mode) {
+    supported.push(session.mode);
+  }
+  return uniqueModeIds(supported);
+}
+
+export function refreshSupportedModesForSession(session: SessionState): void {
+  const computed = computedSupportedModeIds(session);
+  session.supportedModeIds = computed.filter(
+    (mode) => mode === session.mode || !session.runtimeUnavailableModeIds.includes(mode),
+  );
+}
+
+export function markModeUnavailableForSession(
+  session: SessionState,
+  mode: PermissionMode,
+): boolean {
+  if (session.runtimeUnavailableModeIds.includes(mode)) {
+    return false;
+  }
+  session.runtimeUnavailableModeIds = [...session.runtimeUnavailableModeIds, mode];
+  refreshSupportedModesForSession(session);
+  return true;
+}
+
+export function permissionModeFailureLooksUnsupported(
+  mode: PermissionMode,
+  message: string,
+): boolean {
+  const normalizedMessage = message.toLowerCase();
+  return (
+    normalizedMessage.includes("cannot set permission mode to") &&
+    normalizedMessage.includes(mode.toLowerCase())
+  );
+}
+
+export function availableModesForSession(session: SessionState): ModeInfo[] {
+  return session.supportedModeIds.map(modeInfoForId);
+}
 
 function asRecord(value: unknown, context: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -448,11 +525,11 @@ export function toPermissionMode(mode: string): PermissionMode | null {
   return null;
 }
 
-export function buildModeState(mode: PermissionMode): ModeState {
+export function buildModeState(session: SessionState, mode: PermissionMode): ModeState {
   return {
     current_mode_id: mode,
     current_mode_name: MODE_NAMES[mode],
-    available_modes: MODE_OPTIONS,
+    available_modes: availableModesForSession(session),
   };
 }
 

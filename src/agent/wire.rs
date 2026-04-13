@@ -278,6 +278,8 @@ pub enum BridgeEvent {
     },
     TurnComplete {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_reason: Option<types::TerminalReason>,
     },
     TurnError {
         session_id: String,
@@ -285,6 +287,8 @@ pub enum BridgeEvent {
         error_kind: Option<String>,
         sdk_result_subtype: Option<String>,
         assistant_error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_reason: Option<types::TerminalReason>,
     },
     SlashError {
         session_id: String,
@@ -353,7 +357,7 @@ impl BridgeEvent {
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
-            | Self::TurnComplete { session_id }
+            | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
@@ -418,11 +422,9 @@ mod tests {
     fn event_envelope_roundtrip_json() {
         let env = EventEnvelope {
             request_id: None,
-            event: BridgeEvent::SessionUpdate {
+            event: BridgeEvent::TurnComplete {
                 session_id: "session-1".to_owned(),
-                update: types::SessionUpdate::CurrentModeUpdate {
-                    current_mode_id: "default".to_owned(),
-                },
+                terminal_reason: Some(types::TerminalReason::Completed),
             },
         };
         let json = serde_json::to_string(&env).expect("serialize");

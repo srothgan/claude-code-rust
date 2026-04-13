@@ -44,6 +44,19 @@ export interface AvailableModel {
 
 export type FastModeState = "off" | "cooldown" | "on";
 export type RateLimitStatus = "allowed" | "allowed_warning" | "rejected";
+export type TerminalReason =
+  | "blocking_limit"
+  | "rapid_refill_breaker"
+  | "prompt_too_long"
+  | "image_error"
+  | "model_error"
+  | "aborted_streaming"
+  | "aborted_tools"
+  | "stop_hook_prevented"
+  | "hook_stopped"
+  | "tool_deferred"
+  | "max_turns"
+  | "completed";
 
 export interface RateLimitUpdate {
   status: RateLimitStatus;
@@ -493,7 +506,7 @@ export type BridgeEvent =
   | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
   | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
   | { event: "mcp_operation_error"; session_id: string; error: McpOperationError }
-  | { event: "turn_complete"; session_id: string }
+  | { event: "turn_complete"; session_id: string; terminal_reason?: TerminalReason }
   | {
       event: "turn_error";
       session_id: string;
@@ -501,6 +514,7 @@ export type BridgeEvent =
       error_kind?: TurnErrorKind;
       sdk_result_subtype?: string;
       assistant_error?: string;
+      terminal_reason?: TerminalReason;
     }
   | { event: "slash_error"; session_id: string; message: string }
   | {

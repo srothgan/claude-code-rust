@@ -35,13 +35,17 @@ pub enum ClientEvent {
     /// MCP operation failed and should be surfaced in the MCP config UI.
     McpOperationError { error: crate::agent::types::McpOperationError },
     /// A prompt turn completed successfully.
-    TurnComplete,
+    TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError(String),
+    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
     /// A prompt turn failed with bridge-provided classification metadata.
-    TurnErrorClassified { message: String, class: TurnErrorClass },
+    TurnErrorClassified {
+        message: String,
+        class: TurnErrorClass,
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// Background connection completed successfully.
     Connected {
         session_id: model::SessionId,

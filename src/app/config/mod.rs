@@ -179,6 +179,7 @@ pub struct SettingSpec {
 pub enum DefaultPermissionMode {
     #[default]
     Default,
+    Auto,
     AcceptEdits,
     Plan,
     DontAsk,
@@ -190,6 +191,7 @@ impl DefaultPermissionMode {
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Default => "default",
+            Self::Auto => "auto",
             Self::AcceptEdits => "acceptEdits",
             Self::Plan => "plan",
             Self::DontAsk => "dontAsk",
@@ -201,6 +203,7 @@ impl DefaultPermissionMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Default => "Default",
+            Self::Auto => "Auto",
             Self::AcceptEdits => "Accept Edits",
             Self::Plan => "Plan",
             Self::DontAsk => "Don't Ask",
@@ -212,6 +215,7 @@ impl DefaultPermissionMode {
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "default" => Some(Self::Default),
+            "auto" => Some(Self::Auto),
             "acceptEdits" => Some(Self::AcceptEdits),
             "plan" => Some(Self::Plan),
             "dontAsk" => Some(Self::DontAsk),
@@ -223,7 +227,8 @@ impl DefaultPermissionMode {
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
-            Self::Default => Self::AcceptEdits,
+            Self::Default => Self::Auto,
+            Self::Auto => Self::AcceptEdits,
             Self::AcceptEdits => Self::Plan,
             Self::Plan => Self::DontAsk,
             Self::DontAsk => Self::BypassPermissions,
@@ -235,7 +240,8 @@ impl DefaultPermissionMode {
     pub const fn prev(self) -> Self {
         match self {
             Self::Default => Self::BypassPermissions,
-            Self::AcceptEdits => Self::Default,
+            Self::Auto => Self::Default,
+            Self::AcceptEdits => Self::Auto,
             Self::Plan => Self::AcceptEdits,
             Self::DontAsk => Self::Plan,
             Self::BypassPermissions => Self::DontAsk,
@@ -340,6 +346,7 @@ impl OutputStyle {
 
 const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
+    SettingOption { stored: "auto", label: "Auto" },
     SettingOption { stored: "acceptEdits", label: "Accept Edits" },
     SettingOption { stored: "plan", label: "Plan" },
     SettingOption { stored: "dontAsk", label: "Don't Ask" },

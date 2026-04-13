@@ -47,7 +47,7 @@ fn stream_text(app: &mut App, text: &str) {
 }
 
 fn complete_turn(app: &mut App) {
-    send_client_event(app, ClientEvent::TurnComplete);
+    send_client_event(app, ClientEvent::TurnComplete { terminal_reason: None });
 }
 
 /// Build a `ChatMessage` with a single text block for direct insertion.

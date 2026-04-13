@@ -102,6 +102,16 @@ fn build_session_settings_object(app: &App) -> Value {
                 .unwrap_or(true),
         ),
     );
+    if let Some(mut sandbox) =
+        app.config.committed_settings_document.get("sandbox").and_then(Value::as_object).cloned()
+    {
+        if sandbox.get("enabled").and_then(Value::as_bool) == Some(true)
+            && !sandbox.contains_key("failIfUnavailable")
+        {
+            sandbox.insert("failIfUnavailable".to_owned(), Value::Bool(false));
+        }
+        settings.insert("sandbox".to_owned(), Value::Object(sandbox));
+    }
 
     Value::Object(settings)
 }
@@ -213,6 +223,64 @@ mod tests {
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
         assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
+    }
+
+    #[test]
+    fn persisted_launch_settings_include_auto_permission_mode() {
+        let mut app = App::test_default();
+        store::set_default_permission_mode(
+            &mut app.config.committed_settings_document,
+            DefaultPermissionMode::Auto,
+        );
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_permission_mode(&launch_settings, "auto");
+    }
+
+    #[test]
+    fn persisted_launch_settings_preserve_sandbox_settings_and_make_fallback_explicit() {
+        let mut app = App::test_default();
+        app.config.committed_settings_document = serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "allowUnsandboxedCommands": false
+            }
+        });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_setting_value(
+            &launch_settings,
+            "sandbox",
+            &serde_json::json!({
+                "enabled": true,
+                "allowUnsandboxedCommands": false,
+                "failIfUnavailable": false
+            }),
+        );
+    }
+
+    #[test]
+    fn persisted_launch_settings_preserve_explicit_sandbox_fail_if_unavailable() {
+        let mut app = App::test_default();
+        app.config.committed_settings_document = serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true
+            }
+        });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_setting_value(
+            &launch_settings,
+            "sandbox",
+            &serde_json::json!({
+                "enabled": true,
+                "failIfUnavailable": true
+            }),
+        );
     }
 
     #[test]

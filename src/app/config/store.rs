@@ -588,6 +588,14 @@ mod tests {
     }
 
     #[test]
+    fn save_roundtrips_auto_permission_mode() {
+        let mut document = Value::Object(Map::new());
+        set_default_permission_mode(&mut document, DefaultPermissionMode::Auto);
+
+        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
+    }
+
+    #[test]
     fn set_language_trims_and_removes_whitespace_only_values() {
         let mut document = Value::Object(Map::new());
         set_language(&mut document, Some("  German  "));
