@@ -2085,6 +2085,63 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(variantCounts.get("tool_call_update"), 1);
 });
 
+test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "assistant",
+      uuid: "a1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-a", name: "Bash", input: { command: "echo a" } },
+          { type: "tool_use", id: "tool-b", name: "Bash", input: { command: "echo b" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "u1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-b",
+            content: "result b",
+            is_error: false,
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "tool-a",
+            content: "result a",
+            is_error: false,
+          },
+        ],
+      },
+    },
+  ]);
+
+  const toolCalls = updates.filter((update) => update.type === "tool_call");
+  const toolUpdates = updates.filter((update) => update.type === "tool_call_update");
+
+  assert.deepEqual(
+    toolCalls.map((update) => update.tool_call.tool_call_id),
+    ["tool-a", "tool-b"],
+  );
+  assert.deepEqual(
+    toolUpdates.map((update) => update.tool_call_update.tool_call_id),
+    ["tool-b", "tool-a"],
+  );
+  assert.deepEqual(
+    toolUpdates.map((update) => update.tool_call_update.fields.raw_output),
+    ["result b", "result a"],
+  );
+});
+
 test("handleResultMessage emits terminal reason on successful turn completion", () => {
   const session = makeSessionState();
 

@@ -2345,6 +2345,59 @@ mod tests {
     }
 
     #[test]
+    fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
+        let mut app = make_test_app();
+        let history_updates = vec![
+            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("first user")),
+            )),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("first assistant")),
+            )),
+            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("second user")),
+            )),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("second assistant")),
+            )),
+        ];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("active-457"),
+                cwd: "/replacement".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates,
+            },
+        );
+
+        let rendered: Vec<(MessageRole, String)> = app
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let text = message.blocks.iter().find_map(|block| match block {
+                    MessageBlock::Text(block) => Some(block.text.clone()),
+                    _ => None,
+                })?;
+                Some((message.role.clone(), text))
+            })
+            .collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                (MessageRole::User, "first user".to_owned()),
+                (MessageRole::Assistant, "first assistant".to_owned()),
+                (MessageRole::User, "second user".to_owned()),
+                (MessageRole::Assistant, "second assistant".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
     fn resume_history_forces_open_tool_calls_to_failed() {
         let mut app = make_test_app();
         let open_tool = model::ToolCall::new("resume-open", "Execute command")

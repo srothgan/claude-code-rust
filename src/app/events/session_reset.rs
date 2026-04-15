@@ -173,6 +173,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     for update in history_updates {
         match update {
             model::SessionUpdate::UserMessageChunk(chunk) => {
+                app.clear_active_turn_assistant();
                 append_resume_user_message_chunk(app, chunk);
             }
             _ => super::handle_session_update(app, update.clone()),
