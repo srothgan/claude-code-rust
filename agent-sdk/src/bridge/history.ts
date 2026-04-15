@@ -39,6 +39,7 @@ function pushResumeToolUse(
   updates: SessionUpdate[],
   toolCalls: Map<string, ToolCall>,
   block: Record<string, unknown>,
+  parentToolUseId: string | null,
 ): void {
   const toolUseId = typeof block.id === "string" ? block.id : "";
   if (!toolUseId) {
@@ -47,7 +48,7 @@ function pushResumeToolUse(
   const name = typeof block.name === "string" ? block.name : "Tool";
   const input = asRecordOrNull(block.input) ?? {};
 
-  const toolCall = createToolCall(toolUseId, name, input);
+  const toolCall = createToolCall(toolUseId, name, input, parentToolUseId);
   toolCall.status = "in_progress";
   toolCalls.set(toolUseId, toolCall);
   updates.push({ type: "tool_call", tool_call: toolCall });
@@ -130,6 +131,12 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
     for (const message of messageCandidates(entry.message)) {
       const roleCandidate = message.role;
       const role = roleCandidate === "assistant" || roleCandidate === "user" ? roleCandidate : fallbackRole;
+      const parentToolUseId =
+        typeof entry.parent_tool_use_id === "string"
+          ? entry.parent_tool_use_id
+          : typeof message.parent_tool_use_id === "string"
+            ? message.parent_tool_use_id
+            : null;
 
       const content = Array.isArray(message.content) ? message.content : [];
       for (const item of content) {
@@ -146,7 +153,7 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
           continue;
         }
         if (isToolUseBlockType(blockType) && role === "assistant") {
-          pushResumeToolUse(updates, toolCalls, block);
+          pushResumeToolUse(updates, toolCalls, block, parentToolUseId);
           continue;
         }
         if (TOOL_RESULT_TYPES.has(blockType)) {

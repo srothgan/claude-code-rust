@@ -3,8 +3,6 @@
 
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
     pub id: String,
@@ -162,8 +160,6 @@ pub struct McpState {
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
-pub const SUBAGENT_THINKING_DEBOUNCE: Duration = Duration::from_millis(1_500);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderCacheBudget {
     pub max_bytes: usize,
@@ -226,11 +222,11 @@ pub enum AppStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCallScope {
     MainAgent,
-    Subagent,
-    Task,
+    SubagentRoot,
+    SubagentChild { parent_tool_use_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

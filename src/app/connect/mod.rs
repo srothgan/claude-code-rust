@@ -166,8 +166,6 @@ pub fn create_app(cli: &Cli) -> App {
         tools_collapsed: true,
         active_task_ids: HashSet::new(),
         tool_call_scopes: HashMap::new(),
-        active_subagent_tool_ids: HashSet::new(),
-        subagent_idle_since: None,
         terminals,
         force_redraw: false,
         tool_call_index: HashMap::new(),

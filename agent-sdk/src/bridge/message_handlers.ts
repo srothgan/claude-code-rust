@@ -153,6 +153,24 @@ export function handleTaskSystemMessage(
     session.taskToolUseIds.set(taskId, explicitToolUseId);
   }
   const toolUseId = resolveTaskToolUseId(session, msg);
+  bridgeLogger.debug({
+    target: LOG_TARGETS.APP_TOOL,
+    eventName: "sdk_task_linkage_observed",
+    message: "SDK task lifecycle linkage observed",
+    outcome: toolUseId ? "resolved" : "unresolved",
+    sessionId: session.sessionId,
+    toolCallId: toolUseId || explicitToolUseId || undefined,
+    fields: {
+      sdk_subtype: subtype,
+      task_id: taskId || undefined,
+      explicit_tool_use_id: explicitToolUseId || undefined,
+      resolved_tool_use_id: toolUseId || undefined,
+      task_status: typeof msg.status === "string" ? msg.status : undefined,
+      has_description: typeof msg.description === "string" && msg.description.length > 0,
+      has_summary: typeof msg.summary === "string" && msg.summary.length > 0,
+      last_tool_name: typeof msg.last_tool_name === "string" ? msg.last_tool_name : undefined,
+    },
+  });
   if (subtype === "task_updated") {
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_TOOL,
@@ -264,7 +282,43 @@ export function handleTaskSystemMessage(
   }
 }
 
-export function handleContentBlock(session: SessionState, block: Record<string, unknown>): void {
+type ContentBlockLinkage = {
+  source: "assistant" | "stream_event" | "user";
+  parentToolUseId?: string;
+};
+
+function logContentBlockLinkage(
+  session: SessionState,
+  blockType: string,
+  toolUseId: string,
+  toolName: string | undefined,
+  linkage: ContentBlockLinkage | undefined,
+): void {
+  if (!toolUseId && !linkage?.parentToolUseId) {
+    return;
+  }
+  bridgeLogger.debug({
+    target: LOG_TARGETS.APP_TOOL,
+    eventName: "sdk_tool_linkage_observed",
+    message: "SDK tool linkage observed",
+    outcome: linkage?.parentToolUseId ? "child" : "root_or_unknown",
+    sessionId: session.sessionId,
+    toolCallId: toolUseId || undefined,
+    fields: {
+      source: linkage?.source,
+      block_type: blockType || undefined,
+      tool_name: toolName,
+      tool_use_id: toolUseId || undefined,
+      parent_tool_use_id: linkage?.parentToolUseId,
+    },
+  });
+}
+
+export function handleContentBlock(
+  session: SessionState,
+  block: Record<string, unknown>,
+  linkage?: ContentBlockLinkage,
+): void {
   const blockType = typeof block.type === "string" ? block.type : "";
 
   if (blockType === "text") {
@@ -291,8 +345,9 @@ export function handleContentBlock(session: SessionState, block: Record<string, 
     if (!toolUseId) {
       return;
     }
+    logContentBlockLinkage(session, blockType, toolUseId, name, linkage);
     emitPlanIfTodoWrite(session, name, input);
-    emitToolCall(session, toolUseId, name, input);
+    emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null);
     return;
   }
 
@@ -301,17 +356,25 @@ export function handleContentBlock(session: SessionState, block: Record<string, 
     if (!toolUseId) {
       return;
     }
+    logContentBlockLinkage(session, blockType, toolUseId, undefined, linkage);
     const isError = Boolean(block.is_error);
     emitToolResultUpdate(session, toolUseId, isError, block.content, block);
   }
 }
 
-export function handleStreamEvent(session: SessionState, event: Record<string, unknown>): void {
+export function handleStreamEvent(
+  session: SessionState,
+  event: Record<string, unknown>,
+  parentToolUseId?: string,
+): void {
   const eventType = typeof event.type === "string" ? event.type : "";
 
   if (eventType === "content_block_start") {
     if (event.content_block && typeof event.content_block === "object") {
-      handleContentBlock(session, event.content_block as Record<string, unknown>);
+      handleContentBlock(session, event.content_block as Record<string, unknown>, {
+        source: "stream_event",
+        parentToolUseId,
+      });
     }
     return;
   }
@@ -362,7 +425,9 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
       blockType === "mcp_tool_use" ||
       TOOL_RESULT_TYPES.has(blockType)
     ) {
-      handleContentBlock(session, blockRecord);
+      const parentToolUseId =
+        typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
+      handleContentBlock(session, blockRecord, { source: "assistant", parentToolUseId });
     }
   }
 }
@@ -383,7 +448,9 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
     const blockRecord = block as Record<string, unknown>;
     const blockType = typeof blockRecord.type === "string" ? blockRecord.type : "";
     if (TOOL_RESULT_TYPES.has(blockType)) {
-      handleContentBlock(session, blockRecord);
+      const parentToolUseId =
+        typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
+      handleContentBlock(session, blockRecord, { source: "user", parentToolUseId });
     }
   }
 }
@@ -645,7 +712,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
   if (type === "stream_event") {
     if (msg.event && typeof msg.event === "object") {
-      handleStreamEvent(session, msg.event as Record<string, unknown>);
+      const parentToolUseId =
+        typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined;
+      handleStreamEvent(session, msg.event as Record<string, unknown>, parentToolUseId);
     }
     return;
   }
@@ -653,6 +722,21 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_progress") {
     const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_TOOL,
+      eventName: "sdk_tool_progress_linkage_observed",
+      message: "SDK tool progress linkage observed",
+      outcome: typeof msg.parent_tool_use_id === "string" ? "child" : "root_or_unknown",
+      sessionId: session.sessionId,
+      toolCallId: toolUseId || undefined,
+      fields: {
+        tool_name: toolName,
+        tool_use_id: toolUseId || undefined,
+        parent_tool_use_id:
+          typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined,
+        task_id: typeof msg.task_id === "string" ? msg.task_id : undefined,
+      },
+    });
     if (toolUseId) {
       emitToolProgressUpdate(session, toolUseId, toolName);
     }

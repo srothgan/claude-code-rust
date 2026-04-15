@@ -33,7 +33,6 @@ fn inactive_spinner() -> SpinnerState {
         is_active_turn_assistant: false,
         show_empty_thinking: false,
         show_thinking: false,
-        show_subagent_thinking: false,
         show_compacting: false,
     }
 }

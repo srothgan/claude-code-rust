@@ -527,26 +527,39 @@ mod tests {
     }
 
     #[test]
-    fn register_tool_call_scope_treats_agent_as_task_scope() {
+    fn register_tool_call_scope_treats_agent_as_subagent_root() {
         let mut app = make_test_app();
-        let scope = tool_calls::register_tool_call_scope(&mut app, "tool-agent", "Agent");
-        assert_eq!(scope, ToolCallScope::Task);
-        assert!(app.active_task_ids.contains("tool-agent"));
+        let scope = tool_calls::register_tool_call_scope(&mut app, "tool-agent", "Agent", None);
+        assert_eq!(scope, ToolCallScope::SubagentRoot);
     }
 
     #[test]
-    fn register_tool_call_scope_treats_task_as_task_scope() {
+    fn register_tool_call_scope_treats_task_as_subagent_root() {
         let mut app = make_test_app();
-        let scope = tool_calls::register_tool_call_scope(&mut app, "tool-task", "Task");
-        assert_eq!(scope, ToolCallScope::Task);
-        assert!(app.active_task_ids.contains("tool-task"));
+        let scope = tool_calls::register_tool_call_scope(&mut app, "tool-task", "Task", None);
+        assert_eq!(scope, ToolCallScope::SubagentRoot);
+    }
+
+    #[test]
+    fn register_tool_call_scope_uses_explicit_parent_for_subagent_child() {
+        let mut app = make_test_app();
+        let scope = tool_calls::register_tool_call_scope(
+            &mut app,
+            "tool-child",
+            "Bash",
+            Some("tool-parent"),
+        );
+        assert_eq!(
+            scope,
+            ToolCallScope::SubagentChild { parent_tool_use_id: "tool-parent".to_owned() }
+        );
     }
 
     /// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
     /// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
     /// `clear_tool_scope_tracking` (called on `TurnComplete`) did not clear `active_task_ids`.
     /// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
-    /// which eventually triggered the subagent thinking indicator spuriously.
+    /// which eventually caused main-agent tools to inherit the wrong scope.
     #[test]
     fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         let mut app = make_test_app();
@@ -568,8 +581,6 @@ mod tests {
 
         // Stale task ID must be gone after turn boundary
         assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
-        assert!(app.active_subagent_tool_ids.is_empty());
-        assert!(app.subagent_idle_since.is_none());
 
         // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
         let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
@@ -584,10 +595,6 @@ mod tests {
             app.tool_call_scope("glob-1"),
             Some(ToolCallScope::MainAgent),
             "main-agent tool must not be misclassified as Subagent after stale task is cleared"
-        );
-        assert!(
-            app.active_subagent_tool_ids.is_empty(),
-            "main-agent tool must not enter subagent tracking"
         );
     }
 
@@ -963,14 +970,17 @@ mod tests {
     }
 
     #[test]
-    fn late_tool_update_for_removed_tool_does_not_corrupt_active_subagent_set() {
+    fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tool-stale",
             model::ToolCallStatus::Completed,
         )))]));
         app.index_tool_call("tool-stale".into(), 0, 0);
-        app.register_tool_call_scope("tool-stale".into(), ToolCallScope::Subagent);
+        app.register_tool_call_scope(
+            "tool-stale".into(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
+        );
 
         let removed = app.remove_message_tracked(0);
         assert!(removed.is_some());
@@ -985,7 +995,6 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
         );
 
-        assert!(app.active_subagent_tool_ids.is_empty());
         assert!(app.active_task_ids.is_empty());
     }
 
@@ -2408,7 +2417,6 @@ mod tests {
         );
 
         assert!(app.active_task_ids.is_empty());
-        assert!(app.active_subagent_tool_ids.is_empty());
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
 
@@ -2641,7 +2649,7 @@ mod tests {
             "task-1",
             model::ToolCallStatus::InProgress,
         )))]));
-        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
         handle_client_event(
@@ -2650,7 +2658,6 @@ mod tests {
         );
 
         assert!(app.active_task_ids.is_empty());
-        assert!(app.active_subagent_tool_ids.is_empty());
         assert_eq!(app.tool_call_scope("task-1"), None);
     }
 
@@ -2671,7 +2678,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         )))]));
         app.bind_active_turn_assistant(0);
-        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
         app.pending_interaction_ids.push("task-1".into());
         app.claim_focus_target(FocusTarget::Permission);
@@ -2741,7 +2748,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         )))]));
         app.bind_active_turn_assistant(0);
-        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
         handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
@@ -2763,7 +2770,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         )))]));
         app.bind_active_turn_assistant(0);
-        app.register_tool_call_scope("task-1".into(), ToolCallScope::Task);
+        app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
         handle_client_event(

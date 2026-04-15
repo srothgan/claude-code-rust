@@ -8,17 +8,17 @@ use super::super::{
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
 use crate::app::todos::{parse_todos_if_present, set_todos};
-use std::time::Instant;
 
 pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let id_str = tc.tool_call_id.clone();
     let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
-    let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name);
-    log_tool_call_received(app, &tc, scope, &sdk_tool_name);
+    let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
+    let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
+    log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
     maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
-    update_subagent_scope_state(app, scope, tc.status, &id_str);
+    update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
-    let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name);
+    let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
     if should_jump_on_large_write(&tool_info) {
@@ -33,7 +33,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
 fn log_tool_call_received(
     app: &App,
     tc: &model::ToolCall,
-    scope: ToolCallScope,
+    scope: &ToolCallScope,
     sdk_tool_name: &str,
 ) {
     let session_id = current_session_id(app);
@@ -62,22 +62,18 @@ pub(super) fn register_tool_call_scope(
     app: &mut App,
     id: &str,
     sdk_tool_name: &str,
+    parent_tool_use_id: Option<&str>,
 ) -> ToolCallScope {
-    // TODO: When the bridge exposes an explicit Task/Agent <-> child-tool relation,
-    // redesign subagent rendering so the parent Task/Agent summary block becomes
-    // the primary visible surface and child agent tools are not rendered directly.
-    let is_task = matches!(sdk_tool_name, "Task" | "Agent");
-    let scope = if is_task {
-        ToolCallScope::Task
-    } else if app.active_task_ids.is_empty() {
-        ToolCallScope::MainAgent
+    let scope = if let Some(parent_tool_use_id) =
+        parent_tool_use_id.filter(|parent| !parent.trim().is_empty())
+    {
+        ToolCallScope::SubagentChild { parent_tool_use_id: parent_tool_use_id.to_owned() }
+    } else if matches!(sdk_tool_name, "Task" | "Agent") {
+        ToolCallScope::SubagentRoot
     } else {
-        ToolCallScope::Subagent
+        ToolCallScope::MainAgent
     };
-    app.register_tool_call_scope(id.to_owned(), scope);
-    if is_task {
-        app.insert_active_task(id.to_owned());
-    }
+    app.register_tool_call_scope(id.to_owned(), scope.clone());
     scope
 }
 
@@ -133,22 +129,22 @@ fn maybe_apply_todo_write_from_tool_call(
 
 pub(super) fn update_subagent_scope_state(
     app: &mut App,
-    scope: ToolCallScope,
+    scope: &ToolCallScope,
     status: model::ToolCallStatus,
     id: &str,
 ) {
-    match (scope, status) {
-        (
-            ToolCallScope::Subagent,
-            model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending,
-        ) => app.mark_subagent_tool_started(id),
-        (
-            ToolCallScope::Subagent,
+    match scope {
+        ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent => {}
+        ToolCallScope::SubagentRoot => match status {
+            model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending => {
+                app.insert_active_task(id.to_owned());
+            }
             model::ToolCallStatus::Completed
             | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed,
-        ) => app.mark_subagent_tool_finished(id, Instant::now()),
-        _ => app.refresh_subagent_idle_since(Instant::now()),
+            | model::ToolCallStatus::Killed => {
+                app.remove_active_task(id);
+            }
+        },
     }
 }
 
@@ -156,6 +152,7 @@ fn build_tool_info_from_tool_call(
     app: &App,
     tc: model::ToolCall,
     sdk_tool_name: String,
+    scope: &ToolCallScope,
 ) -> ToolCallInfo {
     let terminal_id = tc.content.iter().find_map(|content| match content {
         model::ToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
@@ -180,7 +177,7 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: false,
+        hidden: matches!(scope, ToolCallScope::SubagentChild { .. }),
         terminal_id,
         terminal_command,
         terminal_output: None,
@@ -268,6 +265,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.status, &tool_info.status);
         changed |= sync_if_changed(&mut existing.content, &tool_info.content);
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
+        changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
         changed |= existing.set_raw_input(tool_info.raw_input.clone());
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
@@ -327,6 +325,13 @@ pub(super) fn sync_if_changed<T: PartialEq + Clone>(dst: &mut T, src: &T) -> boo
 
 pub(super) fn sdk_tool_name_from_meta(meta: Option<&serde_json::Value>) -> Option<&str> {
     meta.and_then(|m| m.get("claudeCode")).and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
+}
+
+pub(super) fn parent_tool_use_id_from_meta(meta: Option<&serde_json::Value>) -> Option<&str> {
+    meta.and_then(|m| m.get("claudeCode"))
+        .and_then(|v| v.get("parentToolUseId"))
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn fallback_sdk_tool_name(kind: model::ToolKind) -> &'static str {
@@ -527,11 +532,11 @@ pub(super) fn json_value_size(value: Option<&serde_json::Value>) -> Option<u64> 
         .and_then(|bytes| u64::try_from(bytes.len()).ok())
 }
 
-pub(super) fn tool_scope_name(scope: ToolCallScope) -> &'static str {
+pub(super) fn tool_scope_name(scope: &ToolCallScope) -> &'static str {
     match scope {
-        ToolCallScope::Task => "task",
+        ToolCallScope::SubagentRoot => "subagent_root",
         ToolCallScope::MainAgent => "main_agent",
-        ToolCallScope::Subagent => "subagent",
+        ToolCallScope::SubagentChild { .. } => "subagent_child",
     }
 }
 

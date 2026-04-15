@@ -26,10 +26,9 @@ pub use tool_call_info::{
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
     LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
-    RecentSessionInfo, RenderCacheBudget, SUBAGENT_THINKING_DEBOUNCE, ScrollbarDragState,
-    SelectionKind, SelectionPoint, SelectionState, SessionPickerState, SessionUsageState, TodoItem,
-    TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow,
+    RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
+    SelectionState, SessionPickerState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -193,15 +192,12 @@ pub struct App {
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+O and applied at render/layout time.
     pub tools_collapsed: bool,
-    /// IDs of Task/Agent tool calls currently `InProgress` -- their children get hidden.
+    /// IDs of root Task/Agent tool calls currently `InProgress`.
     /// Use `insert_active_task()`, `remove_active_task()`.
     pub active_task_ids: HashSet<String>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent from subagent tools.
+    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
+    /// and explicitly owned subagent child tools.
     pub tool_call_scopes: HashMap<String, ToolCallScope>,
-    /// IDs of non Task/Agent subagent tool calls currently `InProgress`/`Pending`.
-    pub active_subagent_tool_ids: HashSet<String>,
-    /// Timestamp when subagent entered an idle gap (no active child tool calls).
-    pub subagent_idle_since: Option<Instant>,
     /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::agent::events::TerminalMap,
     /// Force a full terminal clear on next render frame.
@@ -525,7 +521,7 @@ impl App {
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes.get(id).copied()
+        self.tool_call_scopes.get(id).cloned()
     }
 
     #[must_use]
@@ -539,40 +535,9 @@ impl App {
         .flatten()
     }
 
-    pub fn mark_subagent_tool_started(&mut self, id: &str) {
-        self.active_subagent_tool_ids.insert(id.to_owned());
-        self.subagent_idle_since = None;
-    }
-
-    pub fn mark_subagent_tool_finished(&mut self, id: &str, now: Instant) {
-        self.active_subagent_tool_ids.remove(id);
-        self.refresh_subagent_idle_since(now);
-    }
-
-    pub fn refresh_subagent_idle_since(&mut self, now: Instant) {
-        if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
-            self.subagent_idle_since = None;
-            return;
-        }
-        if self.subagent_idle_since.is_none() {
-            self.subagent_idle_since = Some(now);
-        }
-    }
-
-    #[must_use]
-    pub fn should_show_subagent_thinking(&self, now: Instant) -> bool {
-        if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
-            return false;
-        }
-        self.subagent_idle_since
-            .is_some_and(|since| now.saturating_duration_since(since) >= SUBAGENT_THINKING_DEBOUNCE)
-    }
-
     pub fn clear_tool_scope_tracking(&mut self) {
         self.tool_call_scopes.clear();
         self.active_task_ids.clear();
-        self.active_subagent_tool_ids.clear();
-        self.subagent_idle_since = None;
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -870,8 +835,6 @@ impl App {
             tools_collapsed: false,
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
-            active_subagent_tool_ids: HashSet::default(),
-            subagent_idle_since: None,
             terminals: std::rc::Rc::default(),
             force_redraw: false,
             tool_call_index: HashMap::default(),
@@ -1872,7 +1835,6 @@ mod tests {
             is_active_turn_assistant: false,
             show_empty_thinking: false,
             show_thinking: false,
-            show_subagent_thinking: false,
             show_compacting: false,
         };
 
@@ -2236,8 +2198,6 @@ mod tests {
         assert!(!app.active_task_ids.is_empty());
         app.clear_tool_scope_tracking();
         assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
-        assert!(app.active_subagent_tool_ids.is_empty());
-        assert!(app.subagent_idle_since.is_none());
     }
 
     #[test]
@@ -2324,7 +2284,10 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 0, 0);
-        app.register_tool_call_scope("tool-1".to_owned(), ToolCallScope::Subagent);
+        app.register_tool_call_scope(
+            "tool-1".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
+        );
 
         let removed = app.remove_message_tracked(0);
 

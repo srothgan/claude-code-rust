@@ -85,6 +85,19 @@ function updateOutcome(status: ToolCall["status"] | undefined): string {
   }
 }
 
+function parentToolUseIdFromMeta(meta: ToolCall["meta"] | undefined): string | null {
+  if (!meta || typeof meta !== "object") {
+    return null;
+  }
+  const claudeCode =
+    "claudeCode" in meta && meta.claudeCode && typeof meta.claudeCode === "object" ? meta.claudeCode : undefined;
+  const parentToolUseId =
+    claudeCode && "parentToolUseId" in claudeCode && typeof claudeCode.parentToolUseId === "string"
+      ? claudeCode.parentToolUseId
+      : null;
+  return parentToolUseId;
+}
+
 function mergeTaskMetadata(
   current: ToolCall["task_metadata"] | undefined,
   update: ToolCallUpdateFields["task_metadata"],
@@ -232,12 +245,19 @@ export function emitToolCallUpdate(
   }
 }
 
-export function emitToolCall(session: SessionState, toolUseId: string, name: string, input: Record<string, unknown>): void {
-  const toolCall = createToolCall(toolUseId, name, input);
+export function emitToolCall(
+  session: SessionState,
+  toolUseId: string,
+  name: string,
+  input: Record<string, unknown>,
+  parentToolUseId: string | null = null,
+): void {
+  const existing = session.toolCalls.get(toolUseId);
+  const resolvedParentToolUseId = parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
+  const toolCall = createToolCall(toolUseId, name, input, resolvedParentToolUseId);
   const status: ToolCall["status"] = "in_progress";
   toolCall.status = status;
 
-  const existing = session.toolCalls.get(toolUseId);
   if (!existing) {
     emitInitialToolCall(session, toolCall);
     return;
@@ -262,12 +282,18 @@ export function ensureToolCallVisible(
   toolUseId: string,
   toolName: string,
   input: Record<string, unknown>,
+  parentToolUseId: string | null = null,
 ): ToolCall {
   const existing = session.toolCalls.get(toolUseId);
   if (existing) {
+    const existingParentToolUseId = parentToolUseIdFromMeta(existing.meta);
+    if (parentToolUseId && existingParentToolUseId !== parentToolUseId) {
+      const refreshed = createToolCall(toolUseId, toolName, input, parentToolUseId);
+      emitToolCallUpdate(session, toolUseId, { meta: refreshed.meta }, "refresh");
+    }
     return existing;
   }
-  const toolCall = createToolCall(toolUseId, toolName, input);
+  const toolCall = createToolCall(toolUseId, toolName, input, parentToolUseId);
   emitInitialToolCall(session, toolCall);
   return toolCall;
 }

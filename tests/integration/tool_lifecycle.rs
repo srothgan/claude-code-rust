@@ -7,14 +7,33 @@
 
 use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
-use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo};
+use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_client_event, test_app};
 
 fn task_meta() -> serde_json::Map<String, serde_json::Value> {
+    claude_meta("Task", None)
+}
+
+fn child_meta(parent_tool_use_id: &str) -> serde_json::Map<String, serde_json::Value> {
+    claude_meta("Bash", Some(parent_tool_use_id))
+}
+
+fn claude_meta(
+    tool_name: &str,
+    parent_tool_use_id: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "Task"}));
+    let mut claude_code = serde_json::Map::new();
+    claude_code.insert("toolName".into(), serde_json::Value::String(tool_name.to_owned()));
+    if let Some(parent_tool_use_id) = parent_tool_use_id {
+        claude_code.insert(
+            "parentToolUseId".into(),
+            serde_json::Value::String(parent_tool_use_id.to_owned()),
+        );
+    }
+    meta.insert("claudeCode".into(), serde_json::Value::Object(claude_code));
     meta
 }
 
@@ -185,6 +204,61 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
         )),
     );
     assert!(!app.active_task_ids.contains("task-fail"), "failed Task should also be removed");
+}
+
+#[tokio::test]
+async fn subagent_child_tools_use_explicit_parent_linkage_only() {
+    let mut app = test_app();
+
+    let root = model::ToolCall::new("task-root", "Research")
+        .kind(model::ToolKind::Think)
+        .status(model::ToolCallStatus::InProgress)
+        .meta(task_meta());
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(root)));
+
+    let child = model::ToolCall::new("child-bash", "Run child command")
+        .kind(model::ToolKind::Execute)
+        .status(model::ToolCallStatus::InProgress)
+        .meta(child_meta("task-root"));
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(child)));
+
+    let main = model::ToolCall::new("main-bash", "Run main command")
+        .kind(model::ToolKind::Execute)
+        .status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(main)));
+
+    assert_eq!(app.tool_call_scope("task-root"), Some(ToolCallScope::SubagentRoot));
+    assert_eq!(
+        app.tool_call_scope("child-bash"),
+        Some(ToolCallScope::SubagentChild { parent_tool_use_id: "task-root".to_owned() })
+    );
+    assert_eq!(app.tool_call_scope("main-bash"), Some(ToolCallScope::MainAgent));
+    assert!(tool_call_block(&app, "child-bash").hidden);
+    assert!(!tool_call_block(&app, "main-bash").hidden);
+}
+
+#[tokio::test]
+async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
+    let mut app = test_app();
+
+    let tc = model::ToolCall::new("child-late", "Run child command")
+        .kind(model::ToolKind::Execute)
+        .status(model::ToolCallStatus::InProgress);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    assert!(!tool_call_block(&app, "child-late").hidden);
+
+    let update = model::ToolCallUpdate::new("child-late", model::ToolCallUpdateFields::new())
+        .meta(child_meta("task-root"));
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+    );
+
+    assert_eq!(
+        app.tool_call_scope("child-late"),
+        Some(ToolCallScope::SubagentChild { parent_tool_use_id: "task-root".to_owned() })
+    );
+    assert!(tool_call_block(&app, "child-late").hidden);
 }
 
 // --- Collapsed tool calls ---

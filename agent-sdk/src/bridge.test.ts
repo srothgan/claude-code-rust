@@ -1040,7 +1040,7 @@ test("emitToolProgressUpdate does not reopen completed tools", () => {
     status: "completed",
     content: [],
     locations: [],
-    meta: { claudeCode: { toolName: "Bash" } },
+    meta: { claudeCode: { toolName: "Bash", parentToolUseId: null } },
   });
 
   const events = captureBridgeEvents(() => {
@@ -1124,7 +1124,7 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
     status: "in_progress",
     content: [] as Array<import("./types.js").ToolCallContent>,
     locations: [] as Array<import("./types.js").ToolLocation>,
-    meta: { claudeCode: { toolName: "AskUserQuestion" } },
+    meta: { claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null } },
   };
 
   const events = await captureBridgeEventsAsync(async () => {
@@ -1213,7 +1213,7 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
       status: "in_progress",
       content: [],
       locations: [],
-      meta: { claudeCode: { toolName: "AskUserQuestion" } },
+      meta: { claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null } },
       raw_input: {
         prompt: {
           question: "Pick deployment target",
@@ -1496,7 +1496,15 @@ test("createToolCall builds edit diff content", () => {
     old: "old",
     new: "new",
   });
-  assert.deepEqual(toolCall.meta, { claudeCode: { toolName: "Edit" } });
+  assert.deepEqual(toolCall.meta, { claudeCode: { toolName: "Edit", parentToolUseId: null } });
+});
+
+test("createToolCall preserves parent tool linkage metadata", () => {
+  const toolCall = createToolCall("tc-child", "Bash", { command: "echo hi" }, "tc-parent");
+
+  assert.deepEqual(toolCall.meta, {
+    claudeCode: { toolName: "Bash", parentToolUseId: "tc-parent" },
+  });
 });
 
 test("createToolCall builds write preview diff content", () => {

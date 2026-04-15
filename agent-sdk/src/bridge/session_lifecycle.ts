@@ -406,6 +406,7 @@ export async function createSession(params: {
       count: request.options.length,
       fields: {
         tool_name: toolName,
+        agent_id: options.agentID,
         blocked_path: options.blockedPath ?? "<none>",
         decision_reason: options.decisionReason ?? "<none>",
       },

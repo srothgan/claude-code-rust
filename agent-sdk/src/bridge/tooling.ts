@@ -120,7 +120,12 @@ function editDiffContent(name: string, input: Record<string, unknown>): ToolCall
   return [];
 }
 
-export function createToolCall(toolUseId: string, name: string, input: Record<string, unknown>): ToolCall {
+export function createToolCall(
+  toolUseId: string,
+  name: string,
+  input: Record<string, unknown>,
+  parentToolUseId: string | null = null,
+): ToolCall {
   return {
     tool_call_id: toolUseId,
     title: toolTitle(name, input),
@@ -132,6 +137,7 @@ export function createToolCall(toolUseId: string, name: string, input: Record<st
     meta: {
       claudeCode: {
         toolName: name,
+        parentToolUseId,
       },
     },
   };

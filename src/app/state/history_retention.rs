@@ -373,12 +373,10 @@ impl super::App {
         self.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids.clear();
-        self.active_subagent_tool_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
-        let previous_idle_since = self.subagent_idle_since;
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
@@ -416,23 +414,18 @@ impl super::App {
                 ) {
                     continue;
                 }
-                match self.tool_call_scopes.get(&tc.id).copied() {
-                    Some(super::ToolCallScope::Task) => {
+                match self.tool_call_scopes.get(&tc.id) {
+                    Some(super::ToolCallScope::SubagentRoot) => {
                         self.active_task_ids.insert(tc.id.clone());
                     }
-                    Some(super::ToolCallScope::Subagent) => {
-                        self.active_subagent_tool_ids.insert(tc.id.clone());
-                    }
-                    Some(super::ToolCallScope::MainAgent) | None => {}
+                    Some(
+                        super::ToolCallScope::SubagentChild { .. }
+                        | super::ToolCallScope::MainAgent,
+                    )
+                    | None => {}
                 }
             }
         }
-        self.subagent_idle_since =
-            if self.active_task_ids.is_empty() || !self.active_subagent_tool_ids.is_empty() {
-                None
-            } else {
-                previous_idle_since
-            };
 
         let interaction_set: HashSet<&str> =
             pending_interaction_ids.iter().map(String::as_str).collect();

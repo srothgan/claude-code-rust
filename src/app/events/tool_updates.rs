@@ -4,11 +4,11 @@
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
     current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
-    sdk_tool_name_from_meta, should_jump_on_large_write, tool_scope_name,
+    parent_tool_use_id_from_meta, sdk_tool_name_from_meta, should_jump_on_large_write,
+    tool_scope_name,
 };
 use crate::agent::model;
 use crate::app::todos::{parse_todos_if_present, set_todos};
-use std::time::Instant;
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
@@ -24,6 +24,12 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
         return;
     };
+    if let Some(parent_tool_use_id) = parent_tool_use_id_from_meta(tcu.meta.as_ref()) {
+        app.register_tool_call_scope(
+            id_str.clone(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: parent_tool_use_id.to_owned() },
+        );
+    }
     let tool_scope = app.tool_call_scope(&id_str);
     let previous_status = app.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
         |block| match block {
@@ -38,14 +44,21 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
                 _ => None,
             },
         );
-    apply_tool_scope_status_update(app, &id_str, tool_scope, tcu.fields.status);
+    apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
     if let Some(mi) = update_outcome.layout_dirty_idx {
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
-    log_tool_call_update_applied(app, &id_str, tcu, tool_scope, previous_status, &update_outcome);
+    log_tool_call_update_applied(
+        app,
+        &id_str,
+        tcu,
+        tool_scope.as_ref(),
+        previous_status,
+        &update_outcome,
+    );
     log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
     if let Some(todos) = update_outcome.pending_todos {
         set_todos(app, todos);
@@ -58,35 +71,24 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
 fn apply_tool_scope_status_update(
     app: &mut App,
     id_str: &str,
-    tool_scope: Option<ToolCallScope>,
+    tool_scope: Option<&ToolCallScope>,
     status: Option<model::ToolCallStatus>,
 ) {
     let Some(status) = status else {
         return;
     };
     match tool_scope {
-        Some(ToolCallScope::Subagent) => match status {
+        Some(ToolCallScope::SubagentRoot) => match status {
             model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
-                app.mark_subagent_tool_started(id_str);
-            }
-            model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed => {
-                app.mark_subagent_tool_finished(id_str, Instant::now());
-            }
-        },
-        Some(ToolCallScope::Task) => match status {
-            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
-                app.refresh_subagent_idle_since(Instant::now());
+                app.insert_active_task(id_str.to_owned());
             }
             model::ToolCallStatus::Completed
             | model::ToolCallStatus::Failed
             | model::ToolCallStatus::Killed => {
                 app.remove_active_task(id_str);
-                app.refresh_subagent_idle_since(Instant::now());
             }
         },
-        Some(ToolCallScope::MainAgent) | None => {}
+        Some(ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent) | None => {}
     }
 }
 
@@ -128,6 +130,7 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
+        changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
         out.pending_todos = extract_todo_updates_from_tool_call_update(
             id_str,
             &session_id,
@@ -301,6 +304,14 @@ fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::
     true
 }
 
+fn apply_tool_call_hidden_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
+    if parent_tool_use_id_from_meta(meta).is_none() || tc.hidden {
+        return false;
+    }
+    tc.hidden = true;
+    true
+}
+
 fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
     if !tc.is_execute_tool()
         || matches!(tc.status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
@@ -377,7 +388,7 @@ fn log_tool_call_update_applied(
     app: &App,
     id_str: &str,
     tcu: &model::ToolCallUpdate,
-    tool_scope: Option<ToolCallScope>,
+    tool_scope: Option<&ToolCallScope>,
     previous_status: Option<model::ToolCallStatus>,
     update_outcome: &ToolCallUpdateApplyOutcome,
 ) {
@@ -967,7 +978,7 @@ mod tests {
             None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::Task);
+        app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);
         app.insert_active_task(tool_id.to_owned());
 
         let update = model::ToolCallUpdate::new(

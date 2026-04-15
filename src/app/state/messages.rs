@@ -67,7 +67,6 @@ pub struct MessageRenderSignature {
     pub role: MessageRole,
     pub show_empty_thinking: bool,
     pub show_thinking: bool,
-    pub show_subagent_thinking: bool,
     pub show_compacting: bool,
     pub assistant_frame: Option<usize>,
     pub blocks: Vec<MessageBlockRenderSignature>,

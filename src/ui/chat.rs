@@ -13,7 +13,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
-use std::time::Instant;
 
 /// Minimum number of messages to render above/below the visible range as a margin.
 /// Heights are now exact (block-level wrapped heights), so no safety margin is needed.
@@ -87,9 +86,6 @@ fn msg_spinner(
         is_active_turn_assistant,
         show_empty_thinking: is_active_turn_assistant && base.show_empty_thinking,
         show_thinking: is_active_turn_assistant && base.show_thinking && has_blocks,
-        show_subagent_thinking: is_active_turn_assistant
-            && base.show_subagent_thinking
-            && has_blocks,
         show_compacting: is_active_turn_assistant && base.show_compacting,
         ..base
     }
@@ -203,8 +199,8 @@ fn sync_active_turn_height_state(
         let spinner = msg_spinner(base, idx, active_turn_assistant, message);
         let empty_indicator_visible =
             message.blocks.is_empty() && (spinner.show_compacting || spinner.show_empty_thinking);
-        let trailing_indicator_visible = !message.blocks.is_empty()
-            && (spinner.show_compacting || spinner.show_subagent_thinking || spinner.show_thinking);
+        let trailing_indicator_visible =
+            !message.blocks.is_empty() && (spinner.show_compacting || spinner.show_thinking);
         Some((idx, empty_indicator_visible, trailing_indicator_visible))
     });
 
@@ -287,13 +283,11 @@ fn measure_message_height(
 }
 
 fn build_base_spinner(app: &App) -> SpinnerState {
-    let show_subagent_thinking = app.should_show_subagent_thinking(Instant::now());
     SpinnerState {
         frame: app.spinner_frame,
         is_active_turn_assistant: false,
         show_empty_thinking: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         show_thinking: matches!(app.status, AppStatus::Thinking),
-        show_subagent_thinking,
         show_compacting: app.is_compacting,
     }
 }
@@ -929,7 +923,7 @@ mod tests {
     use super::{
         SCROLLBAR_MIN_THUMB_HEIGHT, clamp_scroll_to_content, paragraph_scroll_offset,
         render_culled_messages, render_lines_from_paragraph, render_scrolled,
-        smooth_scrollbar_geometry, sync_active_turn_height_state, update_visual_heights,
+        smooth_scrollbar_geometry, update_visual_heights,
     };
     use crate::app::{
         App, AppStatus, ChatMessage, ChatViewport, InvalidationLevel, MessageBlock, MessageRole,
@@ -973,7 +967,6 @@ mod tests {
             is_active_turn_assistant: false,
             show_empty_thinking: false,
             show_thinking: false,
-            show_subagent_thinking: false,
             show_compacting: false,
         }
     }
@@ -1016,30 +1009,6 @@ mod tests {
         let second_spinner = SpinnerState { frame: 1, show_thinking: true, ..idle_spinner() };
         let second = update_visual_heights(&mut app, second_spinner, 40, 8);
         assert_eq!(second.measured_msgs, 0);
-    }
-
-    #[test]
-    fn subagent_indicator_transition_invalidates_active_assistant_height() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        app.messages = vec![assistant_text_message("streaming body")];
-        app.bind_active_turn_assistant(0);
-
-        let _ = app.viewport.on_frame(40, 8);
-        let baseline_spinner = SpinnerState { frame: 0, show_thinking: false, ..idle_spinner() };
-        update_visual_heights(&mut app, baseline_spinner, 40, 8);
-        let base_height = app.viewport.message_height(0);
-        assert!(app.viewport.message_height_is_current(0));
-
-        let subagent_spinner =
-            SpinnerState { frame: 0, show_subagent_thinking: true, ..idle_spinner() };
-        let active_turn_assistant = app.active_turn_assistant_idx();
-        sync_active_turn_height_state(&mut app, subagent_spinner, active_turn_assistant);
-        assert!(!app.viewport.message_height_is_current(0));
-
-        let updated = update_visual_heights(&mut app, subagent_spinner, 40, 8);
-        assert_eq!(updated.measured_msgs, 1);
-        assert!(app.viewport.message_height(0) > base_height);
     }
 
     #[test]
