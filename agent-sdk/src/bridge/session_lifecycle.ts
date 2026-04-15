@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import {
-  getSessionMessages,
-  listSessions,
   query,
   type AccountInfo,
   type CanUseTool,
@@ -16,7 +14,6 @@ import {
   type SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
-  AvailableCommand,
   CurrentModel,
   AvailableModel,
   BridgeCommand,
@@ -38,15 +35,10 @@ import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
 } from "./permissions.js";
-import { mapSessionMessagesToUpdates } from "./history.js";
 import {
-  writeEvent,
   failConnection,
-  slashError,
   emitSessionUpdate,
   emitConnectEvent,
-  emitSessionsList,
-  refreshSessionsList,
   emitPermissionRequestEvent,
   emitElicitationRequestEvent,
 } from "./events.js";
@@ -1438,7 +1430,7 @@ function currentModelIsAuthoritative(
 ): boolean {
   const resolved = resolvedId.trim();
   if (!resolved || resolved === DEFAULT_MODEL_NAME || resolved === "Connecting...") {
-    return Boolean(requestedId && requestedId.trim() && requestedId.trim() !== DEFAULT_MODEL_NAME);
+    return Boolean(requestedId?.trim() && requestedId.trim() !== DEFAULT_MODEL_NAME);
   }
   return true;
 }

@@ -29,7 +29,7 @@ import {
   taskUpdatedFields,
 } from "./tool_calls.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
-import { mapAvailableAgents, mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
+import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import {
   buildApiRetryUpdate,
   buildRateLimitUpdate,
@@ -39,7 +39,7 @@ import {
 } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
-import { refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
+import { emitCurrentModelUpdate, refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
@@ -564,10 +564,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         emitSessionReplacedEvent(session);
       } else {
         if (currentModelChanged) {
-          emitSessionUpdate(session.sessionId, {
-            type: "current_model_update",
-            current_model: session.currentModel!,
-          });
+          emitCurrentModelUpdate(session);
         }
         if (incomingMode) {
           emitSessionUpdate(session.sessionId, {

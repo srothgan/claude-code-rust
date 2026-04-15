@@ -7,7 +7,6 @@ import type {
   QuestionAnnotation,
   QuestionOption,
   QuestionOutcome,
-  QuestionPrompt,
   QuestionRequest,
   ToolCall,
   ToolCallUpdateFields,

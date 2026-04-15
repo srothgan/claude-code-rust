@@ -10,13 +10,19 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/bridge.js",
     "check": "npm run build",
+    "lint": "biome lint src",
+    "knip": "knip --include files,dependencies,unlisted,unresolved",
+    "audit": "npm audit --audit-level=moderate",
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.104"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "0.81.0",
+    "@biomejs/biome": "2.4.12",
     "@types/node": "25.3.3",
+    "knip": "6.4.1",
     "typescript": "5.9.3"
   }
 }

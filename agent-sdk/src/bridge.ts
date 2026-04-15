@@ -28,12 +28,11 @@ import {
   currentSessionListOptions,
   setSessionListingDir,
 } from "./bridge/events.js";
-import { textFromPrompt, contentFromPrompt } from "./bridge/message_handlers.js";
+import { contentFromPrompt } from "./bridge/message_handlers.js";
 import {
   sessions,
   sessionById,
   createSession,
-  closeSession,
   closeAllSessions,
   handleElicitationResponse,
   handlePermissionResponse,
@@ -786,6 +785,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         ...(requestId ? { requestId } : {}),
       });
       process.exit(0);
+      return;
 
     default:
       bridgeLogger.error({

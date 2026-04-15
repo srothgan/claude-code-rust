@@ -48,7 +48,6 @@ export function parseApiRetryError(value: unknown): ApiRetryError {
     case "server_error":
     case "max_output_tokens":
       return value;
-    case "unknown":
     default:
       return "unknown";
   }
