@@ -1725,7 +1725,7 @@ test("buildToolResultFields preserves Edit diff content from input and structure
   ]);
 });
 
-test("buildToolResultFields prefers structured Bash stdout over token-saver output", () => {
+test("buildToolResultFields ignores model-facing Bash stale read hints", () => {
   const base = createToolCall("tc-bash", "Bash", { command: "npm test" });
   const fields = buildToolResultFields(
     false,
@@ -1733,7 +1733,7 @@ test("buildToolResultFields prefers structured Bash stdout over token-saver outp
       stdout: "real stdout",
       stderr: "",
       interrupted: false,
-      tokenSaverOutput: "compressed output for model",
+      staleReadFileStateHint: "src/main.rs changed while command ran",
     },
     base,
     {
@@ -1741,17 +1741,13 @@ test("buildToolResultFields prefers structured Bash stdout over token-saver outp
         stdout: "real stdout",
         stderr: "",
         interrupted: false,
-        tokenSaverOutput: "compressed output for model",
+        staleReadFileStateHint: "src/main.rs changed while command ran",
       },
     },
   );
 
   assert.equal(fields.raw_output, "real stdout");
-  assert.deepEqual(fields.output_metadata, {
-    bash: {
-      token_saver_active: true,
-    },
-  });
+  assert.equal(fields.output_metadata, undefined);
 });
 
 test("buildToolResultFields adds Bash auto-backgrounded metadata and message", () => {
@@ -2286,25 +2282,88 @@ test("buildSessionListOptions scopes repo-local listings to worktrees", () => {
   });
 });
 
-test("buildToolResultFields extracts ExitPlanMode ultraplan metadata from structured results", () => {
-  const base = createToolCall("tc-plan", "ExitPlanMode", {});
+test("buildToolResultFields renders file_unchanged Read results compactly", () => {
+  const base = createToolCall("tc-read", "Read", { file_path: "src/main.rs" });
   const fields = buildToolResultFields(
     false,
-    [{ text: "Plan ready for approval" }],
+    {
+      type: "file_unchanged",
+      file: { filePath: "src/main.rs" },
+    },
     base,
     {
       result: {
-        plan: "Plan contents",
-        isUltraplan: true,
+        type: "file_unchanged",
+        file: { filePath: "src/main.rs" },
       },
     },
   );
 
-  assert.deepEqual(fields.output_metadata, {
-    exit_plan_mode: {
-      is_ultraplan: true,
+  assert.equal(fields.raw_output, "File unchanged: src/main.rs");
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: "File unchanged: src/main.rs" } },
+  ]);
+});
+
+test("buildToolResultFields renders array-wrapped file_unchanged Read results compactly", () => {
+  const base = createToolCall("tc-read", "Read", { file_path: "src/lib.rs" });
+  const fields = buildToolResultFields(
+    false,
+    [],
+    base,
+    {
+      result: [
+        {
+          type: "file_unchanged",
+          file: { filePath: "src/lib.rs" },
+        },
+      ],
     },
-  });
+  );
+
+  assert.equal(fields.raw_output, "File unchanged: src/lib.rs");
+});
+
+test("buildToolResultFields uses Agent output agentType as task title", () => {
+  const base = createToolCall("tc-agent", "Agent", { prompt: "Review tests" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      agentId: "agent-1",
+      agentType: "reviewer",
+      content: [{ type: "text", text: "Done" }],
+      totalToolUseCount: 0,
+      totalDurationMs: 10,
+      totalTokens: 20,
+      usage: {},
+      status: "completed",
+      prompt: "Review tests",
+    },
+    base,
+  );
+
+  assert.equal(fields.title, "reviewer");
+});
+
+test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
+  const base = createToolCall("tc-agent", "Agent", { prompt: "Review tests" });
+  const fields = buildToolResultFields(
+    false,
+    [],
+    base,
+    {
+      result: [
+        {
+          agentId: "agent-1",
+          agentType: "planner",
+          content: [{ type: "text", text: "Done" }],
+          status: "completed",
+        },
+      ],
+    },
+  );
+
+  assert.equal(fields.title, "planner");
 });
 
 test("buildToolResultFields extracts TodoWrite verification metadata from structured results", () => {

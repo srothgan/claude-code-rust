@@ -523,6 +523,7 @@ mod tests {
                 cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![],
+                    display: None,
                     response_tx,
                     selected_index: 0,
                     focused: true,

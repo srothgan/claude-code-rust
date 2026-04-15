@@ -25,6 +25,7 @@ import type {
   FastModeState,
   Json,
   PermissionOutcome,
+  PermissionDisplay,
   PermissionRequest,
   QuestionOutcome,
   SessionLaunchSettings,
@@ -63,6 +64,22 @@ import { mapAvailableAgents, emitAvailableAgentsIfChanged, refreshAvailableAgent
 import { emitAuthRequired, emitFastModeUpdateIfChanged } from "./error_classification.js";
 
 export type ConnectEventKind = "connected" | "session_replaced";
+
+function permissionDisplayFromCanUseOptions(
+  options: Parameters<CanUseTool>[2],
+): PermissionDisplay | undefined {
+  const title = typeof options.title === "string" ? options.title.trim() : "";
+  const displayName = typeof options.displayName === "string" ? options.displayName.trim() : "";
+  const description = typeof options.description === "string" ? options.description.trim() : "";
+  if (!title && !displayName && !description) {
+    return undefined;
+  }
+  return {
+    ...(title ? { title } : {}),
+    ...(displayName ? { display_name: displayName } : {}),
+    ...(description ? { description } : {}),
+  };
+}
 
 export type PendingPermission = {
   resolve?: (result: PermissionResult) => void;
@@ -405,9 +422,11 @@ export async function createSession(params: {
       );
     }
 
+    const display = permissionDisplayFromCanUseOptions(options);
     const request: PermissionRequest = {
       tool_call: existing,
       options: permissionOptionsFromSuggestions(options.suggestions),
+      ...(display ? { display } : {}),
     };
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_PERMISSION,

@@ -123,22 +123,16 @@ export type ToolCallContent =
       blob_saved_to?: string;
     };
 
-export interface ExitPlanModeOutputMetadata {
-  is_ultraplan?: boolean;
-}
-
 export interface TodoWriteOutputMetadata {
   verification_nudge_needed?: boolean;
 }
 
 export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
-  token_saver_active?: boolean;
 }
 
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
-  exit_plan_mode?: ExitPlanModeOutputMetadata;
   todo_write?: TodoWriteOutputMetadata;
 }
 
@@ -231,6 +225,13 @@ export interface PermissionOption {
 export interface PermissionRequest {
   tool_call: ToolCall;
   options: PermissionOption[];
+  display?: PermissionDisplay;
+}
+
+export interface PermissionDisplay {
+  title?: string;
+  display_name?: string;
+  description?: string;
 }
 
 export type ElicitationMode = "form" | "url";

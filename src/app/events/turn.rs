@@ -74,6 +74,7 @@ pub(super) fn handle_permission_request_event(
         let is_first = app.pending_interaction_ids.is_empty();
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
+            display: request.display,
             response_tx,
             selected_index: 0,
             focused: is_first,

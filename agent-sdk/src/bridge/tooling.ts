@@ -153,19 +153,35 @@ function resultRecordCandidates(rawResult: unknown, rawContent: unknown): Record
     }
   };
 
+  const pushRecords = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        pushRecord(entry);
+      }
+      return;
+    }
+    pushRecord(value);
+  };
+
   const pushNestedRecords = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        pushNestedRecords(entry);
+      }
+      return;
+    }
     const record = asRecordOrNull(value);
     if (!record) {
       return;
     }
-    pushRecord(record.result);
-    pushRecord(record.data);
-    pushRecord(record.content);
+    pushRecords(record.result);
+    pushRecords(record.data);
+    pushRecords(record.content);
   };
 
-  pushRecord(rawResult);
+  pushRecords(rawResult);
   pushNestedRecords(rawResult);
-  pushRecord(rawContent);
+  pushRecords(rawContent);
   pushNestedRecords(rawContent);
 
   return candidates;
@@ -270,28 +286,12 @@ function extractToolOutputMetadata(
   if (toolName === "Bash") {
     for (const candidate of candidates) {
       const hasAssistantAutoBackgrounded = typeof candidate.assistantAutoBackgrounded === "boolean";
-      const hasTokenSaverOutput =
-        typeof candidate.tokenSaverOutput === "string" && candidate.tokenSaverOutput.length > 0;
-      if (hasAssistantAutoBackgrounded || hasTokenSaverOutput) {
+      if (hasAssistantAutoBackgrounded) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
-        if (hasAssistantAutoBackgrounded) {
-          bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
-        }
-        if (hasTokenSaverOutput) {
-          bashMetadata.token_saver_active = true;
-        }
+        bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
         return {
           bash: bashMetadata,
         };
-      }
-    }
-    return undefined;
-  }
-
-  if (toolName === "ExitPlanMode") {
-    for (const candidate of candidates) {
-      if (typeof candidate.isUltraplan === "boolean") {
-        return { exit_plan_mode: { is_ultraplan: candidate.isUltraplan } };
       }
     }
     return undefined;
@@ -558,8 +558,7 @@ function findBashResultRecord(
       "stderr" in candidate ||
       "backgroundTaskId" in candidate ||
       "backgroundedByUser" in candidate ||
-      "assistantAutoBackgrounded" in candidate ||
-      "tokenSaverOutput" in candidate,
+      "assistantAutoBackgrounded" in candidate,
   );
 }
 
@@ -598,6 +597,30 @@ function buildBashDisplayOutput(record: Record<string, unknown>): string {
   return segments.join("\n");
 }
 
+function fileUnchangedResultText(rawResult: unknown, rawContent: unknown): string {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    if (candidate.type !== "file_unchanged") {
+      continue;
+    }
+    const file = asRecordOrNull(candidate.file);
+    const filePath = typeof file?.filePath === "string" ? file.filePath.trim() : "";
+    if (filePath) {
+      return `File unchanged: ${filePath}`;
+    }
+  }
+  return "";
+}
+
+function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown): string {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    const agentType = typeof candidate.agentType === "string" ? candidate.agentType.trim() : "";
+    if (agentType) {
+      return agentType;
+    }
+  }
+  return "";
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -605,14 +628,24 @@ export function buildToolResultFields(
   rawResult?: unknown,
 ): ToolCallUpdateFields {
   const toolName = resolveToolName(base);
+  const fields: ToolCallUpdateFields = {
+    status: isError ? "failed" : "completed",
+  };
+  const fileUnchangedText = !isError && toolName === "Read" ? fileUnchangedResultText(rawResult, rawContent) : "";
+  if (fileUnchangedText) {
+    fields.raw_output = fileUnchangedText;
+    fields.content = [{ type: "content", content: { type: "text", text: fileUnchangedText } }];
+    return fields;
+  }
+  const agentTitle = !isError && toolName === "Agent" ? agentTitleFromAgentOutput(rawResult, rawContent) : "";
+  if (agentTitle) {
+    fields.title = agentTitle;
+  }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
   const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
   const rawOutput = bashResultRecord
     ? buildBashDisplayOutput(bashResultRecord)
     : normalizedRawOutput || JSON.stringify(rawContent);
-  const fields: ToolCallUpdateFields = {
-    status: isError ? "failed" : "completed",
-  };
   if (rawOutput) {
     fields.raw_output = rawOutput;
   }

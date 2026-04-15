@@ -265,13 +265,6 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
-    if tc.is_ultraplan() {
-        badges.push(Span::styled(
-            "  [ultraplan]",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        ));
-    }
-
     if tc.verification_nudge_needed() {
         badges.push(Span::styled(
             "  [verification needed]",
@@ -527,19 +520,6 @@ mod tests {
             measure_tool_call_height_cached_with_tools_collapsed(&mut tc, 80, 0, 1, false);
         assert_eq!(recomputed_height, first_height);
         assert!(recompute_lines > 0);
-    }
-
-    #[test]
-    fn exit_plan_mode_title_renders_ultraplan_badge() {
-        let mut tc = test_tool_call("tc-plan", "ExitPlanMode", model::ToolCallStatus::Completed);
-        tc.output_metadata =
-            Some(model::ToolOutputMetadata::new().exit_plan_mode(Some(
-                model::ExitPlanModeOutputMetadata::new().ultraplan(Some(true)),
-            )));
-
-        let rendered = standard::render_tool_call_title(&tc, 80, 0);
-        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("[ultraplan]"));
     }
 
     #[test]

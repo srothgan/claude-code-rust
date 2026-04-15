@@ -26,7 +26,8 @@ fn setup_permission(
     let (response_tx, response_rx) = oneshot::channel();
     let tool_call_update =
         model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
-    let request = model::RequestPermissionRequest::new("test-session", tool_call_update, options);
+    let request =
+        model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
     send_client_event(app, ClientEvent::PermissionRequest { request, response_tx });
     response_rx
 }
@@ -79,7 +80,8 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     let tool_call_update =
         model::ToolCallUpdate::new("nonexistent", model::ToolCallUpdateFields::new());
     let options = allow_deny_options();
-    let request = model::RequestPermissionRequest::new("test-session", tool_call_update, options);
+    let request =
+        model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
     // Should NOT be in pending queue
@@ -130,6 +132,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
         "test-session",
         tool_call_update,
         allow_deny_options(),
+        None,
     );
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 

@@ -1530,6 +1530,7 @@ mod tests {
                     crate::agent::model::PermissionOptionKind::RejectOnce,
                 ),
             ],
+            display: None,
             response_tx,
             selected_index: 0,
             focused,

@@ -78,29 +78,11 @@ impl ToolCallInfo {
     }
 
     #[must_use]
-    pub fn is_ultraplan(&self) -> bool {
-        self.output_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.exit_plan_mode.as_ref())
-            .and_then(|metadata| metadata.is_ultraplan)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
     pub fn assistant_auto_backgrounded(&self) -> bool {
         self.output_metadata
             .as_ref()
             .and_then(|metadata| metadata.bash.as_ref())
             .and_then(|metadata| metadata.assistant_auto_backgrounded)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
-    pub fn token_saver_active(&self) -> bool {
-        self.output_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.bash.as_ref())
-            .and_then(|metadata| metadata.token_saver_active)
             .unwrap_or(false)
     }
 
@@ -198,6 +180,7 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
 /// controls render inside the tool call block (unified edit/permission UX).
 pub struct InlinePermission {
     pub options: Vec<model::PermissionOption>,
+    pub display: Option<model::PermissionDisplay>,
     pub response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     pub selected_index: usize,
     /// Whether this permission currently has keyboard focus.

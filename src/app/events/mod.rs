@@ -3618,8 +3618,13 @@ mod tests {
     ) -> oneshot::Receiver<model::RequestPermissionResponse> {
         let (response_tx, response_rx) = oneshot::channel();
         let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
-        tc.pending_permission =
-            Some(InlinePermission { options, response_tx, selected_index: 0, focused });
+        tc.pending_permission = Some(InlinePermission {
+            options,
+            display: None,
+            response_tx,
+            selected_index: 0,
+            focused,
+        });
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages.len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);

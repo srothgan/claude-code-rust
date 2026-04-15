@@ -413,8 +413,13 @@ mod tests {
         if let Some(MessageBlock::ToolCall(tc)) =
             app.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
-            tc.pending_permission =
-                Some(InlinePermission { options, response_tx: tx, selected_index: 0, focused });
+            tc.pending_permission = Some(InlinePermission {
+                options,
+                display: None,
+                response_tx: tx,
+                selected_index: 0,
+                focused,
+            });
         }
         app.pending_interaction_ids.push(tool_id.to_owned());
         rx

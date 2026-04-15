@@ -312,6 +312,7 @@ pub(super) fn map_permission_request(
             model::SessionId::new(session_id),
             tool_call_update,
             options,
+            convert_permission_display(request.display),
         ),
         tool_call_id,
     )
@@ -538,15 +539,22 @@ fn convert_tool_output_metadata(
         .bash(output_metadata.bash.map(|bash| {
             model::BashOutputMetadata::new()
                 .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-                .token_saver_active(bash.token_saver_active)
-        }))
-        .exit_plan_mode(output_metadata.exit_plan_mode.map(|exit_plan_mode| {
-            model::ExitPlanModeOutputMetadata::new().ultraplan(exit_plan_mode.is_ultraplan)
         }))
         .todo_write(output_metadata.todo_write.map(|todo_write| {
             model::TodoWriteOutputMetadata::new()
                 .verification_nudge_needed(todo_write.verification_nudge_needed)
         }))
+}
+
+fn convert_permission_display(
+    display: Option<types::PermissionDisplay>,
+) -> Option<model::PermissionDisplay> {
+    let display = display?;
+    let mapped = model::PermissionDisplay::new()
+        .title(display.title)
+        .display_name(display.display_name)
+        .description(display.description);
+    (!mapped.is_empty()).then_some(mapped)
 }
 
 fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetadata {
@@ -629,7 +637,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 mod tests {
     use super::{
         convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_question_request, map_session_update,
+        map_permission_request, map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
 
@@ -719,6 +727,50 @@ mod tests {
     }
 
     #[test]
+    fn map_permission_request_preserves_display_metadata() {
+        let (request, tool_call_id) = map_permission_request(
+            "session-1",
+            types::PermissionRequest {
+                tool_call: types::ToolCall {
+                    tool_call_id: "tool-1".to_owned(),
+                    title: "Bash npm test".to_owned(),
+                    kind: "execute".to_owned(),
+                    status: "in_progress".to_owned(),
+                    content: Vec::new(),
+                    raw_input: None,
+                    raw_output: None,
+                    output_metadata: None,
+                    task_metadata: None,
+                    locations: Vec::new(),
+                    meta: None,
+                },
+                options: vec![types::PermissionOption {
+                    option_id: "allow".to_owned(),
+                    name: "Allow".to_owned(),
+                    description: None,
+                    kind: "allow_once".to_owned(),
+                }],
+                display: Some(types::PermissionDisplay {
+                    title: Some("Claude wants to run tests".to_owned()),
+                    display_name: Some("Run tests".to_owned()),
+                    description: Some("This command reads project files".to_owned()),
+                }),
+            },
+        );
+
+        assert_eq!(tool_call_id, "tool-1");
+        assert_eq!(
+            request.display,
+            Some(
+                model::PermissionDisplay::new()
+                    .title(Some("Claude wants to run tests".to_owned()))
+                    .display_name(Some("Run tests".to_owned()))
+                    .description(Some("This command reads project files".to_owned())),
+            )
+        );
+    }
+
+    #[test]
     fn map_question_request_preserves_preview_and_annotation_shape() {
         let (request, tool_call_id) = map_question_request(
             "session-1",
@@ -802,13 +854,7 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
-                bash: Some(types::BashOutputMetadata {
-                    assistant_auto_backgrounded: Some(true),
-                    token_saver_active: Some(true),
-                }),
-                exit_plan_mode: Some(types::ExitPlanModeOutputMetadata {
-                    is_ultraplan: Some(true),
-                }),
+                bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
                 todo_write: Some(types::TodoWriteOutputMetadata {
                     verification_nudge_needed: Some(true),
                 }),
@@ -821,12 +867,7 @@ mod tests {
             Some(
                 model::ToolOutputMetadata::new()
                     .bash(Some(
-                        model::BashOutputMetadata::new()
-                            .assistant_auto_backgrounded(Some(true))
-                            .token_saver_active(Some(true)),
-                    ))
-                    .exit_plan_mode(Some(
-                        model::ExitPlanModeOutputMetadata::new().ultraplan(Some(true)),
+                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
                     ))
                     .todo_write(Some(
                         model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),

@@ -440,24 +440,6 @@ impl ToolCallUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ExitPlanModeOutputMetadata {
-    pub is_ultraplan: Option<bool>,
-}
-
-impl ExitPlanModeOutputMetadata {
-    #[must_use]
-    pub fn new() -> Self {
-        Self { is_ultraplan: None }
-    }
-
-    #[must_use]
-    pub fn ultraplan(mut self, is_ultraplan: Option<bool>) -> Self {
-        self.is_ultraplan = is_ultraplan;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TodoWriteOutputMetadata {
     pub verification_nudge_needed: Option<bool>,
 }
@@ -478,13 +460,12 @@ impl TodoWriteOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
-    pub token_saver_active: Option<bool>,
 }
 
 impl BashOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
-        Self { assistant_auto_backgrounded: None, token_saver_active: None }
+        Self { assistant_auto_backgrounded: None }
     }
 
     #[must_use]
@@ -495,18 +476,11 @@ impl BashOutputMetadata {
         self.assistant_auto_backgrounded = assistant_auto_backgrounded;
         self
     }
-
-    #[must_use]
-    pub fn token_saver_active(mut self, token_saver_active: Option<bool>) -> Self {
-        self.token_saver_active = token_saver_active;
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub exit_plan_mode: Option<ExitPlanModeOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
@@ -558,12 +532,6 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
         self.bash = bash;
-        self
-    }
-
-    #[must_use]
-    pub fn exit_plan_mode(mut self, exit_plan_mode: Option<ExitPlanModeOutputMetadata>) -> Self {
-        self.exit_plan_mode = exit_plan_mode;
         self
     }
 
@@ -1200,6 +1168,7 @@ pub struct RequestPermissionRequest {
     pub session_id: SessionId,
     pub tool_call: ToolCallUpdate,
     pub options: Vec<PermissionOption>,
+    pub display: Option<PermissionDisplay>,
 }
 
 impl RequestPermissionRequest {
@@ -1208,8 +1177,48 @@ impl RequestPermissionRequest {
         session_id: impl Into<SessionId>,
         tool_call: ToolCallUpdate,
         options: Vec<PermissionOption>,
+        display: Option<PermissionDisplay>,
     ) -> Self {
-        Self { session_id: session_id.into(), tool_call, options }
+        Self { session_id: session_id.into(), tool_call, options, display }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PermissionDisplay {
+    pub title: Option<String>,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+}
+
+impl PermissionDisplay {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn title(mut self, title: Option<String>) -> Self {
+        self.title = title;
+        self
+    }
+
+    #[must_use]
+    pub fn display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name;
+        self
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.title.as_ref().is_none_or(|value| value.trim().is_empty())
+            && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
+            && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
     }
 }
 

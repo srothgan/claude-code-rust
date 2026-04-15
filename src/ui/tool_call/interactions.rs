@@ -33,6 +33,11 @@ pub(super) fn render_permission_lines(
         ];
     }
 
+    let mut lines = vec![Line::default()];
+    if let Some(display) = permission_display_lines(perm) {
+        lines.extend(display);
+    }
+
     let mut spans: Vec<Span<'static>> = Vec::new();
     let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
 
@@ -93,14 +98,45 @@ pub(super) fn render_permission_lines(
         spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
     }
 
-    vec![
-        Line::default(),
-        Line::from(spans),
-        Line::from(Span::styled(
-            "\u{2190}\u{2192} select  \u{2191}\u{2193} next  enter confirm  esc reject",
-            Style::default().fg(theme::DIM),
-        )),
-    ]
+    lines.push(Line::from(spans));
+    lines.push(Line::from(Span::styled(
+        "\u{2190}\u{2192} select  \u{2191}\u{2193} next  enter confirm  esc reject",
+        Style::default().fg(theme::DIM),
+    )));
+    lines
+}
+
+fn permission_display_lines(perm: &InlinePermission) -> Option<Vec<Line<'static>>> {
+    let display = perm.display.as_ref()?;
+    let title = display.title.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    let display_name =
+        display.display_name.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    let description =
+        display.description.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    if title.is_none() && display_name.is_none() && description.is_none() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if let Some(title) = title.or(display_name) {
+        lines.push(Line::from(vec![
+            Span::styled("  ! ", Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(
+                title.to_owned(),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    if let Some(description) = description {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(description.to_owned(), Style::default().fg(theme::DIM)),
+        ]));
+    }
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    Some(lines)
 }
 
 fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
@@ -353,7 +389,8 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
 mod tests {
     use super::{render_permission_lines, render_plan_approval_lines, render_question_lines};
     use crate::agent::model::{
-        PermissionOption, PermissionOptionKind, QuestionOption, QuestionPrompt, ToolCallStatus,
+        PermissionDisplay, PermissionOption, PermissionOptionKind, QuestionOption, QuestionPrompt,
+        ToolCallStatus,
     };
     use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
     use crate::ui::theme;
@@ -421,6 +458,7 @@ mod tests {
                 PermissionOption::new("allow", "Allow", kind),
                 PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
             ],
+            display: None,
             response_tx,
             selected_index: 0,
             focused: true,
@@ -466,6 +504,28 @@ mod tests {
             .expect("selected permission label");
 
         assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
+    }
+
+    #[test]
+    fn permission_display_metadata_renders_prompt_header() {
+        let tc = test_tool_call("Bash");
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.display = Some(
+            PermissionDisplay::new()
+                .title(Some("Claude wants to run tests".to_owned()))
+                .description(Some("This command reads project files".to_owned())),
+        );
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Claude wants to run tests"));
+        assert!(rendered.contains("This command reads project files"));
     }
 
     #[test]

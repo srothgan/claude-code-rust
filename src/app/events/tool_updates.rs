@@ -639,7 +639,6 @@ fn log_command_update_applied(
             terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
             has_terminal = tc.terminal_id.is_some(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-            token_saver_active = tc.token_saver_active(),
         ),
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
             target: crate::logging::targets::APP_COMMAND,
@@ -662,7 +661,6 @@ fn log_command_update_applied(
             terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
             has_terminal = tc.terminal_id.is_some(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-            token_saver_active = tc.token_saver_active(),
         ),
         model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {}
     }

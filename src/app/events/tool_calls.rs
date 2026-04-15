@@ -453,7 +453,6 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             has_command = tc.terminal_command.is_some(),
             terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-            token_saver_active = tc.token_saver_active(),
         ),
         model::ToolCallStatus::Completed => tracing::info!(
             target: crate::logging::targets::APP_COMMAND,
@@ -470,7 +469,6 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             has_command = tc.terminal_command.is_some(),
             terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-            token_saver_active = tc.token_saver_active(),
         ),
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => tracing::warn!(
             target: crate::logging::targets::APP_COMMAND,
@@ -496,7 +494,6 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
             has_command = tc.terminal_command.is_some(),
             terminal_output_bytes = u64::try_from(tc.terminal_output_len).unwrap_or_default(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-            token_saver_active = tc.token_saver_active(),
         ),
     }
 }
@@ -518,7 +515,6 @@ pub(super) fn log_terminal_spawned(app: &App, tc: &ToolCallInfo, source: &str) {
         spawn_source = source,
         has_command = tc.terminal_command.is_some(),
         assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
-        token_saver_active = tc.token_saver_active(),
     );
 }
 

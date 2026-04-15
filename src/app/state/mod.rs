@@ -1581,6 +1581,7 @@ mod tests {
                         "Allow once",
                         model::PermissionOptionKind::AllowOnce,
                     )],
+                    display: None,
                     response_tx: tx,
                     selected_index: 0,
                     focused: false,
