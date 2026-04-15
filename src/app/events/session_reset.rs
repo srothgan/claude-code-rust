@@ -42,6 +42,8 @@ fn reset_session_identity_state(
     super::clear_compaction_state(app, false);
     app.session_usage = super::super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
+    app.runtime_session_state = None;
+    app.prompt_suggestion = None;
     app.last_rate_limit_update = None;
     app.should_quit = false;
     app.files_accessed = 0;

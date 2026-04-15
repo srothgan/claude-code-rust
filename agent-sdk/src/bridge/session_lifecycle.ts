@@ -258,6 +258,10 @@ export function attachRequestUserDialogInterceptor(
 
   const originalProcessControlRequest = internalQuery.processControlRequest.bind(query);
   internalQuery.processControlRequest = async (request, signal) => {
+    // SDK 0.2.104 also added cancel_async_message and seed_read_state control
+    // requests. Keep those delegated to the SDK internals: claude-rs does not
+    // own the SDK async-message queue or read-state cache, so TUI-level commands
+    // for them would add unsupported host behavior without user-visible value.
     if (isRequestUserDialogControlRequest(request)) {
       bridgeLogger.warn({
         target: LOG_TARGETS.APP_SESSION,
@@ -825,6 +829,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   return {
     cwd: params.cwd,
     includePartialMessages: true,
+    promptSuggestions: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(settings ? { settings } : {}),

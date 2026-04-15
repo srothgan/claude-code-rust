@@ -208,6 +208,8 @@ pub fn create_app(cli: &Cli) -> App {
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
         fast_mode_state: model::FastModeState::Off,
+        runtime_session_state: None,
+        prompt_suggestion: None,
         last_rate_limit_update: None,
         turn_notice_refs: Vec::new(),
         is_compacting: false,

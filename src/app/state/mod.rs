@@ -295,6 +295,10 @@ pub struct App {
     pub mcp: McpState,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
+    /// Latest SDK runtime liveness state.
+    pub runtime_session_state: Option<model::RuntimeSessionState>,
+    /// Latest prompt suggestion from the SDK, shown in the input hint band.
+    pub prompt_suggestion: Option<String>,
     /// Latest rate-limit telemetry from the SDK.
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Turn-local inline/system notices that may upgrade in place during the active turn.
@@ -908,6 +912,8 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             fast_mode_state: model::FastModeState::Off,
+            runtime_session_state: None,
+            prompt_suggestion: None,
             last_rate_limit_update: None,
             turn_notice_refs: Vec::new(),
             is_compacting: false,

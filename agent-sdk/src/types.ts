@@ -84,6 +84,23 @@ export interface RateLimitUpdate {
   surpassed_threshold?: number;
 }
 
+export type ApiRetryError =
+  | "authentication_failed"
+  | "billing_error"
+  | "rate_limit"
+  | "invalid_request"
+  | "server_error"
+  | "unknown"
+  | "max_output_tokens";
+
+export type RuntimeSessionState = "idle" | "running" | "requires_action";
+
+export interface SettingsParseErrorUpdate {
+  file?: string;
+  path: string;
+  message: string;
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; mime_type?: string; uri?: string; data?: string };
@@ -190,6 +207,17 @@ export type SessionUpdate =
   | { type: "config_option_update"; option_id: string; value: Json }
   | { type: "fast_mode_update"; fast_mode_state: FastModeState }
   | ({ type: "rate_limit_update" } & RateLimitUpdate)
+  | {
+      type: "api_retry_update";
+      attempt: number;
+      max_retries: number;
+      retry_delay_ms: number;
+      error_status: number | null;
+      error: ApiRetryError;
+    }
+  | { type: "prompt_suggestion_update"; suggestion: string }
+  | { type: "runtime_session_state_update"; state: RuntimeSessionState }
+  | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "compacting" | "idle" }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 

@@ -9,4 +9,8 @@ ignore = [
     # Upstream fix merged in syntect main (PR #608, Feb 2026), waiting on release
     # Tracked: https://github.com/trishume/syntect/pull/608
     "RUSTSEC-2024-0320",
+
+    # rand unsoundness with custom logger + ThreadRng reseeding
+    # rand is only a transitive dev-dep of upstream crates, not in our build
+    "RUSTSEC-2026-0097",
 ]

@@ -1,6 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+mod api_retry;
 mod client;
 mod mouse;
 mod notices;
@@ -270,6 +271,31 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);
         }
+        model::SessionUpdate::ApiRetryUpdate {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error,
+        } => {
+            api_retry::handle_api_retry_update(
+                app,
+                attempt,
+                max_retries,
+                retry_delay_ms,
+                error_status,
+                error,
+            );
+        }
+        model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
+            app.prompt_suggestion = (!suggestion.trim().is_empty()).then_some(suggestion);
+        }
+        model::SessionUpdate::RuntimeSessionStateUpdate(state) => {
+            handle_runtime_session_state_update(app, state);
+        }
+        model::SessionUpdate::SettingsParseError { file, path, message } => {
+            handle_settings_parse_error(app, file.as_deref(), &path, &message);
+        }
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
@@ -295,6 +321,42 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
     }
+}
+
+fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
+    app.runtime_session_state = Some(state);
+    match state {
+        model::RuntimeSessionState::Running => {
+            if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
+                && !app.is_compacting
+            {
+                app.status = AppStatus::Running;
+            }
+        }
+        model::RuntimeSessionState::RequiresAction => {}
+        model::RuntimeSessionState::Idle => {
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+                && !app.is_compacting
+                && app.pending_cancel_origin.is_none()
+            {
+                app.status = AppStatus::Ready;
+            }
+        }
+    }
+}
+
+fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, message: &str) {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let rendered = match (file.filter(|value| !value.trim().is_empty()), path.trim()) {
+        (Some(file), "") => format!("Settings parse error in {file}: {trimmed}"),
+        (Some(file), path) => format!("Settings parse error in {file} at {path}: {trimmed}"),
+        (None, "") => format!("Settings parse error: {trimmed}"),
+        (None, path) => format!("Settings parse error at {path}: {trimmed}"),
+    };
+    push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
 pub(crate) fn push_system_message_with_severity(
@@ -4448,6 +4510,113 @@ mod tests {
 
         assert_eq!(app.viewport.scroll_target, 4);
         assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn api_retry_updates_single_warning_notice() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+                attempt: 1,
+                max_retries: 4,
+                retry_delay_ms: 1000,
+                error_status: None,
+                error: model::ApiRetryError::Unknown,
+            }),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+                attempt: 2,
+                max_retries: 4,
+                retry_delay_ms: 1500,
+                error_status: Some(529),
+                error: model::ApiRetryError::ServerError,
+            }),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.turn_notice_refs.len(), 1);
+        let MessageBlock::Notice(notice) = &app.messages[0].blocks[0] else {
+            panic!("expected API retry notice");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+    }
+
+    #[test]
+    fn prompt_suggestion_tab_accepts_empty_input_only_after_todo_focus() {
+        let mut app = make_test_app();
+        app.prompt_suggestion = Some("Write focused tests".to_owned());
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(app.input.text(), "Write focused tests");
+        assert!(app.prompt_suggestion.is_none());
+    }
+
+    #[test]
+    fn prompt_suggestion_tab_does_not_steal_todo_focus_toggle() {
+        let mut app = make_test_app();
+        app.prompt_suggestion = Some("Write focused tests".to_owned());
+        app.show_todo_panel = true;
+        app.todos.push(TodoItem {
+            content: "todo".to_owned(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+        assert!(app.input.is_empty());
+        assert_eq!(app.prompt_suggestion.as_deref(), Some("Write focused tests"));
+    }
+
+    #[test]
+    fn runtime_session_state_updates_status_with_guards() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+                model::RuntimeSessionState::Running,
+            )),
+        );
+        assert_eq!(app.runtime_session_state, Some(model::RuntimeSessionState::Running));
+        assert!(matches!(app.status, AppStatus::Running));
+
+        app.status = AppStatus::Error;
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+                model::RuntimeSessionState::Idle,
+            )),
+        );
+        assert!(matches!(app.status, AppStatus::Error));
+    }
+
+    #[test]
+    fn settings_parse_error_surfaces_system_error_message() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::SettingsParseError {
+                file: Some("C:/work/.claude/settings.json".to_owned()),
+                path: "permissions.allow".to_owned(),
+                message: "Expected array".to_owned(),
+            }),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Error))));
+        let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+            panic!("expected settings parse error text");
+        };
+        assert_eq!(
+            text.text,
+            "Settings parse error in C:/work/.claude/settings.json at permissions.allow: Expected array",
+        );
     }
 
     #[test]

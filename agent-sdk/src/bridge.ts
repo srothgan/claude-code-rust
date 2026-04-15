@@ -79,7 +79,7 @@ export {
   mapSessionMessagesToUpdates,
   mapSdkSessions,
 } from "./bridge/history.js";
-export { handleTaskSystemMessage } from "./bridge/message_handlers.js";
+export { handleSdkMessage, handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
 export {
   attachRequestUserDialogInterceptor,
@@ -89,7 +89,12 @@ export {
 export {
   parseFastModeState,
   parseRateLimitStatus,
+  parseRuntimeSessionState,
+  parseApiRetryError,
   buildRateLimitUpdate,
+  buildApiRetryUpdate,
+  normalizeSettingsParseError,
+  normalizeSettingsParseErrors,
 } from "./bridge/state_parsing.js";
 export { MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS, staleMcpAuthCandidates };
 export type {

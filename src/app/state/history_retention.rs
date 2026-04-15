@@ -216,6 +216,7 @@ impl super::App {
                             NoticeDedupKey::RateLimit(incident) => {
                                 incident.rate_limit_type.as_ref().map_or(0, String::capacity)
                             }
+                            NoticeDedupKey::ApiRetry => 0,
                         });
                     }
                 }

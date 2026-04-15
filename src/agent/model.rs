@@ -927,6 +927,24 @@ pub enum RateLimitStatus {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiRetryError {
+    AuthenticationFailed,
+    BillingError,
+    RateLimit,
+    InvalidRequest,
+    ServerError,
+    MaxOutputTokens,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuntimeSessionState {
+    Idle,
+    Running,
+    RequiresAction,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
@@ -976,6 +994,20 @@ pub enum SessionUpdate {
     ConfigOptionUpdate(ConfigOptionUpdate),
     FastModeUpdate(FastModeState),
     RateLimitUpdate(RateLimitUpdate),
+    ApiRetryUpdate {
+        attempt: u64,
+        max_retries: u64,
+        retry_delay_ms: u64,
+        error_status: Option<u16>,
+        error: ApiRetryError,
+    },
+    PromptSuggestionUpdate(String),
+    RuntimeSessionStateUpdate(RuntimeSessionState),
+    SettingsParseError {
+        file: Option<String>,
+        path: String,
+        message: String,
+    },
     SessionStatusUpdate(SessionStatus),
     CompactionBoundary(CompactionBoundary),
 }

@@ -4,7 +4,7 @@
 use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
 use crate::app::subagent;
-use crate::app::{App, AppStatus};
+use crate::app::{App, AppStatus, FocusOwner};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -43,6 +43,7 @@ const SPINNER_FRAMES: &[char] = &[
 /// calculation and rendering stay in sync.
 const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
+const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
@@ -61,10 +62,17 @@ fn has_cancel_hint(app: &App) -> bool {
     app.pending_cancel_origin.is_some()
 }
 
+fn has_prompt_suggestion_hint(app: &App) -> bool {
+    app.input.is_empty()
+        && app.focus_owner() == FocusOwner::Input
+        && app.prompt_suggestion.as_deref().is_some_and(|suggestion| !suggestion.trim().is_empty())
+}
+
 pub(crate) fn hint_line_count(app: &App) -> u16 {
     let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
     let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
-    login + cancel
+    let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
+    login + cancel + suggestion
 }
 
 pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
@@ -135,6 +143,24 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             let cancel_area =
                 Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: CANCEL_HINT_LINES };
             frame.render_widget(Paragraph::new(cancel_line), cancel_area);
+            hint_y = hint_y.saturating_add(CANCEL_HINT_LINES);
+        }
+
+        if has_prompt_suggestion_hint(app)
+            && let Some(suggestion) = app.prompt_suggestion.as_deref()
+        {
+            let suggestion_line = Line::from(vec![
+                Span::styled("Suggestion: ", Style::default().fg(theme::DIM)),
+                Span::styled(suggestion.trim().to_owned(), Style::default().fg(Color::White)),
+                Span::styled("    Tab to accept", Style::default().fg(theme::DIM)),
+            ]);
+            let suggestion_area = Rect {
+                x: hint_pad.x,
+                y: hint_y,
+                width: hint_pad.width,
+                height: PROMPT_SUGGESTION_HINT_LINES,
+            };
+            frame.render_widget(Paragraph::new(suggestion_line), suggestion_area);
         }
     }
 
@@ -356,11 +382,11 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, slash_command_range,
-        visual_line_count,
+        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
+        slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
-    use crate::app::{App, CancelOrigin, LoginHint};
+    use crate::app::{App, CancelOrigin, FocusTarget, LoginHint};
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -411,5 +437,34 @@ mod tests {
         let mut app = App::test_default();
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
         assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
+    }
+
+    #[test]
+    fn visual_line_count_includes_prompt_suggestion_hint_row() {
+        let mut app = App::test_default();
+        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+    }
+
+    #[test]
+    fn visual_line_count_hides_prompt_suggestion_hint_when_input_not_empty() {
+        let mut app = App::test_default();
+        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        app.input.set_text("draft");
+        assert_eq!(visual_line_count(&mut app, 80), 1);
+    }
+
+    #[test]
+    fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
+        let mut app = App::test_default();
+        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        app.show_todo_panel = true;
+        app.todos.push(crate::app::TodoItem {
+            content: "todo".to_owned(),
+            status: crate::app::TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(visual_line_count(&mut app, 80), 1);
     }
 }

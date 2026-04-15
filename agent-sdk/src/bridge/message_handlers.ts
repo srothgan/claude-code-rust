@@ -30,7 +30,13 @@ import {
 } from "./tool_calls.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgents, mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
-import { buildRateLimitUpdate, numberField } from "./state_parsing.js";
+import {
+  buildApiRetryUpdate,
+  buildRateLimitUpdate,
+  normalizeSettingsParseErrors,
+  numberField,
+  parseRuntimeSessionState,
+} from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
@@ -451,6 +457,25 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
   if (type === "system") {
     const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
+    if (subtype === "api_retry") {
+      const update = buildApiRetryUpdate(msg);
+      if (update) {
+        emitSessionUpdate(session.sessionId, update);
+      }
+      return;
+    }
+
+    if (subtype === "session_state_changed") {
+      const state = parseRuntimeSessionState(msg.state);
+      if (state) {
+        emitSessionUpdate(session.sessionId, {
+          type: "runtime_session_state_update",
+          state,
+        });
+      }
+      return;
+    }
+
     if (subtype === "init") {
       const previousSessionId = session.sessionId;
       const incomingSessionId = typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
@@ -512,6 +537,14 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
           // Best-effort only; slash commands from init were already emitted.
         });
       refreshAvailableAgents(session);
+      for (const settingsError of normalizeSettingsParseErrors(
+        msg.settings_errors ?? msg.settingsErrors,
+      )) {
+        emitSessionUpdate(session.sessionId, {
+          type: "settings_parse_error",
+          ...settingsError,
+        });
+      }
       return;
     }
 
@@ -577,6 +610,24 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     }
 
     handleTaskSystemMessage(session, subtype, msg);
+    return;
+  }
+
+  if (type === "prompt_suggestion") {
+    const suggestion = typeof msg.suggestion === "string" ? msg.suggestion.trim() : "";
+    if (suggestion) {
+      emitSessionUpdate(session.sessionId, { type: "prompt_suggestion_update", suggestion });
+    }
+    return;
+  }
+
+  if (type === "settings_parse_error") {
+    for (const settingsError of normalizeSettingsParseErrors(msg)) {
+      emitSessionUpdate(session.sessionId, {
+        type: "settings_parse_error",
+        ...settingsError,
+      });
+    }
     return;
   }
 

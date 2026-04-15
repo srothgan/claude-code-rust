@@ -348,6 +348,9 @@ fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
     if handle_focus_toggle_key(app, key) {
         return true;
     }
+    if handle_prompt_suggestion_key(app, key) {
+        return true;
+    }
     if handle_mode_cycle_key(app, key) {
         return true;
     }
@@ -510,6 +513,26 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         _ => false,
     }
+}
+
+fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
+    if !matches!(key.code, KeyCode::Tab)
+        || !key.modifiers.is_empty()
+        || app.focus_owner() != FocusOwner::Input
+        || !app.input.is_empty()
+    {
+        return false;
+    }
+
+    let Some(suggestion) = app.prompt_suggestion.take() else {
+        return false;
+    };
+    if suggestion.trim().is_empty() {
+        return false;
+    }
+    app.input.set_text(&suggestion);
+    app.sync_help_open_with_input();
+    true
 }
 
 fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {

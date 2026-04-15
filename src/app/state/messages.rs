@@ -475,6 +475,7 @@ pub struct RateLimitIncidentKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NoticeDedupKey {
     RateLimit(RateLimitIncidentKey),
+    ApiRetry,
 }
 
 pub struct NoticeBlock {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   AsyncQueue,
   CACHE_SPLIT_POLICY,
+  buildApiRetryUpdate,
   buildRateLimitUpdate,
   buildQueryOptions,
   canGenerateSessionTitle,
@@ -12,6 +13,7 @@ import {
   buildToolResultFields,
   createToolCall,
   handleTaskSystemMessage,
+  handleSdkMessage,
   mapAvailableAgents,
   mapAvailableModels,
   mapSessionMessagesToUpdates,
@@ -21,7 +23,9 @@ import {
   looksLikeAuthRequired,
   normalizeToolResultText,
   parseFastModeState,
+  parseRuntimeSessionState,
   parseRateLimitStatus,
+  normalizeSettingsParseError,
   normalizeToolKind,
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
@@ -586,6 +590,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal("thinking" in options, false);
   assert.equal("effort" in options, false);
   assert.equal(options.agentProgressSummaries, true);
+  assert.equal(options.promptSuggestions, true);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.deepEqual(options.toolConfig, {
@@ -1283,6 +1288,14 @@ test("parseRateLimitStatus accepts known values and rejects unknown values", () 
   assert.equal(parseRateLimitStatus(undefined), null);
 });
 
+test("parseRuntimeSessionState accepts known values and rejects unknown values", () => {
+  assert.equal(parseRuntimeSessionState("idle"), "idle");
+  assert.equal(parseRuntimeSessionState("running"), "running");
+  assert.equal(parseRuntimeSessionState("requires_action"), "requires_action");
+  assert.equal(parseRuntimeSessionState("blocked"), null);
+  assert.equal(parseRuntimeSessionState(undefined), null);
+});
+
 test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
   const update = buildRateLimitUpdate({
     status: "allowed_warning",
@@ -1321,6 +1334,131 @@ test("buildRateLimitUpdate rejects invalid payloads", () => {
     }),
     { type: "rate_limit_update", status: "rejected" },
   );
+});
+
+test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
+  assert.deepEqual(
+    buildApiRetryUpdate({
+      attempt: 2,
+      max_retries: 4,
+      retry_delay_ms: 1500,
+      error_status: 529,
+      error: "server_error",
+    }),
+    {
+      type: "api_retry_update",
+      attempt: 2,
+      max_retries: 4,
+      retry_delay_ms: 1500,
+      error_status: 529,
+      error: "server_error",
+    },
+  );
+
+  assert.deepEqual(
+    buildApiRetryUpdate({
+      attempt: 1,
+      maxRetries: 4,
+      retryDelayMs: 1000,
+      errorStatus: null,
+      error: "unexpected",
+    }),
+    {
+      type: "api_retry_update",
+      attempt: 1,
+      max_retries: 4,
+      retry_delay_ms: 1000,
+      error_status: null,
+      error: "unknown",
+    },
+  );
+  assert.equal(buildApiRetryUpdate({ attempt: 1 }), null);
+});
+
+test("normalizeSettingsParseError accepts only SDK-shaped errors", () => {
+  assert.deepEqual(
+    normalizeSettingsParseError({
+      file: "C:/work/.claude/settings.json",
+      path: "permissions.allow",
+      message: "Expected array",
+    }),
+    {
+      file: "C:/work/.claude/settings.json",
+      path: "permissions.allow",
+      message: "Expected array",
+    },
+  );
+  assert.deepEqual(normalizeSettingsParseError({ path: "", message: "Invalid JSON" }), {
+    path: "",
+    message: "Invalid JSON",
+  });
+  assert.equal(normalizeSettingsParseError({ path: "", message: "" }), null);
+  assert.equal(normalizeSettingsParseError("Invalid JSON"), null);
+});
+
+test("handleSdkMessage emits lifecycle compatibility session updates", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "prompt_suggestion",
+      suggestion: "Write tests for this change",
+      uuid: "message-1",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "api_retry",
+      attempt: 1,
+      max_retries: 4,
+      retry_delay_ms: 1000,
+      error_status: null,
+      error: "server_error",
+      uuid: "message-2",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "session_state_changed",
+      state: "idle",
+      uuid: "message-3",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      { type: "prompt_suggestion_update", suggestion: "Write tests for this change" },
+      {
+        type: "api_retry_update",
+        attempt: 1,
+        max_retries: 4,
+        retry_delay_ms: 1000,
+        error_status: null,
+        error: "server_error",
+      },
+      { type: "runtime_session_state_update", state: "idle" },
+    ],
+  );
+});
+
+test("handleSdkMessage emits settings parse errors from defensive payloads", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "settings_parse_error",
+      file: "C:/work/.claude/settings.json",
+      path: "permissions.allow",
+      message: "Expected array",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1)?.update, {
+    type: "settings_parse_error",
+    file: "C:/work/.claude/settings.json",
+    path: "permissions.allow",
+    message: "Expected array",
+  });
 });
 
 test("mapAvailableAgents normalizes and deduplicates agents", () => {

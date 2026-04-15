@@ -29,6 +29,18 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
     }
 }
 
+pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
+    match error {
+        types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
+        types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
+        types::ApiRetryError::RateLimit => model::ApiRetryError::RateLimit,
+        types::ApiRetryError::InvalidRequest => model::ApiRetryError::InvalidRequest,
+        types::ApiRetryError::ServerError => model::ApiRetryError::ServerError,
+        types::ApiRetryError::MaxOutputTokens => model::ApiRetryError::MaxOutputTokens,
+        types::ApiRetryError::Unknown => model::ApiRetryError::Unknown,
+    }
+}
+
 pub(super) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
 ) -> model::AvailableCommandsUpdate {
@@ -211,6 +223,34 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 surpassed_threshold,
             },
         ))),
+        types::SessionUpdate::ApiRetryUpdate {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error,
+        } => Some(model::SessionUpdate::ApiRetryUpdate {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error: map_api_retry_error(error),
+        }),
+        types::SessionUpdate::PromptSuggestionUpdate { suggestion } => {
+            Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
+        }
+        types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
+            Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
+                types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,
+                types::RuntimeSessionState::Running => model::RuntimeSessionState::Running,
+                types::RuntimeSessionState::RequiresAction => {
+                    model::RuntimeSessionState::RequiresAction
+                }
+            }))
+        }
+        types::SessionUpdate::SettingsParseError { file, path, message } => {
+            Some(model::SessionUpdate::SettingsParseError { file, path, message })
+        }
         types::SessionUpdate::SessionStatusUpdate { status } => {
             Some(model::SessionUpdate::SessionStatusUpdate(match status {
                 types::SessionStatus::Compacting => model::SessionStatus::Compacting,
@@ -589,7 +629,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 mod tests {
     use super::{
         convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_question_request,
+        map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
 
@@ -641,6 +681,40 @@ mod tests {
                     .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
+        );
+    }
+
+    #[test]
+    fn map_lifecycle_updates_preserves_new_sdk_state() {
+        assert_eq!(
+            map_session_update(types::SessionUpdate::ApiRetryUpdate {
+                attempt: 2,
+                max_retries: 4,
+                retry_delay_ms: 1500,
+                error_status: Some(529),
+                error: types::ApiRetryError::ServerError,
+            }),
+            Some(model::SessionUpdate::ApiRetryUpdate {
+                attempt: 2,
+                max_retries: 4,
+                retry_delay_ms: 1500,
+                error_status: Some(529),
+                error: model::ApiRetryError::ServerError,
+            })
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::RuntimeSessionStateUpdate {
+                state: types::RuntimeSessionState::RequiresAction,
+            }),
+            Some(model::SessionUpdate::RuntimeSessionStateUpdate(
+                model::RuntimeSessionState::RequiresAction,
+            ))
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::PromptSuggestionUpdate {
+                suggestion: "Add tests".to_owned(),
+            }),
+            Some(model::SessionUpdate::PromptSuggestionUpdate("Add tests".to_owned()))
         );
     }
 

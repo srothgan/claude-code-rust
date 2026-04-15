@@ -21,6 +21,7 @@ pub(super) fn submit_input(app: &mut App) {
     if text.trim().is_empty() {
         return;
     }
+    app.prompt_suggestion = None;
 
     // `/cancel` is an explicit control action: execute immediately.
     if slash::is_cancel_command(&text) {

@@ -85,6 +85,34 @@ pub enum RateLimitStatus {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiRetryError {
+    AuthenticationFailed,
+    BillingError,
+    RateLimit,
+    InvalidRequest,
+    ServerError,
+    MaxOutputTokens,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionState {
+    Idle,
+    Running,
+    RequiresAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsParseErrorUpdate {
+    pub file: Option<String>,
+    pub path: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
@@ -273,6 +301,24 @@ pub enum SessionUpdate {
         overage_disabled_reason: Option<String>,
         is_using_overage: Option<bool>,
         surpassed_threshold: Option<f64>,
+    },
+    ApiRetryUpdate {
+        attempt: u64,
+        max_retries: u64,
+        retry_delay_ms: u64,
+        error_status: Option<u16>,
+        error: ApiRetryError,
+    },
+    PromptSuggestionUpdate {
+        suggestion: String,
+    },
+    RuntimeSessionStateUpdate {
+        state: RuntimeSessionState,
+    },
+    SettingsParseError {
+        file: Option<String>,
+        path: String,
+        message: String,
     },
     SessionStatusUpdate {
         status: SessionStatus,
@@ -584,4 +630,27 @@ pub struct McpSetServersResult {
     pub removed: Vec<String>,
     #[serde(default)]
     pub errors: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiRetryError, SessionUpdate};
+
+    #[test]
+    fn api_retry_update_deserializes_unknown_error_defensively() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "api_retry_update",
+            "attempt": 1,
+            "max_retries": 4,
+            "retry_delay_ms": 1000,
+            "error_status": null,
+            "error": "transport_timeout"
+        }))
+        .expect("deserialize api retry update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
+        ));
+    }
 }
