@@ -43,6 +43,11 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     if let Some(ref account) = app.account_info {
         section_header(&mut lines, "Account");
         kv_line(&mut lines, "Login method", &login_method_label(account));
+        if let Some(ref provider) = account.api_provider
+            && !provider.trim().is_empty()
+        {
+            kv_line(&mut lines, "API provider", &api_provider_label(provider.trim()));
+        }
         if let Some(ref org) = account.organization
             && !org.is_empty()
         {
@@ -144,6 +149,12 @@ fn model_display(app: &App) -> String {
 }
 
 pub(crate) fn login_method_label(account: &crate::agent::types::AccountInfo) -> String {
+    if let Some(ref provider) = account.api_provider
+        && !provider.trim().is_empty()
+        && provider != "firstParty"
+    {
+        return "External provider".to_owned();
+    }
     if let Some(ref source) = account.api_key_source {
         match source.as_str() {
             "oauth" => return "Claude Max Account".to_owned(),
@@ -161,6 +172,18 @@ pub(crate) fn login_method_label(account: &crate::agent::types::AccountInfo) -> 
         return source.clone();
     }
     "Unknown".to_owned()
+}
+
+fn api_provider_label(provider: &str) -> String {
+    match provider {
+        "firstParty" => "First party".to_owned(),
+        "bedrock" => "Bedrock".to_owned(),
+        "vertex" => "Vertex".to_owned(),
+        "foundry" => "Foundry".to_owned(),
+        "anthropicAws" => "Anthropic AWS".to_owned(),
+        "mantle" => "Mantle".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn resolve_memory_path(app: &App) -> String {
@@ -289,6 +312,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(login_method_label(&account), "User API key");
+    }
+
+    #[test]
+    fn login_method_maps_external_provider() {
+        let account = crate::agent::types::AccountInfo {
+            api_provider: Some("bedrock".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(login_method_label(&account), "External provider");
+    }
+
+    #[test]
+    fn status_lines_render_api_provider() {
+        let mut app = App::test_default();
+        app.account_info = Some(crate::agent::types::AccountInfo {
+            api_provider: Some("mantle".to_owned()),
+            ..Default::default()
+        });
+
+        let text = lines_to_string(&status_lines(&app));
+
+        assert!(text.contains("API provider"));
+        assert!(text.contains("Mantle"));
     }
 
     #[test]

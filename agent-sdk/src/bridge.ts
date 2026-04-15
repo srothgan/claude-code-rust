@@ -552,6 +552,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
             subscription_type: account.subscriptionType,
             token_source: account.tokenSource,
             api_key_source: account.apiKeySource,
+            api_provider: account.apiProvider,
           },
         });
         writeEvent(
@@ -564,6 +565,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
               subscription_type: account.subscriptionType,
               token_source: account.tokenSource,
               api_key_source: account.apiKeySource,
+              api_provider: account.apiProvider,
             },
           },
           requestId,

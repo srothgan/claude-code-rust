@@ -5,6 +5,7 @@ import {
   getSessionMessages,
   listSessions,
   query,
+  type AccountInfo,
   type CanUseTool,
   type ModelInfo,
   type PermissionMode,
@@ -131,6 +132,18 @@ type QueryWithInternalControlHandling = Query & {
 const requestUserDialogInterceptorInstalled = Symbol("requestUserDialogInterceptorInstalled");
 
 export const sessions = new Map<string, SessionState>();
+
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function shouldEmitStartupAuthRequiredForAccount(account: AccountInfo): boolean {
+  const provider = account.apiProvider;
+  if (nonEmptyString(provider) && provider !== "firstParty") {
+    return false;
+  }
+  return !nonEmptyString(account.email) && !nonEmptyString(account.apiKeySource);
+}
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_MODEL_NAME = "default";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
@@ -586,11 +599,7 @@ export async function createSession(params: {
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
-      const acct = result.account;
-      const hasCredentials =
-        (typeof acct.email === "string" && acct.email.trim().length > 0) ||
-        (typeof acct.apiKeySource === "string" && acct.apiKeySource.trim().length > 0);
-      if (!hasCredentials) {
+      if (shouldEmitStartupAuthRequiredForAccount(result.account)) {
         emitAuthRequired(session);
       }
       emitFastModeUpdateIfChanged(session, result.fast_mode_state);

@@ -48,6 +48,7 @@ import {
   refreshCurrentModel,
   resolveCurrentModel,
   shouldInvalidateResolvedRuntimeModel,
+  shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
 import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
@@ -1440,6 +1441,40 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
       { type: "runtime_session_state_update", state: "idle" },
     ],
   );
+});
+
+test("shouldEmitStartupAuthRequiredForAccount keeps legacy first-party behavior", () => {
+  assert.equal(shouldEmitStartupAuthRequiredForAccount({}), true);
+  assert.equal(
+    shouldEmitStartupAuthRequiredForAccount({ apiProvider: "firstParty" }),
+    true,
+  );
+  assert.equal(
+    shouldEmitStartupAuthRequiredForAccount({
+      apiProvider: "firstParty",
+      apiKeySource: "oauth",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEmitStartupAuthRequiredForAccount({
+      apiProvider: "firstParty",
+      email: "user@example.com",
+    }),
+    false,
+  );
+});
+
+test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for external providers", () => {
+  for (const apiProvider of [
+    "bedrock",
+    "vertex",
+    "foundry",
+    "anthropicAws",
+    "mantle",
+  ] as const) {
+    assert.equal(shouldEmitStartupAuthRequiredForAccount({ apiProvider }), false);
+  }
 });
 
 test("handleSdkMessage emits settings parse errors from defensive payloads", () => {

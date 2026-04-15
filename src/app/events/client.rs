@@ -133,6 +133,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let subscription_type = account.subscription_type.clone();
             let token_source = account.token_source.clone();
             let api_key_source = account.api_key_source.clone();
+            let api_provider = account.api_provider.clone();
             app.account_info = Some(account);
             app.needs_redraw = true;
             tracing::info!(
@@ -146,6 +147,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 subscription_type = ?subscription_type,
                 token_source = ?token_source,
                 api_key_source = ?api_key_source,
+                api_provider = ?api_provider,
             );
         }
         ClientEvent::ContextUsageReceived { session_id, percentage } => {

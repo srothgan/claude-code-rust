@@ -319,6 +319,7 @@ export interface AccountInfo {
   subscription_type?: string;
   token_source?: string;
   api_key_source?: string;
+  api_provider?: string;
 }
 
 export type McpServerConnectionStatus =

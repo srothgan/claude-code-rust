@@ -526,6 +526,7 @@ pub struct AccountInfo {
     pub subscription_type: Option<String>,
     pub token_source: Option<String>,
     pub api_key_source: Option<String>,
+    pub api_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1581,6 +1581,7 @@ mod tests {
             subscription_type: None,
             token_source: None,
             api_key_source: None,
+            api_provider: None,
         });
         app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
             id: "old-plugin".into(),
@@ -1886,6 +1887,7 @@ mod tests {
                     subscription_type: None,
                     token_source: None,
                     api_key_source: None,
+                    api_provider: None,
                 },
             },
         );
