@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-04-16 [Changes][v0.11.0]
+
+### Features
+
+- **Agent SDK 0.2.104 migration** (#135, @srothgan): Upgrade the bundled Claude Agent SDK from `0.2.74` to `0.2.104` across the published package and local bridge; extend the Rust and TypeScript wire contract for current-model snapshots, runtime session state, API retry updates, settings parse errors, terminal reasons, task metadata, prompt suggestions, and refreshed tool metadata
+- **Live session capability synchronization** (#135, @srothgan): Reconcile current model and permission-mode support against the active SDK session instead of assuming startup-time state, and keep session/runtime status aligned through connect, resume, and turn lifecycle changes
+- **Task patch updates and subagent grouping** (#135, @srothgan): Propagate incremental task patches and parent tool linkage so subagent child tool calls collapse under their root task while still surfacing focused hidden permission prompts when user input is required
+- **Welcome session snapshot and rotating tips** (#135, @srothgan): Replace the welcome model badge with a lightweight snapshot showing version, subscription, cwd, and session ID, and rotate curated startup tips across sessions
+- **Backgrounded tool state badges** (#135, @srothgan): Surface assistant-backgrounded Bash commands and backgrounded task state directly in tool cards and summaries
+
+### Fixes
+
+- **Resume ordering and runtime stability** (#135, @srothgan): Preserve resumed history turn ordering and tighten turn/session state handling so reconnects, tool updates, and completion events stay consistent
+- **External API provider auth handling** (#135, @srothgan): Respect external API providers during auth validation instead of assuming the bundled Claude auth path
+- **Permission and tool-result rendering cleanup** (#135, @srothgan): Normalize SDK permission display and tool-result metadata, hide redundant permission headers, and treat killed tool calls as terminal failures in transcript rendering
+- **Ctrl+V paste path split** (#135, @srothgan): Make `Ctrl+V` exclusively trigger image paste while keeping normal text paste on the standard input path
+- **Collapsed in-progress subagent summaries** (#135, @srothgan): Show substantially more context in collapsed in-progress subagent cards without expanding completed tool calls
+
+### Documentation
+
+- **Startup limitation note** (#135, @srothgan): Document the current end-to-end startup latency constraint from the upstream Claude Agent SDK runtime in `README.md`
+
+### CI and Dependencies
+
+- Bump `@anthropic-ai/claude-agent-sdk` from `0.2.74` to `0.2.104` in both the published package and bundled bridge (#135, @srothgan)
+- Add dedicated `agent-sdk` CI for `audit`, `lint`, and `knip`, and gate audit failures on direct dependency advisories only (#135, @srothgan)
+- Add `@anthropic-ai/sdk` 0.81.0, `@biomejs/biome` 2.4.12, and `knip` 6.4.1 to the bundled bridge toolchain (#135, @srothgan)
+
 ## [0.10.0] - 2026-04-11 [Changes][v0.10.0]
 
 ### Features
@@ -456,6 +484,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.11.0]: https://github.com/srothgan/claude-code-rust/compare/v0.10.0...v0.11.0
 [v0.10.0]: https://github.com/srothgan/claude-code-rust/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/srothgan/claude-code-rust/compare/v0.8.4...v0.9.0
 [v0.8.4]: https://github.com/srothgan/claude-code-rust/compare/v0.8.3...v0.8.4
