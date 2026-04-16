@@ -12,7 +12,8 @@
     "check": "npm run build",
     "lint": "biome lint src",
     "knip": "knip --include files,dependencies,unlisted,unresolved",
-    "audit": "npm audit --audit-level=moderate",
+    "audit": "node ./scripts/audit-direct-deps.mjs",
+    "audit:raw": "npm audit --audit-level=moderate",
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {

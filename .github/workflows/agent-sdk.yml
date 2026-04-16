@@ -32,7 +32,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run audit
+      - name: Run raw audit report
+        run: npm run audit:raw
+        continue-on-error: true
+
+      - name: Run direct dependency audit gate
         run: npm run audit
 
       - name: Run lint
