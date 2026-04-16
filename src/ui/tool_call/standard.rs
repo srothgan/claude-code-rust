@@ -18,7 +18,10 @@ use super::errors::{
     looks_like_internal_error, render_internal_failure_content, render_tool_use_error_content,
 };
 use super::interactions::{render_permission_lines, render_question_lines};
-use super::{markdown_inline_spans, status_icon, tool_output_badge_spans};
+use super::{
+    ToolCallRenderContext, markdown_inline_spans, status_icon, tool_display_title,
+    tool_output_badge_spans,
+};
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
 pub(super) const WRITE_DIFF_HEAD_LINES: usize = 10;
@@ -30,6 +33,7 @@ const IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 180;
 /// Execute tool calls are handled separately via `render_execute_with_borders`.
 pub(super) fn render_tool_call_title(
     tc: &ToolCallInfo,
+    render_context: ToolCallRenderContext<'_>,
     _width: u16,
     spinner_frame: usize,
 ) -> Line<'static> {
@@ -44,7 +48,8 @@ pub(super) fn render_tool_call_title(
         ),
     ];
 
-    title_spans.extend(markdown_inline_spans(&tc.title));
+    let display_title = tool_display_title(tc, render_context);
+    title_spans.extend(markdown_inline_spans(display_title.as_ref()));
     title_spans.extend(tool_output_badge_spans(tc));
 
     Line::from(title_spans)
@@ -236,11 +241,15 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
-                let raw = render_diff(diff);
-                if tc.sdk_tool_name == "Write" && !is_plan_file_path(&diff.path) {
-                    lines.extend(cap_write_diff_lines(raw));
+                if is_plan_file_path(&diff.path) {
+                    lines.extend(render_plan_content(&diff.new_text));
                 } else {
-                    lines.extend(raw);
+                    let raw = render_diff(diff);
+                    if tc.sdk_tool_name == "Write" {
+                        lines.extend(cap_write_diff_lines(raw));
+                    } else {
+                        lines.extend(raw);
+                    }
                 }
             }
             model::ToolCallContent::McpResource(resource) => {
@@ -257,6 +266,21 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
+}
+
+fn render_plan_content(text: &str) -> Vec<Line<'static>> {
+    let md_source = strip_outer_code_fence(text);
+    markdown::render_markdown_safe(&md_source, None)
+        .into_iter()
+        .map(|line| {
+            let owned: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                .collect();
+            Line::from(owned)
+        })
+        .collect()
 }
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
@@ -319,7 +343,7 @@ fn render_mcp_resource_content(
 }
 
 /// Returns `true` for paths inside `.claude/plans/` (cross-platform).
-/// Write diffs for these files are never capped so the full plan is always visible.
+/// These files render as markdown plan content instead of unified diffs.
 fn is_plan_file_path(path: &std::path::Path) -> bool {
     path.components()
         .zip(path.components().skip(1))

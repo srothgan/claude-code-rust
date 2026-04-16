@@ -14,8 +14,8 @@ mod tool_updates;
 mod turn;
 
 use super::{
-    ActiveView, App, AppStatus, ChatMessage, MessageBlock, MessageRole, PendingCommandAck,
-    SystemSeverity, TextBlock,
+    ActiveView, App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
+    PendingCommandAck, SystemSeverity, TextBlock,
 };
 use crate::agent::model;
 use crate::app::todos::apply_plan_todos;
@@ -208,14 +208,21 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             }
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
+            let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
+                != Some(mode.current_mode_id.as_str());
             app.mode = Some(mode);
+            if mode_changed {
+                app.invalidate_layout(InvalidationLevel::Global);
+            }
             if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
             }
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
             let mode_id = update.current_mode_id.to_string();
+            let mut mode_changed = false;
             if let Some(ref mut mode) = app.mode {
+                mode_changed = mode.current_mode_id != mode_id;
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
                     mode.current_mode_name.clone_from(&info.name);
                     mode.current_mode_id = mode_id;
@@ -223,6 +230,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                     mode.current_mode_name.clone_from(&mode_id);
                     mode.current_mode_id = mode_id;
                 }
+            }
+            if mode_changed {
+                app.invalidate_layout(InvalidationLevel::Global);
             }
             if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
@@ -2256,6 +2266,8 @@ mod tests {
                 crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
             ],
         });
+        app.messages.push(user_msg("seed"));
+        let layout_generation_before = app.viewport.layout_generation;
 
         handle_client_event(
             &mut app,
@@ -2270,6 +2282,38 @@ mod tests {
         let mode = app.mode.expect("mode should be present");
         assert_eq!(mode.current_mode_id, "plan");
         assert_eq!(mode.current_mode_name, "Plan");
+        assert_eq!(app.viewport.layout_generation, layout_generation_before + 1);
+    }
+
+    #[test]
+    fn mode_state_update_invalidates_layout_when_mode_changes() {
+        let mut app = make_test_app();
+        app.mode = Some(crate::app::ModeState {
+            current_mode_id: "code".to_owned(),
+            current_mode_name: "Code".to_owned(),
+            available_modes: vec![
+                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+            ],
+        });
+        app.messages.push(user_msg("seed"));
+        let layout_generation_before = app.viewport.layout_generation;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ModeStateUpdate(
+                crate::app::ModeState {
+                    current_mode_id: "plan".to_owned(),
+                    current_mode_name: "Plan".to_owned(),
+                    available_modes: vec![
+                        crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                        crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                    ],
+                },
+            )),
+        );
+
+        assert_eq!(app.viewport.layout_generation, layout_generation_before + 1);
     }
 
     #[test]

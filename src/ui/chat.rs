@@ -240,6 +240,7 @@ fn measure_message_height_at(
     let (h, rendered_lines) = measure_message_height(
         &mut app.messages[idx],
         &sp,
+        app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
         width,
         app.viewport.layout_generation,
         app.tools_collapsed,
@@ -263,6 +264,7 @@ fn measure_message_height_at(
 fn measure_message_height(
     msg: &mut crate::app::ChatMessage,
     spinner: &SpinnerState,
+    current_mode_id: Option<&str>,
     width: u16,
     layout_generation: u64,
     tools_collapsed: bool,
@@ -270,9 +272,10 @@ fn measure_message_height(
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
     let (h, wrapped_lines) =
-        message::measure_message_height_cached_with_tools_collapsed_and_separator(
+        message::measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
             msg,
             spinner,
+            current_mode_id,
             width,
             layout_generation,
             tools_collapsed,
@@ -635,15 +638,18 @@ fn render_culled_messages(
         let before = out.len();
         let message_height = app.viewport.message_height(i);
         if structural_skip > 0 {
-            let remaining_skip = message::render_message_from_offset_internal(
+            let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.messages[i],
                 &sp,
-                width,
-                app.viewport.layout_generation,
-                message::MessageRenderOptions {
-                    tools_collapsed: app.tools_collapsed,
-                    include_trailing_separator: i + 1 != msg_count,
-                },
+                message::MessageRenderContext::new(
+                    app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
+                    width,
+                    app.viewport.layout_generation,
+                    message::MessageRenderOptions {
+                        tools_collapsed: app.tools_collapsed,
+                        include_trailing_separator: i + 1 != msg_count,
+                    },
+                ),
                 structural_skip,
                 out,
             );
@@ -653,13 +659,18 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message_with_tools_collapsed_and_separator_and_layout_generation(
+            message::render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
                 &mut app.messages[i],
                 &sp,
-                width,
-                app.viewport.layout_generation,
-                app.tools_collapsed,
-                i + 1 != msg_count,
+                message::MessageRenderContext::new(
+                    app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
+                    width,
+                    app.viewport.layout_generation,
+                    message::MessageRenderOptions {
+                        tools_collapsed: app.tools_collapsed,
+                        include_trailing_separator: i + 1 != msg_count,
+                    },
+                ),
                 out,
             );
             rendered_rows = rendered_rows.saturating_add(message_height);

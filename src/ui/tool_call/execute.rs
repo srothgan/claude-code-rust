@@ -14,8 +14,8 @@ use ratatui::text::{Line, Span};
 use super::errors::failed_execute_first_line;
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    markdown_inline_spans, spans_width, status_icon, tool_output_badge_spans,
-    truncate_spans_to_width,
+    ToolCallRenderContext, markdown_inline_spans, spans_width, status_icon, tool_display_title,
+    tool_output_badge_spans, truncate_spans_to_width,
 };
 
 /// Max visible output lines for Execute/Bash tool calls.
@@ -91,6 +91,7 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 /// fill the terminal correctly even after resize.
 pub(super) fn render_execute_with_borders(
     tc: &ToolCallInfo,
+    render_context: ToolCallRenderContext<'_>,
     content: &[Line<'static>],
     width: u16,
     spinner_frame: usize,
@@ -117,7 +118,9 @@ pub(super) fn render_execute_with_borders(
     let right_border_w = 1; // "right-corner"
     // Reserve at least one fill char so the border looks continuous.
     let title_max_w = line_budget.saturating_sub(prefix_w + badges_w + right_border_w + 1);
-    let title_spans = truncate_spans_to_width(markdown_inline_spans(&tc.title), title_max_w);
+    let display_title = tool_display_title(tc, render_context);
+    let title_spans =
+        truncate_spans_to_width(markdown_inline_spans(display_title.as_ref()), title_max_w);
     let title_w = spans_width(&title_spans);
     let fill_w = line_budget.saturating_sub(prefix_w + title_w + badges_w + right_border_w);
     let top_fill: String = "\u{2500}".repeat(fill_w);

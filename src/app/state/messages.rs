@@ -83,6 +83,7 @@ pub enum MessageBlockRenderSignature {
         hidden: bool,
         status: crate::agent::model::ToolCallStatus,
         sdk_tool_name: String,
+        current_mode_id: Option<String>,
         pending_permission: bool,
         pending_question: bool,
         frame: Option<usize>,

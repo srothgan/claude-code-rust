@@ -581,6 +581,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         current_mode_name: next_name,
         available_modes: modes,
     });
+    app.invalidate_layout(InvalidationLevel::Global);
     true
 }
 
