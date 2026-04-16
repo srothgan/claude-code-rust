@@ -791,6 +791,26 @@ mod tests {
     }
 
     #[test]
+    fn content_summary_uses_higher_limit_for_in_progress_agent() {
+        let mut tc = test_tool_call("tc-agent", "Agent", model::ToolCallStatus::InProgress);
+        let long_line = "a".repeat(150);
+        tc.content = vec![model::ToolCallContent::from(long_line.clone())];
+
+        assert_eq!(content_summary(&tc), long_line);
+    }
+
+    #[test]
+    fn content_summary_keeps_normal_limit_for_completed_agent() {
+        let mut tc = test_tool_call("tc-agent-done", "Agent", model::ToolCallStatus::Completed);
+        let long_line = "a".repeat(150);
+        tc.content = vec![model::ToolCallContent::from(long_line)];
+
+        let summary = content_summary(&tc);
+        assert_eq!(summary.chars().count(), 60);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
     fn render_execute_content_failed_surfaces_summary_before_full_output() {
         let tc = ToolCallInfo {
             id: "tc-3".into(),

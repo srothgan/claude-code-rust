@@ -22,6 +22,8 @@ use super::{markdown_inline_spans, status_icon, tool_output_badge_spans};
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
 pub(super) const WRITE_DIFF_HEAD_LINES: usize = 10;
+const DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 60;
+const IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 180;
 
 /// Render just the title line for a non-Execute tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
@@ -162,11 +164,7 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                 }
                 if let Some(text) = resource.text.as_deref() {
                     let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
-                    if first.chars().count() > 60 {
-                        let truncated: String = first.chars().take(57).collect();
-                        return format!("{truncated}...");
-                    }
-                    return first.to_owned();
+                    return truncate_summary_line(first, DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT);
                 }
                 return resource.uri.clone();
             }
@@ -181,18 +179,32 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                         return msg;
                     }
                     let first = stripped.lines().next().unwrap_or("");
-                    return if first.chars().count() > 60 {
-                        let truncated: String = first.chars().take(57).collect();
-                        format!("{truncated}...")
-                    } else {
-                        first.to_owned()
-                    };
+                    return truncate_summary_line(first, collapsed_text_summary_limit(tc));
                 }
             }
             model::ToolCallContent::Terminal(_) => {}
         }
     }
     String::new()
+}
+
+fn collapsed_text_summary_limit(tc: &ToolCallInfo) -> usize {
+    if matches!(tc.status, model::ToolCallStatus::InProgress)
+        && matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")
+    {
+        IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT
+    } else {
+        DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT
+    }
+}
+
+fn truncate_summary_line(line: &str, max_chars: usize) -> String {
+    if line.chars().count() > max_chars {
+        let truncated: String = line.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{truncated}...")
+    } else {
+        line.to_owned()
+    }
 }
 
 /// Render the full content of a tool call as lines.
