@@ -30,6 +30,33 @@ const FERRIS_SAYS: &[&str] = &[
     r"          / '-----' \ ",
 ];
 
+// Prepared for future randomized welcome-tip selection. Intentionally unused
+// until the welcome UI is switched from a single hard-coded tip.
+const WELCOME_TIPS: &[&str] = &[
+    "Use /mode plan before larger changes, then switch back to code once the plan is clear",
+    "Use /mcp to connect live tools and docs instead of pasting stale context into chat",
+    "Keep repo instructions short in CLAUDE.md and update them when mistakes repeat",
+    "Start prompts with the goal, relevant context, and constraints so Claude needs fewer corrections",
+    "Ask Claude for a plan first on multi-step work instead of jumping straight to edits",
+    "Give success criteria Claude can verify: tests, lint, screenshots, or exact outputs",
+    "For visual work, paste screenshots or mockups so Claude can verify UI changes instead of guessing",
+    "Start a fresh thread with /new-session when the task changes and old context is noise",
+    "Use /compact when a session gets long and you want to keep the thread but trim context",
+    "Use /resume <session_id> to jump back into earlier work without rebuilding context",
+    "Use /docs shortcuts to see the live keyboard shortcuts for the current app state",
+    "Use /docs commands to inspect the slash commands this app and the SDK expose",
+    "If Claude drifts, refine or restate the plan early instead of piling on corrective prompts",
+    "For tricky bugs, provide clear repro steps and runtime evidence instead of guessing fixes",
+    "Point Claude at the relevant files, errors, and constraints instead of pasting everything",
+    "If you do not know the exact file, let Claude search first and only pin the files that matter",
+    "Ask codebase questions first in unfamiliar areas instead of coding blind",
+    "Review diffs carefully even when the output looks plausible on first read",
+    "Use hooks for checks that must run every time instead of relying on reminder text alone",
+    "Turn repeated workflows into CLAUDE.md guidance only after they work reliably by hand",
+    "For larger features, let Claude clarify requirements and edge cases through structured questions",
+    "Use separate sessions for unrelated work so planning, debugging, and review stay clean",
+];
+
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone, Copy)]
@@ -1016,14 +1043,22 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     // TODO: Replace the hard-coded tip text with a small array of welcome tips
     // and randomized selection once this becomes a first-class surface.
     lines.push(Line::from(Span::styled(
-        format!(
-            "{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C copies selection or quits"
-        ),
+        format!("{pad}Tips: {}", selected_welcome_tip(block)),
         Style::default().fg(theme::DIM),
     )));
     lines.push(Line::default());
 
     lines
+}
+
+fn selected_welcome_tip(block: &WelcomeBlock) -> &'static str {
+    let Some(first_tip) = WELCOME_TIPS.first().copied() else {
+        return "Enter sends, Shift+Enter inserts a newline, and Ctrl+C copies a selection or quits";
+    };
+    let len_u64 = u64::try_from(WELCOME_TIPS.len()).unwrap_or(1);
+    let idx_u64 = block.tip_seed % len_u64;
+    let idx = usize::try_from(idx_u64).unwrap_or(0);
+    WELCOME_TIPS.get(idx).copied().unwrap_or(first_tip)
 }
 
 fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Line<'static>>) {
@@ -1367,6 +1402,11 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Subscription: -")));
         assert!(lines.iter().any(|line| line.contains("cwd:          /cwd")));
         assert!(lines.iter().any(|line| line.contains("Session ID:   -")));
+        assert!(lines.iter().any(|line| line.contains("Tips: ")));
+        assert!(
+            WELCOME_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
+            "expected one welcome tip to be rendered"
+        );
     }
 
     // force_markdown_line_breaks
@@ -1550,7 +1590,13 @@ mod tests {
     }
 
     fn make_welcome_message(subscription: &str, cwd: &str, session_id: &str) -> ChatMessage {
-        ChatMessage::welcome(env!("CARGO_PKG_VERSION"), subscription, cwd, session_id)
+        let mut message =
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), subscription, cwd, session_id);
+        let Some(MessageBlock::Welcome(block)) = message.blocks.first_mut() else {
+            panic!("expected welcome block");
+        };
+        block.tip_seed = 0;
+        message
     }
 
     fn idle_spinner() -> SpinnerState {

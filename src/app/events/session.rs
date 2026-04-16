@@ -35,7 +35,7 @@ pub(super) fn handle_connected_client_event(
         app.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
-    reset_for_new_session(app, session_id, current_model, mode);
+    reset_for_new_session(app, session_id, current_model, mode, true);
     app.available_models = available_models;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
@@ -304,7 +304,7 @@ pub(super) fn handle_session_replaced_event(
     app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
-    reset_for_new_session(app, session_id, current_model, mode);
+    reset_for_new_session(app, session_id, current_model, mode, false);
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);

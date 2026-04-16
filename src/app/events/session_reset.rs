@@ -12,11 +12,12 @@ pub(super) fn reset_for_new_session(
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
+    preserve_current_welcome_tip: bool,
 ) {
     crate::agent::events::kill_all_terminals(&app.terminals);
 
     reset_session_identity_state(app, session_id, current_model, mode);
-    reset_messages_for_new_session(app);
+    reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
     reset_interaction_state_for_new_session(app);
     reset_render_state_for_new_session(app);
@@ -53,10 +54,16 @@ fn reset_session_identity_state(
     app.account_info = None;
 }
 
-fn reset_messages_for_new_session(app: &mut App) {
+fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: bool) {
+    let preserved_tip_seed =
+        preserve_current_welcome_tip.then(|| app.current_welcome_tip_seed()).flatten();
     app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
-    app.push_message_tracked(app.build_welcome_message());
+    let mut welcome = app.build_welcome_message();
+    if let Some(tip_seed) = preserved_tip_seed {
+        App::apply_welcome_tip_seed(&mut welcome, tip_seed);
+    }
+    app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
     app.viewport = super::super::ChatViewport::new();
 }
@@ -158,9 +165,14 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 }
 
 pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
+    let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
-    app.push_message_tracked(app.build_welcome_message());
+    let mut welcome = app.build_welcome_message();
+    if let Some(tip_seed) = preserved_tip_seed {
+        App::apply_welcome_tip_seed(&mut welcome, tip_seed);
+    }
+    app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
     for update in history_updates {
         match update {

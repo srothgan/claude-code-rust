@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct ChatMessage {
     pub role: MessageRole,
@@ -33,6 +34,7 @@ impl ChatMessage {
                 subscription: subscription.to_owned(),
                 cwd: cwd.to_owned(),
                 session_id: session_id.to_owned(),
+                tip_seed: random_welcome_tip_seed(),
                 cache: BlockCache::default(),
             })],
             None,
@@ -206,6 +208,13 @@ pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
     block.subscription.hash(&mut hasher);
     block.cwd.hash(&mut hasher);
     block.session_id.hash(&mut hasher);
+    block.tip_seed.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn random_welcome_tip_seed() -> u64 {
+    let mut hasher = DefaultHasher::new();
+    SystemTime::now().duration_since(UNIX_EPOCH).ok().hash(&mut hasher);
     hasher.finish()
 }
 
@@ -539,5 +548,6 @@ pub struct WelcomeBlock {
     pub subscription: String,
     pub cwd: String,
     pub session_id: String,
+    pub tip_seed: u64,
     pub cache: BlockCache,
 }

@@ -1398,6 +1398,10 @@ mod tests {
     fn connected_updates_welcome_session_id_while_pristine() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+            panic!("expected welcome block");
+        };
+        welcome.tip_seed = 7;
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -1408,6 +1412,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.session_id, "test-session");
+        assert_eq!(welcome.tip_seed, 7);
     }
 
     #[test]
@@ -1514,6 +1519,10 @@ mod tests {
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+            panic!("expected welcome block");
+        };
+        welcome.tip_seed = 11;
         app.messages.push(user_msg("hello"));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
@@ -1525,6 +1534,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.session_id, "test-session");
+        assert_eq!(welcome.tip_seed, 11);
     }
 
     #[test]
@@ -1734,6 +1744,11 @@ mod tests {
     #[test]
     fn session_replaced_resets_chat_and_transient_state() {
         let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+            panic!("expected welcome block");
+        };
+        welcome.tip_seed = 5;
         app.messages.push(user_msg("hello"));
         app.messages
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
@@ -1793,6 +1808,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.cwd, "/replacement");
+        assert_ne!(welcome.tip_seed, 5);
     }
 
     #[test]

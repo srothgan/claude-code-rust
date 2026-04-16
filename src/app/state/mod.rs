@@ -483,6 +483,22 @@ impl App {
         )
     }
 
+    #[must_use]
+    pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
+        let first = self.messages.first()?;
+        let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
+            return None;
+        };
+        Some(welcome.tip_seed)
+    }
+
+    pub(crate) fn apply_welcome_tip_seed(message: &mut ChatMessage, tip_seed: u64) {
+        let Some(MessageBlock::Welcome(welcome)) = message.blocks.first_mut() else {
+            return;
+        };
+        welcome.tip_seed = tip_seed;
+    }
+
     /// Update the welcome message with the latest session/account snapshot.
     pub fn sync_welcome_snapshot(&mut self) {
         let version = env!("CARGO_PKG_VERSION");
