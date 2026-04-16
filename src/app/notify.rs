@@ -33,6 +33,12 @@ pub struct NotificationManager {
     terminal_focused: bool,
 }
 
+impl Default for NotificationManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NotificationPlan {
     ring_bell: bool,

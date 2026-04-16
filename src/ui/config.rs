@@ -1366,7 +1366,7 @@ mod tests {
             super::settings::settings_hint_height(20) > super::settings::settings_hint_height(40)
         );
         assert_eq!(super::settings::settings_hint_height(0), 0);
-        assert!(!SETTINGS_LIMITATION_HINT.is_empty());
+        assert!(SETTINGS_LIMITATION_HINT.contains("not all settings are supported"));
     }
 
     #[test]

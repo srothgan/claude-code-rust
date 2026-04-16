@@ -154,7 +154,7 @@ mod tests {
             name: name.to_owned(),
             components: component_names
                 .iter()
-                .map(|n| IncidentComponent { name: n.to_string() })
+                .map(|n| IncidentComponent { name: (*n).to_owned() })
                 .collect(),
         }
     }

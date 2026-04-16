@@ -283,8 +283,8 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
     year -= i64::from(month <= 2);
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let yoe = year - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + day_of_year;
     Some(era * 146_097 + doe - 719_468)
 }
 
