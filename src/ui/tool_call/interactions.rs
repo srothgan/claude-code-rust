@@ -34,7 +34,7 @@ pub(super) fn render_permission_lines(
     }
 
     let mut lines = vec![Line::default()];
-    if let Some(display) = permission_display_lines(perm) {
+    if let Some(display) = permission_display_lines(tc, perm) {
         lines.extend(display);
     }
 
@@ -106,7 +106,10 @@ pub(super) fn render_permission_lines(
     lines
 }
 
-fn permission_display_lines(perm: &InlinePermission) -> Option<Vec<Line<'static>>> {
+fn permission_display_lines(
+    tc: &ToolCallInfo,
+    perm: &InlinePermission,
+) -> Option<Vec<Line<'static>>> {
     let display = perm.display.as_ref()?;
     let title = display.title.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
     let display_name =
@@ -117,15 +120,17 @@ fn permission_display_lines(perm: &InlinePermission) -> Option<Vec<Line<'static>
         return None;
     }
 
+    let header = title
+        .into_iter()
+        .chain(display_name)
+        .find(|value| !is_redundant_permission_header(tc, value));
+
     let mut lines = Vec::new();
-    if let Some(title) = title.or(display_name) {
-        lines.push(Line::from(vec![
-            Span::styled("  ! ", Style::default().fg(theme::RUST_ORANGE)),
-            Span::styled(
-                title.to_owned(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+    if let Some(title) = header {
+        lines.push(Line::from(Span::styled(
+            format!("  {title}"),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
     }
     if let Some(description) = description {
         lines.push(Line::from(vec![
@@ -137,6 +142,18 @@ fn permission_display_lines(perm: &InlinePermission) -> Option<Vec<Line<'static>
         lines.push(Line::default());
     }
     Some(lines)
+}
+
+fn is_redundant_permission_header(tc: &ToolCallInfo, value: &str) -> bool {
+    let normalized = normalize_permission_header(value);
+    let tool_label = normalize_permission_header(theme::tool_name_label(&tc.sdk_tool_name).1);
+    let sdk_name = normalize_permission_header(&tc.sdk_tool_name);
+    let title = normalize_permission_header(&tc.title);
+    normalized == tool_label || normalized == sdk_name || normalized == title
+}
+
+fn normalize_permission_header(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
@@ -525,6 +542,28 @@ mod tests {
             .join("\n");
 
         assert!(rendered.contains("Claude wants to run tests"));
+        assert!(rendered.contains("This command reads project files"));
+    }
+
+    #[test]
+    fn permission_display_metadata_hides_redundant_tool_header() {
+        let tc = test_tool_call("Bash");
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.display = Some(
+            PermissionDisplay::new()
+                .title(Some("Bash".to_owned()))
+                .description(Some("This command reads project files".to_owned())),
+        );
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("\n  Bash\n"));
         assert!(rendered.contains("This command reads project files"));
     }
 
