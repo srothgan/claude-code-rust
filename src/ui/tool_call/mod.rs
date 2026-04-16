@@ -122,16 +122,26 @@ pub fn render_tool_call_cached_with_tools_collapsed(
         return;
     }
 
+    let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
+
     // Expanded body: use cache if valid, otherwise render and cache.
-    if let Some(cached_body) = tc.cache.get() {
+    let cached_body =
+        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    if let Some(cached_body) = cached_body {
         crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
     } else {
         crate::perf::mark("tc::cache_miss_body");
         let _t = crate::perf::start("tc::render_body");
-        let body = standard::render_tool_call_body(tc);
-        tc.cache.store(body);
-        if let Some(stored) = tc.cache.get() {
+        let body = standard::render_tool_call_body(tc, width);
+        if body_depends_on_width {
+            tc.cache.store_for_width(body, width);
+        } else {
+            tc.cache.store(body);
+        }
+        let stored =
+            if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+        if let Some(stored) = stored {
             out.extend_from_slice(stored);
         }
     }
@@ -201,25 +211,44 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
         return (total, 1 + summary.len());
     }
 
-    if let Some(body_h) = tc.cache.height_at(width) {
-        let total = title_h + body_h;
-        tc.record_measured_height(width, total, layout_generation);
-        return (total, 1);
-    }
-    if let Some(body_h) = tc.cache.measure_and_set_height(width) {
-        let total = title_h + body_h;
-        tc.record_measured_height(width, total, layout_generation);
-        return (total, tc.cache.get().map_or(1, |b| b.len() + 1));
+    let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
+    let cached_body =
+        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    if cached_body.is_some() {
+        if let Some(body_h) = tc.cache.height_at(width) {
+            let total = title_h + body_h;
+            tc.record_measured_height(width, total, layout_generation);
+            return (total, 1);
+        }
+        if let Some(body_h) = tc.cache.measure_and_set_height(width) {
+            let total = title_h + body_h;
+            tc.record_measured_height(width, total, layout_generation);
+            let cached_len = if body_depends_on_width {
+                tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+            } else {
+                tc.cache.get().map_or(1, |body| body.len() + 1)
+            };
+            return (total, cached_len);
+        }
     }
 
-    let body = standard::render_tool_call_body(tc);
+    let body = standard::render_tool_call_body(tc, width);
     let body_h =
         Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
-    tc.cache.store(body);
+    if body_depends_on_width {
+        tc.cache.store_for_width(body, width);
+    } else {
+        tc.cache.store(body);
+    }
     tc.cache.set_height(body_h, width);
     let total = title_h + body_h;
     tc.record_measured_height(width, total, layout_generation);
-    (total, tc.cache.get().map_or(1, |b| b.len() + 1))
+    let cached_len = if body_depends_on_width {
+        tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+    } else {
+        tc.cache.get().map_or(1, |body| body.len() + 1)
+    };
+    (total, cached_len)
 }
 
 // ---------------------------------------------------------------------------
@@ -679,7 +708,7 @@ mod tests {
                 .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
         )];
 
-        let body = standard::render_tool_call_body(&tc);
+        let body = standard::render_tool_call_body(&tc, 80);
         let rendered: Vec<String> = body
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -708,7 +737,7 @@ mod tests {
                 .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
         )];
 
-        let body = standard::render_tool_call_body(&tc);
+        let body = standard::render_tool_call_body(&tc, 80);
         let rendered: Vec<String> = body
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -808,7 +837,8 @@ mod tests {
             .collect();
 
         assert!(!text.iter().any(|line| line.contains("expand")));
-        assert!(text.iter().any(|line| line.contains("main.rs")));
+        assert!(text.iter().any(|line| line.contains("lines ")));
+        assert!(text.iter().any(|line| line.contains("+  new")));
         assert!(text.len() > 2);
     }
 
@@ -827,7 +857,7 @@ mod tests {
             .old_text(Some("# Old Plan\n".to_owned())),
         )];
 
-        let body = standard::render_tool_call_body(&tc);
+        let body = standard::render_tool_call_body(&tc, 80);
         let rendered: Vec<String> = body
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())

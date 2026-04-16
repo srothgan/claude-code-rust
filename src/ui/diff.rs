@@ -3,6 +3,7 @@
 
 use crate::agent::model;
 use crate::ui::theme;
+use crate::ui::wrap::{StyledChunk, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
@@ -10,25 +11,20 @@ use similar::TextDiff;
 /// Render a diff with proper unified-style output using the `similar` crate.
 /// The model `Diff` struct provides `old_text`/`new_text` -- we compute the actual
 /// line-level changes and show only changed lines with context.
-pub fn render_diff(diff: &model::Diff) -> Vec<Line<'static>> {
+pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // File path header
-    let name = diff.path.file_name().map_or_else(
-        || diff.path.to_string_lossy().into_owned(),
-        |f| f.to_string_lossy().into_owned(),
-    );
-    let mut header_spans =
-        vec![Span::styled(name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))];
     if let Some(repository) = diff.repository.as_deref() {
-        header_spans
-            .push(Span::styled(format!("  [{repository}]"), Style::default().fg(theme::DIM)));
+        lines.push(Line::from(Span::styled(
+            format!("[{repository}]"),
+            Style::default().fg(theme::DIM),
+        )));
     }
-    lines.push(Line::from(header_spans));
 
     let old = diff.old_text.as_deref().unwrap_or("");
     let new = &diff.new_text;
     let text_diff = TextDiff::from_lines(old, new);
+    let line_number_width = old.lines().count().max(new.lines().count()).max(1).to_string().len();
+    let content_width = usize::from(width).saturating_sub(line_number_width + 5).max(1);
 
     // Use unified diff with 3 lines of context -- only shows changed hunks
     // instead of the full file content.
@@ -40,19 +36,38 @@ pub fn render_diff(diff: &model::Diff) -> Vec<Line<'static>> {
             && header.starts_with("@@")
         {
             lines.push(Line::from(Span::styled(
-                header.to_owned(),
+                format_compact_hunk_header(header),
                 Style::default().fg(Color::Cyan),
             )));
         }
 
         for change in hunk.iter_changes() {
             let value = change.as_str().unwrap_or("").trim_end_matches('\n');
-            let (prefix, style) = match change.tag() {
-                similar::ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
-                similar::ChangeTag::Insert => ("+", Style::default().fg(Color::Green)),
-                similar::ChangeTag::Equal => (" ", Style::default().fg(theme::DIM)),
+            let (marker, style, line_number) = match change.tag() {
+                similar::ChangeTag::Delete => (
+                    "-",
+                    Style::default().fg(Color::Red),
+                    change.old_index().map(|index| index + 1),
+                ),
+                similar::ChangeTag::Insert => (
+                    "+",
+                    Style::default().fg(Color::Green),
+                    change.new_index().map(|index| index + 1),
+                ),
+                similar::ChangeTag::Equal => (
+                    " ",
+                    Style::default().fg(theme::DIM),
+                    change.new_index().map(|index| index + 1),
+                ),
             };
-            lines.push(Line::from(Span::styled(format!("{prefix} {value}"), style)));
+            lines.extend(render_wrapped_diff_row(
+                line_number,
+                line_number_width,
+                marker,
+                value,
+                style,
+                content_width,
+            ));
         }
     }
 
@@ -124,6 +139,92 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     };
 
     Line::from(Span::styled(line.to_owned(), style))
+}
+
+#[derive(Clone, Copy)]
+struct HunkRange {
+    start: usize,
+    count: usize,
+}
+
+fn format_compact_hunk_header(header: &str) -> String {
+    parse_unified_hunk_header(header).map_or_else(
+        || header.to_owned(),
+        |(old_range, new_range)| {
+            let mut parts = Vec::with_capacity(2);
+            if old_range.count > 0 {
+                parts.push(format_range("-", old_range));
+            }
+            if new_range.count > 0 {
+                parts.push(format_range("+", new_range));
+            }
+            if parts.is_empty() { "lines".to_owned() } else { format!("lines {}", parts.join(" ")) }
+        },
+    )
+}
+
+fn parse_unified_hunk_header(header: &str) -> Option<(HunkRange, HunkRange)> {
+    let body = header.strip_prefix("@@ ")?.split(" @@").next()?;
+    let mut parts = body.split_whitespace();
+    let old_range = parse_prefixed_hunk_range(parts.next()?, '-')?;
+    let new_range = parse_prefixed_hunk_range(parts.next()?, '+')?;
+    Some((old_range, new_range))
+}
+
+fn parse_prefixed_hunk_range(token: &str, prefix: char) -> Option<HunkRange> {
+    let raw = token.strip_prefix(prefix)?;
+    let (start, count) = raw.split_once(',').map_or((raw, "1"), |(start, count)| (start, count));
+    Some(HunkRange { start: start.parse().ok()?, count: count.parse().ok()? })
+}
+
+fn format_range(prefix: &str, range: HunkRange) -> String {
+    if range.count <= 1 {
+        format!("{prefix}{}", range.start)
+    } else {
+        let end = range.start.saturating_add(range.count.saturating_sub(1));
+        format!("{prefix}{}-{end}", range.start)
+    }
+}
+
+fn render_wrapped_diff_row(
+    line_number: Option<usize>,
+    line_number_width: usize,
+    marker: &str,
+    value: &str,
+    style: Style,
+    content_width: usize,
+) -> Vec<Line<'static>> {
+    let number_style = Style::default().fg(theme::DIM);
+    let content_lines = if value.is_empty() {
+        vec![Line::default()]
+    } else {
+        wrap_styled_chunks(&[StyledChunk { text: value.to_owned(), style }], content_width)
+    };
+
+    let line_number_text = line_number.map_or_else(
+        || " ".repeat(line_number_width),
+        |line_number| format!("{line_number:>line_number_width$}"),
+    );
+    let continuation_prefix = " ".repeat(line_number_width + 5);
+
+    content_lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, content_line)| {
+            let mut spans = if index == 0 {
+                vec![
+                    Span::styled(line_number_text.clone(), number_style),
+                    Span::styled("  ", number_style),
+                    Span::styled(marker.to_owned(), style),
+                    Span::styled("  ", number_style),
+                ]
+            } else {
+                vec![Span::styled(continuation_prefix.clone(), number_style)]
+            };
+            spans.extend(content_line.spans);
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// Check if a tool call title references a markdown file.
@@ -226,10 +327,11 @@ mod tests {
             &model::Diff::new("src/main.rs", "fn main() {}\n")
                 .old_text(Some("fn old() {}\n"))
                 .repository(Some("acme/project".to_owned())),
+            80,
         );
-        let header: String = lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(header.contains("main.rs"));
-        assert!(header.contains("[acme/project]"));
+        let repository_line: String =
+            lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(repository_line.contains("[acme/project]"));
     }
 
     #[test]
@@ -246,6 +348,33 @@ mod tests {
         assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
         assert_eq!(lines[2].spans[0].style.fg, Some(Color::Cyan));
         assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn render_diff_adds_line_numbers_and_hanging_indent() {
+        let lines = render_diff(
+            &model::Diff::new(
+                "tmp.md",
+                "This is a long added line that should wrap onto another visual line.\n".to_owned(),
+            ),
+            28,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("lines +1")));
+        assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
+        assert!(rendered.iter().any(|line| line.starts_with("      ")));
+        assert!(!rendered.iter().any(|line| line == "tmp.md"));
+    }
+
+    #[test]
+    fn compact_hunk_header_omits_empty_side_and_uses_ranges() {
+        assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
+        assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines -4-6 +4-8");
+        assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "lines -8 +8");
     }
 
     #[test]

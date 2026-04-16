@@ -19,6 +19,7 @@ pub(crate) fn next_cache_access_tick() -> u64 {
 pub struct BlockCache {
     version: u64,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
+    render_width: Option<u16>,
     /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
     segments: Vec<CacheLineSegment>,
     /// Approximate UTF-8 byte size of cached rendered lines.
@@ -62,7 +63,20 @@ impl BlockCache {
     /// Get a reference to the cached lines, if fresh.
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 {
+        if self.version == 0 && self.render_width.is_none() {
+            let lines = self.lines.as_ref();
+            if lines.is_some() {
+                self.touch();
+            }
+            lines
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
+        if self.version == 0 && self.render_width == Some(width) {
             let lines = self.lines.as_ref();
             if lines.is_some() {
                 self.touch();
@@ -81,6 +95,20 @@ impl BlockCache {
 
     /// Store freshly rendered lines using a shared KB split policy.
     pub fn store_with_policy(
+        &mut self,
+        lines: Vec<ratatui::text::Line<'static>>,
+        policy: super::super::CacheSplitPolicy,
+    ) {
+        self.render_width = None;
+        self.store_with_policy_and_width(lines, policy);
+    }
+
+    pub fn store_for_width(&mut self, lines: Vec<ratatui::text::Line<'static>>, width: u16) {
+        self.render_width = Some(width);
+        self.store_with_policy_and_width(lines, *super::super::default_cache_split_policy());
+    }
+
+    fn store_with_policy_and_width(
         &mut self,
         lines: Vec<ratatui::text::Line<'static>>,
         policy: super::super::CacheSplitPolicy,
@@ -188,6 +216,7 @@ impl BlockCache {
             return 0;
         }
         self.lines = None;
+        self.render_width = None;
         self.segments.clear();
         self.cached_bytes = 0;
         self.wrapped_height = 0;

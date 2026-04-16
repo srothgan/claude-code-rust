@@ -4220,7 +4220,7 @@ mod tests {
     #[test]
     fn mouse_down_on_scrollbar_rail_starts_drag_and_scrolls() {
         let mut app = make_test_app();
-        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.rendered_chat_area = Rect::new(0, 0, 19, 10);
         app.viewport.height_prefix_sums = vec![30];
         app.viewport.scrollbar_thumb_top = 0.0;
         app.viewport.scrollbar_thumb_size = 3.0;
@@ -4250,7 +4250,7 @@ mod tests {
     #[test]
     fn dragging_scrollbar_thumb_can_reach_bottom_and_top() {
         let mut app = make_test_app();
-        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.rendered_chat_area = Rect::new(0, 0, 19, 10);
         app.viewport.height_prefix_sums = vec![30];
         app.viewport.scrollbar_thumb_top = 0.0;
         app.viewport.scrollbar_thumb_size = 3.0;
@@ -4301,7 +4301,7 @@ mod tests {
     #[test]
     fn dragging_uses_displayed_thumb_track_when_scrollbar_is_smoothed() {
         let mut app = make_test_app();
-        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.rendered_chat_area = Rect::new(0, 0, 19, 10);
         app.viewport.height_prefix_sums = vec![30];
         app.viewport.scrollbar_thumb_top = 2.0;
         app.viewport.scrollbar_thumb_size = 6.0;

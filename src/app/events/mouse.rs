@@ -188,7 +188,7 @@ fn mouse_on_scrollbar_rail(app: &App, mouse: MouseEvent) -> bool {
     if area.width == 0 || area.height == 0 {
         return false;
     }
-    let rail_x = area.right().saturating_sub(1);
+    let rail_x = area.right();
     mouse.column == rail_x && mouse.row >= area.y && mouse.row < area.bottom()
 }
 

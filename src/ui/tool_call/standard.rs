@@ -58,10 +58,15 @@ pub(super) fn render_tool_call_title(
 /// Render the body lines (everything after the title) for a non-Execute tool call.
 /// Used for in-progress tool calls where the body is cached separately from the title.
 /// Execute tool calls are handled separately via `render_execute_with_borders`.
-pub(super) fn render_tool_call_body(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    render_standard_body(tc, &mut lines);
+    render_standard_body(tc, width, &mut lines);
     lines
+}
+
+#[must_use]
+pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
+    tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
 }
 
 #[must_use]
@@ -85,7 +90,7 @@ pub(super) fn render_collapsed_tool_call_summary(
 }
 
 /// Render the body (everything after the title line) of a standard (non-Execute) tool call.
-fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
+fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
     let pipe_style = Style::default().fg(theme::DIM);
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();
@@ -95,7 +100,7 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     }
 
     // Expanded: render full content with | prefix on each line
-    let mut content_lines = render_tool_content(tc);
+    let mut content_lines = render_tool_content(tc, width.saturating_sub(5));
 
     // Append inline permission controls if pending
     if let Some(ref perm) = tc.pending_permission {
@@ -213,7 +218,7 @@ fn truncate_summary_line(line: &str, max_chars: usize) -> String {
 }
 
 /// Render the full content of a tool call as lines.
-fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     let is_execute = tc.is_execute_tool();
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -244,7 +249,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 if is_plan_file_path(&diff.path) {
                     lines.extend(render_plan_content(&diff.new_text));
                 } else {
-                    let raw = render_diff(diff);
+                    let raw = render_diff(diff, width);
                     if tc.sdk_tool_name == "Write" {
                         lines.extend(cap_write_diff_lines(raw));
                     } else {
