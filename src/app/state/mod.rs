@@ -264,9 +264,6 @@ pub struct App {
     /// Some terminals split one clipboard paste into multiple chunks; we merge
     /// them and apply placeholder threshold to the merged content once per cycle.
     pub pending_paste_text: String,
-    /// Pending duplicate-suppression marker for terminals that emit both a
-    /// clipboard shortcut key event and `Event::Paste` for the same text paste.
-    pub pending_clipboard_paste_dedupe: Option<String>,
     /// Pending paste session metadata for the currently queued `Event::Paste` payload.
     pub pending_paste_session: Option<PasteSessionState>,
     /// Most recent active placeholder paste session, used for safe chunk continuation.
@@ -888,7 +885,6 @@ impl App {
             pending_submit: None,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
-            pending_clipboard_paste_dedupe: None,
             pending_paste_session: None,
             active_paste_session: None,
             next_paste_session_id: 1,

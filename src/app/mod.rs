@@ -338,7 +338,6 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
-    app.pending_clipboard_paste_dedupe = None;
     let pasted = std::mem::take(&mut app.pending_paste_text);
     if pasted.is_empty() {
         return;
