@@ -3,7 +3,7 @@
 
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
-use super::types::{MessageUsage, RecentSessionInfo};
+use super::types::MessageUsage;
 use ratatui::style::Color;
 use ratatui::text::Line;
 use std::cell::Cell;
@@ -25,22 +25,14 @@ impl ChatMessage {
     }
 
     #[must_use]
-    pub fn welcome(model_name: &str, cwd: &str) -> Self {
-        Self::welcome_with_recent(model_name, cwd, &[])
-    }
-
-    #[must_use]
-    pub fn welcome_with_recent(
-        model_name: &str,
-        cwd: &str,
-        recent_sessions: &[RecentSessionInfo],
-    ) -> Self {
+    pub fn welcome(version: &str, subscription: &str, cwd: &str, session_id: &str) -> Self {
         Self::new(
             MessageRole::Welcome,
             vec![MessageBlock::Welcome(WelcomeBlock {
-                model_name: model_name.to_owned(),
+                version: version.to_owned(),
+                subscription: subscription.to_owned(),
                 cwd: cwd.to_owned(),
-                recent_sessions: recent_sessions.to_vec(),
+                session_id: session_id.to_owned(),
                 cache: BlockCache::default(),
             })],
             None,
@@ -210,18 +202,10 @@ pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -
 #[must_use]
 pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
     let mut hasher = DefaultHasher::new();
-    block.model_name.hash(&mut hasher);
+    block.version.hash(&mut hasher);
+    block.subscription.hash(&mut hasher);
     block.cwd.hash(&mut hasher);
-    for recent in &block.recent_sessions {
-        recent.session_id.hash(&mut hasher);
-        recent.summary.hash(&mut hasher);
-        recent.last_modified_ms.hash(&mut hasher);
-        recent.file_size_bytes.hash(&mut hasher);
-        recent.cwd.hash(&mut hasher);
-        recent.git_branch.hash(&mut hasher);
-        recent.custom_title.hash(&mut hasher);
-        recent.first_prompt.hash(&mut hasher);
-    }
+    block.session_id.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -551,8 +535,9 @@ pub enum SystemSeverity {
 }
 
 pub struct WelcomeBlock {
-    pub model_name: String,
+    pub version: String,
+    pub subscription: String,
     pub cwd: String,
-    pub recent_sessions: Vec<RecentSessionInfo>,
+    pub session_id: String,
     pub cache: BlockCache,
 }

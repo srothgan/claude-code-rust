@@ -244,7 +244,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             let next_display_long = update.current_model.display_name_long.clone();
             let pending_ack_before = format!("{:?}", app.pending_command_ack);
             app.current_model = Some(update.current_model);
-            app.update_welcome_model_once();
             let clearing_pending =
                 matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
             if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
@@ -1396,9 +1395,9 @@ mod tests {
     }
 
     #[test]
-    fn connected_updates_welcome_model_while_pristine() {
+    fn connected_updates_welcome_session_id_while_pristine() {
         let mut app = make_test_app();
-        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -1408,13 +1407,13 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-updated");
+        assert_eq!(welcome.session_id, "test-session");
     }
 
     #[test]
-    fn connected_updates_welcome_to_default_for_provisional_default_model() {
+    fn connected_keeps_subscription_placeholder_until_status_snapshot_arrives() {
         let mut app = make_test_app();
-        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "old", "/test", "old"));
 
         handle_client_event(&mut app, connected_event("default"));
 
@@ -1424,7 +1423,7 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "default");
+        assert_eq!(welcome.subscription, "-");
     }
 
     #[test]
@@ -1457,7 +1456,7 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
-        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.resuming_session_id = Some("resume-123".into());
 
         handle_client_event(
@@ -1514,7 +1513,7 @@ mod tests {
     #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
-        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages.push(user_msg("hello"));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
@@ -1525,21 +1524,20 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-updated");
+        assert_eq!(welcome.session_id, "test-session");
     }
 
     #[test]
-    fn current_model_update_refreshes_welcome_after_settings_reconcile() {
+    fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-1"));
         app.current_model = Some(test_current_model("default"));
-        app.messages = vec![ChatMessage::welcome("default", "/test")];
+        app.messages =
+            vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
             Some("default"),
         );
-
-        app.update_welcome_model_once();
 
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
@@ -1557,7 +1555,8 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-opus-4-6");
+        assert_eq!(welcome.session_id, "session-1");
+        assert_eq!(welcome.subscription, "-");
     }
 
     #[test]
@@ -1614,10 +1613,10 @@ mod tests {
     }
 
     #[test]
-    fn current_model_update_refreshes_welcome_after_provisional_default() {
+    fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         let mut app = make_test_app();
         app.current_model = Some(test_current_model("default"));
-        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages.push(user_msg("hello"));
 
         handle_client_event(
@@ -1633,7 +1632,7 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-opus-4-6");
+        assert_eq!(welcome.session_id, "-");
 
         handle_client_event(
             &mut app,
@@ -1648,7 +1647,7 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.model_name, "claude-sonnet-4-5");
+        assert_eq!(welcome.session_id, "-");
     }
 
     #[test]
@@ -1834,24 +1833,22 @@ mod tests {
     }
 
     #[test]
-    fn connected_requests_status_snapshot_when_status_tab_is_open() {
+    fn connected_requests_status_snapshot_on_connect() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.active_view = ActiveView::Config;
-        app.config.active_tab = crate::app::config::ConfigTab::Status;
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
-        let status = rx.try_recv().expect("status snapshot command");
-        assert_eq!(
-            status.command,
-            crate::agent::wire::BridgeCommand::GetStatusSnapshot {
-                session_id: "test-session".to_owned(),
-            }
-        );
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp.command,
             crate::agent::wire::BridgeCommand::GetMcpSnapshot {
+                session_id: "test-session".to_owned(),
+            }
+        );
+        let status = rx.try_recv().expect("status snapshot command");
+        assert_eq!(
+            status.command,
+            crate::agent::wire::BridgeCommand::GetStatusSnapshot {
                 session_id: "test-session".to_owned(),
             }
         );
@@ -1893,6 +1890,38 @@ mod tests {
         );
 
         assert!(app.account_info.is_none());
+    }
+
+    #[test]
+    fn status_snapshot_updates_welcome_subscription() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "session-1",
+        ));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "session-1".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Claude Max".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.subscription, "Claude Max");
     }
 
     #[test]

@@ -13,7 +13,7 @@ use super::messages::{
     WelcomeBlock,
 };
 use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
-use super::types::{HistoryRetentionStats, MessageUsage, RecentSessionInfo};
+use super::types::{HistoryRetentionStats, MessageUsage};
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
 
@@ -226,27 +226,10 @@ impl super::App {
                 MessageBlock::Welcome(welcome) => {
                     total = total
                         .saturating_add(size_of::<WelcomeBlock>())
-                        .saturating_add(welcome.model_name.capacity())
+                        .saturating_add(welcome.version.capacity())
+                        .saturating_add(welcome.subscription.capacity())
                         .saturating_add(welcome.cwd.capacity())
-                        .saturating_add(
-                            welcome
-                                .recent_sessions
-                                .capacity()
-                                .saturating_mul(size_of::<RecentSessionInfo>()),
-                        );
-                    for session in &welcome.recent_sessions {
-                        total = total
-                            .saturating_add(session.session_id.capacity())
-                            .saturating_add(session.summary.capacity())
-                            .saturating_add(session.cwd.as_ref().map_or(0, String::capacity))
-                            .saturating_add(session.git_branch.as_ref().map_or(0, String::capacity))
-                            .saturating_add(
-                                session.custom_title.as_ref().map_or(0, String::capacity),
-                            )
-                            .saturating_add(
-                                session.first_prompt.as_ref().map_or(0, String::capacity),
-                            );
-                    }
+                        .saturating_add(welcome.session_id.capacity());
                 }
                 MessageBlock::ImageAttachment(_) => {
                     total =

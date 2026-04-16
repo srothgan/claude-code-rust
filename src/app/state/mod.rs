@@ -442,33 +442,53 @@ impl App {
         if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
             return;
         }
-        self.insert_message_tracked(
-            0,
-            ChatMessage::welcome_with_recent(
-                self.model_display_name(),
-                &self.cwd,
-                &self.recent_sessions,
-            ),
-        );
+        self.insert_message_tracked(0, self.build_welcome_message());
     }
 
     #[must_use]
-    pub fn model_display_name(&self) -> &str {
-        match self.current_model.as_ref() {
-            Some(current_model)
-                if current_model.is_authoritative
-                    || current_model.display_name_long.trim() != "Default" =>
-            {
-                &current_model.display_name_long
-            }
-            _ if self.session_id.is_none() => "Connecting...",
-            _ => "default",
-        }
+    fn welcome_subscription_display(&self) -> &str {
+        self.account_info
+            .as_ref()
+            .and_then(|account| account.subscription_type.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("-")
     }
 
-    /// Update the welcome message's model label from the current session model state.
-    pub fn update_welcome_model_once(&mut self) {
-        let welcome_model = self.model_display_name().to_owned();
+    #[must_use]
+    fn welcome_cwd_display(&self) -> &str {
+        let cwd = self.cwd.trim();
+        if cwd.is_empty() { "-" } else { cwd }
+    }
+
+    #[must_use]
+    fn welcome_session_id_display(&self) -> String {
+        self.session_id
+            .as_ref()
+            .map(std::string::ToString::to_string)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "-".to_owned())
+    }
+
+    #[must_use]
+    pub(crate) fn build_welcome_message(&self) -> ChatMessage {
+        let subscription = self.welcome_subscription_display();
+        let session_id = self.welcome_session_id_display();
+        ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            subscription,
+            self.welcome_cwd_display(),
+            &session_id,
+        )
+    }
+
+    /// Update the welcome message with the latest session/account snapshot.
+    pub fn sync_welcome_snapshot(&mut self) {
+        let version = env!("CARGO_PKG_VERSION");
+        let subscription = self.welcome_subscription_display().to_owned();
+        let cwd = self.welcome_cwd_display().to_owned();
+        let session_id = self.welcome_session_id_display();
         let Some(first) = self.messages.first_mut() else {
             return;
         };
@@ -478,31 +498,20 @@ impl App {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
             return;
         };
-        if welcome.model_name != welcome_model {
-            welcome.model_name = welcome_model;
+        if welcome.version != version
+            || welcome.subscription != subscription
+            || welcome.cwd != cwd
+            || welcome.session_id != session_id
+        {
+            version.clone_into(&mut welcome.version);
+            welcome.subscription = subscription;
+            welcome.cwd = cwd;
+            welcome.session_id = session_id;
             welcome.cache.invalidate();
             self.sync_render_cache_slot(0, 0);
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
         }
-    }
-
-    /// Update the welcome message with latest discovered recent sessions.
-    pub fn sync_welcome_recent_sessions(&mut self) {
-        let Some(first) = self.messages.first_mut() else {
-            return;
-        };
-        if !matches!(first.role, MessageRole::Welcome) {
-            return;
-        }
-        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
-            return;
-        };
-        welcome.recent_sessions.clone_from(&self.recent_sessions);
-        welcome.cache.invalidate();
-        self.sync_render_cache_slot(0, 0);
-        self.recompute_message_retained_bytes(0);
-        self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
     }
 
     /// Track a Task/Agent tool call as active (in-progress subagent).
@@ -1042,7 +1051,6 @@ impl App {
 
     pub fn reconcile_runtime_from_persisted_settings_change(&mut self) {
         self.reconcile_trust_state_from_preferences_and_cwd();
-        self.update_welcome_model_once();
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
@@ -1862,7 +1870,7 @@ mod tests {
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("small message"),
             user_text_message("another message"),
         ];
@@ -1878,7 +1886,7 @@ mod tests {
     fn enforce_history_retention_drops_oldest_and_adds_marker() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("first old message"),
             user_text_message("second old message"),
             user_text_message("third old message"),
@@ -1896,7 +1904,7 @@ mod tests {
     fn enforce_history_retention_preserves_in_progress_tool_message() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
         ];
@@ -1919,7 +1927,7 @@ mod tests {
     fn enforce_history_retention_preserves_pending_tool_message() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
         ];
@@ -1938,7 +1946,7 @@ mod tests {
     fn enforce_history_retention_preserves_permission_tool_message() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message_with_pending_permission("tool-perm"),
         ];
@@ -1957,7 +1965,7 @@ mod tests {
     fn enforce_history_retention_rebuilds_tool_index_after_prune() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
         ];
@@ -1979,7 +1987,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
         ];
@@ -2019,7 +2027,10 @@ mod tests {
     #[test]
     fn enforce_history_retention_keeps_single_marker_on_repeat() {
         let mut app = make_test_app();
-        app.messages = vec![ChatMessage::welcome("model", "/cwd"), user_text_message("drop me")];
+        app.messages = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("drop me"),
+        ];
         app.history_retention.max_bytes = 1;
 
         let first = app.enforce_history_retention();
@@ -2037,7 +2048,7 @@ mod tests {
     fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
         let mut app = make_test_app();
         app.messages = vec![
-            ChatMessage::welcome("model", "/cwd"),
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me first"),
             user_text_message("keep this anchored"),
             user_text_message("tail"),

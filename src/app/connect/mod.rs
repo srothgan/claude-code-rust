@@ -126,7 +126,12 @@ pub fn create_app(cli: &Cli) -> App {
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        messages: vec![super::ChatMessage::welcome_with_recent("Connecting...", &cwd_display, &[])],
+        messages: vec![super::ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            &cwd_display,
+            "-",
+        )],
         message_retained_bytes: Vec::new(),
         retained_history_bytes: 0,
         viewport: ChatViewport::new(),

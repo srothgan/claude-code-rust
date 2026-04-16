@@ -993,14 +993,22 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Model: "), Style::default().fg(theme::DIM)),
+        Span::styled(format!("{pad}Version:      "), Style::default().fg(theme::DIM)),
+        Span::styled(block.version.clone(), Style::default().fg(theme::DIM)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{pad}Subscription: "), Style::default().fg(theme::DIM)),
         Span::styled(
-            block.model_name.clone(),
+            block.subscription.clone(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(Span::styled(
-        format!("{pad}cwd:   {}", block.cwd),
+        format!("{pad}cwd:          {}", block.cwd),
+        Style::default().fg(theme::DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("{pad}Session ID:   {}", block.session_id),
         Style::default().fg(theme::DIM),
     )));
 
@@ -1345,21 +1353,8 @@ mod tests {
     }
 
     #[test]
-    fn welcome_lines_do_not_render_recent_sessions_section() {
-        let message = ChatMessage::welcome_with_recent(
-            "claude-sonnet-4-5",
-            "/cwd",
-            &[crate::app::RecentSessionInfo {
-                session_id: "11111111-1111-1111-1111-111111111111".to_owned(),
-                summary: "Title".to_owned(),
-                last_modified_ms: 0,
-                file_size_bytes: 0,
-                cwd: Some("/a".to_owned()),
-                git_branch: None,
-                custom_title: Some("Title".to_owned()),
-                first_prompt: None,
-            }],
-        );
+    fn welcome_lines_render_expected_fields() {
+        let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-");
         let MessageBlock::Welcome(block) = &message.blocks[0] else {
             panic!("expected welcome block");
         };
@@ -1368,7 +1363,10 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
-        assert!(!lines.iter().any(|line| line.contains("Recent sessions")));
+        assert!(lines.iter().any(|line| line.contains("Version:")));
+        assert!(lines.iter().any(|line| line.contains("Subscription: -")));
+        assert!(lines.iter().any(|line| line.contains("cwd:          /cwd")));
+        assert!(lines.iter().any(|line| line.contains("Session ID:   -")));
     }
 
     // force_markdown_line_breaks
@@ -1551,8 +1549,8 @@ mod tests {
             .unwrap_or_else(|| panic!("expected line containing {needle:?}"))
     }
 
-    fn make_welcome_message(model_name: &str, cwd: &str) -> ChatMessage {
-        ChatMessage::welcome(model_name, cwd)
+    fn make_welcome_message(subscription: &str, cwd: &str, session_id: &str) -> ChatMessage {
+        ChatMessage::welcome(env!("CARGO_PKG_VERSION"), subscription, cwd, session_id)
     }
 
     fn idle_spinner() -> SpinnerState {
@@ -1620,8 +1618,8 @@ mod tests {
     #[test]
     fn welcome_role_label_wrap_height_matches_ground_truth() {
         let spinner = idle_spinner();
-        let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
-        let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+        let mut measured_msg = make_welcome_message("Max", "~/project", "session-1");
+        let mut truth_msg = make_welcome_message("Max", "~/project", "session-1");
 
         let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 4, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
@@ -2006,8 +2004,8 @@ mod tests {
     #[test]
     fn welcome_height_matches_ground_truth() {
         let spinner = idle_spinner();
-        let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
-        let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+        let mut measured_msg = make_welcome_message("Max", "~/project", "session-1");
+        let mut truth_msg = make_welcome_message("Max", "~/project", "session-1");
 
         let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52, 1);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 52);

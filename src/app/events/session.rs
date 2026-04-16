@@ -6,8 +6,7 @@ use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
 use super::super::{
-    App, AppStatus, ChatMessage, InvalidationLevel, LoginHint, MessageBlock, MessageRole,
-    SystemSeverity, TextBlock,
+    App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
@@ -38,8 +37,7 @@ pub(super) fn handle_connected_client_event(
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, current_model, mode);
     app.available_models = available_models;
-    app.update_welcome_model_once();
-    app.sync_welcome_recent_sessions();
+    app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
@@ -110,7 +108,6 @@ pub(super) fn handle_sessions_listed_event(
     }
     app.startup_recent_sessions_loaded = true;
     reconcile_session_picker_selection(app, selected_session_id.as_deref());
-    app.sync_welcome_recent_sessions();
     maybe_open_startup_session_picker(app);
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -308,6 +305,7 @@ pub(super) fn handle_session_replaced_event(
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
     reset_for_new_session(app, session_id, current_model, mode);
+    app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
@@ -410,20 +408,7 @@ fn shorten_cwd_display(cwd_raw: &str) -> String {
 }
 
 fn sync_welcome_cwd(app: &mut App) {
-    let Some(first) = app.messages.first_mut() else {
-        return;
-    };
-    if !matches!(first.role, MessageRole::Welcome) {
-        return;
-    }
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
-        return;
-    };
-    welcome.cwd.clone_from(&app.cwd);
-    welcome.cache.invalidate();
-    app.sync_render_cache_slot(0, 0);
-    app.recompute_message_retained_bytes(0);
-    app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
+    app.sync_welcome_snapshot();
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {

@@ -82,6 +82,34 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
     }
 }
 
+pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
+    let Some(conn) = app.conn.as_ref() else {
+        return;
+    };
+    let Some(ref sid) = app.session_id else {
+        return;
+    };
+
+    let session_id = sid.to_string();
+    match conn.get_status_snapshot(session_id.clone()) {
+        Ok(()) => tracing::debug!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "status_snapshot_requested",
+            message = "session status snapshot requested",
+            outcome = "start",
+            session_id = %session_id,
+        ),
+        Err(error) => tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "status_snapshot_request_failed",
+            message = "failed to request session status snapshot",
+            outcome = "failure",
+            session_id = %session_id,
+            error_message = %error,
+        ),
+    }
+}
+
 pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>) {
     app.session_usage.context_usage_percent = percentage;
     app.session_usage.context_usage_in_flight = false;
@@ -100,7 +128,7 @@ fn clear_context_usage_refresh_state(app: &mut App) {
 mod tests {
     use super::{
         RuntimeReloadRequestOutcome, apply_context_usage_snapshot, request_context_usage_refresh,
-        request_runtime_reload,
+        request_runtime_reload, request_status_snapshot_refresh,
     };
     use crate::agent::model;
     use crate::agent::wire::BridgeCommand;
@@ -171,6 +199,19 @@ mod tests {
         assert!(matches!(
             envelope.command,
             BridgeCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn request_status_snapshot_refresh_sends_bridge_command() {
+        let (mut app, mut rx) = app_with_connection();
+
+        request_status_snapshot_refresh(&mut app);
+
+        let envelope = rx.try_recv().expect("status snapshot command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::GetStatusSnapshot { session_id } if session_id == "session-1"
         ));
     }
 }

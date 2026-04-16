@@ -52,6 +52,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_status_snapshot_refresh(app);
             crate::app::session_runtime::request_context_usage_refresh(app);
         }
         ClientEvent::SessionsListed { sessions } => {
@@ -100,6 +101,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_status_snapshot_refresh(app);
             crate::app::session_runtime::request_context_usage_refresh(app);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
@@ -135,6 +137,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let api_key_source = account.api_key_source.clone();
             let api_provider = account.api_provider.clone();
             app.account_info = Some(account);
+            app.sync_welcome_snapshot();
             app.needs_redraw = true;
             tracing::info!(
                 target: crate::logging::targets::APP_AUTH,
