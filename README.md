@@ -25,11 +25,9 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 npm install -g claude-code-rust
 ```
 
-The published package installs a `claude-rs` command and fetches the matching
-prebuilt release binary for your platform during install.
+The published package installs a `claude-rs` command and fetches the matching prebuilt release binary for your platform during install.
 
-If `claude-rs` resolves to an older global shim, ensure your npm global bin
-directory comes first on `PATH` or remove the stale shim before retrying.
+If `claude-rs` resolves to an older global shim, ensure your npm global bin directory comes first on `PATH` or remove the stale shim before retrying.
 
 ## Usage
 
@@ -63,10 +61,13 @@ Three-layer design:
 
 This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
 
+## Limitations
+
+Startup is still constrained by the upstream Claude Agent SDK runtime that this TUI wraps. The Rust interface itself is fast, but end-to-end readiness can still take noticeable time before a session is fully available. Improving that remains an active area of work.
+
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
-Apache-2.0 was chosen to keep usage and redistribution straightforward for individual users, downstream packagers, and commercial adopters.
+This project is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 was chosen to keep usage and redistribution straightforward for individual users, downstream packagers, and commercial adopters.
 
 ## Disclaimer and Legal Notice
 
