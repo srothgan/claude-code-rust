@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-04-16 [Changes][v0.11.1]
+
+### Features
+
+- **Folder-local 1M context controls** (@srothgan): Add `/1m-context enable|disable|status` to persist `CLAUDE_CODE_DISABLE_1M_CONTEXT` in `.claude/settings.local.json`, preserve neighboring local env keys, surface status, and point 1M-context recovery guidance at the new folder-local fallback
+
 ## [0.11.0] - 2026-04-16 [Changes][v0.11.0]
 
 ### Features
@@ -484,6 +490,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.11.1]: https://github.com/srothgan/claude-code-rust/compare/v0.11.0...v0.11.1
 [v0.11.0]: https://github.com/srothgan/claude-code-rust/compare/v0.10.0...v0.11.0
 [v0.10.0]: https://github.com/srothgan/claude-code-rust/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/srothgan/claude-code-rust/compare/v0.8.4...v0.9.0
