@@ -17,6 +17,7 @@ const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
+const CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV: &str = "CLAUDE_CODE_DISABLE_1M_CONTEXT";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistedSettingValue {
@@ -285,6 +286,26 @@ pub fn set_language(document: &mut Value, value: Option<&str>) {
             PersistedSettingValue::String(text.to_owned())
         });
     write_persisted_setting(document, setting_spec(SettingId::Language), persisted);
+}
+
+pub fn disable_1m_context(document: &Value) -> Result<bool, ()> {
+    match read_json_path(document, &["env", CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV]) {
+        None => Ok(false),
+        Some(Value::String(value)) => Ok(value == "1"),
+        Some(_) => Err(()),
+    }
+}
+
+pub fn set_disable_1m_context(document: &mut Value, disabled: bool) {
+    if disabled {
+        set_json_path(
+            document,
+            &["env", CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV],
+            Value::String("1".to_owned()),
+        );
+    } else {
+        remove_json_path(document, &["env", CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV]);
+    }
 }
 
 pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
@@ -622,6 +643,39 @@ mod tests {
 
         assert_eq!(output_style(&saved), Ok(OutputStyle::Learning));
         assert_eq!(saved["spinnerTipsEnabled"], Value::Bool(true));
+    }
+
+    #[test]
+    fn set_disable_1m_context_preserves_neighboring_env_keys() {
+        let mut document = serde_json::json!({
+            "env": {
+                "KEEP_ME": "yes"
+            },
+            "other": true
+        });
+
+        set_disable_1m_context(&mut document, true);
+        assert_eq!(disable_1m_context(&document), Ok(true));
+        assert_eq!(document["env"]["KEEP_ME"], Value::String("yes".to_owned()));
+
+        set_disable_1m_context(&mut document, false);
+        assert_eq!(disable_1m_context(&document), Ok(false));
+        assert_eq!(document["env"]["KEEP_ME"], Value::String("yes".to_owned()));
+        assert_eq!(document["other"], Value::Bool(true));
+    }
+
+    #[test]
+    fn set_disable_1m_context_removes_empty_env_object() {
+        let mut document = serde_json::json!({
+            "env": {
+                "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1"
+            }
+        });
+
+        set_disable_1m_context(&mut document, false);
+
+        assert_eq!(disable_1m_context(&document), Ok(false));
+        assert!(document.get("env").is_none());
     }
 
     #[test]

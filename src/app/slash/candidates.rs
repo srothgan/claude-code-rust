@@ -109,11 +109,12 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(command_name, "/docs" | "/mode" | "/model" | "/resume")
+    matches!(command_name, "/1m-context" | "/docs" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
-    arg_index == 0 && matches!(command_name, "/docs" | "/mode" | "/model" | "/resume")
+    arg_index == 0
+        && matches!(command_name, "/1m-context" | "/docs" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -130,6 +131,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     use std::collections::BTreeMap;
 
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+    by_name.insert("/1m-context".into(), "Manage 1M context for this folder".into());
     by_name.insert("/cancel".into(), "Cancel active turn".into());
     by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/config".into(), "Open settings".into());
@@ -258,6 +260,18 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
+        "/1m-context" => [
+            ("disable", "Disable 1M context for future sessions in this folder"),
+            ("enable", "Enable 1M context for future sessions in this folder"),
+            ("status", "Show the current 1M context setting for this folder"),
+        ]
+        .into_iter()
+        .map(|(value, description)| SlashCandidate {
+            insert_value: value.to_owned(),
+            primary: value.to_owned(),
+            secondary: Some(description.to_owned()),
+        })
+        .collect(),
         "/docs" => super::DOCS_TOPICS
             .iter()
             .map(|(topic, description)| SlashCandidate {
@@ -345,7 +359,8 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
     matches!(
         command_name,
-        "/cancel"
+        "/1m-context"
+            | "/cancel"
             | "/compact"
             | "/config"
             | "/mcp"

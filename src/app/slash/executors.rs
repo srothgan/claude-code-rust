@@ -8,10 +8,13 @@ use super::{
     set_command_pending,
 };
 use crate::agent::events::ClientEvent;
+use crate::app::config::{self, SettingFile, store};
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use crate::app::events::push_system_message_with_severity;
 use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
 use std::fmt::Write as _;
+
+const ONE_M_CONTEXT_USAGE: &str = "Usage: /1m-context <enable|disable|status>";
 
 /// Handle slash command submission.
 ///
@@ -23,6 +26,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     };
 
     match parsed.name {
+        "/1m-context" => handle_1m_context_submit(app, &parsed.args),
         "/cancel" => handle_cancel_submit(app),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
@@ -39,6 +43,107 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+fn handle_1m_context_submit(app: &mut App, args: &[&str]) -> bool {
+    let [subcommand] = args else {
+        push_system_message(app, ONE_M_CONTEXT_USAGE);
+        return true;
+    };
+    let subcommand = subcommand.trim();
+    if subcommand.is_empty() || args.len() != 1 {
+        push_system_message(app, ONE_M_CONTEXT_USAGE);
+        return true;
+    }
+
+    match subcommand {
+        "status" => {
+            match current_1m_context_disabled(app) {
+                Ok(true) => push_system_message_with_severity(
+                    app,
+                    Some(SystemSeverity::Info),
+                    "1M context is disabled for future sessions in this folder via `.claude/settings.local.json`.",
+                ),
+                Ok(false) => push_system_message_with_severity(
+                    app,
+                    Some(SystemSeverity::Info),
+                    "1M context is enabled for future sessions in this folder.",
+                ),
+                Err(err) => {
+                    push_system_message(app, format!("Failed to read /1m-context status: {err}"));
+                }
+            }
+            true
+        }
+        "disable" => {
+            if let Err(err) = set_1m_context_disabled(app, true) {
+                push_system_message(app, format!("Failed to run /1m-context disable: {err}"));
+            }
+            true
+        }
+        "enable" => {
+            if let Err(err) = set_1m_context_disabled(app, false) {
+                push_system_message(app, format!("Failed to run /1m-context enable: {err}"));
+            }
+            true
+        }
+        _ => {
+            push_system_message(app, ONE_M_CONTEXT_USAGE);
+            true
+        }
+    }
+}
+
+fn current_1m_context_disabled(app: &mut App) -> Result<bool, String> {
+    config::initialize_shared_state(app)?;
+    store::disable_1m_context(&app.config.committed_local_settings_document).map_err(|()| {
+        "Expected `.claude/settings.local.json` env.CLAUDE_CODE_DISABLE_1M_CONTEXT to be a string"
+            .to_owned()
+    })
+}
+
+fn set_1m_context_disabled(app: &mut App, disabled: bool) -> Result<(), String> {
+    if !app.is_project_trusted() {
+        return Err(
+            "Project trust must be accepted before editing folder-local 1M context settings"
+                .to_owned(),
+        );
+    }
+
+    config::initialize_shared_state(app)?;
+    let Some(path) = app.config.path_for(SettingFile::LocalSettings).cloned() else {
+        return Err("Local settings path is not available".to_owned());
+    };
+
+    let current = store::disable_1m_context(&app.config.committed_local_settings_document)
+        .map_err(|()| {
+            "Expected `.claude/settings.local.json` env.CLAUDE_CODE_DISABLE_1M_CONTEXT to be a string"
+                .to_owned()
+        })?;
+
+    let mut next_document = app.config.committed_local_settings_document.clone();
+    store::set_disable_1m_context(&mut next_document, disabled);
+    store::save(&path, &next_document)?;
+    app.config.committed_local_settings_document = next_document;
+    app.reconcile_runtime_from_persisted_settings_change();
+    app.config.last_error = None;
+
+    let message = match (disabled, current == disabled) {
+        (true, true) => {
+            "1M context is already disabled for future sessions in this folder. Run /new-session to apply it."
+        }
+        (true, false) => {
+            "Disabled 1M context for future sessions in this folder. Run /new-session to apply it."
+        }
+        (false, true) => {
+            "1M context is already enabled for future sessions in this folder. Run /new-session to apply it."
+        }
+        (false, false) => {
+            "Enabled 1M context for future sessions in this folder. Run /new-session to apply it."
+        }
+    };
+    push_system_message_with_severity(app, Some(SystemSeverity::Info), message);
+    Ok(())
 }
 
 fn handle_cancel_submit(app: &mut App) -> bool {

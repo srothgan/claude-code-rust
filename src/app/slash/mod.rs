@@ -193,6 +193,7 @@ mod tests {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
+        assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
@@ -228,6 +229,88 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /config");
+    }
+
+    #[test]
+    fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        let consumed = try_handle_submit(&mut app, "/1m-context disable");
+
+        assert!(consumed);
+        let settings_path = dir.path().join(".claude").join("settings.local.json");
+        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
+        assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
+        let Some(last) = app.messages.last() else {
+            panic!("expected success message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("Disabled 1M context"));
+        assert!(block.text.contains("/new-session"));
+    }
+
+    #[test]
+    fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let local_settings = dir.path().join(".claude").join("settings.local.json");
+        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
+            .expect("create dir");
+        std::fs::write(
+            &local_settings,
+            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
+        )
+        .expect("write settings");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        let consumed = try_handle_submit(&mut app, "/1m-context enable");
+
+        assert!(consumed);
+        let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
+        assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
+        assert!(raw.contains("\"KEEP_ME\": \"yes\""));
+        let Some(last) = app.messages.last() else {
+            panic!("expected success message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("Enabled 1M context"));
+        assert!(block.text.contains("/new-session"));
+    }
+
+    #[test]
+    fn one_m_context_status_reports_disabled_folder_local_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let local_settings = dir.path().join(".claude").join("settings.local.json");
+        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
+            .expect("create dir");
+        std::fs::write(
+            &local_settings,
+            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\"\n  }\n}\n",
+        )
+        .expect("write settings");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        let consumed = try_handle_submit(&mut app, "/1m-context status");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected status message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("1M context is disabled"));
+        assert!(block.text.contains(".claude/settings.local.json"));
     }
 
     #[test]

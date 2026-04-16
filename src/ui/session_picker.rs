@@ -165,16 +165,13 @@ mod tests {
     use crate::app::{ActiveView, App, RecentSessionInfo};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn session(id: &str, title: &str) -> RecentSessionInfo {
-        let now_ms =
-            u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).expect("time").as_millis())
-                .expect("millis fit in u64");
         RecentSessionInfo {
             session_id: id.to_owned(),
             summary: format!("summary {title}"),
-            last_modified_ms: now_ms,
+            // Zero maps to the stable "just now" rendering path without depending on wall-clock timing.
+            last_modified_ms: 0,
             file_size_bytes: 1,
             cwd: Some("/test/project".to_owned()),
             git_branch: Some("main".to_owned()),
