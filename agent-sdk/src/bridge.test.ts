@@ -128,7 +128,7 @@ test("refreshSupportedModesForSession uses resolved current model for auto-mode 
   ];
   session.currentModel = {
     resolved_id: "claude-sonnet-4-6[1m]",
-    display_name_short: "Sonnet [1M]",
+    display_name_short: "Sonnet 4.6 [1M]",
     display_name_long: "Sonnet 4.6 [1M]",
     supports_effort: true,
     supported_effort_levels: ["low", "medium", "high"],
@@ -2437,7 +2437,7 @@ test("resolveCurrentModel keeps 1M context suffix in short and long display name
 
   const currentModel = resolveCurrentModel(session);
 
-  assert.equal(currentModel.display_name_short, "Opus [1M]");
+  assert.equal(currentModel.display_name_short, "Opus 4.6 [1M]");
   assert.equal(currentModel.display_name_long, "Opus 4.6 [1M]");
 });
 
@@ -2513,7 +2513,7 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
     current_model: {
       requested_id: "default",
       resolved_id: "claude-opus-4-6[1m]",
-      display_name_short: "Opus [1M]",
+      display_name_short: "Opus 4.6 [1M]",
       display_name_long: "Opus 4.6 [1M]",
       supports_effort: false,
       supported_effort_levels: [],

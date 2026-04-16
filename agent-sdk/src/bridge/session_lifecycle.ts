@@ -1415,13 +1415,15 @@ function shortDisplayNameForModelId(id: string): string {
     : normalized.family === "sonnet"
       ? "Sonnet"
       : "Haiku";
+  const versionLabel =
+    normalized.versionParts.length > 0 ? ` ${normalized.versionParts.join(".")}` : "";
   const contextLabel =
     normalized.contextSuffix?.toLowerCase() === "1m"
       ? " [1M]"
       : normalized.contextSuffix
         ? ` [${normalized.contextSuffix}]`
         : "";
-  return `${familyLabel}${contextLabel}`;
+  return `${familyLabel}${versionLabel}${contextLabel}`;
 }
 
 function currentModelIsAuthoritative(
