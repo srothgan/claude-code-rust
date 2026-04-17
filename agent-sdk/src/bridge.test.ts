@@ -127,9 +127,9 @@ test("refreshSupportedModesForSession uses resolved current model for auto-mode 
     },
   ];
   session.currentModel = {
-    resolved_id: "claude-sonnet-4-6[1m]",
-    display_name_short: "Sonnet 4.6 [1M]",
-    display_name_long: "Sonnet 4.6 [1M]",
+    resolved_id: "claude-sonnet-4-7[1m]",
+    display_name_short: "Sonnet 4.7 [1M]",
+    display_name_long: "Sonnet 4.7 [1M]",
     supports_effort: true,
     supported_effort_levels: ["low", "medium", "high"],
     supports_auto_mode: false,
@@ -644,7 +644,7 @@ test("buildQueryOptions trims startup model before passing sdk option", () => {
     cwd: "C:/work",
     launchSettings: {
       settings: {
-        model: "  claude-opus-4-6  ",
+        model: "  claude-opus-4-7  ",
         permissions: { defaultMode: "plan" },
       },
     },
@@ -656,7 +656,7 @@ test("buildQueryOptions trims startup model before passing sdk option", () => {
     sessionIdForLogs: () => "session-model",
   });
 
-  assert.equal(options.model, "claude-opus-4-6");
+  assert.equal(options.model, "claude-opus-4-7");
   assert.equal(options.permissionMode, "plan");
 });
 
@@ -2050,7 +2050,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.104");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.112");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -2433,27 +2433,27 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
 
 test("resolveCurrentModel keeps 1M context suffix in short and long display names", () => {
   const session = makeSessionState();
-  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
 
   const currentModel = resolveCurrentModel(session);
 
-  assert.equal(currentModel.display_name_short, "Opus 4.6 [1M]");
-  assert.equal(currentModel.display_name_long, "Opus 4.6 [1M]");
+  assert.equal(currentModel.display_name_short, "Opus 4.7 [1M]");
+  assert.equal(currentModel.display_name_long, "Opus 4.7 [1M]");
 });
 
 test("resolveCurrentModel does not inherit standard Opus capabilities for 1M when sibling variants exist", () => {
   const session = makeSessionState();
-  session.requestedModelId = "claude-opus-4-6";
-  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.requestedModelId = "claude-opus-4-7";
+  session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   session.availableModels = [
     {
-      id: "claude-opus-4-6",
+      id: "claude-opus-4-7",
       display_name: "Claude Opus",
       supports_effort: true,
       supported_effort_levels: ["low", "medium", "high"],
     },
     {
-      id: "claude-opus-4-6[1m]",
+      id: "claude-opus-4-7[1m]",
       display_name: "Claude Opus 1M",
       supports_effort: false,
       supported_effort_levels: [],
@@ -2462,23 +2462,23 @@ test("resolveCurrentModel does not inherit standard Opus capabilities for 1M whe
 
   const currentModel = resolveCurrentModel(session);
 
-  assert.equal(currentModel.catalog_id, "claude-opus-4-6[1m]");
+  assert.equal(currentModel.catalog_id, "claude-opus-4-7[1m]");
   assert.equal(currentModel.supports_effort, false);
 });
 
 test("resolveCurrentModel avoids suffix-insensitive fallback when sibling variants make it ambiguous", () => {
   const session = makeSessionState();
-  session.requestedModelId = "claude-opus-4-6";
-  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.requestedModelId = "claude-opus-4-7";
+  session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   session.availableModels = [
     {
-      id: "claude-opus-4-6",
+      id: "claude-opus-4-7",
       display_name: "Claude Opus",
       supports_effort: true,
       supported_effort_levels: ["low", "medium", "high"],
     },
     {
-      id: "claude-opus-4-6-alt[1m]",
+      id: "claude-opus-4-7-alt[1m]",
       display_name: "Claude Opus Alt 1M",
       supports_effort: false,
       supported_effort_levels: [],
@@ -2495,7 +2495,7 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
   const session = makeSessionState();
   session.model = "default";
   session.requestedModelId = "default";
-  session.resolvedRuntimeModelId = "claude-opus-4-6[1m]";
+  session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   refreshCurrentModel(session);
 
   const events = captureBridgeEvents(() => {
@@ -2512,9 +2512,9 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
     type: "current_model_update",
     current_model: {
       requested_id: "default",
-      resolved_id: "claude-opus-4-6[1m]",
-      display_name_short: "Opus 4.6 [1M]",
-      display_name_long: "Opus 4.6 [1M]",
+      resolved_id: "claude-opus-4-7[1m]",
+      display_name_short: "Opus 4.7 [1M]",
+      display_name_long: "Opus 4.7 [1M]",
       supports_effort: false,
       supported_effort_levels: [],
       is_authoritative: true,

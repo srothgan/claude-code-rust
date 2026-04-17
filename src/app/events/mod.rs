@@ -1558,7 +1558,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-6")),
+                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
             )),
         );
 
@@ -1632,7 +1632,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-6")),
+                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
             )),
         );
 

@@ -242,11 +242,11 @@ mod tests {
     fn status_lines_shows_model() {
         let mut app = App::test_default();
         app.current_model = Some(
-            crate::agent::model::CurrentModel::new("claude-sonnet-4-6", "Sonnet", "Sonnet 4.6")
+            crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
                 .authoritative(true),
         );
         let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("Sonnet 4.6"));
+        assert!(text.contains("Sonnet 4.7"));
     }
 
     #[test]

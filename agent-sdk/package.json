@@ -17,7 +17,7 @@
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.104"
+    "@anthropic-ai/claude-agent-sdk": "0.2.112"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "0.81.0",

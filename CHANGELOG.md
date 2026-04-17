@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### CI and Dependencies
+
+- Bump `@anthropic-ai/claude-agent-sdk` from `0.2.104` to `0.2.112` in both the published package and bundled bridge, update the bridge version gate (`EXPECTED_AGENT_SDK_VERSION`), and refresh Rust TUI and bridge test fixtures from `4.6` to `4.7`
+
 ## [0.11.1] - 2026-04-16 [Changes][v0.11.1]
 
 ### Features

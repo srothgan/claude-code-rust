@@ -553,7 +553,7 @@ mod tests {
     fn footer_model_badge_uses_resolved_model_and_effort() {
         let mut app = App::test_default();
         app.current_model = Some(
-            model::CurrentModel::new("claude-sonnet-4-6", "Sonnet 4.6", "Sonnet 4.6")
+            model::CurrentModel::new("claude-sonnet-4-7", "Sonnet 4.7", "Sonnet 4.7")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
                     model::EffortLevel::Low,
@@ -563,7 +563,7 @@ mod tests {
                 .authoritative(true),
         );
 
-        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.6/Med".to_owned()));
+        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Med".to_owned()));
     }
 
     #[test]

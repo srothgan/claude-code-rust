@@ -279,7 +279,7 @@ mod tests {
     fn ignores_status_bar_percentage_noise() {
         let sample = r"
         Claude Code v2.1.32
-        01:07 |  | Opus 4.6 | default | 0% left
+        01:07 |  | Opus 4.7 | default | 0% left
         Current session
         10% used
         Current week (all models)

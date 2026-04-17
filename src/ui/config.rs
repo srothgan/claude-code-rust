@@ -964,7 +964,7 @@ mod tests {
         let mut app = App::test_default();
         app.available_models = vec![
             AvailableModel::new("default", "Default")
-                .description("Opus 4.6")
+                .description("Opus 4.7")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
                     EffortLevel::Low,
