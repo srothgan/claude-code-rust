@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.3] - 2026-04-19 [Changes][v0.11.3]
+
+### Fixes
+
+- **Plan approval Ctrl shortcuts** (@srothgan): Replace plain `y`/`n` exit-plan approvals with `Ctrl+y`/`Ctrl+n`.
+
 ## [0.11.2] - 2026-04-19 [Changes][v0.11.2]
 
 ### Features
@@ -511,6 +517,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.11.3]: https://github.com/srothgan/claude-code-rust/compare/v0.11.2...v0.11.3
 [v0.11.2]: https://github.com/srothgan/claude-code-rust/compare/v0.11.1...v0.11.2
 [v0.11.1]: https://github.com/srothgan/claude-code-rust/compare/v0.11.0...v0.11.1
 [v0.11.0]: https://github.com/srothgan/claude-code-rust/compare/v0.10.0...v0.11.0
