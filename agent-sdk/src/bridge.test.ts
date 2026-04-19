@@ -2493,8 +2493,8 @@ test("resolveCurrentModel avoids suffix-insensitive fallback when sibling varian
 
 test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () => {
   const session = makeSessionState();
-  session.model = "default";
-  session.requestedModelId = "default";
+  session.model = "opus";
+  session.requestedModelId = "opus";
   session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   refreshCurrentModel(session);
 
@@ -2511,7 +2511,7 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
   assert.deepEqual(lastEvent.update, {
     type: "current_model_update",
     current_model: {
-      requested_id: "default",
+      requested_id: "opus",
       resolved_id: "claude-opus-4-7[1m]",
       display_name_short: "Opus 4.7 [1M]",
       display_name_long: "Opus 4.7 [1M]",
@@ -2562,7 +2562,7 @@ test("emitCurrentModelUpdate can publish catalog-enriched current model metadata
 
 test("shouldInvalidateResolvedRuntimeModel invalidates stale runtime identity only when the request changes", () => {
   assert.equal(
-    shouldInvalidateResolvedRuntimeModel("default", "default", "sonnet"),
+    shouldInvalidateResolvedRuntimeModel("opus", "opus", "sonnet"),
     true,
   );
   assert.equal(
@@ -2570,9 +2570,21 @@ test("shouldInvalidateResolvedRuntimeModel invalidates stale runtime identity on
     true,
   );
   assert.equal(
-    shouldInvalidateResolvedRuntimeModel("default", "default", "default"),
+    shouldInvalidateResolvedRuntimeModel("opus", "opus", "opus"),
     false,
   );
+});
+
+test("resolveCurrentModel strips release date suffix from dated model ids", () => {
+  const session = makeSessionState();
+  session.model = "claude-opus-4-5-20251101";
+  session.requestedModelId = "claude-opus-4-5-20251101";
+  session.resolvedRuntimeModelId = "claude-opus-4-5-20251101";
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.display_name_short, "Opus 4.5");
+  assert.equal(currentModel.display_name_long, "Opus 4.5");
 });
 
 test("resolveCurrentModel falls back to the requested model immediately after stale runtime identity is cleared", () => {

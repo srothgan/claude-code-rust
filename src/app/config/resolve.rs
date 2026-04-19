@@ -1,6 +1,6 @@
 use super::{
-    DEFAULT_MODEL_ID, DEFAULT_PERMISSION_OPTIONS, DefaultPermissionMode, LANGUAGE_MAX_CHARS,
-    LANGUAGE_MIN_CHARS, OutputStyle, PreferredNotifChannel, ResolvedChoice, ResolvedSetting,
+    DEFAULT_PERMISSION_OPTIONS, DefaultPermissionMode, LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS,
+    OPUS_MODEL_ALIAS_ID, OutputStyle, PreferredNotifChannel, ResolvedChoice, ResolvedSetting,
     ResolvedSettingValue, RuntimeCatalogKind, SettingId, SettingOptions, SettingSpec,
     SettingValidation, store,
 };
@@ -115,7 +115,7 @@ fn resolve_model_setting(
         },
         Ok(store::PersistedSettingValue::String(value))
             if available_models.is_empty()
-                || value == DEFAULT_MODEL_ID
+                || value == OPUS_MODEL_ALIAS_ID
                 || available_models.iter().any(|model| model.id == value) =>
         {
             ResolvedSetting {
@@ -140,7 +140,7 @@ fn option_exists(spec: &SettingSpec, value: &str) -> bool {
         SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
             DEFAULT_PERMISSION_OPTIONS.iter().any(|option| option.stored == value)
         }
-        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => value == DEFAULT_MODEL_ID,
+        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => value == OPUS_MODEL_ALIAS_ID,
         SettingOptions::None => false,
     }
 }

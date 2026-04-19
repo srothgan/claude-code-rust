@@ -850,9 +850,7 @@ mod tests {
     }
 
     fn test_current_model(model_name: &str) -> model::CurrentModel {
-        let (short, long) =
-            if model_name == "default" { ("Default", "Default") } else { (model_name, model_name) };
-        model::CurrentModel::new(model_name, short, long).authoritative(model_name != "default")
+        model::CurrentModel::new(model_name, model_name, model_name).authoritative(true)
     }
 
     fn connected_event(model_name: &str) -> ClientEvent {
@@ -1438,7 +1436,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "old", "/test", "old"));
 
-        handle_client_event(&mut app, connected_event("default"));
+        handle_client_event(&mut app, connected_event("opus"));
 
         let Some(first) = app.messages.first() else {
             panic!("missing welcome message");
@@ -1559,12 +1557,12 @@ mod tests {
     fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("session-1"));
-        app.current_model = Some(test_current_model("default"));
+        app.current_model = Some(test_current_model("opus"));
         app.messages =
             vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
-            Some("default"),
+            Some("opus"),
         );
 
         crate::app::config::store::set_model(
@@ -1643,7 +1641,7 @@ mod tests {
     #[test]
     fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         let mut app = make_test_app();
-        app.current_model = Some(test_current_model("default"));
+        app.current_model = Some(test_current_model("opus"));
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages.push(user_msg("hello"));
 

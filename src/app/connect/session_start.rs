@@ -69,7 +69,7 @@ fn build_session_settings_object(app: &App) -> Value {
         Value::Bool(app.config.always_thinking_effective()),
     );
 
-    if let Some(model) = store::model(&app.config.committed_settings_document).ok().flatten() {
+    if let Some(model) = app.config.model_effective() {
         settings.insert("model".to_owned(), Value::String(model));
     }
 
@@ -301,7 +301,7 @@ mod tests {
             session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
 
         assert_eq!(launch_settings.language, None);
-        assert_setting_absent(&launch_settings, "model");
+        assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
         assert_permission_mode(&launch_settings, "default");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_launch_settings_include_supported_settings_json_without_model_when_unset() {
+    fn persisted_launch_settings_include_supported_settings_json_with_explicit_opus_when_unset() {
         let mut app = App::test_default();
         store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
         store::set_thinking_effort_level(
@@ -334,7 +334,7 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language, None);
-        assert_setting_absent(&launch_settings, "model");
+        assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
         assert_permission_mode(&launch_settings, "default");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));
@@ -390,13 +390,6 @@ mod tests {
 
     fn assert_setting_value(launch_settings: &SessionLaunchSettings, key: &str, expected: &Value) {
         assert_eq!(settings_object(launch_settings).get(key), Some(expected));
-    }
-
-    fn assert_setting_absent(launch_settings: &SessionLaunchSettings, key: &str) {
-        assert!(
-            !settings_object(launch_settings).contains_key(key),
-            "expected `{key}` to be absent"
-        );
     }
 
     fn assert_permission_mode(launch_settings: &SessionLaunchSettings, expected: &str) {

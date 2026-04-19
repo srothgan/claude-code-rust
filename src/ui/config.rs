@@ -963,7 +963,7 @@ mod tests {
     fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
         let mut app = App::test_default();
         app.available_models = vec![
-            AvailableModel::new("default", "Default")
+            AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
@@ -1003,7 +1003,7 @@ mod tests {
     fn model_overlay_scroll_accounts_for_wrapped_lines() {
         let mut app = App::test_default();
         app.available_models = vec![
-            AvailableModel::new("default", "Default")
+            AvailableModel::new("opus", "Opus")
                 .description("1234567890")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
@@ -1028,6 +1028,13 @@ mod tests {
     fn model_overlay_scroll_accounts_for_badge_padding_width() {
         let mut app = App::test_default();
         app.available_models = vec![
+            AvailableModel::new("opus", "Opus")
+                .description("Frontier")
+                .supports_effort(true)
+                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
+                .supports_adaptive_thinking(Some(true))
+                .supports_fast_mode(Some(true))
+                .supports_auto_mode(Some(true)),
             AvailableModel::new("sonnet", "Sonnet")
                 .description("Everyday tasks")
                 .supports_effort(true)
@@ -1046,8 +1053,8 @@ mod tests {
             selected_effort: EffortLevel::Medium,
         }));
 
-        let narrow_scroll = assert_selected_model_visible(&app, 4, 18);
-        let wide_scroll = assert_selected_model_visible(&app, 4, 40);
+        let narrow_scroll = assert_selected_model_visible(&app, 3, 12);
+        let wide_scroll = assert_selected_model_visible(&app, 3, 40);
         assert!(narrow_scroll > 0);
         assert!(narrow_scroll >= wide_scroll);
     }

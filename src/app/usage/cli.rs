@@ -167,7 +167,7 @@ fn is_likely_status_context_line(line: &str) -> bool {
         return false;
     }
     let lower = line.to_ascii_lowercase();
-    ["opus", "sonnet", "haiku", "default"].iter().any(|token| lower.contains(token))
+    ["opus", "sonnet", "haiku"].iter().any(|token| lower.contains(token))
 }
 
 fn extract_usage_error(text: &str) -> Option<String> {

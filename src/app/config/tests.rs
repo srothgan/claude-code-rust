@@ -857,7 +857,7 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
 
     assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
-    assert_eq!(setting_display_value(&app, setting_spec(SettingId::Model), &resolved), "Default");
+    assert_eq!(setting_display_value(&app, setting_spec(SettingId::Model), &resolved), "Opus");
 }
 
 #[test]
@@ -874,7 +874,7 @@ fn model_overlay_options_are_sorted_alphabetically() {
         .map(|option| option.display_name)
         .collect::<Vec<_>>();
 
-    assert_eq!(labels, vec!["Default", "Haiku", "Opus", "Sonnet"]);
+    assert_eq!(labels, vec!["Haiku", "Opus", "Sonnet"]);
 }
 
 #[test]

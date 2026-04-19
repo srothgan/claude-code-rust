@@ -154,7 +154,7 @@ export function shouldEmitStartupAuthRequiredForAccount(account: AccountInfo): b
   return !nonEmptyString(account.email) && !nonEmptyString(account.apiKeySource);
 }
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-const DEFAULT_MODEL_NAME = "default";
+const OPUS_MODEL_ALIAS = "opus";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 function isSdkElicitationContentValue(value: Json): value is string | number | boolean | string[] {
@@ -774,7 +774,7 @@ function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | und
 function initialSessionModel(launchSettings: SessionLaunchSettings): string {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
   const model = typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model || DEFAULT_MODEL_NAME;
+  return model || OPUS_MODEL_ALIAS;
 }
 
 function startupModelOption(
@@ -1256,16 +1256,20 @@ export function handleElicitationResponse(
 }
 type NormalizedModelKey = {
   original: string;
-  family: "opus" | "sonnet" | "haiku" | "unknown" | "default";
+  family: "opus" | "sonnet" | "haiku" | "unknown";
   versionParts: number[];
   variantParts: string[];
+  buildParts: string[];
   contextSuffix?: string;
 };
 
+const MAX_MODEL_VERSION_PARTS = 2;
+const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
+
 function normalizeModelKey(id: string): NormalizedModelKey {
   const original = id.trim();
-  if (!original || original === DEFAULT_MODEL_NAME) {
-    return { original, family: "default", versionParts: [], variantParts: [] };
+  if (!original) {
+    return { original, family: "unknown", versionParts: [], variantParts: [], buildParts: [] };
   }
 
   const lower = original.toLowerCase();
@@ -1281,26 +1285,35 @@ function normalizeModelKey(id: string): NormalizedModelKey {
     familyPart === "opus" || familyPart === "sonnet" || familyPart === "haiku"
       ? familyPart
       : "unknown";
-  const versionParts =
-    family === "unknown"
-      ? []
-      : parts
-          .slice(1)
-          .filter((part) => /^\d+$/.test(part))
-          .map((part) => Number.parseInt(part, 10))
-          .filter((part) => Number.isFinite(part));
-  const variantParts =
-    family === "unknown"
-      ? []
-      : parts
-          .slice(1)
-          .filter((part) => !/^\d+$/.test(part));
+  const versionParts: number[] = [];
+  const variantParts: string[] = [];
+  const buildParts: string[] = [];
+
+  if (family !== "unknown") {
+    for (const part of parts.slice(1)) {
+      if (/^\d+$/.test(part)) {
+        if (versionParts.length < MAX_MODEL_VERSION_PARTS) {
+          const parsed = Number.parseInt(part, 10);
+          if (Number.isFinite(parsed)) {
+            versionParts.push(parsed);
+          }
+          continue;
+        }
+        if (RELEASE_BUILD_TOKEN.test(part)) {
+          buildParts.push(part);
+          continue;
+        }
+      }
+      variantParts.push(part);
+    }
+  }
 
   return {
     original,
     family,
     versionParts,
     variantParts,
+    buildParts,
     ...(contextSuffix ? { contextSuffix } : {}),
   };
 }
@@ -1308,9 +1321,6 @@ function normalizeModelKey(id: string): NormalizedModelKey {
 function modelKeysAreCompatible(leftId: string, rightId: string): boolean {
   const left = normalizeModelKey(leftId);
   const right = normalizeModelKey(rightId);
-  if (left.family === "default" || right.family === "default") {
-    return false;
-  }
   if (left.family === "unknown" || right.family === "unknown") {
     return left.original.toLowerCase() === right.original.toLowerCase();
   }
@@ -1335,9 +1345,6 @@ function sameContextSuffix(leftId: string, rightId: string): boolean {
 function sameFamilyAndVersion(leftId: string, rightId: string): boolean {
   const left = normalizeModelKey(leftId);
   const right = normalizeModelKey(rightId);
-  if (left.family === "default" || right.family === "default") {
-    return false;
-  }
   if (left.family === "unknown" || right.family === "unknown") {
     return left.original.toLowerCase() === right.original.toLowerCase();
   }
@@ -1378,9 +1385,6 @@ function hasVariantSiblingConflict(
 
 function humanizeModelId(id: string): string {
   const normalized = normalizeModelKey(id);
-  if (normalized.family === "default") {
-    return "Default";
-  }
   if (normalized.family === "unknown") {
     return id;
   }
@@ -1404,9 +1408,6 @@ function humanizeModelId(id: string): string {
 
 function shortDisplayNameForModelId(id: string): string {
   const normalized = normalizeModelKey(id);
-  if (normalized.family === "default") {
-    return "Default";
-  }
   if (normalized.family === "unknown") {
     return id;
   }
@@ -1431,8 +1432,8 @@ function currentModelIsAuthoritative(
   requestedId: string | undefined,
 ): boolean {
   const resolved = resolvedId.trim();
-  if (!resolved || resolved === DEFAULT_MODEL_NAME || resolved === "Connecting...") {
-    return Boolean(requestedId?.trim() && requestedId.trim() !== DEFAULT_MODEL_NAME);
+  if (!resolved || resolved === "Connecting...") {
+    return Boolean(requestedId?.trim());
   }
   return true;
 }
@@ -1472,9 +1473,9 @@ export function resolveCurrentModel(session: SessionState): CurrentModel {
     session.resolvedRuntimeModelId?.trim() ||
     session.model.trim() ||
     requestedId ||
-    DEFAULT_MODEL_NAME;
+    OPUS_MODEL_ALIAS;
   const catalogModel = resolveCatalogModel(session.availableModels, resolvedId, requestedId);
-  const runtimeDisplayId = resolvedId || requestedId || DEFAULT_MODEL_NAME;
+  const runtimeDisplayId = resolvedId || requestedId || OPUS_MODEL_ALIAS;
   const displayNameShort = shortDisplayNameForModelId(runtimeDisplayId);
   const displayNameLong = humanizeModelId(runtimeDisplayId);
   const currentModel: CurrentModel = {

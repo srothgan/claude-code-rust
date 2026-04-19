@@ -378,8 +378,8 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "vim", label: "Vim" },
 ];
-const DEFAULT_MODEL_ID: &str = "default";
-const DEFAULT_MODEL_LABEL: &str = "Default";
+const OPUS_MODEL_ALIAS_ID: &str = "opus";
+const OPUS_MODEL_ALIAS_LABEL: &str = "Opus";
 const DEFAULT_EFFORT_LEVELS: [EffortLevel; 3] =
     [EffortLevel::Low, EffortLevel::Medium, EffortLevel::High];
 const LANGUAGE_MIN_CHARS: usize = 2;
@@ -409,8 +409,8 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
     SettingSpec {
         id: SettingId::Model,
         entry_id: "A19",
-        label: "Default model",
-        description: "Sets the default model for new sessions and opens the combined model and thinking effort picker.",
+        label: "Model",
+        description: "Sets the model for new sessions and opens the combined model and thinking effort picker.",
         file: SettingFile::Settings,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,
@@ -851,7 +851,7 @@ impl ConfigState {
             .value
         {
             ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
-                Some(DEFAULT_MODEL_ID.to_owned())
+                Some(OPUS_MODEL_ALIAS_ID.to_owned())
             }
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,
@@ -1326,7 +1326,7 @@ pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedS
             }
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
-            DEFAULT_MODEL_LABEL.to_owned()
+            OPUS_MODEL_ALIAS_LABEL.to_owned()
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), SettingId::Model) => {
             model_status_label(Some(value), app)
@@ -1371,7 +1371,7 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
                 if app.available_models.is_empty() {
                     vec![
-                        DEFAULT_MODEL_LABEL.to_owned(),
+                        OPUS_MODEL_ALIAS_LABEL.to_owned(),
                         "Connect to load available models".to_owned(),
                     ]
                 } else {
@@ -1576,14 +1576,14 @@ pub fn request_status_snapshot_if_needed(app: &App) {
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
     match model {
-        None => DEFAULT_MODEL_LABEL.to_owned(),
+        None => OPUS_MODEL_ALIAS_LABEL.to_owned(),
         Some(model_id) => model_overlay_options(app)
             .into_iter()
             .find(|candidate| candidate.id == model_id)
             .map_or_else(
                 || {
-                    if model_id == DEFAULT_MODEL_ID {
-                        DEFAULT_MODEL_LABEL.to_owned()
+                    if model_id == OPUS_MODEL_ALIAS_ID {
+                        OPUS_MODEL_ALIAS_LABEL.to_owned()
                     } else {
                         model_id.to_owned()
                     }

@@ -1,8 +1,8 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DEFAULT_MODEL_ID,
-    DEFAULT_MODEL_LABEL, DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState,
-    OutputStyle, OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
+    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DefaultPermissionMode,
+    LanguageOverlayState, ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle,
+    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
     PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
     SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
     resolved_setting, setting_display_value, setting_spec, store,
@@ -207,10 +207,6 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
 }
 
 pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
-    if model_id == DEFAULT_MODEL_ID {
-        return true;
-    }
-
     model_overlay_options(app)
         .into_iter()
         .find(|option| option.id == model_id)
@@ -259,18 +255,6 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             supports_auto_mode: model.supports_auto_mode,
         })
         .collect::<Vec<_>>();
-    if !options.iter().any(|option| option.id == DEFAULT_MODEL_ID) {
-        options.push(OverlayModelOption {
-            id: DEFAULT_MODEL_ID.to_owned(),
-            display_name: DEFAULT_MODEL_LABEL.to_owned(),
-            description: Some("Uses Claude's default model selection.".to_owned()),
-            supports_effort: true,
-            supported_effort_levels: DEFAULT_EFFORT_LEVELS.to_vec(),
-            supports_adaptive_thinking: None,
-            supports_fast_mode: None,
-            supports_auto_mode: None,
-        });
-    }
     options.sort_by(|left, right| {
         let left_key = left.display_name.to_ascii_lowercase();
         let right_key = right.display_name.to_ascii_lowercase();
@@ -381,7 +365,7 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
         .config
         .model_effective()
         .filter(|value| options.iter().any(|option| option.id == *value))
-        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_owned());
+        .unwrap_or_else(|| OPUS_MODEL_ALIAS_ID.to_owned());
     let current_effort = app.config.thinking_effort_effective();
     let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
     app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
