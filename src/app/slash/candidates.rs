@@ -49,9 +49,7 @@ fn model_candidate_secondary(
     let Some(version) = opus_version_label_for_model_id(&pinned_model_id) else {
         return base;
     };
-    let Some(description) = base else {
-        return None;
-    };
+    let description = base?;
 
     Some(
         description

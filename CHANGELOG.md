@@ -4,8 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Project-local Opus version controls** (#146, @srothgan): Add `/opus-version` to pin the Opus alias per project.
+
 ### Fixes
 
+- **Model alias cleanup and Opus naming** (#146, @srothgan): Replace `Default` with the explicit `opus` alias and normalize dated Opus labels.
+- **Dev versus installed bridge resolution** (#146, @srothgan): Make `cargo run` use the repo bridge and installed builds use the bundled bridge.
 - **Tool-call diff rendering and scrollbar lane** (#138, @srothgan): Reserve a dedicated scrollbar column and keep diff content out of it.
 - **Versioned short model names** (#139, @srothgan): Show resolved model versions in short model names.
 - **Bridge script resolution precedence** (#142, @srothgan): Prefer the bundled bridge script and keep repo-local fallback debug-only.
