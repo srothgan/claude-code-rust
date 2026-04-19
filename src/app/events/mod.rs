@@ -4272,6 +4272,42 @@ mod tests {
     }
 
     #[test]
+    fn plan_approval_raw_ctrl_y_resolves_without_editing_input() {
+        let mut app = make_test_app();
+        app.input.set_text("seed");
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "plan-approve",
+                    "Approve",
+                    model::PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    "plan-reject",
+                    "Reject",
+                    model::PermissionOptionKind::PlanReject,
+                ),
+            ],
+            true,
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE)),
+        );
+
+        let resp = response_rx.try_recv().expect("raw ctrl+y should resolve plan approval");
+        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id.clone(), "plan-approve");
+        assert_eq!(app.input.text(), "seed");
+        assert!(app.pending_interaction_ids.is_empty());
+    }
+
+    #[test]
     fn connecting_state_ctrl_c_with_non_empty_selection_does_not_quit() {
         let mut app = make_test_app();
         let _clipboard =

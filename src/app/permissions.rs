@@ -5,10 +5,11 @@ use super::inline_interactions::{
     focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
     get_focused_interaction_tc, invalidate_if_changed, pop_next_valid_interaction_id,
 };
+use super::keys::is_ctrl_char_shortcut;
 use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::agent::model::PermissionOptionKind;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 fn focused_permission(app: &App) -> Option<&crate::app::InlinePermission> {
     focused_interaction(app)?.pending_permission.as_ref()
@@ -23,15 +24,6 @@ where
     F: FnMut(&model::PermissionOption) -> bool,
 {
     focused_permission(app)?.options.iter().position(&mut predicate)
-}
-
-fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
-}
-
-fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
-    is_ctrl_shortcut(key.modifiers)
-        && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
 }
 
 fn normalized_option_tokens(option: &model::PermissionOption) -> String {
@@ -176,27 +168,23 @@ fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<boo
         return None;
     }
     if focused_permission_is_plan_approval(app) {
-        if is_ctrl_char_shortcut(key, 'y')
-            || is_ctrl_char_shortcut(key, 'a')
-            || is_ctrl_char_shortcut(key, 'n')
-        {
+        if is_ctrl_char_shortcut(key, 'y') {
+            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
+            {
+                respond_permission(app, Some(idx));
+                return Some(true);
+            }
             return Some(false);
         }
-        if !is_ctrl_shortcut(key.modifiers) {
-            if matches!(key.code, KeyCode::Char('y' | 'Y'))
-                && let Some(idx) =
-                    focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
-            {
+        if is_ctrl_char_shortcut(key, 'n') {
+            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::PlanReject) {
                 respond_permission(app, Some(idx));
                 return Some(true);
             }
-            if matches!(key.code, KeyCode::Char('n' | 'N'))
-                && let Some(idx) =
-                    focused_option_index_by_kind(app, PermissionOptionKind::PlanReject)
-            {
-                respond_permission(app, Some(idx));
-                return Some(true);
-            }
+            return Some(false);
+        }
+        if is_ctrl_char_shortcut(key, 'a') {
+            return Some(false);
         }
         return None;
     }
@@ -346,6 +334,7 @@ mod tests {
         App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission,
         MessageBlock, MessageRole, ToolCallInfo,
     };
+    use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
     use tokio::sync::oneshot;
 
@@ -537,6 +526,149 @@ mod tests {
     fn plain_y_and_n_are_not_consumed() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
+
+        let consumed_y = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            true,
+        );
+        let consumed_n = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            true,
+        );
+
+        assert!(!consumed_y);
+        assert!(!consumed_n);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn ctrl_y_approves_plan_permission() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "plan-approve",
+                    "Approve",
+                    PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    "plan-reject",
+                    "Reject",
+                    PermissionOptionKind::PlanReject,
+                ),
+            ],
+            true,
+        );
+
+        let consumed = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            true,
+        );
+        assert!(consumed);
+
+        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+y");
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(sel.option_id.clone(), "plan-approve");
+    }
+
+    #[test]
+    fn raw_ctrl_y_approves_plan_permission() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "plan-approve",
+                    "Approve",
+                    PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    "plan-reject",
+                    "Reject",
+                    PermissionOptionKind::PlanReject,
+                ),
+            ],
+            true,
+        );
+
+        let consumed = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE),
+            true,
+        );
+        assert!(consumed);
+
+        let resp = rx.try_recv().expect("plan permission should be answered by raw ctrl+y");
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(sel.option_id.clone(), "plan-approve");
+    }
+
+    #[test]
+    fn ctrl_n_rejects_plan_permission() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "plan-approve",
+                    "Approve",
+                    PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    "plan-reject",
+                    "Reject",
+                    PermissionOptionKind::PlanReject,
+                ),
+            ],
+            true,
+        );
+
+        let consumed = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            true,
+        );
+        assert!(consumed);
+
+        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+n");
+        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(sel.option_id.clone(), "plan-reject");
+    }
+
+    #[test]
+    fn plain_y_and_n_are_not_consumed_for_plan_approval() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                model::PermissionOption::new(
+                    "plan-approve",
+                    "Approve",
+                    PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    "plan-reject",
+                    "Reject",
+                    PermissionOptionKind::PlanReject,
+                ),
+            ],
+            true,
+        );
 
         let consumed_y = handle_permission_key(
             &mut app,

@@ -36,7 +36,7 @@ fn ctrl_char(expected: char) -> Option<char> {
     Some(char::from((upper as u8) & 0x1f))
 }
 
-fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
+pub(super) fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
     match key.code {
         KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected) => is_ctrl_shortcut(key.modifiers),
         KeyCode::Char(c) if Some(c) == ctrl_char(expected) => {

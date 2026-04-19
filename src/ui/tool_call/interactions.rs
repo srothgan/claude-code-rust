@@ -211,8 +211,8 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
         let (icon, icon_color, shortcut) = match opt.kind {
-            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green, " [y]"),
-            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red, " [n]"),
+            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green, " [Ctrl+y]"),
+            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red, " [Ctrl+n]"),
             _ => ("\u{00b7}", Color::Gray, ""),
         };
 
@@ -238,7 +238,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     }
 
     lines.push(Line::from(Span::styled(
-        "  \u{2191}\u{2193} select  enter confirm  y approve  n/esc reject",
+        "  \u{2191}\u{2193} select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject",
         Style::default().fg(theme::DIM),
     )));
 
@@ -470,10 +470,17 @@ mod tests {
 
     fn test_permission(kind: PermissionOptionKind) -> InlinePermission {
         let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        let reject_kind =
+            if matches!(kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+            {
+                PermissionOptionKind::PlanReject
+            } else {
+                PermissionOptionKind::RejectOnce
+            };
         InlinePermission {
             options: vec![
                 PermissionOption::new("allow", "Allow", kind),
-                PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+                PermissionOption::new("deny", "Deny", reject_kind),
             ],
             display: None,
             response_tx,
@@ -580,5 +587,26 @@ mod tests {
             .expect("selected plan label");
 
         assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
+    }
+
+    #[test]
+    fn plan_approval_hints_use_ctrl_shortcuts_only() {
+        let tc = test_tool_call("ExitPlanMode");
+        let perm = test_permission(PermissionOptionKind::PlanApprove);
+
+        let rendered = render_plan_approval_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("[Ctrl+y]"));
+        assert!(rendered.contains("[Ctrl+n]"));
+        assert!(rendered.contains("Ctrl+y approve"));
+        assert!(rendered.contains("Ctrl+n/esc reject"));
+        assert!(!rendered.contains(" [y]"));
+        assert!(!rendered.contains(" [n]"));
     }
 }
