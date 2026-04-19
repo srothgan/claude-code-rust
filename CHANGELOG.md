@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- **Tool-call diff rendering and scrollbar lane** (#138, @srothgan): Tighten tool-call diff rendering and reserve a dedicated chat scrollbar column so transcript content no longer renders underneath it
+- **Versioned short model names** (#139, @srothgan): Include model version numbers in `display_name_short` so footer and status surfaces show the resolved runtime model version
+- **Bridge script resolution precedence** (@srothgan): Prefer the bundled `agent-sdk/dist/bridge.js` near the installed executable and keep repo-local fallback debug-only
+
 ### CI and Dependencies
 
 - Bump `@anthropic-ai/claude-agent-sdk` from `0.2.104` to `0.2.112` in both the published package and bundled bridge, update the bridge version gate (`EXPECTED_AGENT_SDK_VERSION`), and refresh Rust TUI and bridge test fixtures from `4.6` to `4.7`
