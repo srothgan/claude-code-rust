@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **Tool-call diff rendering and scrollbar lane** (#138, @srothgan): Tighten tool-call diff rendering and reserve a dedicated chat scrollbar column so transcript content no longer renders underneath it
 - **Versioned short model names** (#139, @srothgan): Include model version numbers in `display_name_short` so footer and status surfaces show the resolved runtime model version
-- **Bridge script resolution precedence** (@srothgan): Prefer the bundled `agent-sdk/dist/bridge.js` near the installed executable and keep repo-local fallback debug-only
+- **Bridge script resolution precedence** (#142, @srothgan): Prefer the bundled `agent-sdk/dist/bridge.js` near the installed executable and keep repo-local fallback debug-only
 
 ### CI and Dependencies
 
