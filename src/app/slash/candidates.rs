@@ -7,8 +7,59 @@ use super::{
     MAX_CANDIDATES, SlashCandidate, SlashContext, SlashDetection, SlashState, normalize_slash_name,
 };
 use crate::app::App;
+use crate::app::config::store;
 use crate::app::dialog::DialogState;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
+const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
+const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
+
+fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
+    match model_id {
+        OPUS_4_5_MODEL_ID => Some("4.5"),
+        OPUS_4_6_MODEL_ID => Some("4.6"),
+        OPUS_4_7_MODEL_ID => Some("4.7"),
+        _ => None,
+    }
+}
+
+fn is_sdk_default_model_option(model: &crate::agent::model::AvailableModel) -> bool {
+    model.id.eq_ignore_ascii_case("default") || model.display_name.eq_ignore_ascii_case("default")
+}
+
+fn model_candidate_secondary(
+    app: &App,
+    model: &crate::agent::model::AvailableModel,
+) -> Option<String> {
+    let base = model
+        .description
+        .clone()
+        .or_else(|| (model.display_name != model.id).then(|| model.id.clone()));
+
+    if !model.id.eq_ignore_ascii_case("opus") && !model.id.eq_ignore_ascii_case("opus[1m]") {
+        return base;
+    }
+
+    let Some(pinned_model_id) =
+        store::opus_version_pin(&app.config.committed_local_settings_document).ok().flatten()
+    else {
+        return base;
+    };
+    let Some(version) = opus_version_label_for_model_id(&pinned_model_id) else {
+        return base;
+    };
+    let Some(description) = base else {
+        return None;
+    };
+
+    Some(
+        description
+            .replace("Opus 4.7", &format!("Opus {version}"))
+            .replace("Opus 4.6", &format!("Opus {version}"))
+            .replace("Opus 4.5", &format!("Opus {version}")),
+    )
+}
 
 pub(super) fn detect_argument_at_cursor(
     chars: &[char],
@@ -109,12 +160,18 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(command_name, "/1m-context" | "/docs" | "/mode" | "/model" | "/resume")
+    matches!(
+        command_name,
+        "/1m-context" | "/docs" | "/mode" | "/model" | "/opus-version" | "/resume"
+    )
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
     arg_index == 0
-        && matches!(command_name, "/1m-context" | "/docs" | "/mode" | "/model" | "/resume")
+        && matches!(
+            command_name,
+            "/1m-context" | "/docs" | "/mode" | "/model" | "/opus-version" | "/resume"
+        )
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -142,6 +199,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/mode".into(), "Set session mode".into());
     by_name.insert("/model".into(), "Set session model".into());
     by_name.insert("/new-session".into(), "Start a fresh session".into());
+    by_name.insert("/opus-version".into(), "Pin the Opus alias version for this folder".into());
     by_name.insert("/resume".into(), "Resume a session by ID".into());
     by_name.insert("/plugins".into(), "Open plugins".into());
     by_name.insert("/status".into(), "Show session status".into());
@@ -280,6 +338,30 @@ pub(super) fn argument_candidates(
                 secondary: Some((*description).to_owned()),
             })
             .collect(),
+        "/opus-version" => [
+            ("4.5", "Claude Opus 4.5", OPUS_4_5_MODEL_ID),
+            ("4.6", "Claude Opus 4.6", OPUS_4_6_MODEL_ID),
+            ("4.7", "Claude Opus 4.7", OPUS_4_7_MODEL_ID),
+        ]
+        .into_iter()
+        .map(|(value, label, _model_id)| SlashCandidate {
+            insert_value: value.to_owned(),
+            primary: value.to_owned(),
+            secondary: Some(label.to_owned()),
+        })
+        .chain([
+            SlashCandidate {
+                insert_value: "default".to_owned(),
+                primary: "default".to_owned(),
+                secondary: Some("Use Claude default Opus alias".to_owned()),
+            },
+            SlashCandidate {
+                insert_value: "status".to_owned(),
+                primary: "status".to_owned(),
+                secondary: Some("Show current project-local Opus pin".to_owned()),
+            },
+        ])
+        .collect(),
         "/resume" => app
             .recent_sessions
             .iter()
@@ -311,13 +393,11 @@ pub(super) fn argument_candidates(
         "/model" => app
             .available_models
             .iter()
+            .filter(|model| !is_sdk_default_model_option(model))
             .map(|model| SlashCandidate {
                 insert_value: model.id.clone(),
                 primary: model.display_name.clone(),
-                secondary: model
-                    .description
-                    .clone()
-                    .or_else(|| (model.display_name != model.id).then(|| model.id.clone())),
+                secondary: model_candidate_secondary(app, model),
             })
             .collect(),
         _ => Vec::new(),
@@ -367,6 +447,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/mode"
             | "/model"
             | "/new-session"
+            | "/opus-version"
             | "/resume"
             | "/plugins"
             | "/status"

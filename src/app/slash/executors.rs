@@ -15,6 +15,10 @@ use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
 use std::fmt::Write as _;
 
 const ONE_M_CONTEXT_USAGE: &str = "Usage: /1m-context <enable|disable|status>";
+const OPUS_VERSION_USAGE: &str = "Usage: /opus-version <4.5|4.6|4.7|default|status>";
+const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
+const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
+const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
 
 /// Handle slash command submission.
 ///
@@ -33,6 +37,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/docs" => handle_docs_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
+        "/opus-version" => handle_opus_version_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/usage" => handle_usage_submit(app, &parsed.args),
         "/login" => handle_login_submit(app, &parsed.args),
@@ -42,6 +47,84 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/new-session" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
+    }
+}
+
+fn opus_model_id_for_version(version: &str) -> Option<&'static str> {
+    match version {
+        "4.5" => Some(OPUS_4_5_MODEL_ID),
+        "4.6" => Some(OPUS_4_6_MODEL_ID),
+        "4.7" => Some(OPUS_4_7_MODEL_ID),
+        _ => None,
+    }
+}
+
+fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
+    match model_id {
+        OPUS_4_5_MODEL_ID => Some("4.5"),
+        OPUS_4_6_MODEL_ID => Some("4.6"),
+        OPUS_4_7_MODEL_ID => Some("4.7"),
+        _ => None,
+    }
+}
+
+fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
+    let [subcommand] = args else {
+        push_system_message(app, OPUS_VERSION_USAGE);
+        return true;
+    };
+    let subcommand = subcommand.trim();
+    if subcommand.is_empty() || args.len() != 1 {
+        push_system_message(app, OPUS_VERSION_USAGE);
+        return true;
+    }
+
+    match subcommand {
+        "status" => {
+            match current_opus_version_pin(app) {
+                Ok(Some(model_id)) => {
+                    let message = if let Some(version) = opus_version_label_for_model_id(&model_id)
+                    {
+                        format!(
+                            "Opus is pinned to {version} in this folder via `.claude/settings.local.json`."
+                        )
+                    } else {
+                        format!(
+                            "Opus is pinned to {model_id} in this folder via `.claude/settings.local.json`."
+                        )
+                    };
+                    push_system_message_with_severity(app, Some(SystemSeverity::Info), &message);
+                }
+                Ok(None) => push_system_message_with_severity(
+                    app,
+                    Some(SystemSeverity::Info),
+                    "Opus is using the default alias resolution in this folder.",
+                ),
+                Err(err) => {
+                    push_system_message(app, format!("Failed to read /opus-version status: {err}"));
+                }
+            }
+            true
+        }
+        "default" => {
+            if let Err(err) = set_opus_version_pin(app, None) {
+                push_system_message(app, format!("Failed to run /opus-version default: {err}"));
+            }
+            true
+        }
+        _ => {
+            let Some(model_id) = opus_model_id_for_version(subcommand) else {
+                push_system_message(app, OPUS_VERSION_USAGE);
+                return true;
+            };
+            if let Err(err) = set_opus_version_pin(app, Some(model_id)) {
+                push_system_message(
+                    app,
+                    format!("Failed to run /opus-version {subcommand}: {err}"),
+                );
+            }
+            true
+        }
     }
 }
 
@@ -143,6 +226,62 @@ fn set_1m_context_disabled(app: &mut App, disabled: bool) -> Result<(), String> 
         }
     };
     push_system_message_with_severity(app, Some(SystemSeverity::Info), message);
+    Ok(())
+}
+
+fn current_opus_version_pin(app: &mut App) -> Result<Option<String>, String> {
+    config::initialize_shared_state(app)?;
+    store::opus_version_pin(&app.config.committed_local_settings_document).map_err(|()| {
+        "Expected `.claude/settings.local.json` env.ANTHROPIC_DEFAULT_OPUS_MODEL to be a string"
+            .to_owned()
+    })
+}
+
+fn set_opus_version_pin(app: &mut App, model: Option<&str>) -> Result<(), String> {
+    if !app.is_project_trusted() {
+        return Err(
+            "Project trust must be accepted before editing folder-local Opus version settings"
+                .to_owned(),
+        );
+    }
+
+    config::initialize_shared_state(app)?;
+    let Some(path) = app.config.path_for(SettingFile::LocalSettings).cloned() else {
+        return Err("Local settings path is not available".to_owned());
+    };
+
+    let current =
+        store::opus_version_pin(&app.config.committed_local_settings_document).map_err(|()| {
+            "Expected `.claude/settings.local.json` env.ANTHROPIC_DEFAULT_OPUS_MODEL to be a string"
+                .to_owned()
+        })?;
+
+    let mut next_document = app.config.committed_local_settings_document.clone();
+    store::set_opus_version_pin(&mut next_document, model);
+    store::save(&path, &next_document)?;
+    app.config.committed_local_settings_document = next_document;
+    app.reconcile_runtime_from_persisted_settings_change();
+    app.config.last_error = None;
+
+    let message = match (model, current.as_deref()) {
+        (Some(next_model), Some(current_model)) if current_model == next_model => {
+            let version = opus_version_label_for_model_id(next_model).unwrap_or(next_model);
+            format!(
+                "Opus is already pinned to {version} for future sessions in this folder. Run /new-session to apply it."
+            )
+        }
+        (Some(next_model), _) => {
+            let version = opus_version_label_for_model_id(next_model).unwrap_or(next_model);
+            format!(
+                "Pinned Opus to {version} for future sessions in this folder. Run /new-session to apply it."
+            )
+        }
+        (None, None) => "Opus is already using the default alias in this folder.".to_owned(),
+        (None, Some(_)) => {
+            "Cleared the project-local Opus version pin for future sessions in this folder. Run /new-session to apply it.".to_owned()
+        }
+    };
+    push_system_message_with_severity(app, Some(SystemSeverity::Info), &message);
     Ok(())
 }
 

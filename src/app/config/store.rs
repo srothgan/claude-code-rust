@@ -18,6 +18,7 @@ const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
 const CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV: &str = "CLAUDE_CODE_DISABLE_1M_CONTEXT";
+const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistedSettingValue {
@@ -236,19 +237,20 @@ pub fn set_output_style(document: &mut Value, style: OutputStyle) {
     );
 }
 
+pub fn set_model(document: &mut Value, model: Option<&str>) {
+    let value = model.map_or(PersistedSettingValue::Missing, |model| {
+        PersistedSettingValue::String(model.to_owned())
+    });
+    write_persisted_setting(document, setting_spec(SettingId::Model), value);
+}
+
+#[cfg(test)]
 pub fn model(document: &Value) -> Result<Option<String>, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::Model))? {
         PersistedSettingValue::Missing => Ok(None),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => Ok(Some(value)),
     }
-}
-
-pub fn set_model(document: &mut Value, model: Option<&str>) {
-    let value = model.map_or(PersistedSettingValue::Missing, |model| {
-        PersistedSettingValue::String(model.to_owned())
-    });
-    write_persisted_setting(document, setting_spec(SettingId::Model), value);
 }
 
 #[cfg(test)]
@@ -305,6 +307,26 @@ pub fn set_disable_1m_context(document: &mut Value, disabled: bool) {
         );
     } else {
         remove_json_path(document, &["env", CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV]);
+    }
+}
+
+pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
+    match read_json_path(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV]) {
+        None => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(()),
+    }
+}
+
+pub fn set_opus_version_pin(document: &mut Value, model: Option<&str>) {
+    if let Some(model) = model {
+        set_json_path(
+            document,
+            &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV],
+            Value::String(model.to_owned()),
+        );
+    } else {
+        remove_json_path(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV]);
     }
 }
 
@@ -675,6 +697,68 @@ mod tests {
         set_disable_1m_context(&mut document, false);
 
         assert_eq!(disable_1m_context(&document), Ok(false));
+        assert!(document.get("env").is_none());
+    }
+
+    #[test]
+    fn opus_version_pin_returns_none_when_unset() {
+        let document = Value::Object(Map::new());
+
+        assert_eq!(opus_version_pin(&document), Ok(None));
+    }
+
+    #[test]
+    fn opus_version_pin_returns_string_when_set() {
+        let document = serde_json::json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7"
+            }
+        });
+
+        assert_eq!(opus_version_pin(&document), Ok(Some("claude-opus-4-7".to_owned())));
+    }
+
+    #[test]
+    fn opus_version_pin_errors_on_non_string_value() {
+        let document = serde_json::json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": true
+            }
+        });
+
+        assert_eq!(opus_version_pin(&document), Err(()));
+    }
+
+    #[test]
+    fn set_opus_version_pin_preserves_neighboring_env_keys() {
+        let mut document = serde_json::json!({
+            "env": {
+                "KEEP_ME": "yes"
+            },
+            "other": true
+        });
+
+        set_opus_version_pin(&mut document, Some("claude-opus-4-6"));
+        assert_eq!(opus_version_pin(&document), Ok(Some("claude-opus-4-6".to_owned())));
+        assert_eq!(document["env"]["KEEP_ME"], Value::String("yes".to_owned()));
+
+        set_opus_version_pin(&mut document, None);
+        assert_eq!(opus_version_pin(&document), Ok(None));
+        assert_eq!(document["env"]["KEEP_ME"], Value::String("yes".to_owned()));
+        assert_eq!(document["other"], Value::Bool(true));
+    }
+
+    #[test]
+    fn set_opus_version_pin_removes_empty_env_object() {
+        let mut document = serde_json::json!({
+            "env": {
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7"
+            }
+        });
+
+        set_opus_version_pin(&mut document, None);
+
+        assert_eq!(opus_version_pin(&document), Ok(None));
         assert!(document.get("env").is_none());
     }
 

@@ -20,12 +20,13 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
-const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 8] = [
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 9] = [
     ("/config", "Open settings"),
     ("/docs", "Show in-chat help topics"),
     ("/login", "Authenticate with Claude"),
     ("/logout", "Sign out of Claude"),
     ("/mcp", "Open MCP"),
+    ("/opus-version", "Pin the Opus alias version for this folder"),
     ("/plugins", "Open plugins"),
     ("/status", "Show session status"),
     ("/usage", "Open usage"),
