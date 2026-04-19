@@ -107,7 +107,7 @@ fn set_active_view_same_view_is_noop() {
 }
 
 #[test]
-fn set_active_view_restores_permission_focus_when_returning_to_chat() {
+fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft() {
     let mut app = busy_view_test_app();
 
     set_active_view(&mut app, ActiveView::Trusted);
@@ -116,7 +116,7 @@ fn set_active_view_restores_permission_focus_when_returning_to_chat() {
     set_active_view(&mut app, ActiveView::Chat);
 
     assert_eq!(app.active_view, ActiveView::Chat);
-    assert_eq!(app.focus_owner(), crate::app::FocusOwner::Permission);
+    assert_eq!(app.focus_owner(), crate::app::FocusOwner::TodoList);
 }
 
 #[test]

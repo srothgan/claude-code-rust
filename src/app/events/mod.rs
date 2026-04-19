@@ -18,6 +18,7 @@ use super::{
     PendingCommandAck, SystemSeverity, TextBlock,
 };
 use crate::agent::model;
+use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
 use crate::app::todos::apply_plan_todos;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
@@ -120,6 +121,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
             ) && !app.is_compacting
             {
+                reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
                 return true;
             }
@@ -446,8 +448,8 @@ mod tests {
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
-        SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem, TodoStatus,
-        ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+        InlineQuestion, SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem,
+        TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
@@ -491,6 +493,16 @@ mod tests {
 
     fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
         ChatMessage::new(MessageRole::Assistant, blocks, None)
+    }
+
+    fn append_tool_call_block(app: &mut App, tool_id: &str) -> (usize, usize) {
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            tool_id,
+            model::ToolCallStatus::InProgress,
+        )))]));
+        let msg_idx = app.messages.len().saturating_sub(1);
+        app.index_tool_call(tool_id.into(), msg_idx, 0);
+        (msg_idx, 0)
     }
 
     fn user_msg(text: &str) -> ChatMessage {
@@ -3559,6 +3571,266 @@ mod tests {
         );
 
         assert_eq!(app.input.text(), "h");
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn permission_request_with_existing_draft_does_not_claim_focus() {
+        let mut app = make_test_app();
+        let tool_id = "perm-draft";
+        append_tool_call_block(&mut app, tool_id);
+        app.input.set_text("draft in progress");
+
+        let (response_tx, _response_rx) = oneshot::channel();
+        turn::handle_permission_request_event(
+            &mut app,
+            model::RequestPermissionRequest::new(
+                "session-1",
+                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
+                vec![
+                    model::PermissionOption::new(
+                        "allow",
+                        "Allow",
+                        model::PermissionOptionKind::AllowOnce,
+                    ),
+                    model::PermissionOption::new(
+                        "deny",
+                        "Deny",
+                        model::PermissionOptionKind::RejectOnce,
+                    ),
+                ],
+                None,
+            ),
+            response_tx,
+        );
+
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+        assert_eq!(permission_focus_state(&app, tool_id), Some(false));
+    }
+
+    #[test]
+    fn question_request_with_existing_draft_does_not_claim_focus() {
+        let mut app = make_test_app();
+        let tool_id = "question-draft";
+        append_tool_call_block(&mut app, tool_id);
+        app.input.set_text("draft in progress");
+
+        let (response_tx, _response_rx) = oneshot::channel();
+        turn::handle_question_request_event(
+            &mut app,
+            model::RequestQuestionRequest::new(
+                "session-1",
+                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
+                model::QuestionPrompt::new(
+                    "Choose one",
+                    "Question",
+                    false,
+                    vec![
+                        model::QuestionOption::new("yes", "Yes"),
+                        model::QuestionOption::new("no", "No"),
+                    ],
+                ),
+                0,
+                1,
+            ),
+            response_tx,
+        );
+
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+        assert_eq!(question_focus_state(&app, tool_id), Some(false));
+    }
+
+    #[test]
+    fn enter_submits_draft_when_permission_arrives_mid_compose() {
+        let (mut app, mut bridge_rx) = app_with_bridge_connection();
+        let tool_id = "perm-submit";
+        append_tool_call_block(&mut app, tool_id);
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.input.set_text("ship the fix");
+
+        let (response_tx, mut response_rx) = oneshot::channel();
+        turn::handle_permission_request_event(
+            &mut app,
+            model::RequestPermissionRequest::new(
+                "session-1",
+                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
+                vec![
+                    model::PermissionOption::new(
+                        "allow",
+                        "Allow",
+                        model::PermissionOptionKind::AllowOnce,
+                    ),
+                    model::PermissionOption::new(
+                        "deny",
+                        "Deny",
+                        model::PermissionOptionKind::RejectOnce,
+                    ),
+                ],
+                None,
+            ),
+            response_tx,
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert!(app.pending_submit.is_some());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        super::super::finalize_deferred_submit(&mut app);
+
+        assert!(app.pending_submit.is_none());
+        assert!(app.pending_interaction_ids.is_empty());
+        assert!(bridge_rx.try_recv().is_ok());
+        assert!(response_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tab_toggles_focus_between_input_and_pending_permission() {
+        let mut app = make_test_app();
+        let _response_rx = attach_pending_permission(
+            &mut app,
+            "perm-tab",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            false,
+        );
+        app.input.set_text("keep drafting");
+        app.release_focus_target(FocusTarget::Permission);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
+        assert_eq!(permission_focus_state(&app, "perm-tab"), Some(true));
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(permission_focus_state(&app, "perm-tab"), Some(false));
+    }
+
+    #[test]
+    fn typing_reclaims_input_from_auto_focused_permission() {
+        let mut app = make_test_app();
+        let _response_rx = attach_pending_permission(
+            &mut app,
+            "perm-auto",
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            true,
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(app.input.text(), "h");
+        assert_eq!(permission_focus_state(&app, "perm-auto"), Some(false));
+    }
+
+    #[test]
+    fn tab_focuses_question_and_enter_confirms_only_after_explicit_handoff() {
+        let (mut app, _bridge_rx) = app_with_bridge_connection();
+        let mut response_rx = attach_pending_question(
+            &mut app,
+            "question-tab",
+            model::QuestionPrompt::new(
+                "Choose one",
+                "Question",
+                false,
+                vec![
+                    model::QuestionOption::new("yes", "Yes"),
+                    model::QuestionOption::new("no", "No"),
+                ],
+            ),
+            false,
+        );
+        app.input.set_text("draft answer");
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(app.pending_submit.is_some());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
+        assert_eq!(question_focus_state(&app, "question-tab"), Some(true));
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        let response = response_rx.try_recv().expect("question should be answered after Tab focus");
+        assert!(matches!(response.outcome, model::RequestQuestionOutcome::Answered(_)));
+    }
+
+    #[test]
+    fn typing_reclaims_input_from_auto_focused_question() {
+        let mut app = make_test_app();
+        let _response_rx = attach_pending_question(
+            &mut app,
+            "question-auto",
+            model::QuestionPrompt::new(
+                "Choose one",
+                "Question",
+                false,
+                vec![
+                    model::QuestionOption::new("yes", "Yes"),
+                    model::QuestionOption::new("no", "No"),
+                ],
+            ),
+            true,
+        );
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(app.input.text(), "n");
+        assert_eq!(question_focus_state(&app, "question-auto"), Some(false));
     }
 
     #[test]
@@ -3648,7 +3920,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_focus_tab_moves_focus_to_todo_list() {
+    fn permission_focus_tab_returns_focus_to_input_before_todos() {
         let mut app = make_test_app();
         let _response_rx = attach_pending_permission(
             &mut app,
@@ -3679,7 +3951,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
     #[test]
@@ -3816,6 +4088,52 @@ mod tests {
         app.pending_interaction_ids.push(tool_id.into());
         app.claim_focus_target(FocusTarget::Permission);
         response_rx
+    }
+
+    fn attach_pending_question(
+        app: &mut App,
+        tool_id: &str,
+        prompt: model::QuestionPrompt,
+        focused: bool,
+    ) -> oneshot::Receiver<model::RequestQuestionResponse> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
+        tc.pending_question = Some(InlineQuestion {
+            prompt,
+            response_tx,
+            focused_option_index: 0,
+            selected_option_indices: std::collections::BTreeSet::new(),
+            notes: String::new(),
+            notes_cursor: 0,
+            editing_notes: false,
+            focused,
+            question_index: 0,
+            total_questions: 1,
+        });
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+        let msg_idx = app.messages.len().saturating_sub(1);
+        app.index_tool_call(tool_id.into(), msg_idx, 0);
+        app.pending_interaction_ids.push(tool_id.into());
+        if focused {
+            app.claim_focus_target(FocusTarget::Permission);
+        }
+        response_rx
+    }
+
+    fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
+        let (mi, bi) = app.lookup_tool_call(tool_id)?;
+        let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
+            return None;
+        };
+        tc.pending_permission.as_ref().map(|permission| permission.focused)
+    }
+
+    fn question_focus_state(app: &App, tool_id: &str) -> Option<bool> {
+        let (mi, bi) = app.lookup_tool_call(tool_id)?;
+        let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
+            return None;
+        };
+        tc.pending_question.as_ref().map(|question| question.focused)
     }
 
     fn push_todo_and_focus(app: &mut App) {

@@ -99,8 +99,51 @@ pub(super) fn focused_interaction_is_active(app: &App) -> bool {
     })
 }
 
+pub(super) fn clear_inline_interaction_focus(app: &mut App) {
+    let mut changed = false;
+    for idx in 0..app.pending_interaction_ids.len() {
+        let Some(tool_id) = app.pending_interaction_ids.get(idx) else {
+            continue;
+        };
+        let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+            continue;
+        };
+        if let Some(msg) = app.messages.get_mut(mi)
+            && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
+        {
+            let tc = tc.as_mut();
+            let mut interaction_changed = false;
+            if let Some(ref mut perm) = tc.pending_permission
+                && perm.focused
+            {
+                perm.focused = false;
+                interaction_changed = true;
+            }
+            if let Some(ref mut question) = tc.pending_question
+                && question.focused
+            {
+                question.focused = false;
+                interaction_changed = true;
+            }
+            if interaction_changed {
+                tc.mark_tool_call_layout_dirty();
+                app.sync_render_cache_slot(mi, bi);
+                app.recompute_message_retained_bytes(mi);
+                app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+                changed = true;
+            }
+        }
+    }
+
+    if changed || matches!(app.focus_owner(), super::FocusOwner::Permission) {
+        app.release_focus_target(FocusTarget::Permission);
+        app.normalize_focus_stack();
+    }
+}
+
 pub(super) fn focus_next_inline_interaction(app: &mut App) {
     normalize_pending_interaction_queue(app);
+    clear_inline_interaction_focus(app);
     set_interaction_focused(app, 0, true);
     if app.pending_interaction_ids.is_empty() {
         app.release_focus_target(FocusTarget::Permission);
@@ -122,18 +165,20 @@ pub(super) fn normalize_pending_interaction_queue(app: &mut App) {
     app.pending_interaction_ids = queue;
 
     if app.pending_interaction_ids.is_empty() {
-        app.release_focus_target(FocusTarget::Permission);
-        app.normalize_focus_stack();
+        clear_inline_interaction_focus(app);
         return;
     }
 
     if changed {
+        let permission_has_focus = matches!(app.focus_owner(), super::FocusOwner::Permission);
         for idx in 0..app.pending_interaction_ids.len() {
-            set_interaction_focused(app, idx, idx == 0);
+            set_interaction_focused(app, idx, permission_has_focus && idx == 0);
         }
     }
-    app.claim_focus_target(FocusTarget::Permission);
-    app.normalize_focus_stack();
+    if matches!(app.focus_owner(), super::FocusOwner::Permission) {
+        app.claim_focus_target(FocusTarget::Permission);
+        app.normalize_focus_stack();
+    }
 }
 
 pub(super) fn pop_next_valid_interaction_id(app: &mut App) -> Option<String> {

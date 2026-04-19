@@ -67,22 +67,24 @@ pub(super) fn handle_permission_request_event(
     }
 
     let mut layout_dirty = false;
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
-        let is_first = app.pending_interaction_ids.is_empty();
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
             display: request.display,
             response_tx,
             selected_index: 0,
-            focused: is_first,
+            focused: auto_focus,
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
         app.pending_interaction_ids.push(tool_id.clone());
-        app.claim_focus_target(FocusTarget::Permission);
+        if auto_focus {
+            app.claim_focus_target(FocusTarget::Permission);
+        }
         app.viewport.engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
@@ -96,7 +98,7 @@ pub(super) fn handle_permission_request_event(
             session_id = %session_id,
             tool_call_id = %tool_id,
             option_count = options.len(),
-            focused = is_first,
+            focused = auto_focus,
         );
     } else {
         tracing::warn!(
@@ -160,11 +162,11 @@ pub(super) fn handle_question_request_event(
     }
 
     let mut layout_dirty = false;
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
-        let is_first = app.pending_interaction_ids.is_empty();
         tc.pending_question = Some(InlineQuestion {
             prompt: request.prompt,
             response_tx,
@@ -173,14 +175,16 @@ pub(super) fn handle_question_request_event(
             notes: String::new(),
             notes_cursor: 0,
             editing_notes: false,
-            focused: is_first,
+            focused: auto_focus,
             question_index: request.question_index,
             total_questions: request.total_questions,
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
         app.pending_interaction_ids.push(tool_id.clone());
-        app.claim_focus_target(FocusTarget::Permission);
+        if auto_focus {
+            app.claim_focus_target(FocusTarget::Permission);
+        }
         app.viewport.engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
@@ -196,7 +200,7 @@ pub(super) fn handle_question_request_event(
             question_index,
             total_questions,
             option_count,
-            focused = is_first,
+            focused = auto_focus,
         );
     } else {
         tracing::warn!(

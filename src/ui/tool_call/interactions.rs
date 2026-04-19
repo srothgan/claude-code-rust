@@ -27,7 +27,7 @@ pub(super) fn render_permission_lines(
         return vec![
             Line::default(),
             Line::from(Span::styled(
-                "  \u{25cb} Waiting for input\u{2026} (\u{2191}\u{2193} to focus)",
+                "  \u{25cb} Waiting for input... (Tab to focus)",
                 Style::default().fg(theme::DIM),
             )),
         ];
@@ -183,7 +183,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
         return vec![
             Line::default(),
             Line::from(Span::styled(
-                "  \u{25cb} Waiting for input\u{2026} (\u{2191}\u{2193} to focus)",
+                "  \u{25cb} Waiting for input... (Tab to focus)",
                 Style::default().fg(theme::DIM),
             )),
         ];
@@ -276,7 +276,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
 
     if !question.focused {
         lines.push(Line::from(Span::styled(
-            "  waiting for input... (Up/Down to focus)",
+            "  waiting for input... (Tab to focus)",
             Style::default().fg(theme::DIM),
         )));
         return lines;
@@ -504,7 +504,7 @@ mod tests {
         question.focused = false;
         let lines = render_question_lines(&question);
         let footer = lines.last().expect("question footer line");
-        assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Up/Down to focus)");
+        assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Tab to focus)");
         assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
     }
 

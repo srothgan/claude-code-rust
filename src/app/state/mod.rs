@@ -49,6 +49,7 @@ use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
+use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::plugins::PluginsState;
@@ -1116,6 +1117,11 @@ impl App {
             || self.subagent.is_some()
     }
 
+    #[must_use]
+    pub fn has_draft_input_for_focus(&self) -> bool {
+        !self.input.is_empty()
+    }
+
     pub fn rebuild_chat_focus_from_state(&mut self) {
         if self.active_view != ActiveView::Chat {
             return;
@@ -1124,9 +1130,12 @@ impl App {
         self.normalize_focus_stack();
 
         if self.pending_interaction_ids.is_empty() {
-            self.release_focus_target(FocusTarget::Permission);
+            clear_inline_interaction_focus(self);
+        } else if self.focus_owner() == FocusOwner::Permission || !self.has_draft_input_for_focus()
+        {
+            focus_next_inline_interaction(self);
         } else {
-            self.claim_focus_target(FocusTarget::Permission);
+            clear_inline_interaction_focus(self);
         }
 
         if self.autocomplete_focus_available() {

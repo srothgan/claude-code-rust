@@ -231,14 +231,27 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
     let focus_owner = app.focus_owner();
 
-    if app.show_todo_panel && !app.todos.is_empty() {
+    if app.show_todo_panel && !app.todos.is_empty() && app.pending_interaction_ids.is_empty() {
         items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
+    }
+
+    if !app.pending_interaction_ids.is_empty() {
+        match focus_owner {
+            FocusOwner::Input => {
+                items.push(("Tab".to_owned(), "Focus pending prompt".to_owned()));
+            }
+            FocusOwner::Permission => {
+                items.push(("Tab".to_owned(), "Return to draft".to_owned()));
+            }
+            _ => {}
+        }
     }
 
     // Input + navigation (active outside todo-list and mention focus)
     if focus_owner != FocusOwner::TodoList
         && focus_owner != FocusOwner::Mention
         && focus_owner != FocusOwner::Help
+        && focus_owner != FocusOwner::Permission
     {
         items.push(("Enter".to_owned(), "Send message".to_owned()));
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
@@ -631,11 +644,16 @@ mod tests {
 
         // Without permission focus claim, do not show permission-only arrows.
         let items = build_help_items(&app);
+        assert!(has_item(&items, "Tab", "Focus pending prompt"));
+        assert!(has_item(&items, "Enter", "Send message"));
         assert!(!has_item(&items, "Left/Right", "Select option"));
         assert!(!has_item(&items, "Up/Down", "Switch prompt focus"));
 
         app.claim_focus_target(FocusTarget::Permission);
         let items = build_help_items(&app);
+        assert!(has_item(&items, "Tab", "Return to draft"));
+        assert!(!has_item(&items, "Enter", "Send message"));
+        assert!(has_item(&items, "Enter", "Confirm option"));
         assert!(has_item(&items, "Left/Right", "Select option"));
         assert!(has_item(&items, "Up/Down", "Switch prompt focus"));
     }

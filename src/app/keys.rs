@@ -9,10 +9,12 @@ use super::{
 };
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
-use crate::app::inline_interactions::handle_inline_interaction_key;
+use crate::app::inline_interactions::{
+    clear_inline_interaction_focus, focus_next_inline_interaction, handle_inline_interaction_key,
+};
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
-use crate::app::{mention, slash, subagent};
+use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
@@ -190,7 +192,10 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Permission => {
-            if handle_inline_interaction_key(app, key) {
+            if should_reclaim_input_focus_before_inline_interaction(app, key) {
+                reclaim_input_from_inline_prompt_if_needed(app);
+                handle_normal_key(app, key)
+            } else if handle_inline_interaction_key(app, key) {
                 true
             } else {
                 handle_normal_key(app, key)
@@ -318,6 +323,15 @@ fn is_editing_like_key(key: KeyEvent) -> bool {
         key.code,
         KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
     )
+}
+
+fn should_reclaim_input_focus_before_inline_interaction(app: &App, key: KeyEvent) -> bool {
+    let question_notes_editing = questions::focused_question_is_editing_notes(app);
+    match key.code {
+        KeyCode::Backspace | KeyCode::Delete => !question_notes_editing,
+        KeyCode::Char(_) if is_printable_text_modifiers(key.modifiers) => !question_notes_editing,
+        _ => false,
+    }
 }
 
 fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
@@ -488,16 +502,30 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Tab, m)
             if !m.contains(KeyModifiers::SHIFT)
                 && !m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT)
-                && app.show_todo_panel
-                && !app.todos.is_empty() =>
+                && !m.contains(KeyModifiers::ALT) =>
         {
-            if app.focus_owner() == FocusOwner::TodoList {
-                app.release_focus_target(FocusTarget::TodoList);
+            if !app.pending_interaction_ids.is_empty() {
+                match app.focus_owner() {
+                    FocusOwner::Permission => {
+                        clear_inline_interaction_focus(app);
+                        true
+                    }
+                    FocusOwner::Input => {
+                        focus_next_inline_interaction(app);
+                        true
+                    }
+                    _ => false,
+                }
+            } else if app.show_todo_panel && !app.todos.is_empty() {
+                if app.focus_owner() == FocusOwner::TodoList {
+                    app.release_focus_target(FocusTarget::TodoList);
+                } else {
+                    app.claim_focus_target(FocusTarget::TodoList);
+                }
+                true
             } else {
-                app.claim_focus_target(FocusTarget::TodoList);
+                false
             }
-            true
         }
         _ => false,
     }
@@ -639,6 +667,12 @@ pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
     is_ctrl_char_shortcut(key, 'v')
 }
 
+pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
+    if app.focus_owner() == FocusOwner::Permission {
+        clear_inline_interaction_focus(app);
+    }
+}
+
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
@@ -646,6 +680,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
+            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
                 return true;
             }
@@ -656,18 +691,21 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
+            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
                 return true;
             }
             app.input.textarea_delete_word_after()
         }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
+            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
                 return true;
             }
             app.input.textarea_delete_char_before()
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
+            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
                 return true;
             }
@@ -705,6 +743,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         app.release_focus_target(FocusTarget::TodoList);
     }
+    reclaim_input_from_inline_prompt_if_needed(app);
 
     let now = Instant::now();
     match app.paste_burst.on_char(c, now) {

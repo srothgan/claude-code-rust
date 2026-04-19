@@ -17,7 +17,7 @@ pub(super) fn has_focused_question(app: &App) -> bool {
     focused_question(app).is_some()
 }
 
-fn focused_question_is_editing_notes(app: &App) -> bool {
+pub(super) fn focused_question_is_editing_notes(app: &App) -> bool {
     focused_question(app).is_some_and(|question| question.editing_notes)
 }
 
