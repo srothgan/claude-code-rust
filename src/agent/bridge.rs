@@ -6,6 +6,9 @@ use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+const BRIDGE_SCRIPT_RELATIVE_PATH: &str = "agent-sdk/dist/bridge.js";
+const MAX_BRIDGE_EXE_ANCESTORS: usize = 8;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BridgeLauncher {
     pub runtime_path: PathBuf,
@@ -52,34 +55,7 @@ fn resolve_bridge_launcher_with_runtime(
 }
 
 fn resolve_bridge_script_path(explicit_script: Option<&Path>) -> anyhow::Result<PathBuf> {
-    if let Some(path) = explicit_script {
-        return validate_script_path(path);
-    }
-
-    if let Some(path) = std::env::var_os("CLAUDE_RS_AGENT_BRIDGE") {
-        return validate_script_path(Path::new(&path));
-    }
-
-    let mut candidates = vec![
-        PathBuf::from("agent-sdk/dist/bridge.js"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("agent-sdk/dist/bridge.js"),
-    ];
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        for ancestor in current_exe.ancestors().skip(1).take(8) {
-            candidates.push(ancestor.join("agent-sdk/dist/bridge.js"));
-        }
-    }
-
-    for candidate in candidates {
-        if !candidate.as_os_str().is_empty() && candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "bridge script not found. expected `agent-sdk/dist/bridge.js` or set CLAUDE_RS_AGENT_BRIDGE"
-    ))
+    BridgeScriptResolver::from_process(explicit_script).resolve()
 }
 
 fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
@@ -92,9 +68,84 @@ fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+struct BridgeScriptResolver<'a> {
+    explicit_script: Option<&'a Path>,
+    env_script: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+    allow_dev_fallbacks: bool,
+    cwd_script: PathBuf,
+    manifest_script: PathBuf,
+}
+
+impl<'a> BridgeScriptResolver<'a> {
+    fn from_process(explicit_script: Option<&'a Path>) -> Self {
+        Self {
+            explicit_script,
+            env_script: std::env::var_os("CLAUDE_RS_AGENT_BRIDGE").map(PathBuf::from),
+            current_exe: std::env::current_exe().ok(),
+            allow_dev_fallbacks: cfg!(debug_assertions),
+            cwd_script: PathBuf::from(BRIDGE_SCRIPT_RELATIVE_PATH),
+            manifest_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(BRIDGE_SCRIPT_RELATIVE_PATH),
+        }
+    }
+
+    fn resolve(&self) -> anyhow::Result<PathBuf> {
+        if let Some(path) = self.explicit_script {
+            return validate_script_path(path);
+        }
+
+        if let Some(path) = self.env_script.as_deref() {
+            return validate_script_path(path);
+        }
+
+        for candidate in self.automatic_candidates() {
+            if is_automatic_script_candidate(&candidate) {
+                return Ok(candidate);
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "bridge script not found near the installed executable. expected bundled `agent-sdk/dist/bridge.js`; debug builds also check repo-local fallbacks. set CLAUDE_RS_AGENT_BRIDGE to override."
+        ))
+    }
+
+    fn automatic_candidates(&self) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        if let Some(current_exe) = self.current_exe.as_deref() {
+            candidates.extend(exe_relative_bridge_candidates(current_exe));
+        }
+
+        if self.allow_dev_fallbacks {
+            candidates.push(self.cwd_script.clone());
+            candidates.push(self.manifest_script.clone());
+        }
+
+        candidates
+    }
+}
+
+fn exe_relative_bridge_candidates(current_exe: &Path) -> Vec<PathBuf> {
+    current_exe
+        .ancestors()
+        .skip(1)
+        .take(MAX_BRIDGE_EXE_ANCESTORS)
+        .map(|ancestor| ancestor.join(BRIDGE_SCRIPT_RELATIVE_PATH))
+        .collect()
+}
+
+fn is_automatic_script_candidate(path: &Path) -> bool {
+    !path.as_os_str().is_empty() && path.is_file()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BridgeLauncher, resolve_bridge_launcher, resolve_bridge_launcher_with_runtime};
+    use super::{
+        BRIDGE_SCRIPT_RELATIVE_PATH, BridgeLauncher, BridgeScriptResolver,
+        exe_relative_bridge_candidates, resolve_bridge_launcher,
+        resolve_bridge_launcher_with_runtime,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -169,10 +220,187 @@ mod tests {
         assert!(stderr.contains("diagnostics-stderr"));
     }
 
+    #[test]
+    fn explicit_missing_script_path_short_circuits_before_fallbacks() {
+        let fixture = resolver_fixture();
+        let missing = fixture.dir.path().join("missing.js");
+
+        let err = BridgeScriptResolver {
+            explicit_script: Some(&missing),
+            env_script: Some(fixture.env_script.clone()),
+            current_exe: Some(fixture.installed_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect_err("explicit missing path should fail");
+
+        assert!(
+            err.to_string().contains("bridge script does not exist"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn env_override_wins_over_automatic_lookup() {
+        let fixture = resolver_fixture();
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: Some(fixture.env_script.clone()),
+            current_exe: Some(fixture.installed_exe.clone()),
+            allow_dev_fallbacks: false,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("env override should resolve");
+
+        assert_eq!(resolved, fixture.env_script);
+    }
+
+    #[test]
+    fn packaged_bridge_precedence_beats_cwd_bridge() {
+        let fixture = resolver_fixture();
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.installed_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("packaged bridge should resolve");
+
+        assert_eq!(resolved, fixture.packaged_bridge);
+    }
+
+    #[test]
+    fn debug_build_falls_back_to_cwd_bridge() {
+        let fixture = resolver_fixture();
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.unbundled_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("cwd fallback should resolve");
+
+        assert_eq!(resolved, fixture.cwd_script);
+    }
+
+    #[test]
+    fn debug_build_falls_back_to_manifest_bridge_after_cwd() {
+        let fixture = resolver_fixture();
+        let missing_cwd = fixture.dir.path().join("missing-cwd").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.unbundled_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: missing_cwd,
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("manifest fallback should resolve");
+
+        assert_eq!(resolved, fixture.manifest_script);
+    }
+
+    #[test]
+    fn release_mode_does_not_use_dev_fallbacks() {
+        let fixture = resolver_fixture();
+
+        let err = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.unbundled_exe.clone()),
+            allow_dev_fallbacks: false,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect_err("release resolver should reject repo-local fallbacks");
+
+        assert!(
+            err.to_string().contains("bridge script not found near the installed executable"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn missing_current_exe_still_allows_debug_fallbacks() {
+        let fixture = resolver_fixture();
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: None,
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("debug fallback should resolve without current_exe");
+
+        assert_eq!(resolved, fixture.cwd_script);
+    }
+
+    #[test]
+    fn missing_current_exe_in_release_mode_does_not_enable_repo_fallbacks() {
+        let fixture = resolver_fixture();
+
+        let err = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: None,
+            allow_dev_fallbacks: false,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect_err("release resolver should fail without bundled bridge");
+
+        assert!(
+            err.to_string().contains("bridge script not found near the installed executable"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn executable_relative_candidates_walk_up_to_package_root() {
+        let fixture = resolver_fixture();
+        let candidates = exe_relative_bridge_candidates(&fixture.installed_exe);
+
+        assert!(candidates.contains(&fixture.packaged_bridge));
+        assert_eq!(
+            candidates[0],
+            fixture.installed_exe.parent().expect("exe parent").join(BRIDGE_SCRIPT_RELATIVE_PATH)
+        );
+    }
+
     struct RuntimeFixture {
         _dir: TempDir,
         runtime_path: PathBuf,
         script_path: PathBuf,
+    }
+
+    struct ResolverFixture {
+        dir: TempDir,
+        installed_exe: PathBuf,
+        unbundled_exe: PathBuf,
+        packaged_bridge: PathBuf,
+        cwd_script: PathBuf,
+        manifest_script: PathBuf,
+        env_script: PathBuf,
     }
 
     fn runtime_fixture() -> std::io::Result<RuntimeFixture> {
@@ -184,6 +412,41 @@ mod tests {
         make_executable(&runtime_path)?;
 
         Ok(RuntimeFixture { _dir: dir, runtime_path, script_path })
+    }
+
+    fn resolver_fixture() -> ResolverFixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let installed_exe =
+            dir.path().join("package").join("vendor").join("x86_64").join("claude-rs");
+        let unbundled_exe =
+            dir.path().join("other").join("vendor").join("x86_64").join("claude-rs");
+        let packaged_bridge = dir.path().join("package").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+        let cwd_script = dir.path().join("repo").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+        let manifest_script = dir.path().join("manifest").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+        let env_script = dir.path().join("env").join("bridge.js");
+
+        write_test_file(&installed_exe);
+        write_test_file(&unbundled_exe);
+        write_test_file(&packaged_bridge);
+        write_test_file(&cwd_script);
+        write_test_file(&manifest_script);
+        write_test_file(&env_script);
+
+        ResolverFixture {
+            dir,
+            installed_exe,
+            unbundled_exe,
+            packaged_bridge,
+            cwd_script,
+            manifest_script,
+            env_script,
+        }
+    }
+
+    fn write_test_file(path: &Path) {
+        let parent = path.parent().expect("path parent");
+        fs::create_dir_all(parent).expect("create parent directories");
+        fs::write(path, "// bridge test fixture\n").expect("write fixture");
     }
 
     #[cfg(windows)]
