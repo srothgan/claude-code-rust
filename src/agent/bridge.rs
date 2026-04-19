@@ -77,6 +77,43 @@ struct BridgeScriptResolver<'a> {
     manifest_script: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutomaticLookupMode {
+    CargoDevTarget,
+    ExecutableRelativePreferred,
+    DevFallbackOnly,
+    ExecutableRelativeOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutomaticCandidateSource {
+    ExecutableRelative,
+    WorkingDirectory,
+    ManifestProject,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutomaticCandidate {
+    source: AutomaticCandidateSource,
+    path: PathBuf,
+}
+
+impl AutomaticCandidate {
+    fn describe(&self) -> String {
+        format!("{}: {}", self.source.label(), self.path.display())
+    }
+}
+
+impl AutomaticCandidateSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExecutableRelative => "executable-relative",
+            Self::WorkingDirectory => "working-directory",
+            Self::ManifestProject => "manifest-project",
+        }
+    }
+}
+
 impl<'a> BridgeScriptResolver<'a> {
     fn from_process(explicit_script: Option<&'a Path>) -> Self {
         Self {
@@ -99,30 +136,110 @@ impl<'a> BridgeScriptResolver<'a> {
             return validate_script_path(path);
         }
 
-        for candidate in self.automatic_candidates() {
-            if is_automatic_script_candidate(&candidate) {
-                return Ok(candidate);
+        let candidates = self.automatic_candidates();
+        for candidate in &candidates {
+            if is_automatic_script_candidate(&candidate.path) {
+                return Ok(candidate.path.clone());
             }
         }
 
+        let checked =
+            candidates.iter().map(AutomaticCandidate::describe).collect::<Vec<_>>().join(", ");
+
         Err(anyhow::anyhow!(
-            "bridge script not found near the installed executable. expected bundled `agent-sdk/dist/bridge.js`; debug builds also check repo-local fallbacks. set CLAUDE_RS_AGENT_BRIDGE to override."
+            "bridge script not found near the installed executable. lookup mode {:?} checked: {}. expected bundled `agent-sdk/dist/bridge.js`; debug builds also check repo-local fallbacks. set CLAUDE_RS_AGENT_BRIDGE to override.",
+            self.lookup_mode(),
+            if checked.is_empty() { "<none>" } else { checked.as_str() }
         ))
     }
 
-    fn automatic_candidates(&self) -> Vec<PathBuf> {
+    fn automatic_candidates(&self) -> Vec<AutomaticCandidate> {
         let mut candidates = Vec::new();
 
-        if let Some(current_exe) = self.current_exe.as_deref() {
-            candidates.extend(exe_relative_bridge_candidates(current_exe));
-        }
-
-        if self.allow_dev_fallbacks {
-            candidates.push(self.cwd_script.clone());
-            candidates.push(self.manifest_script.clone());
+        match self.lookup_mode() {
+            AutomaticLookupMode::CargoDevTarget => {
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::ManifestProject,
+                    self.manifest_script.clone(),
+                );
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::WorkingDirectory,
+                    self.cwd_script.clone(),
+                );
+                self.push_executable_relative_candidates(&mut candidates);
+            }
+            AutomaticLookupMode::ExecutableRelativePreferred => {
+                self.push_executable_relative_candidates(&mut candidates);
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::WorkingDirectory,
+                    self.cwd_script.clone(),
+                );
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::ManifestProject,
+                    self.manifest_script.clone(),
+                );
+            }
+            AutomaticLookupMode::DevFallbackOnly => {
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::WorkingDirectory,
+                    self.cwd_script.clone(),
+                );
+                Self::push_candidate(
+                    &mut candidates,
+                    AutomaticCandidateSource::ManifestProject,
+                    self.manifest_script.clone(),
+                );
+            }
+            AutomaticLookupMode::ExecutableRelativeOnly => {
+                self.push_executable_relative_candidates(&mut candidates);
+            }
         }
 
         candidates
+    }
+
+    fn lookup_mode(&self) -> AutomaticLookupMode {
+        match (self.allow_dev_fallbacks, self.current_exe.as_deref()) {
+            (true, Some(current_exe)) if self.is_cargo_dev_target_executable(current_exe) => {
+                AutomaticLookupMode::CargoDevTarget
+            }
+            (true, Some(_)) => AutomaticLookupMode::ExecutableRelativePreferred,
+            (true, None) => AutomaticLookupMode::DevFallbackOnly,
+            (false, Some(_) | None) => AutomaticLookupMode::ExecutableRelativeOnly,
+        }
+    }
+
+    fn is_cargo_dev_target_executable(&self, current_exe: &Path) -> bool {
+        let Some(manifest_root) = manifest_root_from_script(&self.manifest_script) else {
+            return false;
+        };
+        current_exe.starts_with(manifest_root.join("target"))
+    }
+
+    fn push_executable_relative_candidates(&self, candidates: &mut Vec<AutomaticCandidate>) {
+        let Some(current_exe) = self.current_exe.as_deref() else {
+            return;
+        };
+        for path in exe_relative_bridge_candidates(current_exe) {
+            Self::push_candidate(candidates, AutomaticCandidateSource::ExecutableRelative, path);
+        }
+    }
+
+    fn push_candidate(
+        candidates: &mut Vec<AutomaticCandidate>,
+        source: AutomaticCandidateSource,
+        path: PathBuf,
+    ) {
+        if path.as_os_str().is_empty() || candidates.iter().any(|candidate| candidate.path == path)
+        {
+            return;
+        }
+        candidates.push(AutomaticCandidate { source, path });
     }
 }
 
@@ -135,6 +252,10 @@ fn exe_relative_bridge_candidates(current_exe: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn manifest_root_from_script(manifest_script: &Path) -> Option<&Path> {
+    manifest_script.parent()?.parent()?.parent()
+}
+
 fn is_automatic_script_candidate(path: &Path) -> bool {
     !path.as_os_str().is_empty() && path.is_file()
 }
@@ -142,8 +263,8 @@ fn is_automatic_script_candidate(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        BRIDGE_SCRIPT_RELATIVE_PATH, BridgeLauncher, BridgeScriptResolver,
-        exe_relative_bridge_candidates, resolve_bridge_launcher,
+        AutomaticCandidateSource, BRIDGE_SCRIPT_RELATIVE_PATH, BridgeLauncher,
+        BridgeScriptResolver, exe_relative_bridge_candidates, resolve_bridge_launcher,
         resolve_bridge_launcher_with_runtime,
     };
     use std::fs;
@@ -316,6 +437,66 @@ mod tests {
     }
 
     #[test]
+    fn cargo_run_prefers_manifest_bridge_over_target_bundle() {
+        let fixture = resolver_fixture();
+
+        let resolved = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.cargo_target_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .resolve()
+        .expect("cargo-run resolver should prefer manifest bridge");
+
+        assert_eq!(resolved, fixture.manifest_script);
+        assert_ne!(resolved, fixture.cargo_target_bridge);
+    }
+
+    #[test]
+    fn cargo_run_candidate_order_prefers_manifest_then_cwd_before_executable_relative() {
+        let fixture = resolver_fixture();
+
+        let candidates = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.cargo_target_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .automatic_candidates();
+
+        assert_eq!(candidates[0].source, AutomaticCandidateSource::ManifestProject);
+        assert_eq!(candidates[0].path, fixture.manifest_script);
+        assert_eq!(candidates[1].source, AutomaticCandidateSource::WorkingDirectory);
+        assert_eq!(candidates[1].path, fixture.cwd_script);
+    }
+
+    #[test]
+    fn installed_candidate_order_prefers_executable_relative_before_dev_fallbacks() {
+        let fixture = resolver_fixture();
+
+        let candidates = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: None,
+            current_exe: Some(fixture.installed_exe.clone()),
+            allow_dev_fallbacks: true,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        }
+        .automatic_candidates();
+
+        assert_eq!(candidates[0].source, AutomaticCandidateSource::ExecutableRelative);
+        assert_eq!(
+            candidates[0].path,
+            fixture.installed_exe.parent().expect("exe parent").join(BRIDGE_SCRIPT_RELATIVE_PATH)
+        );
+    }
+
+    #[test]
     fn release_mode_does_not_use_dev_fallbacks() {
         let fixture = resolver_fixture();
 
@@ -397,7 +578,9 @@ mod tests {
         dir: TempDir,
         installed_exe: PathBuf,
         unbundled_exe: PathBuf,
+        cargo_target_exe: PathBuf,
         packaged_bridge: PathBuf,
+        cargo_target_bridge: PathBuf,
         cwd_script: PathBuf,
         manifest_script: PathBuf,
         env_script: PathBuf,
@@ -420,14 +603,20 @@ mod tests {
             dir.path().join("package").join("vendor").join("x86_64").join("claude-rs");
         let unbundled_exe =
             dir.path().join("other").join("vendor").join("x86_64").join("claude-rs");
+        let cargo_target_exe =
+            dir.path().join("manifest").join("target").join("debug").join("claude-rs");
         let packaged_bridge = dir.path().join("package").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+        let cargo_target_bridge =
+            dir.path().join("manifest").join("target").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let cwd_script = dir.path().join("repo").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let manifest_script = dir.path().join("manifest").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let env_script = dir.path().join("env").join("bridge.js");
 
         write_test_file(&installed_exe);
         write_test_file(&unbundled_exe);
+        write_test_file(&cargo_target_exe);
         write_test_file(&packaged_bridge);
+        write_test_file(&cargo_target_bridge);
         write_test_file(&cwd_script);
         write_test_file(&manifest_script);
         write_test_file(&env_script);
@@ -436,7 +625,9 @@ mod tests {
             dir,
             installed_exe,
             unbundled_exe,
+            cargo_target_exe,
             packaged_bridge,
+            cargo_target_bridge,
             cwd_script,
             manifest_script,
             env_script,
