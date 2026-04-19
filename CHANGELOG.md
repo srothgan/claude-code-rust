@@ -6,15 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
-- **Tool-call diff rendering and scrollbar lane** (#138, @srothgan): Tighten tool-call diff rendering and reserve a dedicated chat scrollbar column so transcript content no longer renders underneath it
-- **Versioned short model names** (#139, @srothgan): Include model version numbers in `display_name_short` so footer and status surfaces show the resolved runtime model version
-- **Bridge script resolution precedence** (#142, @srothgan): Prefer the bundled `agent-sdk/dist/bridge.js` near the installed executable and keep repo-local fallback debug-only
-- **Update notice warning message** (#143, @srothgan): Move the update hint from the footer into a persistent warning system message with current version, latest version, and inline upgrade command
-- **Terminal ANSI output rendering** (#144, @srothgan): Preserve command-emitted ANSI colors in terminal tool output while keeping unified diff rendering on stripped text
+- **Tool-call diff rendering and scrollbar lane** (#138, @srothgan): Reserve a dedicated scrollbar column and keep diff content out of it.
+- **Versioned short model names** (#139, @srothgan): Show resolved model versions in short model names.
+- **Bridge script resolution precedence** (#142, @srothgan): Prefer the bundled bridge script and keep repo-local fallback debug-only.
+- **Update notice warning message** (#143, @srothgan): Move upgrade hints from the footer into a warning system message.
+- **Terminal ANSI output rendering** (#144, @srothgan): Preserve command-emitted ANSI colors in terminal tool output.
+- **Draft-focused inline prompts** (#145, @srothgan): Keep pending prompts from stealing draft focus and move prompt handoff to `Tab`.
 
 ### CI and Dependencies
 
-- Bump `@anthropic-ai/claude-agent-sdk` from `0.2.104` to `0.2.112` in both the published package and bundled bridge, update the bridge version gate (`EXPECTED_AGENT_SDK_VERSION`), and refresh Rust TUI and bridge test fixtures from `4.6` to `4.7`
+- **Agent SDK 0.2.112 refresh** (#141, @shyal): Bump `@anthropic-ai/claude-agent-sdk` to `0.2.112`, update `EXPECTED_AGENT_SDK_VERSION`, and refresh `4.7` fixtures.
 
 ## [0.11.1] - 2026-04-16 [Changes][v0.11.1]
 
