@@ -234,7 +234,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     Style::default().fg(theme::STATUS_ERROR),
                 )));
             } else {
-                lines.extend(highlight::render_terminal_output(&stripped_output));
+                lines.extend(highlight::render_terminal_output(output));
             }
         } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
             lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));

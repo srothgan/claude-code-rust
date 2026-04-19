@@ -55,7 +55,7 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 Style::default().fg(theme::STATUS_ERROR),
             )));
         } else {
-            let raw_lines = highlight::render_terminal_output(&stripped_output);
+            let raw_lines = highlight::render_terminal_output(output);
 
             let total = raw_lines.len();
             if total > TERMINAL_MAX_LINES {

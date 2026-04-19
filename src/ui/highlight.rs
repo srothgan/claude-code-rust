@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::diff;
+use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::sync::LazyLock;
@@ -71,7 +72,7 @@ pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
     if diff::looks_like_unified_diff(&stripped) {
         return diff::render_raw_unified_diff(&stripped);
     }
-    plain_text_lines(&stripped)
+    ansi_text_lines(text).unwrap_or_else(|| plain_text_lines(&stripped))
 }
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
@@ -156,6 +157,11 @@ fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
+fn ansi_text_lines(text: &str) -> Option<Vec<Line<'static>>> {
+    let rendered = text.as_bytes().into_text().ok()?.clone();
+    Some(rendered.lines)
+}
+
 fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
     let token = language.trim();
     if token.is_empty() {
@@ -220,5 +226,15 @@ mod tests {
         let spans = highlight_shell_command("git diff --stat");
         let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "git diff --stat");
+    }
+
+    #[test]
+    fn render_terminal_output_preserves_ansi_color() {
+        let rendered = render_terminal_output("\u{1b}[31mred\u{1b}[0m plain");
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].spans.len(), 2);
+        assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
+        assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
+        assert_eq!(rendered[0].spans[1].content.as_ref(), " plain");
     }
 }

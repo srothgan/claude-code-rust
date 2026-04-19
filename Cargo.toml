@@ -20,6 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.101"
+ansi-to-tui = "8.0.1"
 arboard = { version = "3.6.1", features = ["image-data"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
