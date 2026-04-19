@@ -28,7 +28,7 @@ pub use types::{
     LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
     SelectionState, SessionPickerState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -278,8 +278,8 @@ pub struct App {
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
-    /// Optional startup update-check hint rendered at the footer's right edge.
-    pub update_check_hint: Option<String>,
+    /// Update availability state for the current app lifetime.
+    pub update_notice: Option<UpdateNoticeState>,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
     /// Config > Usage snapshot and refresh lifecycle.
@@ -891,7 +891,7 @@ impl App {
             pending_images: Vec::new(),
             cached_todo_compact: None,
             git_context: GitContextState::default(),
-            update_check_hint: None,
+            update_notice: None,
             session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
             mcp: McpState::default(),

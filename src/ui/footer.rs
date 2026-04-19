@@ -41,7 +41,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         frame,
         first_row,
         first_line,
-        footer_update_hint(app),
+        footer_primary_hint(app),
         PRIMARY_ROW_LEFT_MIN_WIDTH,
     );
 
@@ -60,12 +60,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn footer_update_hint(app: &App) -> FooterItem {
+fn footer_primary_hint(app: &App) -> FooterItem {
     let permission_count = pending_permission_request_count(app);
     if permission_count > 0 {
         return Some((format!("{permission_count} PEND. PERM."), Color::Yellow));
     }
-    app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE))
+    None
 }
 
 fn footer_mcp_auth_hint(app: &App) -> FooterItem {
@@ -475,25 +475,14 @@ mod tests {
     }
 
     #[test]
-    fn footer_update_hint_none_without_hint() {
+    fn footer_primary_hint_none_without_pending_permission() {
         let app = App::test_default();
-        assert_eq!(footer_update_hint(&app), None);
+        assert_eq!(footer_primary_hint(&app), None);
     }
 
     #[test]
-    fn footer_update_hint_returns_text_when_present() {
+    fn footer_primary_hint_shows_pending_permission_count() {
         let mut app = App::test_default();
-        app.update_check_hint = Some("Update available".to_owned());
-        assert_eq!(
-            footer_update_hint(&app),
-            Some(("Update available".to_owned(), theme::RUST_ORANGE))
-        );
-    }
-
-    #[test]
-    fn footer_update_hint_prefers_pending_permission_count() {
-        let mut app = App::test_default();
-        app.update_check_hint = Some("Update available".to_owned());
         let (response_tx, _response_rx) = oneshot::channel();
         app.messages.push(ChatMessage::new(
             MessageRole::Assistant,
@@ -535,7 +524,7 @@ mod tests {
         app.index_tool_call("perm-1".into(), 0, 0);
         app.pending_interaction_ids.push("perm-1".into());
 
-        assert_eq!(footer_update_hint(&app), Some(("1 PEND. PERM.".to_owned(), Color::Yellow)));
+        assert_eq!(footer_primary_hint(&app), Some(("1 PEND. PERM.".to_owned(), Color::Yellow)));
     }
 
     #[test]

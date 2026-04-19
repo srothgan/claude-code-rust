@@ -203,12 +203,6 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
 /// During blocked-input states (Connecting, `CommandPending`, Error), keep input disabled and only allow
 /// navigation/help shortcuts.
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
-        app.update_check_hint = None;
-        sync_help_focus(app);
-        return true;
-    }
-
     if is_ctrl_char_shortcut(key, 'l') {
         app.force_redraw = true;
         sync_help_focus(app);
@@ -251,12 +245,6 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    // Session-only dismiss for update hint.
-    if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
-        app.update_check_hint = None;
-        return true;
-    }
-
     // Permission quick shortcuts are global when permissions are pending.
     if !app.pending_interaction_ids.is_empty() && is_permission_ctrl_shortcut(key) {
         return handle_inline_interaction_key(app, key);

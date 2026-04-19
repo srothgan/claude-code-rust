@@ -202,28 +202,16 @@ fn build_help_items(app: &App) -> Vec<(String, String)> {
 
 fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     if app.status == AppStatus::Connecting {
-        let mut items = blocked_input_help_items("Unavailable while connecting");
-        if app.update_check_hint.is_some() {
-            items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
-        }
-        return items;
+        return blocked_input_help_items("Unavailable while connecting");
     }
     if app.status == AppStatus::CommandPending {
-        let mut items = blocked_input_help_items(&format!(
+        return blocked_input_help_items(&format!(
             "Unavailable while command runs ({})",
             pending_command_help_label(app)
         ));
-        if app.update_check_hint.is_some() {
-            items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
-        }
-        return items;
     }
     if app.status == AppStatus::Error {
-        let mut items = blocked_input_help_items("Unavailable after error");
-        if app.update_check_hint.is_some() {
-            items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
-        }
-        return items;
+        return blocked_input_help_items("Unavailable after error");
     }
 
     let mut items: Vec<(String, String)> = vec![
@@ -238,9 +226,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
-    if app.update_check_hint.is_some() {
-        items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
-    }
     if app.is_compacting {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
@@ -625,14 +610,18 @@ mod tests {
     }
 
     #[test]
-    fn key_tab_shows_ctrl_u_only_when_update_hint_visible() {
+    fn key_tab_never_shows_ctrl_u_for_update_hiding() {
         let mut app = App::test_default();
         let items = build_help_items(&app);
         assert!(!has_item(&items, "Ctrl+u", "Hide update hint"));
 
-        app.update_check_hint = Some("Update available".into());
+        app.update_notice = Some(crate::app::UpdateNoticeState {
+            current_version: "0.11.1".into(),
+            latest_version: "0.11.2".into(),
+            emitted_session_scope_epoch: None,
+        });
         let items = build_help_items(&app);
-        assert!(has_item(&items, "Ctrl+u", "Hide update hint"));
+        assert!(!has_item(&items, "Ctrl+u", "Hide update hint"));
     }
 
     #[test]

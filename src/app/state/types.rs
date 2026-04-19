@@ -38,6 +38,13 @@ pub enum PendingCommandAck {
     ConfigOption { option_id: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateNoticeState {
+    pub current_version: String,
+    pub latest_version: String,
+    pub emitted_session_scope_epoch: Option<u64>,
+}
+
 /// A single todo item from Claude's `TodoWrite` tool call.
 #[derive(Debug, Clone)]
 pub struct TodoItem {

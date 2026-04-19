@@ -7,6 +7,7 @@ use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
 use super::super::{
     App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    UpdateNoticeState,
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
@@ -18,6 +19,7 @@ use std::rc::Rc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
+const UPDATE_INSTALL_COMMAND: &str = "npm install -g claude-code-rust";
 
 pub(super) fn handle_connected_client_event(
     app: &mut App,
@@ -41,6 +43,7 @@ pub(super) fn handle_connected_client_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
+    ensure_update_notice_message(app);
     clear_pending_command(app);
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
@@ -309,6 +312,7 @@ pub(super) fn handle_session_replaced_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
+    ensure_update_notice_message(app);
     clear_pending_command(app);
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
@@ -331,9 +335,12 @@ pub(super) fn handle_update_available_event(
     latest_version: &str,
     current_version: &str,
 ) {
-    app.update_check_hint = Some(format!(
-        "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
-    ));
+    app.update_notice = Some(UpdateNoticeState {
+        current_version: current_version.to_owned(),
+        latest_version: latest_version.to_owned(),
+        emitted_session_scope_epoch: None,
+    });
+    ensure_update_notice_message(app);
     tracing::info!(
         target: crate::logging::targets::APP_UPDATE,
         event_name = "update_available_applied",
@@ -342,6 +349,27 @@ pub(super) fn handle_update_available_event(
         latest_version = %latest_version,
         current_version = %current_version,
     );
+}
+
+pub(super) fn ensure_update_notice_message(app: &mut App) {
+    let Some(notice) = app.update_notice.as_ref() else {
+        return;
+    };
+    if notice.emitted_session_scope_epoch == Some(app.session_scope_epoch) {
+        return;
+    }
+
+    let message = format_update_available_message(&notice.latest_version, &notice.current_version);
+    push_system_message_with_severity(app, Some(SystemSeverity::Warning), &message);
+    if let Some(notice) = app.update_notice.as_mut() {
+        notice.emitted_session_scope_epoch = Some(app.session_scope_epoch);
+    }
+}
+
+fn format_update_available_message(latest_version: &str, current_version: &str) -> String {
+    format!(
+        "Update available: current v{current_version}, latest v{latest_version}. Upgrade to latest version via {UPDATE_INSTALL_COMMAND}."
+    )
 }
 
 pub(super) fn handle_service_status_event(
