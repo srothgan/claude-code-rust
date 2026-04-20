@@ -11,6 +11,9 @@ ignore = [
     "RUSTSEC-2024-0320",
 
     # rand unsoundness with custom logger + ThreadRng reseeding
-    # rand is only a transitive dev-dep of upstream crates, not in our build
+    # Resolved in Cargo.lock via unselected optional deps (phf_generator,
+    # quinn-proto behind reqwest's disabled HTTP/3 feature); never compiled
+    # into our binary. Verified: `cargo tree -i rand` returns nothing across
+    # all targets/features/edges.
     "RUSTSEC-2026-0097",
 ]
