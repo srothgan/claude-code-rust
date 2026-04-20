@@ -349,6 +349,7 @@ mod tests {
     use super::*;
     use crate::app::BlockCache;
     use pretty_assertions::assert_eq;
+    use std::fmt::Write as _;
 
     fn test_tool_call(
         id: &str,
@@ -840,6 +841,97 @@ mod tests {
         assert!(text.iter().any(|line| line.contains("lines ")));
         assert!(text.iter().any(|line| line.contains("+  new")));
         assert!(text.len() > 2);
+    }
+
+    #[test]
+    fn diff_tool_body_adds_nested_indent_inside_tool_prefix() {
+        let mut tc = test_tool_call("tc-diff-indent", "Edit", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(
+            model::Diff::new("src/main.rs", "new".to_owned())
+                .old_text(Some("old".to_owned()))
+                .repository(Some("acme/project".to_owned())),
+        )];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.starts_with("  │    [acme/project]")));
+        assert!(rendered.iter().any(|line| line.starts_with("  │    lines ")));
+        assert!(rendered.iter().any(|line| {
+            (line.starts_with("  │   ") || line.starts_with("  └─   ")) && line.contains("+  new")
+        }));
+    }
+
+    #[test]
+    fn diff_tool_body_preserves_source_code_indentation() {
+        let mut tc =
+            test_tool_call("tc-diff-code-indent", "Edit", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+            "src/main.rs",
+            "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
+        ))];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("+      if true {")));
+        assert!(rendered.iter().any(|line| line.contains("+          return;")));
+    }
+
+    #[test]
+    fn diff_tool_body_preserves_nested_indent_for_wrapped_continuations() {
+        let mut tc = test_tool_call("tc-diff-wrap", "Edit", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+            "src/main.rs",
+            "        This is a long added line that should wrap onto another visual line.\n"
+                .to_owned(),
+        ))];
+
+        let body = standard::render_tool_call_body(&tc, 28);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("+          This")));
+        assert!(
+            rendered.iter().any(|line| line.starts_with("  │                  "))
+                || rendered.iter().any(|line| line.starts_with("  └─                  "))
+        );
+        assert!(rendered.iter().any(|line| line.contains("another")));
+        assert!(rendered.iter().any(|line| line.contains("line.")));
+    }
+
+    #[test]
+    fn write_diff_cap_keeps_omission_marker_nested_indented() {
+        let new_text = (0..120).fold(String::new(), |mut text, idx| {
+            let _ = writeln!(&mut text, "line {idx}");
+            text
+        });
+        let mut tc = test_tool_call("tc-diff-cap", "Write", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("src/main.rs", new_text))];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.starts_with("  │    ... ") && line.contains("diff lines omitted"))
+                || rendered
+                    .iter()
+                    .any(|line| line.starts_with("  └─    ... ")
+                        && line.contains("diff lines omitted"))
+        );
     }
 
     #[test]

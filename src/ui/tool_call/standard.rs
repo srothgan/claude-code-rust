@@ -27,6 +27,8 @@ pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
 pub(super) const WRITE_DIFF_HEAD_LINES: usize = 10;
 const DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 60;
 const IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 180;
+const DIFF_BODY_INDENT: &str = "  ";
+const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 
 /// Render just the title line for a non-Execute tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
@@ -249,12 +251,10 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                 if is_plan_file_path(&diff.path) {
                     lines.extend(render_plan_content(&diff.new_text));
                 } else {
-                    let raw = render_diff(diff, width);
-                    if tc.sdk_tool_name == "Write" {
-                        lines.extend(cap_write_diff_lines(raw));
-                    } else {
-                        lines.extend(raw);
-                    }
+                    let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
+                    let raw =
+                        if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                    lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
                 }
             }
             model::ToolCallContent::McpResource(resource) => {
@@ -345,6 +345,17 @@ fn render_mcp_resource_content(
         lines.push(Line::from(Span::styled(resource.uri.clone(), Style::default().fg(theme::DIM))));
     }
     lines
+}
+
+fn indent_rendered_lines(lines: Vec<Line<'static>>, indent: &str) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::raw(indent.to_owned())];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// Returns `true` for paths inside `.claude/plans/` (cross-platform).

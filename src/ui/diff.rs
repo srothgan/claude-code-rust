@@ -3,7 +3,7 @@
 
 use crate::agent::model;
 use crate::ui::theme;
-use crate::ui::wrap::{StyledChunk, wrap_styled_chunks};
+use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
@@ -195,10 +195,13 @@ fn render_wrapped_diff_row(
     content_width: usize,
 ) -> Vec<Line<'static>> {
     let number_style = Style::default().fg(theme::DIM);
-    let content_lines = if value.is_empty() {
+    let (leading_indent, content) = split_leading_whitespace(value);
+    let leading_indent_width = display_width(leading_indent);
+    let content_lines = if content.is_empty() {
         vec![Line::default()]
     } else {
-        wrap_styled_chunks(&[StyledChunk { text: value.to_owned(), style }], content_width)
+        let wrapped_width = content_width.saturating_sub(leading_indent_width).max(1);
+        wrap_styled_chunks(&[StyledChunk { text: content.to_owned(), style }], wrapped_width)
     };
 
     let line_number_text = line_number.map_or_else(
@@ -221,10 +224,21 @@ fn render_wrapped_diff_row(
             } else {
                 vec![Span::styled(continuation_prefix.clone(), number_style)]
             };
+            if !leading_indent.is_empty() {
+                spans.push(Span::styled(leading_indent.to_owned(), style));
+            }
             spans.extend(content_line.spans);
             Line::from(spans)
         })
         .collect()
+}
+
+fn split_leading_whitespace(text: &str) -> (&str, &str) {
+    let split_at = text
+        .char_indices()
+        .find_map(|(idx, ch)| (!ch.is_whitespace()).then_some(idx))
+        .unwrap_or(text.len());
+    text.split_at(split_at)
 }
 
 /// Check if a tool call title references a markdown file.
@@ -368,6 +382,44 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
         assert!(rendered.iter().any(|line| line.starts_with("      ")));
         assert!(!rendered.iter().any(|line| line == "tmp.md"));
+    }
+
+    #[test]
+    fn render_diff_preserves_source_indentation() {
+        let lines = render_diff(
+            &model::Diff::new(
+                "tmp.rs",
+                "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
+            ),
+            80,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("+      if true {")));
+        assert!(rendered.iter().any(|line| line.contains("+          return;")));
+    }
+
+    #[test]
+    fn render_diff_preserves_source_indentation_for_wrapped_lines() {
+        let lines = render_diff(
+            &model::Diff::new(
+                "tmp.rs",
+                "        This is a long added line that should wrap with indentation preserved.\n"
+                    .to_owned(),
+            ),
+            28,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("+          This is a")));
+        assert!(rendered.iter().any(|line| line.contains("indentation")));
+        assert!(rendered.iter().any(|line| line.starts_with("              ")));
     }
 
     #[test]
