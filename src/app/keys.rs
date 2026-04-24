@@ -13,7 +13,6 @@ use crate::app::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, handle_inline_interaction_key,
 };
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
-use crate::app::state::AutocompleteKind;
 use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
@@ -225,42 +224,9 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     if is_ctrl_char_shortcut(key, 'l') {
         app.force_redraw = true;
-        sync_help_focus(app);
         return true;
     }
-
-    let changed = match (key.code, key.modifiers) {
-        (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            if app.is_help_active() {
-                app.help_open = false;
-                app.input.clear();
-            } else {
-                app.help_open = true;
-                app.input.set_text("?");
-            }
-            true
-        }
-        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
-            set_help_view(app, prev_help_view(app.help_view));
-            true
-        }
-        (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
-            set_help_view(app, next_help_view(app.help_view));
-            true
-        }
-        (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_up(1);
-            true
-        }
-        (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_down(1);
-            true
-        }
-        _ => false,
-    };
-
-    sync_help_focus(app);
-    changed
+    false
 }
 
 /// Handle shortcuts that should work regardless of current focus owner.
@@ -281,14 +247,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
-            true
-        }
-        (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_up(1);
-            true
-        }
-        (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_down(1);
             true
         }
         _ => false,
@@ -314,12 +272,10 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 
     if app.input.version != input_version_before {
         app.sync_help_open_with_input();
-    }
-
-    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
-        mention::sync_with_cursor(app);
-        slash::sync_with_cursor(app);
-        subagent::sync_with_cursor(app);
+        mention::deactivate(app);
+        slash::deactivate(app);
+        subagent::deactivate(app);
+        app.release_focus_target(FocusTarget::Mention);
     }
 
     sync_help_focus(app);
@@ -504,15 +460,11 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, _) => {
-            if !try_move_input_cursor_up(app) {
-                app.viewport.scroll_up(1);
-            }
+            let _ = try_move_input_cursor_up(app);
             true
         }
         (KeyCode::Down, _) => {
-            if !try_move_input_cursor_down(app) {
-                app.viewport.scroll_down(1);
-            }
+            let _ = try_move_input_cursor_down(app);
             true
         }
         (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
@@ -806,17 +758,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         }
     }
 
-    if c == '?' && app.input.text().trim() == "?" {
-        app.help_open = true;
-    }
-
-    if c == '@' {
-        mention::activate(app);
-    } else if c == '/' {
-        slash::activate(app);
-    } else if c == '&' {
-        subagent::activate(app);
-    }
     true
 }
 
@@ -830,30 +771,6 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     let before = (app.input.cursor_row(), app.input.cursor_col());
     let _ = app.input.textarea_move_down();
     (app.input.cursor_row(), app.input.cursor_col()) != before
-}
-
-fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
-
-    match (key.code, key.modifiers) {
-        (
-            KeyCode::Up
-            | KeyCode::Down
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::Backspace
-            | KeyCode::Delete
-            | KeyCode::Enter,
-            _,
-        ) => true,
-        (KeyCode::Char('z' | 'y'), m) if m == KeyModifiers::CONTROL => true,
-        (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
-        _ => false,
-    }
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
@@ -897,13 +814,11 @@ pub(super) fn move_todo_selection_down(app: &mut App) {
 
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
-    match app.active_autocomplete_kind() {
-        Some(AutocompleteKind::Mention) => return handle_mention_key(app, key),
-        Some(AutocompleteKind::Slash) => return handle_slash_key(app, key),
-        Some(AutocompleteKind::Subagent) => return handle_subagent_key(app, key),
-        None => {}
-    }
-    dispatch_key_by_focus(app, key)
+    mention::deactivate(app);
+    slash::deactivate(app);
+    subagent::deactivate(app);
+    app.release_focus_target(FocusTarget::Mention);
+    handle_normal_key(app, key)
 }
 
 fn handle_help_key(app: &mut App, key: KeyEvent) -> bool {

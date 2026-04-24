@@ -30,9 +30,13 @@ const DOCS_TOPICS: [(&str, &str); 5] = [
 
 // Re-export public API
 pub use executors::try_handle_submit;
+#[allow(unused_imports)]
 pub use navigation::{
     activate, confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
 };
+
+const INLINE_CHAT_MIGRATION_MESSAGE: &str =
+    "Slash commands are temporarily unavailable during the inline-chat migration.";
 
 #[derive(Debug, Clone)]
 pub struct SlashCandidate {
@@ -88,6 +92,14 @@ fn parse(text: &str) -> Option<ParsedSlash<'_>> {
 
 pub fn is_cancel_command(text: &str) -> bool {
     parse(text).is_some_and(|parsed| parsed.name == "/cancel")
+}
+
+pub fn try_handle_inline_chat_migration_submit(app: &mut App, text: &str) -> bool {
+    if parse(text).is_none() {
+        return false;
+    }
+    push_system_message(app, INLINE_CHAT_MIGRATION_MESSAGE);
+    true
 }
 
 fn normalize_slash_name(name: &str) -> String {
