@@ -7,6 +7,7 @@ mod fullscreen_session;
 mod insert_history;
 mod modes;
 mod panic_hook;
+mod screen_scroll;
 
 use self::chat_session::ChatTerminalSession;
 use self::fullscreen_session::FullscreenTerminalSession;

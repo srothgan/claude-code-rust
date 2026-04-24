@@ -18,6 +18,7 @@ use std::io::{Stdout, Write};
 
 use super::custom_inline_terminal::Terminal;
 use super::insert_history::insert_history_lines;
+use super::screen_scroll::{ScreenScrollRequest, scroll_screen};
 
 type StdoutTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -257,12 +258,16 @@ impl ChatTerminalSession {
 
         let old_area = self.terminal.viewport_area;
         let reclaimed_history_rows = old_area.top().saturating_sub(next_area.top());
+        let released_history_rows = next_area.top().saturating_sub(old_area.top());
         if reclaimed_history_rows > 0 {
-            let _ = self
-                .terminal
-                .scroll_screen_up(reclaimed_history_rows)
-                .context("failed to scroll terminal history before viewport expansion")?;
+            let _ =
+                scroll_screen(&mut self.terminal, ScreenScrollRequest::up(reclaimed_history_rows))
+                    .context("failed to scroll terminal history before viewport expansion")?;
             self.terminal.invalidate_viewport();
+        } else if released_history_rows > 0 {
+            let _ =
+                scroll_screen(&mut self.terminal, ScreenScrollRequest::down(released_history_rows))
+                    .context("failed to scroll terminal history before viewport shrink")?;
         } else {
             self.terminal
                 .clear()
@@ -290,6 +295,7 @@ impl ChatTerminalSession {
             new_top = next_area.top(),
             new_height = next_area.height,
             reclaimed_history_rows,
+            released_history_rows,
             terminal_width = screen_size.width,
             terminal_height = screen_size.height,
             reason = "mutable_height_changed",

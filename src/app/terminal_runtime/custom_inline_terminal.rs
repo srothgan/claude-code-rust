@@ -4,13 +4,12 @@
 use std::io;
 use std::io::Write;
 
-use crossterm::cursor::MoveTo;
-use crossterm::queue;
-use crossterm::style::Print;
 use ratatui::backend::{Backend, ClearType};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::widgets::Widget;
+
+use super::screen_scroll::ScreenScrollDirection;
 
 #[derive(Debug, Hash)]
 pub(crate) struct Frame<'a> {
@@ -188,27 +187,6 @@ where
         Ok(())
     }
 
-    pub(crate) fn scroll_screen_up(&mut self, rows: u16) -> io::Result<u16> {
-        let screen_size = self.size()?;
-        let rows = rows.min(screen_size.height);
-        if rows == 0 || screen_size.height == 0 {
-            return Ok(0);
-        }
-
-        queue!(self.backend, MoveTo(0, screen_size.height.saturating_sub(1)))?;
-        for _ in 0..rows {
-            queue!(self.backend, Print("\n"))?;
-        }
-
-        self.last_known_cursor_pos = Position {
-            x: self.last_known_cursor_pos.x,
-            y: self.last_known_cursor_pos.y.saturating_sub(rows),
-        };
-        self.shift_history_up(rows);
-        self.buffers[1 - self.current].reset();
-        Ok(rows)
-    }
-
     pub(crate) fn invalidate_viewport(&mut self) {
         self.buffers[1 - self.current].reset();
     }
@@ -240,6 +218,20 @@ where
         }
     }
 
+    pub(crate) fn apply_screen_scroll_bookkeeping(
+        &mut self,
+        direction: ScreenScrollDirection,
+        rows: u16,
+        cursor_pos: Position,
+    ) {
+        self.last_known_cursor_pos = cursor_pos;
+        match direction {
+            ScreenScrollDirection::Up => self.shift_history_up(rows),
+            ScreenScrollDirection::Down => self.shift_history_down(rows),
+        }
+        self.invalidate_viewport();
+    }
+
     fn shift_history_up(&mut self, rows: u16) {
         let Some(top) = self.history_top else {
             return;
@@ -247,6 +239,21 @@ where
 
         self.history_top = Some(top.saturating_sub(rows));
         self.history_bottom_exclusive = self.history_bottom_exclusive.saturating_sub(rows);
+        if self.history_top.is_some_and(|next_top| next_top >= self.history_bottom_exclusive) {
+            self.history_top = None;
+            self.history_bottom_exclusive = 0;
+        }
+    }
+
+    fn shift_history_down(&mut self, rows: u16) {
+        let Some(top) = self.history_top else {
+            return;
+        };
+
+        let viewport_top = self.viewport_area.top();
+        self.history_top = Some(top.saturating_add(rows).min(viewport_top));
+        self.history_bottom_exclusive =
+            self.history_bottom_exclusive.saturating_add(rows).min(viewport_top);
         if self.history_top.is_some_and(|next_top| next_top >= self.history_bottom_exclusive) {
             self.history_top = None;
             self.history_bottom_exclusive = 0;

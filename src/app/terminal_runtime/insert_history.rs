@@ -19,6 +19,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 
 use super::custom_inline_terminal::Terminal;
+use super::screen_scroll::{ScreenScrollRequest, scroll_screen};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistoryInsertOutcome {
@@ -52,8 +53,9 @@ where
     while next_line_idx < lines.len() {
         let segment = planner.next_segment(lines.len().saturating_sub(next_line_idx));
         if segment.scroll_up_amount > 0 {
-            total_scrolled =
-                total_scrolled.saturating_add(terminal.scroll_screen_up(segment.scroll_up_amount)?);
+            let outcome =
+                scroll_screen(terminal, ScreenScrollRequest::up(segment.scroll_up_amount))?;
+            total_scrolled = total_scrolled.saturating_add(outcome.applied_rows);
         }
 
         let segment_end = next_line_idx.saturating_add(usize::from(segment.segment_rows));
