@@ -117,6 +117,8 @@ pub(super) fn handle_permission_request_event(
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 }
 
@@ -220,6 +222,8 @@ pub(super) fn handle_question_request_event(
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 }
 
@@ -243,6 +247,8 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App) {
     app.cancelled_turn_pending_hint =
         matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    crate::app::handoff::shadow::mirror_visible_live_tools(app);
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
@@ -300,6 +306,12 @@ pub(super) fn handle_turn_complete_event(
     } else {
         model::ToolCallStatus::Completed
     };
+    let committed_entries =
+        crate::app::handoff::shadow::mirror_turn_exit(&mut app.handoff_shadow, tool_status);
+    if !committed_entries.is_empty() {
+        app.chat_render.queue_pending_transcript_entries(committed_entries.clone());
+        app.mark_committed_output_changed();
+    }
     finish_ready_turn_exit(app, exit, tool_status);
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
@@ -386,6 +398,14 @@ pub(super) fn handle_turn_error_event(
         }
         TurnErrorClass::Other => {}
     }
+    let committed_entries = crate::app::handoff::shadow::mirror_turn_exit(
+        &mut app.handoff_shadow,
+        model::ToolCallStatus::Failed,
+    );
+    if !committed_entries.is_empty() {
+        app.chat_render.queue_pending_transcript_entries(committed_entries.clone());
+        app.mark_committed_output_changed();
+    }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
@@ -406,6 +426,7 @@ pub(super) fn handle_turn_error_event(
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 fn push_interrupted_hint(app: &mut App) {
@@ -550,5 +571,87 @@ mod tests {
         assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::User));
         assert!(matches!(app.messages[1].role, MessageRole::System(None)));
+    }
+
+    #[test]
+    fn turn_complete_commits_shadow_and_clears_active_turn() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_message("hello"));
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("done"))],
+            None,
+        ));
+        app.bind_active_turn_assistant(1);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, "done");
+
+        handle_turn_complete_event(&mut app, None);
+
+        assert!(app.handoff_shadow.active_turn.is_none());
+        let finished = app.handoff_shadow.last_finished_turn.as_ref().expect("finished turn");
+        assert_eq!(finished.transcript_entries.len(), 1);
+    }
+
+    #[test]
+    fn permission_request_marks_shadow_tool_non_final() {
+        let mut app = App::test_default();
+        let tool_id = "bash-1";
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
+                id: tool_id.to_owned(),
+                title: "tool".to_owned(),
+                sdk_tool_name: "Bash".to_owned(),
+                raw_input: None,
+                raw_input_bytes: 0,
+                output_metadata: None,
+                task_metadata: None,
+                status: model::ToolCallStatus::InProgress,
+                content: Vec::new(),
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
+                terminal_output_len: 0,
+                terminal_bytes_seen: 0,
+                terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: crate::app::BlockCache::default(),
+                pending_permission: None,
+                pending_question: None,
+            }))],
+            None,
+        ));
+        app.bind_active_turn_assistant(0);
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(&mut app, tool_id);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = model::RequestPermissionRequest::new(
+            "session-1",
+            model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
+            vec![model::PermissionOption::new(
+                "allow",
+                "Allow",
+                model::PermissionOptionKind::AllowOnce,
+            )],
+            None,
+        );
+
+        handle_permission_request_event(&mut app, request, tx);
+
+        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        let crate::app::handoff::types::LiveAssistantUnit::Tool(tool) = &turn.live.units[0] else {
+            panic!("expected tool");
+        };
+        assert!(tool.pending_permission);
     }
 }

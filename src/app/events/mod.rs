@@ -61,12 +61,10 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) {
-    // Force a full terminal clear on resize. Without this, terminal
-    // emulators (especially on Windows) corrupt their scrollback buffer
-    // when the alternate screen is resized, causing the visible area to
-    // shift even though ratatui paints the correct content. The clear
-    // resets the terminal's internal state.
-    app.force_redraw = true;
+    app.surface_dirty.mark_resize(app.terminal_lifecycle);
+    app.chat_render.set_terminal_size(width, height);
+    app.chat_render.clear_measurements();
+    app.chat_render.invalidate_live_anchor();
 
     // Interaction-facing geometry is stale until the next frame computes the
     // new layout. Invalidate it immediately so mouse/selection logic cannot
@@ -78,8 +76,6 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.rendered_input_lines.clear();
     app.selection = None;
     app.scrollbar_drag = None;
-
-    crate::ui::help::sync_geometry_state(app, width);
 }
 
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
@@ -107,7 +103,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.active_view {
         ActiveView::Chat => {
             app.active_paste_session = None;
-            mouse::handle_mouse_event(app, mouse);
+            let _ = mouse;
         }
         ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
             let _ = mouse;
@@ -324,6 +320,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
     }
+    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
 }
 
 fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
@@ -390,6 +387,7 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
             "Session successfully compacted.",
         );
     }
+    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
 }
 
 fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
@@ -449,8 +447,9 @@ mod tests {
     use crate::agent::events::TerminalProcess;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
-        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
-        InlineQuestion, SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem,
+        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, FullscreenView, HelpView,
+        InlinePermission, InlineQuestion, ReleaseReason, SelectionKind, SelectionPoint,
+        SelectionState, SurfaceMode, TerminalLifecycleState, TextBlockSpacing, TodoItem,
         TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -1335,6 +1334,11 @@ mod tests {
     fn test_app_defaults() {
         let app = make_test_app();
         assert!(app.messages.is_empty());
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
+        assert!(!app.surface_dirty.fullscreen.redraw);
+        assert!(!app.surface_dirty.terminal_mode);
         assert_eq!(app.viewport.scroll_offset, 0);
         assert_eq!(app.viewport.scroll_target, 0);
         assert!(app.viewport.auto_scroll);
@@ -1352,6 +1356,52 @@ mod tests {
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
+    }
+
+    #[test]
+    fn resize_marks_chat_surface_dirty_when_running_chat() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+        app.chat_render.terminal_width = 90;
+        app.chat_render.terminal_height = 30;
+        app.chat_render.composer.total_rows = 4;
+        app.chat_render.composer.last_rendered_rows = 4;
+        app.chat_render.live_region.anchor_valid = true;
+        app.chat_render.live_region.last_rendered_rows = 7;
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert!(!app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.chat_render.terminal_width, 120);
+        assert_eq!(app.chat_render.terminal_height, 40);
+        assert_eq!(app.chat_render.composer.total_rows, 0);
+        assert_eq!(app.chat_render.composer.last_rendered_rows, 0);
+        assert!(!app.chat_render.live_region.anchor_valid);
+        assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+    }
+
+    #[test]
+    fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle =
+            TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert!(app.surface_dirty.fullscreen.redraw);
+    }
+
+    #[test]
+    fn resize_marks_hidden_chat_dirty_when_terminal_is_released() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert!(!app.surface_dirty.fullscreen.redraw);
     }
 
     #[test]

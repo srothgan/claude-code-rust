@@ -266,12 +266,15 @@ impl super::App {
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
         let previous_tail = self.messages.len().checked_sub(1);
+        let transcript_entries = crate::app::handoff::shadow::transcript_entries_from_message(&msg);
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.push(msg);
         self.message_retained_bytes.push(bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
         self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
+        self.chat_render.queue_pending_transcript_entries(transcript_entries);
+        self.mark_committed_output_changed();
         self.needs_redraw = true;
     }
 
@@ -284,6 +287,8 @@ impl super::App {
             self.shift_turn_notice_refs_for_insert(insert_idx);
         }
         let bytes = Self::measure_message_bytes(&msg);
+        let transcript_entries = appended_at_tail
+            .then(|| crate::app::handoff::shadow::transcript_entries_from_message(&msg));
         self.messages.insert(insert_idx, msg);
         self.message_retained_bytes.insert(insert_idx, bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
@@ -297,6 +302,10 @@ impl super::App {
         } else {
             self.sync_after_message_topology_change(insert_idx);
         }
+        if let Some(transcript_entries) = transcript_entries {
+            self.chat_render.queue_pending_transcript_entries(transcript_entries);
+        }
+        self.mark_committed_output_changed();
         self.needs_redraw = true;
     }
 
@@ -331,6 +340,8 @@ impl super::App {
         self.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
+        crate::app::handoff::shadow::clear_shadow_state(&mut self.handoff_shadow);
+        self.reset_committed_output_tracking();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.viewport.sync_message_count(0);

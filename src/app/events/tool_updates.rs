@@ -66,6 +66,8 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
     }
+    crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &id_str);
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 fn apply_tool_scope_status_update(
@@ -991,5 +993,38 @@ mod tests {
         };
         assert_eq!(tc.status, model::ToolCallStatus::Killed);
         assert!(!app.active_task_ids.contains(tool_id));
+    }
+
+    #[test]
+    fn completed_tool_update_stays_live_in_shadow_until_turn_exit() {
+        let mut app = App::test_default();
+        let tool_id = "tool-1";
+        app.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
+                tool_id,
+                model::ToolCallStatus::InProgress,
+                Some("term-1"),
+            )))],
+            None,
+        ));
+        app.bind_active_turn_assistant(0);
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(&mut app, tool_id);
+
+        let update = model::ToolCallUpdate::new(
+            tool_id,
+            model::ToolCallUpdateFields::new()
+                .status(model::ToolCallStatus::Completed)
+                .raw_output(serde_json::Value::String("done".to_owned())),
+        );
+
+        handle_tool_call_update_session(&mut app, &update);
+
+        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert!(turn.committed_entries.is_empty());
+        assert_eq!(turn.live.units.len(), 1);
     }
 }

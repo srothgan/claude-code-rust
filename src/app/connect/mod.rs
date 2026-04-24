@@ -15,14 +15,16 @@ mod type_converters;
 
 use super::config::ConfigState;
 use super::dialog::DialogState;
+use super::handoff::shadow::HandoffShadowState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
     SessionPickerState,
 };
 use super::trust;
-use super::view::ActiveView;
+use super::view::{ActiveView, SurfaceMode};
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
+use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -123,6 +125,10 @@ pub fn create_app(cli: &Cli) -> App {
     let cwd_display = shorten_cwd(&cwd);
     let mut app = App {
         active_view: ActiveView::Chat,
+        surface_mode: SurfaceMode::Chat,
+        terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
+        surface_dirty: SurfaceDirtyState::default(),
+        handoff_shadow: HandoffShadowState::default(),
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
@@ -192,6 +198,7 @@ pub fn create_app(cli: &Cli) -> App {
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        chat_render: super::ChatRenderState::default(),
         mention: None,
         file_index: super::file_index::FileIndexState::default(),
         slash: None,
@@ -266,6 +273,7 @@ pub fn create_app(cli: &Cli) -> App {
 
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
+    app.reset_committed_output_tracking();
     trust::initialize(&mut app);
     app.sync_git_context();
     super::file_index::restart(&mut app);
@@ -328,6 +336,7 @@ mod tests {
     use crate::Cli;
     use crate::agent::model;
     use crate::agent::types;
+    use crate::app::TerminalLifecycleState;
 
     #[test]
     fn map_session_update_preserves_config_option_update() {
@@ -366,5 +375,7 @@ mod tests {
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
+        assert_eq!(app.surface_mode, app.active_view.surface_mode());
+        assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
     }
 }

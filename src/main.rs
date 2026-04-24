@@ -14,7 +14,7 @@ fn main() {
             eprintln!("{}", app_error.user_message());
             std::process::exit(app_error.exit_code());
         }
-        eprintln!("{err}");
+        eprintln!("{err:#}");
         std::process::exit(1);
     }
 }

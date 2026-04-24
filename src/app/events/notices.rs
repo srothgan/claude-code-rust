@@ -100,6 +100,19 @@ fn insert_inline_notice(
         location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
     });
     app.viewport.engage_auto_scroll();
+    if let Some(MessageBlock::Notice(notice)) =
+        app.messages.get(owner_idx).and_then(|message| message.blocks.get(block_idx))
+    {
+        let live_notice = crate::app::handoff::types::inline_notice_to_live(
+            notice,
+            crate::app::handoff::types::LiveUnitId(0),
+        );
+        crate::app::handoff::shadow::mirror_inline_notice_insert(
+            &mut app.handoff_shadow,
+            live_notice,
+        );
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
+    }
 }
 
 fn insert_standalone_notice(
@@ -147,6 +160,13 @@ fn update_inline_notice(
     app.sync_render_cache_slot(msg_idx, block_idx);
     app.recompute_message_retained_bytes(msg_idx);
     app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
+    crate::app::handoff::shadow::mirror_inline_notice_update(
+        &mut app.handoff_shadow,
+        dedup_key,
+        severity,
+        message,
+    );
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     true
 }
 
@@ -210,4 +230,57 @@ fn prune_invalid_turn_notice_refs(app: &mut App) {
             )
         ),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{update_inline_notice, upsert_turn_notice};
+    use crate::app::{App, ChatMessage, MessageRole, NoticeStage, SystemSeverity};
+
+    #[test]
+    fn inline_notice_insert_is_mirrored_into_shadow() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+
+        upsert_turn_notice(
+            &mut app,
+            crate::app::NoticeDedupKey::ApiRetry,
+            NoticeStage::Warning,
+            SystemSeverity::Warning,
+            "retrying",
+        );
+
+        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(turn.committed_entries.len(), 0);
+        assert_eq!(turn.live.units.len(), 1);
+    }
+
+    #[test]
+    fn inline_notice_update_mutates_shadow_notice() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+
+        upsert_turn_notice(
+            &mut app,
+            crate::app::NoticeDedupKey::ApiRetry,
+            NoticeStage::Warning,
+            SystemSeverity::Warning,
+            "retrying",
+        );
+        assert!(update_inline_notice(
+            &mut app,
+            0,
+            0,
+            &crate::app::NoticeDedupKey::ApiRetry,
+            SystemSeverity::Error,
+            "failed",
+        ));
+
+        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+    }
 }

@@ -129,6 +129,9 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
 }
 
 fn dispatch_submission(app: &mut App, text: String) {
+    if slash::try_handle_inline_chat_migration_submit(app, &text) {
+        return;
+    }
     if slash::try_handle_submit(app, &text) {
         return;
     }
@@ -156,8 +159,10 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // Create empty assistant message immediately -- message.rs shows thinking indicator
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();
+    let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
+    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
     app.viewport.engage_auto_scroll();
 
     let tx = app.event_tx.clone();
@@ -339,6 +344,11 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages.len(), 2);
+        assert!(app.handoff_shadow.active_turn.is_some());
+        assert_eq!(
+            app.handoff_shadow.active_turn.as_ref().and_then(|turn| turn.live.live_indicator),
+            Some(crate::app::handoff::types::LiveAssistantIndicator::Thinking)
+        );
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt.command,

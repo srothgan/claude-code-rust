@@ -3,6 +3,7 @@
 
 pub mod block_cache;
 pub mod cache_metrics;
+pub mod chat_render;
 mod history_retention;
 pub mod messages;
 mod render_budget;
@@ -13,9 +14,10 @@ pub mod viewport;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
+pub use chat_render::{ChatRenderState, ComposerRenderState, LiveRegionRenderState};
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
-    CachedMessageSegment, ChatMessage, IncrementalMarkdown, MessageBlock,
+    CachedMessageSegment, ChatMessage, ImageAttachmentBlock, IncrementalMarkdown, MessageBlock,
     MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
     MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey, SystemSeverity, TextBlock,
     TextBlockSpacing, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
@@ -49,6 +51,7 @@ use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
+use super::handoff::shadow::HandoffShadowState;
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
@@ -56,7 +59,8 @@ use super::plugins::PluginsState;
 use super::slash;
 use super::subagent;
 use super::trust::TrustState;
-use super::view::ActiveView;
+use super::view::{ActiveView, SurfaceMode};
+use super::{SurfaceDirtyState, TerminalLifecycleState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TerminalToolCallRef {
@@ -123,6 +127,10 @@ pub struct ChatRenderTraceState {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
+    pub surface_mode: SurfaceMode,
+    pub terminal_lifecycle: TerminalLifecycleState,
+    pub surface_dirty: SurfaceDirtyState,
+    pub(crate) handoff_shadow: HandoffShadowState,
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
@@ -243,6 +251,8 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
+    /// Deterministic measurement state for the future mutable chat region.
+    pub chat_render: ChatRenderState,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
     /// App-owned file index backing `@` file mention autocomplete.
@@ -409,6 +419,14 @@ impl App {
         );
     }
 
+    pub(crate) fn mark_committed_output_changed(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    pub(crate) fn reset_committed_output_tracking(&mut self) {
+        self.chat_render.reset_committed_output();
+    }
+
     /// Mark one presented frame at `now`, updating smoothed FPS.
     pub fn mark_frame_presented(&mut self, now: Instant) {
         let Some(prev) = self.last_frame_at.replace(now) else {
@@ -503,28 +521,51 @@ impl App {
         let subscription = self.welcome_subscription_display().to_owned();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.messages.first_mut() else {
+        let Some(first) = self.messages.first() else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {
             return;
         }
-        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
-            return;
-        };
-        if welcome.version != version
-            || welcome.subscription != subscription
-            || welcome.cwd != cwd
-            || welcome.session_id != session_id
+        let previously_committable =
+            !crate::app::handoff::shadow::transcript_entries_from_message(first).is_empty();
+        let mut changed = false;
         {
-            version.clone_into(&mut welcome.version);
-            welcome.subscription = subscription;
-            welcome.cwd = cwd;
-            welcome.session_id = session_id;
-            welcome.cache.invalidate();
+            let Some(first) = self.messages.first_mut() else {
+                return;
+            };
+            let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
+                return;
+            };
+            if welcome.version != version
+                || welcome.subscription != subscription
+                || welcome.cwd != cwd
+                || welcome.session_id != session_id
+            {
+                version.clone_into(&mut welcome.version);
+                welcome.subscription = subscription;
+                welcome.cwd = cwd;
+                welcome.session_id = session_id;
+                welcome.cache.invalidate();
+                changed = true;
+            }
+        }
+        if changed {
             self.sync_render_cache_slot(0, 0);
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
+            let now_committable = self.messages.first().is_some_and(|first| {
+                !crate::app::handoff::shadow::transcript_entries_from_message(first).is_empty()
+            });
+            if !previously_committable
+                && now_committable
+                && let Some(first) = self.messages.first()
+            {
+                self.chat_render.queue_pending_transcript_entries(
+                    crate::app::handoff::shadow::transcript_entries_from_message(first),
+                );
+                self.mark_committed_output_changed();
+            }
         }
     }
 
@@ -812,6 +853,10 @@ impl App {
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         Self {
             active_view: ActiveView::Chat,
+            surface_mode: SurfaceMode::Chat,
+            terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),
+            surface_dirty: SurfaceDirtyState::default(),
+            handoff_shadow: HandoffShadowState::default(),
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
@@ -879,6 +924,7 @@ impl App {
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
+            chat_render: ChatRenderState::default(),
             mention: None,
             file_index: file_index::FileIndexState::default(),
             slash: None,
@@ -1390,6 +1436,13 @@ mod tests {
     }
 
     #[test]
+    fn test_default_initializes_chat_render_state() {
+        let app = App::test_default();
+
+        assert_eq!(app.chat_render, ChatRenderState::default());
+    }
+
+    #[test]
     fn cache_store_without_height_has_no_height() {
         let mut cache = BlockCache::default();
         cache.store(vec![Line::from("hello")]);
@@ -1502,6 +1555,22 @@ mod tests {
 
     fn user_text_message(text: &str) -> ChatMessage {
         ChatMessage::new(MessageRole::User, vec![assistant_text_block(text)], None)
+    }
+
+    #[test]
+    fn reset_committed_output_tracking_clears_pending_transcript_state() {
+        let mut app = make_test_app();
+        app.chat_render.mark_terminal_history_synced();
+        app.chat_render.queue_pending_transcript_entries(
+            crate::app::handoff::shadow::transcript_entries_from_message(&user_text_message(
+                "queued",
+            )),
+        );
+
+        app.reset_committed_output_tracking();
+
+        assert!(app.chat_render.transcript.pending_entries.is_empty());
+        assert!(!app.chat_render.transcript.history_in_sync);
     }
 
     fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {

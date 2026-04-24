@@ -5,8 +5,8 @@ use crate::app::slash::{SlashContext, SlashState};
 use crate::app::state::types::ScrollbarDragState;
 use crate::app::subagent::SubagentState;
 use crate::app::{
-    FocusTarget, PasteSessionState, SelectionKind, SelectionPoint, SelectionState, TodoItem,
-    TodoStatus,
+    FocusTarget, FullscreenView, PasteSessionState, ReleaseReason, SelectionKind, SelectionPoint,
+    SelectionState, SurfaceMode, TerminalLifecycleState, TodoItem, TodoStatus,
 };
 
 fn busy_view_test_app() -> App {
@@ -63,6 +63,8 @@ fn busy_view_test_app() -> App {
 #[test]
 fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     let mut app = busy_view_test_app();
+    app.chat_render.live_region.anchor_valid = true;
+    app.chat_render.live_region.last_rendered_rows = 5;
 
     set_active_view(&mut app, ActiveView::Trusted);
 
@@ -77,6 +79,8 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     assert!(app.pending_paste_session.is_none());
     assert!(app.active_paste_session.is_none());
     assert!(app.pending_submit.is_none());
+    assert!(!app.chat_render.live_region.anchor_valid);
+    assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
 }
 
 #[test]
@@ -149,4 +153,77 @@ fn leaving_config_clears_config_overlay() {
     set_active_view(&mut app, ActiveView::Trusted);
 
     assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn active_view_surface_mode_mapping_covers_all_views() {
+    assert_eq!(ActiveView::Chat.surface_mode(), SurfaceMode::Chat);
+    assert_eq!(ActiveView::Chat.fullscreen_view(), None);
+
+    assert_eq!(ActiveView::Config.surface_mode(), SurfaceMode::Fullscreen(FullscreenView::Config));
+    assert_eq!(ActiveView::Config.fullscreen_view(), Some(FullscreenView::Config));
+
+    assert_eq!(
+        ActiveView::Trusted.surface_mode(),
+        SurfaceMode::Fullscreen(FullscreenView::Trusted)
+    );
+    assert_eq!(ActiveView::Trusted.fullscreen_view(), Some(FullscreenView::Trusted));
+
+    assert_eq!(
+        ActiveView::SessionPicker.surface_mode(),
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
+    );
+    assert_eq!(ActiveView::SessionPicker.fullscreen_view(), Some(FullscreenView::SessionPicker));
+}
+
+#[test]
+fn surface_mode_active_view_mapping_covers_all_modes() {
+    assert_eq!(SurfaceMode::Chat.active_view(), ActiveView::Chat);
+    assert_eq!(FullscreenView::Config.active_view(), ActiveView::Config);
+    assert_eq!(FullscreenView::Trusted.active_view(), ActiveView::Trusted);
+    assert_eq!(FullscreenView::SessionPicker.active_view(), ActiveView::SessionPicker);
+    assert_eq!(SurfaceMode::Fullscreen(FullscreenView::Config).active_view(), ActiveView::Config);
+}
+
+#[test]
+fn set_active_view_updates_surface_and_lifecycle_while_running() {
+    let mut app = App::test_default();
+    app.chat_render.live_region.anchor_valid = true;
+
+    set_active_view(&mut app, ActiveView::Config);
+
+    assert_eq!(app.active_view, ActiveView::Config);
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+    assert_eq!(
+        app.terminal_lifecycle,
+        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config))
+    );
+    assert!(app.surface_dirty.fullscreen.redraw);
+    assert!(app.surface_dirty.terminal_mode);
+    assert!(!app.chat_render.live_region.anchor_valid);
+}
+
+#[test]
+fn set_active_view_preserves_non_running_lifecycle_states() {
+    let mut released_app = App::test_default();
+    released_app.terminal_lifecycle =
+        TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
+    set_active_view(&mut released_app, ActiveView::Trusted);
+    assert_eq!(
+        released_app.terminal_lifecycle,
+        TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow)
+    );
+    assert_eq!(released_app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
+
+    let mut restoring_app = App::test_default();
+    restoring_app.terminal_lifecycle = TerminalLifecycleState::Restoring;
+    set_active_view(&mut restoring_app, ActiveView::Config);
+    assert_eq!(restoring_app.terminal_lifecycle, TerminalLifecycleState::Restoring);
+    assert_eq!(restoring_app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+
+    let mut exited_app = App::test_default();
+    exited_app.terminal_lifecycle = TerminalLifecycleState::Exited;
+    set_active_view(&mut exited_app, ActiveView::SessionPicker);
+    assert_eq!(exited_app.terminal_lifecycle, TerminalLifecycleState::Exited);
+    assert_eq!(exited_app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
 }

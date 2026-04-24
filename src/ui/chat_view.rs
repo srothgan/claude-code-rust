@@ -1,7 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{autocomplete, chat, footer, help, input, layout, theme, todo};
+use super::{
+    autocomplete, chat, composer_measure, footer, help, input, input_rows, layout, theme, todo,
+};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -35,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
         layout::compute(frame_area, input_visual_lines, todo_height, help_height)
     };
+    update_chat_render_measurement(app, frame_area, areas.input.width, areas.footer.is_some());
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
@@ -111,3 +114,24 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
 
 #[cfg(not(feature = "perf"))]
 fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app: &App) {}
+
+fn update_chat_render_measurement(
+    app: &mut App,
+    frame_area: Rect,
+    composer_width: u16,
+    footer_present: bool,
+) {
+    let input_rows = input_rows::serialize_input_rows(app, composer_width);
+    let composer =
+        composer_measure::measure_composer(composer_width, input_rows.measurement, footer_present);
+
+    app.chat_render.set_terminal_size(frame_area.width, frame_area.height);
+    app.chat_render.composer.width = composer.width;
+    app.chat_render.composer.hint_rows = composer.hint_rows;
+    app.chat_render.composer.editor_rows = composer.editor_rows;
+    app.chat_render.composer.footer_rows = composer.footer_rows;
+    app.chat_render.composer.total_rows = composer.total_rows;
+    app.chat_render.composer.caret_row = composer.caret_row;
+    app.chat_render.composer.caret_col = composer.caret_col;
+    app.chat_render.composer.last_rendered_rows = composer.total_rows;
+}

@@ -11,10 +11,12 @@ mod events;
 pub(crate) mod file_index;
 mod focus;
 mod git_context;
+pub(crate) mod handoff;
 mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
 mod keys;
+mod lifecycle;
 pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
@@ -30,6 +32,7 @@ mod state;
 pub(crate) mod subagent;
 mod tab_title;
 mod terminal;
+mod terminal_runtime;
 mod todos;
 mod trust;
 mod update_check;
@@ -47,33 +50,34 @@ pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
+pub use lifecycle::{
+    FullscreenSurfaceDirtyState, ReleaseReason, SurfaceDirtyState, TerminalLifecycleState,
+};
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, CancelOrigin, ChatMessage,
-    ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
-    InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation, LoginHint, McpState,
-    MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
-    RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name,
+    ChatRenderState, ChatRenderTraceState, ChatViewport, ComposerRenderState, ExtraUsage, HelpView,
+    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
+    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock,
+    MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
+    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
+    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
+    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
+    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
+    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
-pub use view::ActiveView;
+pub use view::{ActiveView, FullscreenView, SurfaceMode};
 
 use crate::agent::model;
-use crossterm::event::{
-    EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+use crossterm::event::EventStream;
 use futures::{FutureExt as _, StreamExt};
 use std::time::{Duration, Instant};
 
@@ -89,10 +93,8 @@ const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 pub(crate) fn suspend_terminal() {
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange,
-        PopKeyboardEnhancementFlags
+        crossterm::event::DisableFocusChange
     );
     let _ = crossterm::terminal::disable_raw_mode();
 }
@@ -102,14 +104,8 @@ pub(crate) fn resume_terminal() {
     let _ = crossterm::terminal::enable_raw_mode();
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableFocusChange,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
+        crossterm::event::EnableFocusChange
     );
 }
 
@@ -119,11 +115,20 @@ pub(crate) fn resume_terminal() {
 
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
-    let mut terminal = ratatui::init();
-    let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
+    let mut terminal_runtime = terminal_runtime::TerminalRuntime::bootstrap(app)?;
+    let result = run_tui_loop(app, &mut terminal_runtime).await;
 
-    // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
-    resume_terminal();
+    finish_run_tui(app, &mut terminal_runtime);
+
+    result
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+async fn run_tui_loop(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+) -> anyhow::Result<()> {
+    let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     let mut events = EventStream::new();
     let tick_duration = Duration::from_millis(16);
@@ -203,6 +208,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             finalize_deferred_submit(app);
         }
 
+        terminal_runtime.sync_surface(app)?;
+
         if app.should_quit {
             break;
         }
@@ -235,7 +242,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.force_redraw {
-            terminal.clear()?;
+            terminal_runtime.clear_active_surface_with_app(Some(app))?;
             app.force_redraw = false;
             app.needs_redraw = true;
         }
@@ -250,7 +257,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             {
                 let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
                 let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
-                terminal.draw(|f| crate::ui::render(f, app))?;
+                terminal_runtime.draw_active_surface(app)?;
                 drop(draw_timer);
                 drop(timer);
             }
@@ -259,8 +266,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
     }
 
-    // --- Graceful shutdown ---
+    Ok(())
+}
 
+fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::TerminalRuntime) {
     // Dismiss all pending inline permissions (reject via last option)
     for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
         if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
@@ -295,10 +304,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Restore terminal
     tab_title::restore_tab_title(&app.cwd);
-    suspend_terminal();
-    ratatui::restore();
-
-    Ok(())
+    terminal_runtime.restore(app);
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {

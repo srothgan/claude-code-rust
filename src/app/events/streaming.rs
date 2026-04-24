@@ -14,6 +14,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
 
     app.status = AppStatus::Running;
     if text.text.is_empty() {
+        crate::app::handoff::shadow::sync_shadow_live_indicator(app);
         return;
     }
     if let Some(owner_idx) = app.active_turn_assistant_idx()
@@ -21,6 +22,8 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     {
         append_agent_stream_text(&mut owner.blocks, &text.text);
         app.sync_after_message_blocks_changed(owner_idx);
+        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
         return;
     }
 
@@ -31,6 +34,8 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         let last_idx = app.messages.len().saturating_sub(1);
         app.bind_active_turn_assistant(last_idx);
         app.sync_after_message_blocks_changed(last_idx);
+        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
         return;
     }
 
@@ -38,6 +43,8 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     append_agent_stream_text(&mut blocks, &text.text);
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
     app.bind_active_turn_assistant_to_tail();
+    crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {
@@ -117,4 +124,32 @@ pub(super) fn find_text_block_split(text: &str) -> Option<TextSplitDecision> {
 #[cfg(test)]
 pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
     find_text_block_split(text).map(|decision| decision.split_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handle_agent_message_chunk;
+    use crate::agent::model;
+    use crate::app::{App, ChatMessage, MessageRole};
+
+    #[test]
+    fn streaming_chunk_updates_shadow_turn_and_commits_prefix() {
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Thinking;
+        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
+
+        handle_agent_message_chunk(
+            &mut app,
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                "first\n\nsecond",
+            ))),
+        );
+
+        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(turn.committed_entries.len(), 1);
+        assert_eq!(turn.live.units.len(), 1);
+    }
 }

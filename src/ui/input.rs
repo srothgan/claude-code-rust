@@ -7,13 +7,13 @@ use crate::app::subagent;
 use crate::app::{App, AppStatus, FocusOwner};
 use crate::ui::theme;
 use ratatui::Frame;
-use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
 use tui_textarea::TextArea;
+
+use super::input_rows;
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -109,58 +109,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let geometry = compute_render_geometry(area, hint_lines);
 
     if let Some(hint_pad) = geometry.hint_pad {
-        let mut hint_y = hint_pad.y;
-
-        if let Some(hint) = &app.login_hint {
-            let lines = vec![
-                Line::from(Span::styled(
-                    format!(
-                        "Authentication required: {} -- {}",
-                        hint.method_name, hint.method_description
-                    ),
-                    Style::default().fg(Color::Yellow),
-                )),
-                Line::from(Span::styled(
-                    "Type /login to authenticate, or run `claude auth login` in another terminal",
-                    Style::default().fg(theme::DIM),
-                )),
-            ];
-            let login_area =
-                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: LOGIN_HINT_LINES };
-            frame.render_widget(Paragraph::new(lines), login_area);
-            hint_y = hint_y.saturating_add(LOGIN_HINT_LINES);
-        }
-
-        if has_cancel_hint(app) {
-            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-            let cancel_line = Line::from(vec![
-                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-                Span::styled(
-                    "Cancelling current turn... draft will auto-submit when ready.",
-                    Style::default().fg(theme::DIM),
-                ),
-            ]);
-            let cancel_area =
-                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: CANCEL_HINT_LINES };
-            frame.render_widget(Paragraph::new(cancel_line), cancel_area);
-            hint_y = hint_y.saturating_add(CANCEL_HINT_LINES);
-        }
-
-        if has_prompt_suggestion_hint(app)
-            && let Some(suggestion) = app.prompt_suggestion.as_deref()
-        {
-            let suggestion_line = Line::from(vec![
-                Span::styled("Suggestion: ", Style::default().fg(theme::DIM)),
-                Span::styled(suggestion.trim().to_owned(), Style::default().fg(Color::White)),
-                Span::styled("    Tab to accept", Style::default().fg(theme::DIM)),
-            ]);
-            let suggestion_area = Rect {
-                x: hint_pad.x,
-                y: hint_y,
-                width: hint_pad.width,
-                height: PROMPT_SUGGESTION_HINT_LINES,
-            };
-            frame.render_widget(Paragraph::new(suggestion_line), suggestion_area);
+        let hint_rows = input_rows::build_input_hint_rows(app);
+        if !hint_rows.is_empty() {
+            frame.render_widget(Paragraph::new(hint_rows), hint_pad);
         }
     }
 
@@ -222,7 +173,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(sel) = app.selection
         && sel.kind == crate::app::SelectionKind::Input
     {
-        frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
+        frame.render_widget(input_rows::SelectionOverlay { selection: sel }, geometry.text);
     }
 }
 
@@ -236,11 +187,12 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
         return;
     }
 
-    configure_input_textarea(app);
-    app.rendered_input_lines = render_lines_from_textarea(app.input.editor(), area);
+    let total_width = area.width.saturating_add(INPUT_PAD * 2 + INPUT_RIGHT_PAD + PROMPT_WIDTH);
+    let serialized = input_rows::serialize_input_rows(app, total_width);
+    app.rendered_input_lines = serialized.plain_editor_rows;
 }
 
-fn configure_input_textarea(app: &mut App) {
+pub(super) fn configure_input_textarea(app: &mut App) {
     let needs_highlight_update = app.input.highlight_version != app.input.content_version;
 
     {
@@ -322,51 +274,6 @@ fn slash_command_range(line: &str) -> Option<(usize, usize)> {
         return None;
     }
     Some((start, end))
-}
-
-struct SelectionOverlay {
-    selection: crate::app::SelectionState,
-}
-
-impl Widget for SelectionOverlay {
-    #[allow(clippy::cast_possible_truncation)]
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let (start, end) =
-            crate::app::normalize_selection(self.selection.start, self.selection.end);
-        for row in start.row..=end.row {
-            let y = area.y.saturating_add(row as u16);
-            if y >= area.bottom() {
-                break;
-            }
-            let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
-            for col in row_start..row_end {
-                let x = area.x.saturating_add(col as u16);
-                if x >= area.right() {
-                    break;
-                }
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
-                }
-            }
-        }
-    }
-}
-
-fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String> {
-    let mut buf = Buffer::empty(area);
-    textarea.render(area, &mut buf);
-    let mut lines = Vec::with_capacity(area.height as usize);
-    for y in 0..area.height {
-        let mut line = String::new();
-        for x in 0..area.width {
-            if let Some(cell) = buf.cell((area.x + x, area.y + y)) {
-                line.push_str(cell.symbol());
-            }
-        }
-        lines.push(line.trim_end().to_owned());
-    }
-    lines
 }
 
 /// Total visual height for the input area: input lines + hint banners.
