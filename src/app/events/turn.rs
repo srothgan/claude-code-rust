@@ -306,12 +306,14 @@ pub(super) fn handle_turn_complete_event(
     } else {
         model::ToolCallStatus::Completed
     };
+    let assistant_anchor = crate::app::handoff::shadow::active_assistant_projection_anchor(app);
     let committed_entries =
         crate::app::handoff::shadow::mirror_turn_exit(&mut app.handoff_shadow, tool_status);
-    if !committed_entries.is_empty() {
-        app.chat_render.queue_pending_transcript_entries(committed_entries.clone());
-        app.mark_committed_output_changed();
-    }
+    crate::app::handoff::shadow::record_assistant_turn_exit_projection(
+        app,
+        assistant_anchor,
+        committed_entries,
+    );
     finish_ready_turn_exit(app, exit, tool_status);
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
@@ -398,14 +400,16 @@ pub(super) fn handle_turn_error_event(
         }
         TurnErrorClass::Other => {}
     }
+    let assistant_anchor = crate::app::handoff::shadow::active_assistant_projection_anchor(app);
     let committed_entries = crate::app::handoff::shadow::mirror_turn_exit(
         &mut app.handoff_shadow,
         model::ToolCallStatus::Failed,
     );
-    if !committed_entries.is_empty() {
-        app.chat_render.queue_pending_transcript_entries(committed_entries.clone());
-        app.mark_committed_output_changed();
-    }
+    crate::app::handoff::shadow::record_assistant_turn_exit_projection(
+        app,
+        assistant_anchor,
+        committed_entries,
+    );
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
@@ -592,6 +596,16 @@ mod tests {
         assert!(app.handoff_shadow.active_turn.is_none());
         let finished = app.handoff_shadow.last_finished_turn.as_ref().expect("finished turn");
         assert_eq!(finished.transcript_entries.len(), 1);
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].anchor,
+            crate::app::handoff::projection::InlineOutputAnchor::AssistantCommit {
+                msg_idx: 1,
+                turn_id: finished.turn_id,
+                commit_idx: 0,
+            }
+        );
     }
 
     #[test]

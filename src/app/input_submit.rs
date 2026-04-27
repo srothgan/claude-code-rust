@@ -162,7 +162,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
-    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
+    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     app.viewport.engage_auto_scroll();
 
     let tx = app.event_tx.clone();
@@ -349,6 +349,11 @@ mod tests {
             app.handoff_shadow.active_turn.as_ref().and_then(|turn| turn.live.live_indicator),
             Some(crate::app::handoff::types::LiveAssistantIndicator::Thinking)
         );
+        let items = app.handoff_shadow.inline_output.items();
+        assert!(matches!(
+            &items[1].kind,
+            crate::app::handoff::projection::InlineOutputItemKind::AssistantLive { .. }
+        ));
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt.command,

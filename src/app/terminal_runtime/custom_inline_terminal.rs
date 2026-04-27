@@ -227,7 +227,6 @@ where
         self.last_known_cursor_pos = cursor_pos;
         match direction {
             ScreenScrollDirection::Up => self.shift_history_up(rows),
-            ScreenScrollDirection::Down => self.shift_history_down(rows),
         }
         self.invalidate_viewport();
     }
@@ -239,21 +238,6 @@ where
 
         self.history_top = Some(top.saturating_sub(rows));
         self.history_bottom_exclusive = self.history_bottom_exclusive.saturating_sub(rows);
-        if self.history_top.is_some_and(|next_top| next_top >= self.history_bottom_exclusive) {
-            self.history_top = None;
-            self.history_bottom_exclusive = 0;
-        }
-    }
-
-    fn shift_history_down(&mut self, rows: u16) {
-        let Some(top) = self.history_top else {
-            return;
-        };
-
-        let viewport_top = self.viewport_area.top();
-        self.history_top = Some(top.saturating_add(rows).min(viewport_top));
-        self.history_bottom_exclusive =
-            self.history_bottom_exclusive.saturating_add(rows).min(viewport_top);
         if self.history_top.is_some_and(|next_top| next_top >= self.history_bottom_exclusive) {
             self.history_top = None;
             self.history_bottom_exclusive = 0;

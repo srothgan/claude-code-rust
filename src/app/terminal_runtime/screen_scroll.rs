@@ -7,7 +7,6 @@ use std::io::Write;
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Print;
-use crossterm::terminal::ScrollDown;
 use ratatui::backend::Backend;
 use ratatui::layout::Position;
 
@@ -16,7 +15,6 @@ use super::custom_inline_terminal::Terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScreenScrollDirection {
     Up,
-    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,10 +26,6 @@ pub(crate) struct ScreenScrollRequest {
 impl ScreenScrollRequest {
     pub(crate) const fn up(rows: u16) -> Self {
         Self { direction: ScreenScrollDirection::Up, rows }
-    }
-
-    pub(crate) const fn down(rows: u16) -> Self {
-        Self { direction: ScreenScrollDirection::Down, rows }
     }
 }
 
@@ -58,7 +52,6 @@ where
         terminal.last_known_cursor_pos,
         request.direction,
         applied_rows,
-        screen_height,
     );
     {
         let writer = terminal.backend_mut();
@@ -69,7 +62,6 @@ where
                     queue!(writer, Print("\n"))?;
                 }
             }
-            ScreenScrollDirection::Down => queue!(writer, ScrollDown(applied_rows))?,
         }
         queue!(writer, MoveTo(cursor_pos.x, cursor_pos.y))?;
     }
@@ -97,12 +89,9 @@ fn scroll_adjusted_cursor_position(
     cursor_pos: Position,
     direction: ScreenScrollDirection,
     rows: u16,
-    screen_height: u16,
 ) -> Position {
-    let max_y = screen_height.saturating_sub(1);
     let y = match direction {
         ScreenScrollDirection::Up => cursor_pos.y.saturating_sub(rows),
-        ScreenScrollDirection::Down => cursor_pos.y.saturating_add(rows).min(max_y),
     };
     Position { x: cursor_pos.x, y }
 }
@@ -132,17 +121,8 @@ mod tests {
     #[test]
     fn adjusted_cursor_tracks_screen_content() {
         assert_eq!(
-            scroll_adjusted_cursor_position(Position::new(4, 10), ScreenScrollDirection::Up, 3, 20,),
+            scroll_adjusted_cursor_position(Position::new(4, 10), ScreenScrollDirection::Up, 3),
             Position::new(4, 7)
-        );
-        assert_eq!(
-            scroll_adjusted_cursor_position(
-                Position::new(4, 18),
-                ScreenScrollDirection::Down,
-                7,
-                20,
-            ),
-            Position::new(4, 19)
         );
     }
 
@@ -160,21 +140,6 @@ mod tests {
         assert_eq!(terminal.history_bounds(), Some((1, 7)));
         let written = String::from_utf8_lossy(&terminal.backend_mut().written);
         assert_eq!(written.matches('\n').count(), 3);
-    }
-
-    #[test]
-    fn scroll_down_writes_command_and_updates_bookkeeping() {
-        let mut terminal = Terminal::with_options(RecordingBackend::new(80, 24)).unwrap();
-        terminal.set_viewport_area(Rect::new(0, 10, 80, 14));
-        terminal.record_history_insert(1, 5);
-        terminal.last_known_cursor_pos = Position::new(5, 8);
-
-        let outcome = scroll_screen(&mut terminal, ScreenScrollRequest::down(4)).unwrap();
-
-        assert_eq!(outcome.applied_rows, 4);
-        assert_eq!(terminal.last_known_cursor_pos, Position::new(5, 12));
-        assert_eq!(terminal.history_bounds(), Some((5, 10)));
-        assert!(terminal.backend_mut().written.contains(&b'T'));
     }
 
     #[derive(Debug)]

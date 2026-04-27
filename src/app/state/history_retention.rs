@@ -266,6 +266,7 @@ impl super::App {
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
         let previous_tail = self.messages.len().checked_sub(1);
+        let msg_idx = self.messages.len();
         let transcript_entries = crate::app::handoff::shadow::transcript_entries_from_message(&msg);
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.push(msg);
@@ -273,7 +274,9 @@ impl super::App {
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
         self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
-        self.chat_render.queue_pending_transcript_entries(transcript_entries);
+        self.handoff_shadow
+            .inline_output
+            .record_message_transcript_entries(msg_idx, transcript_entries);
         self.mark_committed_output_changed();
         self.needs_redraw = true;
     }
@@ -303,7 +306,9 @@ impl super::App {
             self.sync_after_message_topology_change(insert_idx);
         }
         if let Some(transcript_entries) = transcript_entries {
-            self.chat_render.queue_pending_transcript_entries(transcript_entries);
+            self.handoff_shadow
+                .inline_output
+                .record_message_transcript_entries(insert_idx, transcript_entries);
         }
         self.mark_committed_output_changed();
         self.needs_redraw = true;

@@ -208,6 +208,16 @@ mod tests {
             &mut app.handoff_shadow,
             model::ToolCallStatus::Completed,
         );
+        app.handoff_shadow.inline_output.record_message_transcript_entries(
+            0,
+            crate::app::handoff::shadow::transcript_entries_from_message(&ChatMessage::new(
+                crate::app::MessageRole::User,
+                vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
+                    "queued",
+                ))],
+                None,
+            )),
+        );
 
         reset_for_new_session(
             &mut app,
@@ -220,6 +230,7 @@ mod tests {
         assert!(app.handoff_shadow.active_turn.is_none());
         assert!(app.handoff_shadow.last_finished_turn.is_none());
         assert_eq!(app.handoff_shadow.next_turn_id, 1);
+        assert!(app.handoff_shadow.inline_output.items().is_empty());
     }
 
     #[test]
@@ -232,7 +243,8 @@ mod tests {
         app.chat_render.live_region.last_rendered_rows = 9;
         app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
         app.chat_render.mark_terminal_history_synced();
-        app.chat_render.queue_pending_transcript_entries(
+        app.handoff_shadow.inline_output.record_message_transcript_entries(
+            1,
             crate::app::handoff::shadow::transcript_entries_from_message(&ChatMessage::new(
                 crate::app::MessageRole::User,
                 vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
@@ -255,7 +267,6 @@ mod tests {
         assert_eq!(app.chat_render.composer.total_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-        assert!(app.chat_render.transcript.pending_entries.is_empty());
         assert!(!app.chat_render.transcript.history_in_sync);
     }
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::commit::{apply_successful_commit, plan_handoff, prepare_for_turn_exit};
+use super::projection::InlineOutputState;
 use super::serialize::serialize_assistant_prefix;
 use super::stabilizer::{append_text_chunk, insert_notice, insert_tool};
 use super::types::{
@@ -21,11 +22,17 @@ pub(crate) struct HandoffShadowState {
     pub next_turn_id: u64,
     pub active_turn: Option<ActiveAssistantShadowTurn>,
     pub last_finished_turn: Option<FinishedAssistantShadowTurn>,
+    pub inline_output: InlineOutputState,
 }
 
 impl Default for HandoffShadowState {
     fn default() -> Self {
-        Self { next_turn_id: 1, active_turn: None, last_finished_turn: None }
+        Self {
+            next_turn_id: 1,
+            active_turn: None,
+            last_finished_turn: None,
+            inline_output: InlineOutputState::default(),
+        }
     }
 }
 
@@ -248,14 +255,77 @@ pub(crate) fn commit_ready_prefix(turn: &mut ActiveAssistantShadowTurn) -> Vec<T
     decision.transcript_entries
 }
 
+#[must_use]
+pub(crate) fn active_assistant_projection_anchor(app: &App) -> Option<(usize, AssistantTurnId)> {
+    let msg_idx = app.active_turn_assistant_idx()?;
+    let turn_id = app.handoff_shadow.active_turn.as_ref()?.live.turn_id;
+    Some((msg_idx, turn_id))
+}
+
+fn active_assistant_needs_live_slot(turn: &ActiveAssistantShadowTurn) -> bool {
+    !turn.live.units.is_empty() || turn.live.live_indicator.is_some()
+}
+
+fn sync_active_assistant_live_slot(app: &mut App, msg_idx: usize, turn_id: AssistantTurnId) {
+    let needs_live_slot =
+        app.handoff_shadow.active_turn.as_ref().is_some_and(active_assistant_needs_live_slot);
+    if needs_live_slot {
+        app.handoff_shadow.inline_output.record_assistant_live_slot(msg_idx, turn_id);
+    } else {
+        app.handoff_shadow.inline_output.remove_assistant_live_slot(msg_idx, turn_id);
+    }
+}
+
+fn record_assistant_commits_for_anchor(
+    app: &mut App,
+    msg_idx: usize,
+    turn_id: AssistantTurnId,
+    committed_entries: Vec<TranscriptEntry>,
+) {
+    if committed_entries.is_empty() {
+        return;
+    }
+    app.handoff_shadow.inline_output.record_assistant_committed_entries(
+        msg_idx,
+        turn_id,
+        committed_entries,
+    );
+    app.mark_committed_output_changed();
+}
+
+pub(crate) fn record_assistant_turn_exit_projection(
+    app: &mut App,
+    anchor: Option<(usize, AssistantTurnId)>,
+    committed_entries: Vec<TranscriptEntry>,
+) {
+    let Some((msg_idx, turn_id)) = anchor else {
+        debug_assert!(
+            committed_entries.is_empty(),
+            "assistant commits require an active assistant projection anchor"
+        );
+        return;
+    };
+
+    record_assistant_commits_for_anchor(app, msg_idx, turn_id, committed_entries);
+    app.handoff_shadow.inline_output.remove_assistant_live_slot(msg_idx, turn_id);
+}
+
 pub(crate) fn sync_handoff_commit_queue(app: &mut App) {
-    let committed =
+    let anchor = active_assistant_projection_anchor(app);
+    let committed_entries =
         app.handoff_shadow.active_turn.as_mut().map(commit_ready_prefix).unwrap_or_default();
-    if !committed.is_empty() {
-        app.chat_render.queue_pending_transcript_entries(committed.clone());
-        app.mark_committed_output_changed();
+    if let Some((msg_idx, turn_id)) = anchor {
+        record_assistant_commits_for_anchor(app, msg_idx, turn_id, committed_entries);
+    } else {
+        debug_assert!(
+            committed_entries.is_empty(),
+            "assistant commits require an active assistant projection anchor"
+        );
     }
     sync_shadow_live_indicator(app);
+    if let Some((msg_idx, turn_id)) = anchor {
+        sync_active_assistant_live_slot(app, msg_idx, turn_id);
+    }
 }
 
 #[must_use]
@@ -365,25 +435,6 @@ pub(crate) fn transcript_entries_from_message(message: &ChatMessage) -> Vec<Tran
         MessageRole::System(severity) => transcript_entries_from_system_message(message, *severity),
         MessageRole::Assistant => transcript_entries_from_assistant_message(message),
     }
-}
-
-pub(crate) fn committed_transcript_entries(app: &App) -> Vec<TranscriptEntry> {
-    let active_turn_assistant_idx = app.active_turn_assistant_idx();
-    let active_turn_committed =
-        app.handoff_shadow.active_turn.as_ref().map(|turn| turn.committed_entries.as_slice());
-
-    let mut entries = Vec::new();
-    for (msg_idx, message) in app.messages.iter().enumerate() {
-        if matches!(message.role, MessageRole::Assistant)
-            && Some(msg_idx) == active_turn_assistant_idx
-            && let Some(committed) = active_turn_committed
-        {
-            entries.extend(committed.iter().cloned());
-        } else {
-            entries.extend(transcript_entries_from_message(message));
-        }
-    }
-    entries
 }
 
 fn transcript_entries_from_welcome_message(message: &ChatMessage) -> Vec<TranscriptEntry> {
@@ -681,8 +732,54 @@ pub(crate) fn assert_shadow_matches_visible_active_turn(app: &App) {
 mod tests {
     use super::*;
     use crate::agent::model;
+    use crate::app::handoff::projection::{
+        InlineOutputAnchor, InlineOutputItemKind, InlineOutputStatus,
+    };
     use crate::app::handoff::types::NoticeMutability;
     use crate::app::{App, MessageBlock, MessageRole, NoticeBlock, TextBlock, TextBlockSpacing};
+
+    fn app_with_active_assistant_turn() -> (App, AssistantTurnId) {
+        let mut app = App::test_default();
+        app.messages.push(crate::app::ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+        let turn_id = begin_local_assistant_turn(&mut app.handoff_shadow);
+        (app, turn_id)
+    }
+
+    fn tool_unit(
+        status: model::ToolCallStatus,
+        terminal_mutation: TerminalMutationState,
+        pending_permission: bool,
+        pending_question: bool,
+    ) -> LiveToolUnit {
+        LiveToolUnit {
+            id: LiveUnitId(1),
+            snapshot: ToolTranscriptSnapshot {
+                tool_call_id: "tool-1".to_owned(),
+                title: "Tool".to_owned(),
+                sdk_tool_name: "Bash".to_owned(),
+                status,
+                hidden: false,
+                raw_input: None,
+                output_metadata: None,
+                task_metadata: None,
+                content: Vec::new(),
+                terminal_command: None,
+                terminal_output: None,
+            },
+            pending_permission,
+            pending_question,
+            terminal_mutation,
+        }
+    }
+
+    fn assert_only_assistant_live_slot(app: &App, turn_id: AssistantTurnId) {
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].anchor, InlineOutputAnchor::AssistantLive { msg_idx: 0, turn_id });
+        assert!(matches!(items[0].kind, InlineOutputItemKind::AssistantLive { .. }));
+        assert!(app.handoff_shadow.inline_output.pending_transcript_items().is_empty());
+    }
 
     #[test]
     fn begin_local_turn_creates_active_turn() {
@@ -761,6 +858,92 @@ mod tests {
         assert_eq!(finished.transcript_entries.len(), 2);
         assert!(matches!(finished.transcript_entries[0], TranscriptEntry::AssistantOpen(_)));
         assert!(matches!(finished.transcript_entries[1], TranscriptEntry::AssistantContinue(_)));
+    }
+
+    #[test]
+    fn sync_handoff_commit_queue_keeps_mutable_text_tail_live_without_commit() {
+        let (mut app, turn_id) = app_with_active_assistant_turn();
+        mirror_text_chunk(&mut app.handoff_shadow, "still streaming");
+
+        sync_handoff_commit_queue(&mut app);
+
+        assert_only_assistant_live_slot(&app, turn_id);
+        let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(active_turn.committed_entries.len(), 0);
+    }
+
+    #[test]
+    fn sync_handoff_commit_queue_keeps_pending_interaction_tools_live() {
+        for (pending_permission, pending_question) in [(true, false), (false, true)] {
+            let (mut app, turn_id) = app_with_active_assistant_turn();
+            let turn = app.handoff_shadow.active_turn.as_mut().expect("active turn");
+            turn.live.units.push(LiveAssistantUnit::Tool(tool_unit(
+                model::ToolCallStatus::Completed,
+                TerminalMutationState::Settled,
+                pending_permission,
+                pending_question,
+            )));
+
+            sync_handoff_commit_queue(&mut app);
+
+            assert_only_assistant_live_slot(&app, turn_id);
+            let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+            assert_eq!(active_turn.committed_entries.len(), 0);
+        }
+    }
+
+    #[test]
+    fn sync_handoff_commit_queue_keeps_unsettled_execute_tools_live() {
+        for terminal_mutation in
+            [TerminalMutationState::Streaming, TerminalMutationState::AwaitingFinalSnapshot]
+        {
+            let (mut app, turn_id) = app_with_active_assistant_turn();
+            let turn = app.handoff_shadow.active_turn.as_mut().expect("active turn");
+            turn.live.units.push(LiveAssistantUnit::Tool(tool_unit(
+                model::ToolCallStatus::Completed,
+                terminal_mutation,
+                false,
+                false,
+            )));
+
+            sync_handoff_commit_queue(&mut app);
+
+            assert_only_assistant_live_slot(&app, turn_id);
+            let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+            assert_eq!(active_turn.committed_entries.len(), 0);
+        }
+    }
+
+    #[test]
+    fn sync_handoff_commit_queue_records_sealed_final_tool_commit_in_projection() {
+        let (mut app, turn_id) = app_with_active_assistant_turn();
+        let turn = app.handoff_shadow.active_turn.as_mut().expect("active turn");
+        turn.live.units.push(LiveAssistantUnit::Tool(tool_unit(
+            model::ToolCallStatus::Completed,
+            TerminalMutationState::Settled,
+            false,
+            false,
+        )));
+        turn.live.sealed = true;
+
+        sync_handoff_commit_queue(&mut app);
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].anchor,
+            InlineOutputAnchor::AssistantCommit { msg_idx: 0, turn_id, commit_idx: 0 }
+        );
+        assert!(matches!(
+            &items[0].kind,
+            InlineOutputItemKind::Transcript {
+                entry: TranscriptEntry::AssistantOpen(_),
+                status: InlineOutputStatus::PendingInsert,
+            }
+        ));
+        let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(active_turn.committed_entries.len(), 1);
+        assert!(active_turn.live.units.is_empty());
     }
 
     #[test]

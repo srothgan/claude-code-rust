@@ -1,8 +1,6 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::handoff::types::TranscriptEntry;
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ChatRenderState {
     pub terminal_width: u16,
@@ -40,19 +38,7 @@ impl ChatRenderState {
     }
 
     pub fn reset_committed_output(&mut self) {
-        self.transcript.pending_entries.clear();
         self.transcript.history_in_sync = false;
-    }
-
-    pub(crate) fn queue_pending_transcript_entries(
-        &mut self,
-        entries: impl IntoIterator<Item = TranscriptEntry>,
-    ) {
-        self.transcript.pending_entries.extend(entries);
-    }
-
-    pub(crate) fn take_pending_transcript_entries(&mut self) -> Vec<TranscriptEntry> {
-        std::mem::take(&mut self.transcript.pending_entries)
     }
 
     pub(crate) fn mark_terminal_history_synced(&mut self) {
@@ -87,14 +73,12 @@ pub struct LiveRegionRenderState {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TranscriptRenderState {
-    pub(crate) pending_entries: Vec<TranscriptEntry>,
     pub history_in_sync: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ChatRenderState, ComposerRenderState, TranscriptRenderState};
-    use crate::app::handoff::types::{SystemTranscriptEntry, TranscriptEntry};
 
     #[test]
     fn clear_measurements_preserves_terminal_size_and_invalidates_live_rows() {
@@ -119,13 +103,7 @@ mod tests {
                 viewport_height: 7,
                 last_rendered_rows: 7,
             },
-            transcript: super::TranscriptRenderState {
-                pending_entries: vec![TranscriptEntry::System(SystemTranscriptEntry {
-                    severity: None,
-                    text: "queued".to_owned(),
-                })],
-                history_in_sync: true,
-            },
+            transcript: super::TranscriptRenderState { history_in_sync: true },
         };
 
         state.clear_measurements();
@@ -139,16 +117,7 @@ mod tests {
         assert_eq!(state.live_region.viewport_height, 0);
         assert_eq!(state.live_region.last_rendered_rows, 0);
         assert!(state.live_region.anchor_valid);
-        assert_eq!(
-            state.transcript,
-            TranscriptRenderState {
-                pending_entries: vec![TranscriptEntry::System(SystemTranscriptEntry {
-                    severity: None,
-                    text: "queued".to_owned(),
-                })],
-                history_in_sync: true,
-            }
-        );
+        assert_eq!(state.transcript, TranscriptRenderState { history_in_sync: true });
     }
 
     #[test]
@@ -170,37 +139,12 @@ mod tests {
     }
 
     #[test]
-    fn reset_committed_output_clears_pending_entries_and_unsyncs_history() {
+    fn reset_committed_output_unsyncs_history() {
         let mut state = ChatRenderState::default();
-        state.queue_pending_transcript_entries([TranscriptEntry::System(SystemTranscriptEntry {
-            severity: None,
-            text: "queued".to_owned(),
-        })]);
         state.mark_terminal_history_synced();
 
         state.reset_committed_output();
 
-        assert_eq!(state.transcript.pending_entries, Vec::<TranscriptEntry>::new());
         assert!(!state.transcript.history_in_sync);
-    }
-
-    #[test]
-    fn take_pending_entries_drains_queue() {
-        let mut state = ChatRenderState::default();
-        state.queue_pending_transcript_entries([TranscriptEntry::System(SystemTranscriptEntry {
-            severity: None,
-            text: "queued".to_owned(),
-        })]);
-
-        let drained = state.take_pending_transcript_entries();
-
-        assert_eq!(
-            drained,
-            vec![TranscriptEntry::System(SystemTranscriptEntry {
-                severity: None,
-                text: "queued".to_owned(),
-            })]
-        );
-        assert!(state.transcript.pending_entries.is_empty());
     }
 }

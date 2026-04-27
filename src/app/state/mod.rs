@@ -561,7 +561,8 @@ impl App {
                 && now_committable
                 && let Some(first) = self.messages.first()
             {
-                self.chat_render.queue_pending_transcript_entries(
+                self.handoff_shadow.inline_output.record_message_transcript_entries(
+                    0,
                     crate::app::handoff::shadow::transcript_entries_from_message(first),
                 );
                 self.mark_committed_output_changed();
@@ -1557,11 +1558,49 @@ mod tests {
         ChatMessage::new(MessageRole::User, vec![assistant_text_block(text)], None)
     }
 
+    fn system_text_message(text: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::System(Some(SystemSeverity::Info)),
+            vec![assistant_text_block(text)],
+            None,
+        )
+    }
+
+    fn user_text_image_message(text: &str, image_count: usize) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::User,
+            vec![
+                assistant_text_block(text),
+                MessageBlock::ImageAttachment(ImageAttachmentBlock::new(image_count)),
+            ],
+            None,
+        )
+    }
+
+    fn assert_pending_message_anchor(
+        item: &crate::app::handoff::projection::InlineOutputItem,
+        msg_idx: usize,
+        entry_idx: usize,
+    ) {
+        assert_eq!(
+            item.anchor,
+            crate::app::handoff::projection::InlineOutputAnchor::Message { msg_idx, entry_idx }
+        );
+        assert!(matches!(
+            &item.kind,
+            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+                status: crate::app::handoff::projection::InlineOutputStatus::PendingInsert,
+                ..
+            }
+        ));
+    }
+
     #[test]
-    fn reset_committed_output_tracking_clears_pending_transcript_state() {
+    fn reset_committed_output_tracking_preserves_projection_for_replay() {
         let mut app = make_test_app();
         app.chat_render.mark_terminal_history_synced();
-        app.chat_render.queue_pending_transcript_entries(
+        app.handoff_shadow.inline_output.record_message_transcript_entries(
+            0,
             crate::app::handoff::shadow::transcript_entries_from_message(&user_text_message(
                 "queued",
             )),
@@ -1569,8 +1608,106 @@ mod tests {
 
         app.reset_committed_output_tracking();
 
-        assert!(app.chat_render.transcript.pending_entries.is_empty());
+        assert_eq!(app.handoff_shadow.inline_output.items().len(), 1);
         assert!(!app.chat_render.transcript.history_in_sync);
+    }
+
+    #[test]
+    fn push_message_tracked_records_user_row_in_inline_output() {
+        let mut app = make_test_app();
+
+        app.push_message_tracked(user_text_message("hello"));
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_pending_message_anchor(&items[0], 0, 0);
+        let crate::app::handoff::projection::InlineOutputItemKind::Transcript { entry, .. } =
+            &items[0].kind
+        else {
+            panic!("expected transcript item");
+        };
+        assert!(matches!(entry, crate::app::handoff::types::TranscriptEntry::User(_)));
+    }
+
+    #[test]
+    fn push_message_tracked_records_system_after_prior_pending_row() {
+        let mut app = make_test_app();
+
+        app.push_message_tracked(user_text_message("first"));
+        app.push_message_tracked(system_text_message("second"));
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 2);
+        assert_pending_message_anchor(&items[0], 0, 0);
+        assert_pending_message_anchor(&items[1], 1, 0);
+        let crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+            entry: system_entry,
+            ..
+        } = &items[1].kind
+        else {
+            panic!("expected transcript item");
+        };
+        assert_eq!(
+            system_entry,
+            &crate::app::handoff::types::TranscriptEntry::System(
+                crate::app::handoff::types::SystemTranscriptEntry {
+                    severity: Some(SystemSeverity::Info),
+                    text: "second".to_owned(),
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn sync_welcome_snapshot_records_welcome_once_when_committable() {
+        let mut app = make_test_app();
+        app.ensure_welcome_message();
+        assert!(app.handoff_shadow.inline_output.items().is_empty());
+
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.account_info = Some(crate::agent::types::AccountInfo {
+            subscription_type: Some("Pro".to_owned()),
+            ..Default::default()
+        });
+
+        app.sync_welcome_snapshot();
+        app.sync_welcome_snapshot();
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_pending_message_anchor(&items[0], 0, 0);
+        assert!(matches!(
+            &items[0].kind,
+            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+                entry: crate::app::handoff::types::TranscriptEntry::Welcome(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn push_message_tracked_preserves_user_image_attachment_entry() {
+        let mut app = make_test_app();
+
+        app.push_message_tracked(user_text_image_message("see attached", 2));
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        let crate::app::handoff::projection::InlineOutputItemKind::Transcript { entry, .. } =
+            &items[0].kind
+        else {
+            panic!("expected transcript item");
+        };
+        let crate::app::handoff::types::TranscriptEntry::User(user_entry) = entry else {
+            panic!("expected user transcript entry");
+        };
+        assert_eq!(
+            user_entry.blocks,
+            vec![
+                crate::app::handoff::types::UserTranscriptBlock::Text("see attached".to_owned()),
+                crate::app::handoff::types::UserTranscriptBlock::ImageAttachment { count: 2 },
+            ]
+        );
     }
 
     fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
