@@ -143,6 +143,13 @@ pub(crate) fn mirror_tool_snapshot(shadow: &mut HandoffShadowState, tool: LiveTo
     insert_tool(&mut turn.live, tool);
 }
 
+pub(crate) fn remove_tool_snapshot(shadow: &mut HandoffShadowState, tool_call_id: &str) {
+    let Some(turn) = shadow.active_turn.as_mut() else {
+        return;
+    };
+    turn.live.remove_tool_by_call_id(tool_call_id);
+}
+
 pub(crate) fn mirror_inline_notice_insert(shadow: &mut HandoffShadowState, notice: LiveNoticeUnit) {
     let dedup_key = notice.dedup_key.clone();
     let turn = ensure_active_turn(shadow);
@@ -371,6 +378,10 @@ pub(crate) fn mirror_visible_tool_snapshot(app: &mut App, tool_call_id: &str) {
         else {
             return;
         };
+        if tc.hidden_unless_focused_interaction() {
+            remove_tool_snapshot(&mut app.handoff_shadow, tool_call_id);
+            return;
+        }
         live_tool_unit_from_info(app, tc.as_ref())
     };
 
@@ -687,10 +698,14 @@ fn project_visible_units(app: &App) -> Vec<ProjectedAssistantUnit> {
                 text: notice.text.text.clone(),
                 trailing_spacing: notice.text.trailing_spacing,
             }),
-            MessageBlock::ToolCall(tc) => Some(ProjectedAssistantUnit::Tool {
-                snapshot: ToolTranscriptSnapshot::from_tool_call_info(tc.as_ref()),
-            }),
-            MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => None,
+            MessageBlock::ToolCall(tc) if !tc.hidden_unless_focused_interaction() => {
+                Some(ProjectedAssistantUnit::Tool {
+                    snapshot: ToolTranscriptSnapshot::from_tool_call_info(tc.as_ref()),
+                })
+            }
+            MessageBlock::ToolCall(_)
+            | MessageBlock::Welcome(_)
+            | MessageBlock::ImageAttachment(_) => None,
         })
         .collect()
 }
@@ -771,6 +786,50 @@ mod tests {
             pending_question,
             terminal_mutation,
         }
+    }
+
+    fn tool_call_info(id: &str, hidden: bool, focused_permission: bool) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: "Tool".to_owned(),
+            sdk_tool_name: "Bash".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: crate::app::BlockCache::default(),
+            pending_permission: focused_permission.then(|| crate::app::InlinePermission {
+                options: Vec::new(),
+                display: None,
+                response_tx: tokio::sync::oneshot::channel().0,
+                selected_index: 0,
+                focused: true,
+            }),
+            pending_question: None,
+        }
+    }
+
+    fn push_tool_call(app: &mut App, tool: ToolCallInfo) {
+        let msg_idx = 0;
+        let block_idx = app.messages[msg_idx].blocks.len();
+        let tool_id = tool.id.clone();
+        app.messages[msg_idx].blocks.push(MessageBlock::ToolCall(Box::new(tool)));
+        app.index_tool_call(tool_id, msg_idx, block_idx);
     }
 
     fn assert_only_assistant_live_slot(app: &App, turn_id: AssistantTurnId) {
@@ -943,6 +1002,49 @@ mod tests {
         ));
         let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
         assert_eq!(active_turn.committed_entries.len(), 1);
+        assert!(active_turn.live.units.is_empty());
+    }
+
+    #[test]
+    fn mirror_visible_tool_snapshot_removes_hidden_child_without_focused_interaction() {
+        let (mut app, _) = app_with_active_assistant_turn();
+        push_tool_call(&mut app, tool_call_info("child-1", true, false));
+
+        mirror_visible_tool_snapshot(&mut app, "child-1");
+
+        let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert!(active_turn.live.units.is_empty());
+    }
+
+    #[test]
+    fn mirror_visible_tool_snapshot_keeps_hidden_child_with_focused_interaction() {
+        let (mut app, _) = app_with_active_assistant_turn();
+        push_tool_call(&mut app, tool_call_info("child-1", true, true));
+
+        mirror_visible_tool_snapshot(&mut app, "child-1");
+
+        let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(active_turn.live.units.len(), 1);
+        let LiveAssistantUnit::Tool(tool) = &active_turn.live.units[0] else {
+            panic!("expected tool");
+        };
+        assert!(tool.snapshot.hidden);
+        assert!(tool.pending_permission);
+    }
+
+    #[test]
+    fn mirror_visible_tool_snapshot_removes_hidden_child_after_focus_is_lost() {
+        let (mut app, _) = app_with_active_assistant_turn();
+        push_tool_call(&mut app, tool_call_info("child-1", true, true));
+        mirror_visible_tool_snapshot(&mut app, "child-1");
+
+        let MessageBlock::ToolCall(tool) = &mut app.messages[0].blocks[0] else {
+            panic!("expected tool");
+        };
+        tool.pending_permission.as_mut().expect("permission").focused = false;
+        mirror_visible_tool_snapshot(&mut app, "child-1");
+
+        let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
         assert!(active_turn.live.units.is_empty());
     }
 

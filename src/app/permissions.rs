@@ -294,6 +294,8 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 
     focus_next_inline_interaction(app);
@@ -322,6 +324,8 @@ fn respond_permission_cancel(app: &mut App) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 
     focus_next_inline_interaction(app);

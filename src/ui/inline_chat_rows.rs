@@ -461,7 +461,7 @@ fn assistant_render_items_from_live(
 ) -> Vec<AssistantRenderItemSpec> {
     let mut items = Vec::with_capacity(units.len());
     let mut previous_kind = initial_previous_kind;
-    for unit in units {
+    for unit in ordered_live_units_for_render(units) {
         let current_kind = live_unit_kind(unit);
         let leading_blank_lines = match (previous_kind, current_kind) {
             (None, _)
@@ -477,6 +477,47 @@ fn assistant_render_items_from_live(
         previous_kind = Some(current_kind);
     }
     items
+}
+
+fn ordered_live_units_for_render(units: &[LiveAssistantUnit]) -> Vec<&LiveAssistantUnit> {
+    let Some(hidden_idx) = units.iter().position(is_hidden_tool_unit) else {
+        return units.iter().collect();
+    };
+    let Some(last_later_root_idx) = units
+        .iter()
+        .enumerate()
+        .skip(hidden_idx + 1)
+        .filter_map(|(idx, unit)| is_visible_subagent_root_unit(unit).then_some(idx))
+        .next_back()
+    else {
+        return units.iter().collect();
+    };
+
+    let hidden_unit = &units[hidden_idx];
+    let mut ordered = Vec::with_capacity(units.len());
+    for (idx, unit) in units.iter().enumerate() {
+        if idx == hidden_idx {
+            continue;
+        }
+        ordered.push(unit);
+        if idx == last_later_root_idx {
+            ordered.push(hidden_unit);
+        }
+    }
+    ordered
+}
+
+fn is_hidden_tool_unit(unit: &LiveAssistantUnit) -> bool {
+    matches!(unit, LiveAssistantUnit::Tool(tool) if tool.snapshot.hidden)
+}
+
+fn is_visible_subagent_root_unit(unit: &LiveAssistantUnit) -> bool {
+    matches!(
+        unit,
+        LiveAssistantUnit::Tool(tool)
+            if !tool.snapshot.hidden
+                && matches!(tool.snapshot.sdk_tool_name.as_str(), "Task" | "Agent")
+    )
 }
 
 fn assistant_render_item_from_committed(entry: &AssistantTranscriptEntry) -> AssistantRenderItem {
@@ -549,29 +590,34 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
     };
 
     for item in request.items {
-        rows.extend(std::iter::repeat_with(Line::default).take(item.leading_blank_lines));
         match item.item {
             AssistantRenderItem::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
                 let rendered =
                     render_assistant_text_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
+                    rows.extend(
+                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                    );
                     state.has_body_content = true;
                     state.has_visible_content = true;
+                    rows.extend(rendered);
+                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
                 }
-                rows.extend(rendered);
-                rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
             }
             AssistantRenderItem::Notice(block) => {
                 let trailing_gap = block.trailing_blank_lines();
                 let rendered =
                     render_assistant_notice_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
+                    rows.extend(
+                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                    );
                     state.has_body_content = true;
                     state.has_visible_content = true;
+                    rows.extend(rendered);
+                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
                 }
-                rows.extend(rendered);
-                rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
             }
             AssistantRenderItem::LiveTool(tool) => {
                 let Some(app) = request.app.as_deref_mut() else {
@@ -579,19 +625,25 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
                 };
                 let rendered = render_live_tool_rows(app, &tool, render_context, request.spinner);
                 if !rendered.is_empty() {
+                    rows.extend(
+                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                    );
                     state.has_body_content = true;
                     state.has_visible_content = true;
+                    rows.extend(rendered);
                 }
-                rows.extend(rendered);
             }
             AssistantRenderItem::CommittedTool(snapshot) => {
                 let rendered =
                     render_committed_tool_rows(&snapshot, render_context, request.spinner);
                 if !rendered.is_empty() {
+                    rows.extend(
+                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                    );
                     state.has_body_content = true;
                     state.has_visible_content = true;
+                    rows.extend(rendered);
                 }
-                rows.extend(rendered);
             }
         }
     }
@@ -616,6 +668,10 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
             ));
         }
         None => {}
+    }
+
+    if !state.has_visible_content && request.indicator.is_none() {
+        return Vec::new();
     }
 
     trim_trailing_blank_rows(rows)
@@ -743,6 +799,9 @@ fn render_live_tool_rows(
         && let Some(MessageBlock::ToolCall(tc)) =
             app.messages.get_mut(msg_idx).and_then(|message| message.blocks.get_mut(block_idx))
     {
+        if tc.hidden_unless_focused_interaction() {
+            return Vec::new();
+        }
         let mut rows = Vec::new();
         tool_call::render_tool_call_cached_with_tools_collapsed(
             tc.as_mut(),
@@ -755,6 +814,9 @@ fn render_live_tool_rows(
         return wrap_lines_to_physical_rows(&rows, render_context.width);
     }
 
+    if tool.snapshot.hidden {
+        return Vec::new();
+    }
     let mut fallback = tool_call_info_from_snapshot(&tool.snapshot, tool.terminal_mutation);
     let mut rows = Vec::new();
     tool_call::render_tool_call_cached_with_tools_collapsed(
@@ -773,6 +835,9 @@ fn render_committed_tool_rows(
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
 ) -> Vec<Line<'static>> {
+    if snapshot.hidden {
+        return Vec::new();
+    }
     let mut fallback = tool_call_info_from_snapshot(snapshot, TerminalMutationState::Settled);
     let mut rows = Vec::new();
     tool_call::render_tool_call_cached_with_tools_collapsed(
@@ -919,10 +984,12 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{serialize_live_rows, serialize_transcript_rows, wrap_lines_to_physical_rows};
+    use crate::agent::model;
     use crate::app::handoff::shadow::ActiveAssistantShadowTurn;
     use crate::app::handoff::types::{
         AssistantCommittedUnit, AssistantTranscriptEntry, AssistantTurnId, CommittedAssistantKind,
-        CommittedTextUnit, LiveAssistantTurn, LiveAssistantUnit, MutableTextTailUnit,
+        CommittedTextUnit, CommittedToolUnit, LiveAssistantTurn, LiveAssistantUnit, LiveToolUnit,
+        LiveUnitId, MutableTextTailUnit, TerminalMutationState, ToolTranscriptSnapshot,
         TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry, WelcomeTranscriptEntry,
     };
     use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
@@ -969,6 +1036,32 @@ mod tests {
             text: text.to_owned(),
         }));
         live
+    }
+
+    fn tool_snapshot(id: &str, hidden: bool) -> ToolTranscriptSnapshot {
+        ToolTranscriptSnapshot {
+            tool_call_id: id.to_owned(),
+            title: "Child Tool".to_owned(),
+            sdk_tool_name: "Bash".to_owned(),
+            status: model::ToolCallStatus::Completed,
+            hidden,
+            raw_input: None,
+            output_metadata: None,
+            task_metadata: None,
+            content: Vec::new(),
+            terminal_command: None,
+            terminal_output: None,
+        }
+    }
+
+    fn hidden_live_tool(id: &str) -> LiveAssistantUnit {
+        LiveAssistantUnit::Tool(LiveToolUnit {
+            id: LiveUnitId(10),
+            snapshot: tool_snapshot(id, true),
+            pending_permission: false,
+            pending_question: false,
+            terminal_mutation: TerminalMutationState::Settled,
+        })
     }
 
     fn install_active_live_turn(
@@ -1189,5 +1282,37 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
+    }
+
+    #[test]
+    fn committed_hidden_tool_transcript_renders_no_rows() {
+        let app = App::test_default();
+        let rows = serialize_transcript_rows(
+            &app,
+            &[TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
+                leading_blank_lines: 0,
+                unit: AssistantCommittedUnit::Tool(Box::new(CommittedToolUnit {
+                    snapshot: tool_snapshot("child-1", true),
+                })),
+            })],
+            false,
+            120,
+        );
+
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn stale_hidden_live_tool_renders_no_rows_or_label() {
+        let mut app = App::test_default();
+        let turn_id = AssistantTurnId(5);
+        let mut live = LiveAssistantTurn::new(turn_id);
+        live.units.push(hidden_live_tool("child-1"));
+        app.messages.push(assistant_message());
+        install_active_live_turn(&mut app, 0, turn_id, live);
+
+        let rows = serialize_live_rows(&mut app, 120);
+
+        assert!(rows.is_empty());
     }
 }

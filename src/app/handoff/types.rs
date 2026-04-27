@@ -46,6 +46,30 @@ impl LiveAssistantTurn {
         })
     }
 
+    pub(crate) fn remove_tool_by_call_id(&mut self, tool_call_id: &str) -> bool {
+        let original_len = self.units.len();
+        self.units.retain(|unit| {
+            !matches!(
+                unit,
+                LiveAssistantUnit::Tool(tool) if tool.snapshot.tool_call_id == tool_call_id
+            )
+        });
+        let removed = self.units.len() != original_len;
+        if removed {
+            self.refresh_current_text_tail();
+        }
+        removed
+    }
+
+    pub(crate) fn remove_hidden_tools(&mut self) {
+        let original_len = self.units.len();
+        self.units
+            .retain(|unit| !matches!(unit, LiveAssistantUnit::Tool(tool) if tool.snapshot.hidden));
+        if self.units.len() != original_len {
+            self.refresh_current_text_tail();
+        }
+    }
+
     pub(crate) fn notice_mut_by_key(
         &mut self,
         key: &NoticeDedupKey,

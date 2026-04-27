@@ -46,6 +46,7 @@ pub(crate) fn prepare_for_turn_exit(
     final_in_progress_status: ToolCallStatus,
 ) {
     seal_mutable_text_tail(turn, TextBlockSpacing::None);
+    turn.remove_hidden_tools();
     for unit in &mut turn.units {
         match unit {
             LiveAssistantUnit::Notice(notice) => {
@@ -131,6 +132,13 @@ mod tests {
             pending_question: false,
             terminal_mutation,
         }
+    }
+
+    fn hidden_tool() -> LiveToolUnit {
+        let mut tool =
+            stable_tool(model::ToolCallStatus::Completed, TerminalMutationState::Settled);
+        tool.snapshot.hidden = true;
+        tool
     }
 
     #[test]
@@ -267,6 +275,25 @@ mod tests {
         };
         assert_eq!(tool.snapshot.status, model::ToolCallStatus::Completed);
         assert_eq!(tool.terminal_mutation, TerminalMutationState::Settled);
+    }
+
+    #[test]
+    fn completion_drops_hidden_tools_before_commit() {
+        let mut turn = empty_turn();
+        append_text_chunk(&mut turn, "before");
+        insert_tool(&mut turn, hidden_tool());
+        append_text_chunk(&mut turn, "after");
+
+        prepare_for_turn_exit(&mut turn, model::ToolCallStatus::Completed);
+        let decision = plan_handoff(&turn);
+
+        assert_eq!(turn.units.len(), 2);
+        assert!(turn.units.iter().all(|unit| !matches!(
+            unit,
+            LiveAssistantUnit::Tool(tool) if tool.snapshot.hidden
+        )));
+        assert_eq!(decision.committed_prefix_len, 2);
+        assert_eq!(decision.transcript_entries.len(), 2);
     }
 
     #[test]

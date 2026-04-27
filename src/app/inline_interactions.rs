@@ -60,10 +60,10 @@ pub(super) fn invalidate_if_changed(
 }
 
 pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused: bool) {
-    let Some(tool_id) = app.pending_interaction_ids.get(queue_index) else {
+    let Some(tool_id) = app.pending_interaction_ids.get(queue_index).cloned() else {
         return;
     };
-    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
         return;
     };
     let mut invalidated = false;
@@ -89,6 +89,8 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
     if invalidated {
         app.sync_render_cache_slot(mi, bi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 }
 
@@ -101,11 +103,12 @@ pub(super) fn focused_interaction_is_active(app: &App) -> bool {
 
 pub(super) fn clear_inline_interaction_focus(app: &mut App) {
     let mut changed = false;
+    let mut changed_tool_ids = Vec::new();
     for idx in 0..app.pending_interaction_ids.len() {
-        let Some(tool_id) = app.pending_interaction_ids.get(idx) else {
+        let Some(tool_id) = app.pending_interaction_ids.get(idx).cloned() else {
             continue;
         };
-        let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
             continue;
         };
         if let Some(msg) = app.messages.get_mut(mi)
@@ -131,8 +134,16 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                 app.recompute_message_retained_bytes(mi);
                 app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
                 changed = true;
+                changed_tool_ids.push(tool_id);
             }
         }
+    }
+
+    if changed {
+        for tool_id in changed_tool_ids {
+            crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_id);
+        }
+        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     }
 
     if changed || matches!(app.focus_owner(), super::FocusOwner::Permission) {
