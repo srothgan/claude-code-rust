@@ -174,7 +174,6 @@ pub fn create_app(cli: &Cli) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         active_turn_assistant_message_idx: None,
-        tools_collapsed: true,
         active_task_ids: HashSet::new(),
         tool_call_scopes: HashMap::new(),
         terminals,

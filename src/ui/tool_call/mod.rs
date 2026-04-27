@@ -5,7 +5,7 @@
 //!
 //! Submodules handle specific rendering concerns:
 //! - [`standard`] -- non-Execute tool calls (Read, Write, Glob, etc.)
-//! - [`execute`] -- Execute/Bash two-layer bordered rendering
+//! - [`execute`] -- Execute/Bash content rendering
 //! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
@@ -34,6 +34,9 @@ use errors::{
 
 #[cfg(test)]
 use standard::{cap_write_diff_lines, content_summary};
+
+pub(super) const TOOL_MAX_RENDER_LINES: usize = 15;
+pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
 /// Spinner frames as `&'static str` for use in `status_icon` return type.
 const SPINNER_STRS: &[&str] = &[
@@ -66,59 +69,19 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 ///
-/// For Execute/Bash tool calls, the cache stores **content only** (command, output,
-/// permissions) without border decoration. Borders are applied at render time using
-/// the current width, so they always fill the terminal correctly after resize.
-/// Height for Execute = `content_lines + 2` (title border + bottom border).
-///
-/// For other tool calls, the title is rendered live and the expanded body is cached
-/// independently, so session collapse preference can change without invalidating
-/// every completed tool-call cache.
-pub fn render_tool_call_cached_with_tools_collapsed(
+/// The title is rendered live and the body is cached independently. Tool content
+/// is capped by policy, while pending permission/question controls remain visible.
+pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
     spinner_frame: usize,
-    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    let is_execute = tc.is_execute_tool();
-
-    // Execute/Bash: two-layer rendering (cache content, apply borders at render time)
-    if is_execute {
-        if tc.cache.get().is_none() {
-            crate::perf::mark("tc::cache_miss_execute");
-            let _t = crate::perf::start("tc::render_exec");
-            let content = execute::render_execute_content(tc);
-            tc.cache.store(content);
-        } else {
-            crate::perf::mark("tc::cache_hit_execute");
-        }
-        if let Some(content) = tc.cache.get() {
-            let bordered = execute::render_execute_with_borders(
-                tc,
-                render_context,
-                content,
-                width,
-                spinner_frame,
-            );
-            out.extend(bordered);
-        }
-        return;
-    }
-
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
     out.push(title);
 
-    let has_body = !(tc.content.is_empty()
-        && tc.pending_permission.is_none()
-        && tc.pending_question.is_none());
-    if !has_body {
-        return;
-    }
-
-    if standard::tool_call_effectively_collapsed(tc, tools_collapsed) {
-        standard::render_collapsed_tool_call_summary(tc, out);
+    if !standard::tool_call_has_body(tc) {
         return;
     }
 
@@ -149,13 +112,12 @@ pub fn render_tool_call_cached_with_tools_collapsed(
 
 /// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.
 /// Returns `(height, lines_wrapped_for_measurement)`.
-pub fn measure_tool_call_height_cached_with_tools_collapsed(
+pub fn measure_tool_call_height_cached(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
     spinner_frame: usize,
     layout_generation: u64,
-    tools_collapsed: bool,
 ) -> (usize, usize) {
     if tc.cache_measurement_key_matches(width, layout_generation) {
         crate::perf::mark("tc_measure_fast_path_hits");
@@ -163,52 +125,12 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
     crate::perf::mark("tc_measure_recompute_count");
 
-    let is_execute = tc.is_execute_tool();
-    if is_execute {
-        if tc.cache.get().is_none() {
-            let content = execute::render_execute_content(tc);
-            tc.cache.store(content);
-        }
-        if let Some(content) = tc.cache.get() {
-            let bordered = execute::render_execute_with_borders(
-                tc,
-                render_context,
-                content,
-                width,
-                spinner_frame,
-            );
-            let h = Paragraph::new(Text::from(bordered.clone()))
-                .wrap(Wrap { trim: false })
-                .line_count(width);
-            tc.cache.set_height(h, width);
-            tc.record_measured_height(width, h, layout_generation);
-            return (h, bordered.len());
-        }
-        tc.record_measured_height(width, 0, layout_generation);
-        return (0, 0);
-    }
-
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
     let title_h =
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
-    let has_body = !(tc.content.is_empty()
-        && tc.pending_permission.is_none()
-        && tc.pending_question.is_none());
-
-    if !has_body {
+    if !standard::tool_call_has_body(tc) {
         tc.record_measured_height(width, title_h, layout_generation);
         return (title_h, 1);
-    }
-
-    if standard::tool_call_effectively_collapsed(tc, tools_collapsed) {
-        let mut summary = Vec::new();
-        standard::render_collapsed_tool_call_summary(tc, &mut summary);
-        let summary_h = Paragraph::new(Text::from(summary.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        let total = title_h + summary_h;
-        tc.record_measured_height(width, total, layout_generation);
-        return (total, 1 + summary.len());
     }
 
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
@@ -516,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_top_border_does_not_wrap_for_long_title() {
+    fn bash_title_does_not_wrap_for_long_title() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
@@ -546,49 +468,66 @@ mod tests {
             pending_question: None,
         };
 
-        let rendered =
-            execute::render_execute_with_borders(&tc, ToolCallRenderContext::default(), &[], 80, 0);
-        let top = rendered.first().expect("top border line");
-        assert!(spans_width(&top.spans) <= 80);
+        let top = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 40, 0);
+        assert!(spans_width(&top.spans) <= 40);
     }
 
     #[test]
-    fn execute_title_renders_assistant_backgrounded_badge() {
+    fn bash_body_uses_plain_indent_without_box_borders() {
+        let mut tc = test_tool_call("tc-bash-indent", "Bash", model::ToolCallStatus::Completed);
+        tc.terminal_id = Some("term-indent".to_owned());
+        tc.terminal_command = Some("echo hi".to_owned());
+        tc.terminal_output = Some("hi".to_owned());
+
+        let mut rendered = Vec::new();
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, &mut rendered);
+        let rendered_text: Vec<String> = rendered
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(rendered_text.len(), 3);
+        assert!(rendered_text[1].starts_with("      $ echo hi"));
+        assert!(rendered_text[2].starts_with("      hi"));
+        assert!(
+            rendered_text
+                .iter()
+                .all(|line| !line.contains('\u{256D}') && !line.contains('\u{2570}'))
+        );
+        assert!(rendered_text.iter().all(|line| !line.starts_with("  \u{2502}")));
+    }
+
+    #[test]
+    fn bash_title_renders_assistant_backgrounded_badge() {
         let mut tc = test_tool_call("tc-bash-bg", "Bash", model::ToolCallStatus::Completed);
         tc.output_metadata =
             Some(model::ToolOutputMetadata::new().bash(Some(
                 model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
             )));
 
-        let rendered = execute::render_execute_with_borders(
-            &tc,
-            ToolCallRenderContext::default(),
-            &[],
-            100,
-            0,
-        );
-        let top = rendered.first().expect("top border line");
-        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        let rendered =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("[assistant backgrounded]"));
     }
 
     #[test]
-    fn execute_title_preserves_bash_title_in_plan_mode() {
+    fn bash_title_preserves_command_title_in_plan_mode() {
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("echo hi".to_owned());
 
-        let rendered = execute::render_execute_with_borders(
+        let rendered = standard::render_tool_call_title(
             &tc,
             ToolCallRenderContext { current_mode_id: Some("plan") },
-            &[],
             80,
             0,
         );
-        let top = rendered.first().expect("top border line");
-        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(text.contains("Bash"));
         assert!(text.contains("echo hi"));
+        assert!(!text.contains("Create Plan"));
+        assert!(!text.contains("Update Plan"));
     }
 
     #[test]
@@ -597,25 +536,13 @@ mod tests {
         tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello\nworld".to_owned());
 
-        let (h1, lines1) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            1,
-            false,
-        );
+        let (h1, lines1) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
         assert!(h1 > 0);
         assert!(lines1 > 0);
 
-        let (h2, lines2) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            4,
-            1,
-            false,
-        );
+        let (h2, lines2) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 4, 1);
         assert_eq!(h2, h1);
         assert!(lines2 <= lines1);
     }
@@ -626,23 +553,11 @@ mod tests {
         tc.terminal_command = Some("echo hi".to_owned());
         tc.terminal_output = Some("hello".to_owned());
 
-        let (_, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            1,
-            false,
-        );
+        let (_, first_lines) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
         assert!(first_lines > 0);
-        let (_, second_lines) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            2,
-            false,
-        );
+        let (_, second_lines) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 2);
         assert!(second_lines > 0);
     }
 
@@ -651,36 +566,17 @@ mod tests {
         let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
         tc.content = vec![model::ToolCallContent::from("one line")];
 
-        let (first_height, first_lines) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            1,
-            false,
-        );
+        let (first_height, first_lines) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
         assert!(first_lines > 0);
-        let (cached_height, fast_lines) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            1,
-            false,
-        );
+        let (cached_height, fast_lines) =
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
         assert_eq!(cached_height, first_height);
         assert!(fast_lines <= first_lines);
 
         tc.mark_tool_call_layout_dirty();
         let (recomputed_height, recompute_lines) =
-            measure_tool_call_height_cached_with_tools_collapsed(
-                &mut tc,
-                ToolCallRenderContext::default(),
-                80,
-                0,
-                1,
-                false,
-            );
+            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
         assert_eq!(recomputed_height, first_height);
         assert!(recompute_lines > 0);
     }
@@ -751,87 +647,54 @@ mod tests {
     }
 
     #[test]
-    fn completed_non_execute_collapse_changes_visible_body_without_hiding_the_title() {
-        let mut tc = test_tool_call("tc-collapse", "Read", model::ToolCallStatus::Completed);
+    fn read_tool_renders_only_summary_line() {
+        let mut tc = test_tool_call("tc-read-summary", "Read", model::ToolCallStatus::Completed);
         tc.content = vec![model::ToolCallContent::from("alpha\nbeta".to_owned())];
 
-        let mut expanded = Vec::new();
-        render_tool_call_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            false,
-            &mut expanded,
-        );
-        let expanded_text: Vec<String> = expanded
+        let mut rendered = Vec::new();
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, &mut rendered);
+        let rendered_text: Vec<String> = rendered
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
-        assert!(expanded_text.iter().any(|line| line.contains("alpha")));
-        assert!(expanded_text.first().is_some_and(|line| line.contains("tc-collapse")));
 
-        let mut collapsed = Vec::new();
-        render_tool_call_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            true,
-            &mut collapsed,
-        );
-        let collapsed_text: Vec<String> = collapsed
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-        assert_eq!(collapsed_text.first(), expanded_text.first());
-        assert!(collapsed_text.iter().any(|line| line.contains("ctrl+o to expand")));
-        assert!(!collapsed_text.iter().any(|line| line.contains("beta")));
-        assert!(collapsed_text.len() < expanded_text.len());
+        assert!(rendered_text.first().is_some_and(|line| line.contains("tc-read-summary")));
+        assert!(rendered_text.iter().any(|line| line.contains("alpha")));
+        assert!(!rendered_text.iter().any(|line| line.contains("beta")));
+        assert_eq!(rendered_text.len(), 2);
     }
 
     #[test]
-    fn completed_non_execute_measurement_changes_with_session_collapse_preference() {
-        let mut tc =
-            test_tool_call("tc-measure-collapse", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("alpha\nbeta\ngamma\ndelta".to_owned())];
+    fn web_and_agent_tools_render_only_summary_line() {
+        for sdk_tool_name in ["Agent", "Task", "WebSearch", "WebFetch"] {
+            let mut tc = test_tool_call(
+                &format!("tc-{sdk_tool_name}"),
+                sdk_tool_name,
+                model::ToolCallStatus::Completed,
+            );
+            tc.content = vec![model::ToolCallContent::from("first line\nsecond line".to_owned())];
 
-        let (expanded_h, _) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            24,
-            0,
-            1,
-            false,
-        );
-        let (collapsed_h, _) = measure_tool_call_height_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            24,
-            0,
-            2,
-            true,
-        );
+            let body = standard::render_tool_call_body(&tc, 80);
+            let rendered: Vec<String> = body
+                .iter()
+                .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
 
-        assert!(collapsed_h < expanded_h);
+            assert_eq!(rendered.len(), 1);
+            assert!(rendered[0].contains("first line"));
+            assert!(!rendered[0].contains("second line"));
+        }
     }
 
     #[test]
-    fn diff_tool_stays_expanded_when_session_prefers_collapsed() {
+    fn diff_tool_renders_without_expand_hint() {
         let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
         tc.content = vec![model::ToolCallContent::Diff(
             model::Diff::new("src/main.rs", "new".to_owned()).old_text(Some("old".to_owned())),
         )];
 
         let mut rendered = Vec::new();
-        render_tool_call_cached_with_tools_collapsed(
-            &mut tc,
-            ToolCallRenderContext::default(),
-            80,
-            0,
-            true,
-            &mut rendered,
-        );
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, &mut rendered);
         let text: Vec<String> = rendered
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1127,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn render_execute_content_failed_surfaces_summary_before_full_output() {
+    fn render_execute_content_keeps_tail_output() {
         let tc = ToolCallInfo {
             id: "tc-3".into(),
             title: "Bash".into(),
@@ -1142,7 +1005,7 @@ mod tests {
             terminal_id: Some("term-3".into()),
             terminal_command: Some("cd path with spaces".into()),
             terminal_output: Some(
-                "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
+                (0..30).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n"),
             ),
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
@@ -1163,13 +1026,16 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(rendered.iter().any(|line| line.contains("Exit code 1")));
-        assert!(!rendered.iter().any(|line| line.contains("more detail")));
+        assert_eq!(rendered.len(), super::TOOL_BODY_MAX_LINES);
+        assert!(rendered[0].contains("$ cd path with spaces"));
+        assert!(rendered[1].contains("lines hidden"));
+        assert!(!rendered.iter().any(|line| line == "line 0"));
+        assert!(rendered.iter().any(|line| line == "line 18"));
+        assert_eq!(rendered.last().map(String::as_str), Some("line 29"));
     }
 
     #[test]
-    fn write_diff_cap_keeps_head_and_tail_with_omission_marker() {
-        use standard::WRITE_DIFF_HEAD_LINES;
+    fn write_diff_cap_keeps_tail_with_omission_marker() {
         use standard::WRITE_DIFF_MAX_LINES;
 
         let lines: Vec<Line<'static>> =
@@ -1181,10 +1047,9 @@ mod tests {
             .collect();
 
         assert_eq!(rendered.len(), WRITE_DIFF_MAX_LINES);
-        assert_eq!(rendered[0], "line 0");
-        assert_eq!(rendered[WRITE_DIFF_HEAD_LINES - 1], "line 9");
-        assert!(rendered.iter().any(|line| line.contains("diff lines omitted")));
-        assert!(rendered.iter().any(|line| line == "line 83"));
+        assert!(rendered[0].contains("diff lines omitted"));
+        assert!(!rendered.iter().any(|line| line == "line 0"));
+        assert!(rendered.iter().any(|line| line == "line 107"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 }

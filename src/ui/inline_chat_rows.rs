@@ -737,7 +737,7 @@ fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageR
         current_mode_id,
         width,
         0,
-        MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+        MessageRenderOptions { include_trailing_separator: false },
     )
 }
 
@@ -803,12 +803,11 @@ fn render_live_tool_rows(
             return Vec::new();
         }
         let mut rows = Vec::new();
-        tool_call::render_tool_call_cached_with_tools_collapsed(
+        tool_call::render_tool_call_cached(
             tc.as_mut(),
             render_context.tool_render_context,
             render_context.width,
             spinner.frame,
-            render_context.options.tools_collapsed,
             &mut rows,
         );
         return wrap_lines_to_physical_rows(&rows, render_context.width);
@@ -819,12 +818,11 @@ fn render_live_tool_rows(
     }
     let mut fallback = tool_call_info_from_snapshot(&tool.snapshot, tool.terminal_mutation);
     let mut rows = Vec::new();
-    tool_call::render_tool_call_cached_with_tools_collapsed(
+    tool_call::render_tool_call_cached(
         &mut fallback,
         render_context.tool_render_context,
         render_context.width,
         spinner.frame,
-        render_context.options.tools_collapsed,
         &mut rows,
     );
     wrap_lines_to_physical_rows(&rows, render_context.width)
@@ -840,12 +838,11 @@ fn render_committed_tool_rows(
     }
     let mut fallback = tool_call_info_from_snapshot(snapshot, TerminalMutationState::Settled);
     let mut rows = Vec::new();
-    tool_call::render_tool_call_cached_with_tools_collapsed(
+    tool_call::render_tool_call_cached(
         &mut fallback,
         render_context.tool_render_context,
         render_context.width,
         spinner.frame,
-        render_context.options.tools_collapsed,
         &mut rows,
     );
     wrap_lines_to_physical_rows(&rows, render_context.width)

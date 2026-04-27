@@ -282,21 +282,19 @@ fn append_assistant_tool_block(
     }
 
     let mut lines = Vec::new();
-    tool_call::render_tool_call_cached_with_tools_collapsed(
+    tool_call::render_tool_call_cached(
         tc,
         render_context.tool_render_context,
         render_context.width,
         spinner.frame,
-        render_context.options.tools_collapsed,
         &mut lines,
     );
-    let (height, wrapped_lines) = tool_call::measure_tool_call_height_cached_with_tools_collapsed(
+    let (height, wrapped_lines) = tool_call::measure_tool_call_height_cached(
         tc,
         render_context.tool_render_context,
         render_context.width,
         spinner.frame,
         render_context.layout_generation,
-        render_context.options.tools_collapsed,
     );
     rows.push_lines(lines, height, wrapped_lines);
     if height > 0 {
@@ -529,12 +527,7 @@ mod tests {
     }
 
     fn render_context(include_trailing_separator: bool) -> MessageRenderContext<'static> {
-        MessageRenderContext::new(
-            None,
-            80,
-            1,
-            MessageRenderOptions { tools_collapsed: false, include_trailing_separator },
-        )
+        MessageRenderContext::new(None, 80, 1, MessageRenderOptions { include_trailing_separator })
     }
 
     fn assistant_message(blocks: Vec<MessageBlock>) -> ChatMessage {

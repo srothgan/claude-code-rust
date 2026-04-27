@@ -50,7 +50,6 @@ impl ChatMessage {
 pub struct MessageRenderCacheKey {
     pub width: u16,
     pub layout_generation: u64,
-    pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
     pub render_signature: MessageRenderSignature,
 }

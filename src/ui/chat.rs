@@ -257,7 +257,6 @@ fn measure_message_height_at(
         app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
         width,
         app.viewport.layout_generation,
-        app.tools_collapsed,
         !is_last_message,
     );
     app.sync_render_cache_message(idx);
@@ -281,20 +280,17 @@ fn measure_message_height(
     current_mode_id: Option<&str>,
     width: u16,
     layout_generation: u64,
-    tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) =
-        message::measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
-            msg,
-            spinner,
-            current_mode_id,
-            width,
-            layout_generation,
-            tools_collapsed,
-            include_trailing_separator,
-        );
+    let (h, wrapped_lines) = message::measure_message_height_cached_with_separator_and_mode(
+        msg,
+        spinner,
+        current_mode_id,
+        width,
+        layout_generation,
+        include_trailing_separator,
+    );
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -660,7 +656,6 @@ fn render_culled_messages(
                     width,
                     app.viewport.layout_generation,
                     message::MessageRenderOptions {
-                        tools_collapsed: app.tools_collapsed,
                         include_trailing_separator: i + 1 != msg_count,
                     },
                 ),
@@ -673,7 +668,7 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
+            message::render_message_with_separator_and_layout_generation_with_mode(
                 &mut app.messages[i],
                 &sp,
                 message::MessageRenderContext::new(
@@ -681,7 +676,6 @@ fn render_culled_messages(
                     width,
                     app.viewport.layout_generation,
                     message::MessageRenderOptions {
-                        tools_collapsed: app.tools_collapsed,
                         include_trailing_separator: i + 1 != msg_count,
                     },
                 ),
@@ -1344,11 +1338,10 @@ mod tests {
 
         let scroll = 60;
         let mut full_lines = Vec::new();
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message_with_separator(
             &mut app.messages[0],
             &spinner,
             width,
-            app.tools_collapsed,
             false,
             &mut full_lines,
         );
@@ -1396,11 +1389,10 @@ mod tests {
 
         let scroll = 1;
         let mut full_lines = Vec::new();
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message_with_separator(
             &mut app.messages[0],
             &spinner,
             width,
-            app.tools_collapsed,
             false,
             &mut full_lines,
         );

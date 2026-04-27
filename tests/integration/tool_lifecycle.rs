@@ -261,60 +261,33 @@ async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
     assert!(tool_call_block(&app, "child-late").hidden);
 }
 
-// --- Collapsed tool calls ---
+// --- Tool call lifecycle rendering policy ---
 
 #[tokio::test]
-async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
+async fn tool_call_lifecycle_updates_status_without_session_collapse_preference() {
     let mut app = test_app();
-    app.tools_collapsed = true;
 
-    let tc = model::ToolCall::new("tc-col", "Read file").status(model::ToolCallStatus::InProgress);
+    let tc = model::ToolCall::new("tc-read", "Read file").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.tools_collapsed, "session preference should remain collapsed");
-    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
+    assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::InProgress));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress);
     send_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-col", fields),
+            model::ToolCallUpdate::new("tc-read", fields),
         )),
     );
-    assert!(app.tools_collapsed, "in-progress updates should not flip the preference");
-    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
+    assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::InProgress));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-col", fields),
+            model::ToolCallUpdate::new("tc-read", fields),
         )),
     );
-    assert!(app.tools_collapsed, "completed updates should keep the preference");
-    assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::Completed));
-
-    let mut expanded_app = test_app();
-    expanded_app.tools_collapsed = false;
-
-    let tc = model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(
-        &mut expanded_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
-    );
-    assert!(!expanded_app.tools_collapsed, "expanded preference should remain expanded");
-
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
-        &mut expanded_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-exp", fields),
-        )),
-    );
-    assert!(!expanded_app.tools_collapsed);
-    assert!(matches!(
-        tool_call_block(&expanded_app, "tc-exp").status,
-        model::ToolCallStatus::Completed
-    ));
+    assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::Completed));
 }
 
 // --- Multiple tool calls indexed correctly ---

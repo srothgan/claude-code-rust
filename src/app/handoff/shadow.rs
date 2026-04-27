@@ -137,7 +137,6 @@ pub(crate) fn mirror_tool_snapshot(shadow: &mut HandoffShadowState, tool: LiveTo
             outcome = "ignored",
             tool_call_id = %tool_call_id,
         );
-        debug_assert!(false, "shadow tool update must not mutate committed transcript state");
         return;
     }
     insert_tool(&mut turn.live, tool);
@@ -168,7 +167,6 @@ pub(crate) fn mirror_inline_notice_insert(shadow: &mut HandoffShadowState, notic
                 outcome = "ignored",
                 dedup_key = ?key,
             );
-            debug_assert!(false, "shadow notice insert must not mutate committed transcript state");
             return;
         }
     }
@@ -195,7 +193,6 @@ pub(crate) fn mirror_inline_notice_update(
             outcome = "ignored",
             dedup_key = ?dedup_key,
         );
-        debug_assert!(false, "shadow notice update must not mutate committed transcript state");
     }
 }
 
@@ -218,10 +215,6 @@ pub(crate) fn mirror_tool_interaction_flags(
             message = "shadow tool interaction update ignored because the tool was already committed",
             outcome = "ignored",
             tool_call_id = %tool_call_id,
-        );
-        debug_assert!(
-            false,
-            "shadow tool interaction update must not mutate committed transcript state"
         );
     }
 }
@@ -1003,6 +996,54 @@ mod tests {
         let active_turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
         assert_eq!(active_turn.committed_entries.len(), 1);
         assert!(active_turn.live.units.is_empty());
+    }
+
+    #[test]
+    fn late_shadow_tool_updates_after_commit_are_ignored_without_mutating_transcript() {
+        let (mut app, _) = app_with_active_assistant_turn();
+        let turn = app.handoff_shadow.active_turn.as_mut().expect("active turn");
+        turn.live.units.push(LiveAssistantUnit::Tool(tool_unit(
+            model::ToolCallStatus::Completed,
+            TerminalMutationState::Settled,
+            false,
+            false,
+        )));
+        turn.live.sealed = true;
+
+        sync_handoff_commit_queue(&mut app);
+
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        let committed_before = turn.committed_entries.clone();
+        assert_eq!(committed_before.len(), 1);
+        assert!(turn.live.units.is_empty());
+
+        mirror_tool_snapshot(
+            &mut app.handoff_shadow,
+            LiveToolUnit {
+                snapshot: ToolTranscriptSnapshot {
+                    title: "Late mutated title".to_owned(),
+                    terminal_output: Some("late output".to_owned()),
+                    ..tool_unit(
+                        model::ToolCallStatus::Completed,
+                        TerminalMutationState::Settled,
+                        false,
+                        false,
+                    )
+                    .snapshot
+                },
+                ..tool_unit(
+                    model::ToolCallStatus::Completed,
+                    TerminalMutationState::Settled,
+                    false,
+                    false,
+                )
+            },
+        );
+        mirror_tool_interaction_flags(&mut app.handoff_shadow, "tool-1", true, true);
+
+        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
+        assert_eq!(turn.committed_entries, committed_before);
+        assert!(turn.live.units.is_empty());
     }
 
     #[test]

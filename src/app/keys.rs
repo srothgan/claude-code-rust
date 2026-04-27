@@ -241,10 +241,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             toggle_todo_panel_focus(app);
             true
         }
-        (KeyCode::Char('o'), m) if m == KeyModifiers::CONTROL => {
-            toggle_all_tool_calls(app);
-            true
-        }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
             true
@@ -994,12 +990,6 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
             dispatch_key_by_focus(app, key)
         }
     }
-}
-
-/// Toggle the session-level collapsed preference for non-Execute tool calls.
-pub(super) fn toggle_all_tool_calls(app: &mut App) {
-    app.tools_collapsed = !app.tools_collapsed;
-    app.invalidate_layout(InvalidationLevel::Global);
 }
 
 #[cfg(test)]

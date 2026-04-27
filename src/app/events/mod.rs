@@ -1346,7 +1346,6 @@ mod tests {
         assert!(app.session_id.is_none());
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
-        assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);

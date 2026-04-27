@@ -81,13 +81,6 @@ pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'st
     highlight_with_syntax(text, syntax)
 }
 
-pub(crate) fn highlight_shell_command(text: &str) -> Vec<Span<'static>> {
-    let syntax = find_syntax("bash")
-        .or_else(|| find_syntax("sh"))
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    highlight_single_line(text, syntax)
-}
-
 fn highlight_with_syntax(text: &str, syntax: &SyntaxReference) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
@@ -105,12 +98,6 @@ fn highlight_with_syntax(text: &str, syntax: &SyntaxReference) -> Vec<Line<'stat
     }
 
     lines
-}
-
-fn highlight_single_line(text: &str, syntax: &SyntaxReference) -> Vec<Span<'static>> {
-    let line = text.lines().next().unwrap_or("");
-    let mut highlighter = HighlightLines::new(syntax, highlight_theme());
-    highlight_line(line, &mut highlighter).spans
 }
 
 fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'static> {
@@ -219,13 +206,6 @@ mod tests {
         let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("fn"));
         assert!(text.contains("main"));
-    }
-
-    #[test]
-    fn highlight_shell_command_preserves_command() {
-        let spans = highlight_shell_command("git diff --stat");
-        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(text, "git diff --stat");
     }
 
     #[test]

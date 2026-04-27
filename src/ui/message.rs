@@ -95,28 +95,26 @@ impl<'a> MessageRenderContext<'a> {
 }
 
 #[cfg(test)]
-pub(crate) fn render_message_with_tools_collapsed(
+pub(crate) fn render_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
-    tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
     let render_context = MessageRenderContext::new(
         None,
         width,
         0,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        MessageRenderOptions { include_trailing_separator: true },
     );
     render_message_internal(msg, spinner, render_context, out);
 }
 
 #[cfg(test)]
-pub(crate) fn render_message_with_tools_collapsed_and_separator(
+pub(crate) fn render_message_with_separator(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
-    tools_collapsed: bool,
     include_trailing_separator: bool,
     out: &mut Vec<Line<'static>>,
 ) {
@@ -124,18 +122,17 @@ pub(crate) fn render_message_with_tools_collapsed_and_separator(
         None,
         width,
         0,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions { include_trailing_separator },
     );
     render_message_internal(msg, spinner, render_context, out);
 }
 
 #[cfg(test)]
-pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_generation(
+pub(crate) fn render_message_with_separator_and_layout_generation(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
-    tools_collapsed: bool,
     include_trailing_separator: bool,
     out: &mut Vec<Line<'static>>,
 ) {
@@ -143,9 +140,9 @@ pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_gener
         None,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions { include_trailing_separator },
     );
-    render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
+    render_message_with_separator_and_layout_generation_with_mode(
         msg,
         spinner,
         render_context,
@@ -153,7 +150,7 @@ pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_gener
     );
 }
 
-pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
+pub(crate) fn render_message_with_separator_and_layout_generation_with_mode(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
@@ -183,65 +180,39 @@ pub fn measure_message_height_cached(
     width: u16,
     layout_generation: u64,
 ) -> (usize, usize) {
-    measure_message_height_cached_with_tools_collapsed(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        false,
-    )
+    measure_message_height_cached_with_separator(msg, spinner, width, layout_generation, true)
 }
 
-pub fn measure_message_height_cached_with_tools_collapsed(
+pub fn measure_message_height_cached_with_separator(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
     layout_generation: u64,
-    tools_collapsed: bool,
-) -> (usize, usize) {
-    measure_message_height_cached_with_tools_collapsed_and_separator(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        tools_collapsed,
-        true,
-    )
-}
-
-pub fn measure_message_height_cached_with_tools_collapsed_and_separator(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
-    measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
+    measure_message_height_cached_with_separator_and_mode(
         msg,
         spinner,
         None,
         width,
         layout_generation,
-        tools_collapsed,
         include_trailing_separator,
     )
 }
 
-pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
+pub fn measure_message_height_cached_with_separator_and_mode(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     current_mode_id: Option<&str>,
     width: u16,
     layout_generation: u64,
-    tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
     let render_context = MessageRenderContext::new(
         current_mode_id,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions { include_trailing_separator },
     );
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
     (cache.height(), cache.wrapped_lines())
@@ -262,33 +233,12 @@ pub(crate) fn render_message_from_offset(
     skip_rows: usize,
     out: &mut Vec<Line<'static>>,
 ) -> usize {
-    render_message_from_offset_with_tools_collapsed(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        false,
-        skip_rows,
-        out,
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn render_message_from_offset_with_tools_collapsed(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    tools_collapsed: bool,
-    skip_rows: usize,
-    out: &mut Vec<Line<'static>>,
-) -> usize {
     render_message_from_offset_internal(
         msg,
         spinner,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        MessageRenderOptions { include_trailing_separator: true },
         skip_rows,
         out,
     )
@@ -401,7 +351,6 @@ fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'
 
 #[derive(Clone, Copy)]
 pub(crate) struct MessageRenderOptions {
-    pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
 }
 
@@ -438,7 +387,6 @@ fn build_message_render_cache_key(
     MessageRenderCacheKey {
         width: render_context.width,
         layout_generation: render_context.layout_generation,
-        tools_collapsed: render_context.options.tools_collapsed,
         include_trailing_separator: render_context.options.include_trailing_separator,
         render_signature: build_message_render_signature(
             msg,
@@ -1170,12 +1118,12 @@ mod tests {
     }
 
     fn default_options() -> MessageRenderOptions {
-        MessageRenderOptions { tools_collapsed: false, include_trailing_separator: true }
+        MessageRenderOptions { include_trailing_separator: true }
     }
 
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(msg, spinner, width, false, &mut lines);
+        render_message(msg, spinner, width, &mut lines);
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(width)
     }
 
@@ -1238,7 +1186,7 @@ mod tests {
         let spinner = idle_spinner();
         let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
+        render_message(&mut msg, &spinner, 80, &mut lines);
 
         let rendered = render_lines_to_strings(&lines);
         let first_idx =
@@ -1258,7 +1206,7 @@ mod tests {
         let spinner = idle_spinner();
         let mut msg = make_assistant_notice_message();
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
+        render_message(&mut msg, &spinner, 80, &mut lines);
 
         let rendered = render_lines_to_strings(&lines);
         let before_idx =
@@ -1277,7 +1225,7 @@ mod tests {
         let spinner = idle_spinner();
         let mut msg = make_assistant_notice_message();
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
+        render_message(&mut msg, &spinner, 80, &mut lines);
 
         let notice_line = lines
             .iter()
@@ -1322,15 +1270,11 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, "hello");
         let mut lines = Vec::new();
 
-        render_message_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, false, false, &mut lines,
-        );
+        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
 
         assert_eq!(render_lines_to_strings(&lines), vec!["Claude".to_owned(), "hello".to_owned()]);
 
-        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, 1, false, false,
-        );
+        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
         assert_eq!(h, 2);
     }
 
@@ -1344,18 +1288,14 @@ mod tests {
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut lines = Vec::new();
 
-        render_message_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, false, false, &mut lines,
-        );
+        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
 
         let rendered = render_lines_to_strings(&lines);
         assert_eq!(rendered.len(), 2);
         assert_eq!(rendered[0], "Claude");
         assert!(rendered[1].contains("Thinking..."));
 
-        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, 1, false, false,
-        );
+        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
         assert_eq!(h, 2);
     }
 
@@ -1369,23 +1309,10 @@ mod tests {
         let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
 
-        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
-            &mut measured_msg,
-            &spinner,
-            6,
-            1,
-            false,
-            false,
-        );
+        let (h, _) =
+            measure_message_height_cached_with_separator(&mut measured_msg, &spinner, 6, 1, false);
         let mut truth_lines = Vec::new();
-        render_message_with_tools_collapsed_and_separator(
-            &mut truth_msg,
-            &spinner,
-            6,
-            false,
-            false,
-            &mut truth_lines,
-        );
+        render_message_with_separator(&mut truth_msg, &spinner, 6, false, &mut truth_lines);
         let truth =
             Paragraph::new(Text::from(truth_lines)).wrap(Wrap { trim: false }).line_count(6);
 
@@ -1403,18 +1330,14 @@ mod tests {
         let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut lines = Vec::new();
 
-        render_message_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, false, false, &mut lines,
-        );
+        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
 
         let rendered = render_lines_to_strings(&lines);
         assert_eq!(rendered.len(), 2);
         assert_eq!(rendered[0], "Claude");
         assert!(rendered[1].contains("Compacting context..."));
 
-        let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
-            &mut msg, &spinner, 80, 1, false, false,
-        );
+        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
         assert_eq!(h, 2);
     }
 
@@ -1433,7 +1356,7 @@ mod tests {
             &spinner,
             80,
             1,
-            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            MessageRenderOptions { include_trailing_separator: false },
             0,
             &mut out,
         );
@@ -1460,7 +1383,7 @@ mod tests {
             &spinner,
             80,
             1,
-            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            MessageRenderOptions { include_trailing_separator: false },
             0,
             &mut out,
         );
@@ -1519,12 +1442,11 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, table);
 
         let mut wide_lines = Vec::new();
-        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+        render_message_with_separator_and_layout_generation(
             &mut msg,
             &spinner,
             40,
             1,
-            false,
             true,
             &mut wide_lines,
         );
@@ -1534,12 +1456,11 @@ mod tests {
         assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
 
         let mut narrow_lines = Vec::new();
-        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+        render_message_with_separator_and_layout_generation(
             &mut msg,
             &spinner,
             12,
             2,
-            false,
             true,
             &mut narrow_lines,
         );
@@ -1549,12 +1470,11 @@ mod tests {
         assert!(!narrow_rendered.iter().any(|line| line.contains('─')));
 
         let mut wide_again_lines = Vec::new();
-        render_message_with_tools_collapsed_and_separator_and_layout_generation(
+        render_message_with_separator_and_layout_generation(
             &mut msg,
             &spinner,
             40,
             3,
-            false,
             true,
             &mut wide_again_lines,
         );
@@ -1626,7 +1546,7 @@ mod tests {
             "Rate limit warning",
         );
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Warning")));
@@ -1637,33 +1557,25 @@ mod tests {
     fn assistant_message_suppresses_hidden_subagent_child_tools() {
         let spinner = idle_spinner();
 
-        for tools_collapsed in [false, true] {
-            let mut hidden_tool = make_tool_call_info(
-                "hidden-child",
-                "Bash",
-                crate::agent::model::ToolCallStatus::Completed,
-                "child output",
-            );
-            hidden_tool.hidden = true;
-            let mut msg = ChatMessage::new(
-                MessageRole::Assistant,
-                vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
-                None,
-            );
+        let mut hidden_tool = make_tool_call_info(
+            "hidden-child",
+            "Bash",
+            crate::agent::model::ToolCallStatus::Completed,
+            "child output",
+        );
+        hidden_tool.hidden = true;
+        let mut msg = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
+            None,
+        );
 
-            let mut lines = Vec::new();
-            render_message_with_tools_collapsed(
-                &mut msg,
-                &spinner,
-                120,
-                tools_collapsed,
-                &mut lines,
-            );
-            let rendered = render_lines_to_strings(&lines);
+        let mut lines = Vec::new();
+        render_message(&mut msg, &spinner, 120, &mut lines);
+        let rendered = render_lines_to_strings(&lines);
 
-            assert!(!rendered.iter().any(|line| line.contains("hidden-child")));
-            assert!(!rendered.iter().any(|line| line.contains("child output")));
-        }
+        assert!(!rendered.iter().any(|line| line.contains("hidden-child")));
+        assert!(!rendered.iter().any(|line| line.contains("child output")));
     }
 
     #[test]
@@ -1684,7 +1596,7 @@ mod tests {
         );
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("hidden-permission")));
@@ -1721,7 +1633,7 @@ mod tests {
         );
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("focused-permission")));
@@ -1746,7 +1658,7 @@ mod tests {
         );
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("main-permission")));
@@ -1787,7 +1699,7 @@ mod tests {
         );
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         let first_root_line = line_index_containing(&rendered, "root-a");
@@ -1832,7 +1744,7 @@ mod tests {
         );
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         let root_idx = line_index_containing(&rendered, "root");
@@ -1849,7 +1761,7 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
+        render_message(&mut msg, &spinner, 80, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
@@ -1898,7 +1810,7 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, "done");
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
@@ -1915,7 +1827,7 @@ mod tests {
         let mut msg = make_text_message(MessageRole::Assistant, "done");
 
         let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
+        render_message(&mut msg, &spinner, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
@@ -1996,10 +1908,8 @@ mod tests {
     fn message_render_cache_rebuilds_when_trailing_separator_visibility_changes() {
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
-        let with_separator =
-            MessageRenderOptions { include_trailing_separator: true, ..default_options() };
-        let without_separator =
-            MessageRenderOptions { include_trailing_separator: false, ..default_options() };
+        let with_separator = MessageRenderOptions { include_trailing_separator: true };
+        let without_separator = MessageRenderOptions { include_trailing_separator: false };
 
         let with_cache = get_or_build_message_render_cache(
             &mut msg,

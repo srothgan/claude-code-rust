@@ -221,7 +221,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+q".to_owned(), "Quit".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
-        ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
         ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
         // Chat scrolling
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
