@@ -99,7 +99,7 @@ where
         let composer_rows = Self::serialize_composer_rows(app, width);
         let layout_plan = MutableLayoutPlan::new(&live_rows, &composer_rows, screen_size.height);
 
-        self.update_viewport(layout_plan.viewport_height, screen_size, app)?;
+        self.reconcile_mutable_viewport_geometry(layout_plan.viewport_height, screen_size, app)?;
 
         log_inline_chat_draw(&InlineChatDrawSummary {
             app,
@@ -269,7 +269,7 @@ where
         ComposerRows { rows, caret_row: measurement.caret_row, caret_col: measurement.caret_col }
     }
 
-    fn update_viewport(
+    fn reconcile_mutable_viewport_geometry(
         &mut self,
         desired_viewport_height: u16,
         screen_size: Size,
@@ -286,6 +286,23 @@ where
         }
 
         let old_area = self.terminal.viewport_area;
+        if old_area.is_empty() {
+            self.terminal.set_viewport_area(next_area);
+            self.terminal
+                .clear()
+                .context("failed to clear inline viewport before initial geometry set")?;
+            Self::invalidate_live_region_render_state(app);
+            Self::log_mutable_viewport_geometry_change(
+                old_area,
+                next_area,
+                screen_size,
+                0,
+                0,
+                "mutable_height_initialized",
+            );
+            return Ok(());
+        }
+
         let reclaimed_history_rows = old_area.top().saturating_sub(next_area.top());
         let released_history_rows = next_area.top().saturating_sub(old_area.top());
         if reclaimed_history_rows > 0 {
@@ -294,9 +311,9 @@ where
                     .context("failed to scroll terminal history before viewport expansion")?;
             self.terminal.invalidate_viewport();
         } else if released_history_rows > 0 {
-            self.terminal
-                .clear()
-                .context("failed to clear inline viewport before viewport shrink")?;
+            let _ =
+                scroll_screen(&mut self.terminal, ScreenScrollRequest::down(released_history_rows))
+                    .context("failed to scroll terminal history before viewport shrink")?;
         } else {
             self.terminal
                 .clear()
@@ -307,13 +324,40 @@ where
             self.terminal
                 .clear()
                 .context("failed to clear expanded inline viewport after history scroll")?;
+        } else if released_history_rows > 0 {
+            self.terminal
+                .clear()
+                .context("failed to clear shrunken inline viewport after history scroll")?;
         }
+        Self::invalidate_live_region_render_state(app);
+
+        Self::log_mutable_viewport_geometry_change(
+            old_area,
+            next_area,
+            screen_size,
+            reclaimed_history_rows,
+            released_history_rows,
+            "mutable_height_changed",
+        );
+        Ok(())
+    }
+
+    fn invalidate_live_region_render_state(app: &mut App) {
         app.chat_render.live_region.anchor_valid = false;
         app.chat_render.live_region.total_rows = 0;
         app.chat_render.live_region.hidden_rows_above = 0;
         app.chat_render.live_region.viewport_height = 0;
         app.chat_render.live_region.last_rendered_rows = 0;
+    }
 
+    fn log_mutable_viewport_geometry_change(
+        old_area: Rect,
+        next_area: Rect,
+        screen_size: Size,
+        reclaimed_history_rows: u16,
+        released_history_rows: u16,
+        reason: &'static str,
+    ) {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_resize_or_rebuild",
@@ -327,9 +371,8 @@ where
             released_history_rows,
             terminal_width = screen_size.width,
             terminal_height = screen_size.height,
-            reason = "mutable_height_changed",
+            reason,
         );
-        Ok(())
     }
 
     fn prepare_transcript_flush(&mut self, app: &mut App, width: u16) -> TranscriptFlushPlan {
@@ -769,6 +812,66 @@ mod tests {
         session.draw(&mut app).expect("second draw shrinks live viewport after confirmation");
 
         assert_eq!(session.terminal.history_bounds(), first_bounds);
+        assert!(inline_live_projection(&app).is_empty());
+    }
+
+    #[test]
+    fn prompt_suggestion_disappearing_scrolls_history_down_through_geometry_reconciler() {
+        let mut app = app_with_pending_user_and_live_assistant("insert me");
+        app.prompt_suggestion = Some("Write focused tests".to_owned());
+        let mut session =
+            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
+
+        session.draw(&mut app).expect("draw with prompt suggestion");
+        let top_with_suggestion = session.terminal.viewport_area.top();
+        let (history_top_with_suggestion, history_bottom_with_suggestion) =
+            session.terminal.history_bounds().expect("history bounds after first draw");
+        assert_eq!(history_bottom_with_suggestion, top_with_suggestion);
+
+        app.prompt_suggestion = None;
+        session.draw(&mut app).expect("draw after prompt suggestion disappears");
+
+        let top_without_suggestion = session.terminal.viewport_area.top();
+        let (history_top_without_suggestion, history_bottom_without_suggestion) =
+            session.terminal.history_bounds().expect("history bounds after shrink");
+        assert_eq!(top_without_suggestion, top_with_suggestion.saturating_add(1));
+        assert_eq!(history_top_without_suggestion, history_top_with_suggestion.saturating_add(1));
+        assert_eq!(
+            history_bottom_without_suggestion,
+            history_bottom_with_suggestion.saturating_add(1)
+        );
+        assert_eq!(history_bottom_without_suggestion, top_without_suggestion);
+    }
+
+    #[test]
+    fn live_assistant_removal_scrolls_history_down_through_geometry_reconciler() {
+        let mut app = app_with_pending_user_and_live_assistant("insert me");
+        let mut session =
+            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
+
+        session.draw(&mut app).expect("draw with live assistant rows");
+        let top_with_live = session.terminal.viewport_area.top();
+        let (history_top_with_live, history_bottom_with_live) =
+            session.terminal.history_bounds().expect("history bounds after first draw");
+        let (msg_idx, turn_id) =
+            crate::app::handoff::shadow::active_assistant_projection_anchor(&app)
+                .expect("active assistant anchor");
+
+        app.handoff_shadow.active_turn = None;
+        app.handoff_shadow.inline_output.remove_assistant_live_slot(msg_idx, turn_id);
+        session.draw(&mut app).expect("draw after live assistant rows are removed");
+
+        let top_without_live = session.terminal.viewport_area.top();
+        let released_rows = top_without_live.saturating_sub(top_with_live);
+        let (history_top_without_live, history_bottom_without_live) =
+            session.terminal.history_bounds().expect("history bounds after shrink");
+        assert!(released_rows > 0);
+        assert_eq!(history_top_without_live, history_top_with_live.saturating_add(released_rows));
+        assert_eq!(
+            history_bottom_without_live,
+            history_bottom_with_live.saturating_add(released_rows)
+        );
+        assert_eq!(history_bottom_without_live, top_without_live);
         assert!(inline_live_projection(&app).is_empty());
     }
 
