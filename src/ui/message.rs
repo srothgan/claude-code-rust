@@ -15,17 +15,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use super::message_rows::{MessageRowSegment, build_message_rows};
 
-const FERRIS_SAYS: &[&str] = &[
-    r" --------------------------------- ",
-    r"< Welcome back to Claude, in Rust! >",
-    r" --------------------------------- ",
-    r"        \             ",
-    r"         \            ",
-    r"            _~^~^~_  ",
-    r"        \) /  o o  \ (/",
-    r"          '_   -   _' ",
-    r"          / '-----' \ ",
-];
+const FERRIS_ART: &[&str] =
+    &[r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
 
 // Prepared for future randomized welcome-tip selection. Intentionally unused
 // until the welcome UI is switched from a single hard-coded tip.
@@ -518,48 +509,64 @@ fn should_skip_whole_block(
 }
 
 fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
+    welcome_overview_lines(block, None)
+}
+
+pub(crate) fn welcome_overview_lines(
+    block: &WelcomeBlock,
+    loading_status: Option<&str>,
+) -> Vec<Line<'static>> {
     let pad = "  ";
-    let mut lines = Vec::new();
-    for art_line in FERRIS_SAYS {
-        lines.push(Line::from(Span::styled(
-            format!("{pad}{art_line}"),
+    let loading = loading_status.unwrap_or("Loading");
+    let subscription_missing = welcome_value_missing(&block.subscription);
+    let session_missing = welcome_value_missing(&block.session_id);
+    let subscription_value =
+        if subscription_missing { loading.to_owned() } else { block.subscription.clone() };
+    let session_value = if session_missing { loading.to_owned() } else { block.session_id.clone() };
+    let subscription_style = if subscription_missing {
+        Style::default().fg(theme::DIM)
+    } else {
+        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+    };
+    let text_rows = vec![
+        welcome_field_line("Version", &block.version, Style::default().fg(theme::DIM)),
+        welcome_field_line("Subscription", &subscription_value, subscription_style),
+        welcome_field_line("Cwd", &block.cwd, Style::default().fg(theme::DIM)),
+        welcome_field_line("Session ID", &session_value, Style::default().fg(theme::DIM)),
+        Line::default(),
+        Line::from(Span::styled(
+            format!("Tips: {}", selected_welcome_tip(block)),
+            Style::default().fg(theme::DIM),
+        )),
+    ];
+
+    let art_width = FERRIS_ART.iter().map(|line| line.chars().count()).max().unwrap_or(0);
+    let row_count = FERRIS_ART.len().max(text_rows.len());
+    let mut lines = Vec::with_capacity(row_count + 1);
+    for idx in 0..row_count {
+        let art = FERRIS_ART.get(idx).copied().unwrap_or_default();
+        let mut spans = vec![Span::styled(
+            format!("{pad}{art:<art_width$}{pad}"),
             Style::default().fg(theme::RUST_ORANGE),
-        )));
+        )];
+        if let Some(text_row) = text_rows.get(idx) {
+            spans.extend(text_row.spans.clone());
+        }
+        lines.push(Line::from(spans));
     }
-
     lines.push(Line::default());
-    lines.push(Line::default());
-
-    lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Version:      "), Style::default().fg(theme::DIM)),
-        Span::styled(block.version.clone(), Style::default().fg(theme::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Subscription: "), Style::default().fg(theme::DIM)),
-        Span::styled(
-            block.subscription.clone(),
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        format!("{pad}cwd:          {}", block.cwd),
-        Style::default().fg(theme::DIM),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!("{pad}Session ID:   {}", block.session_id),
-        Style::default().fg(theme::DIM),
-    )));
-
-    lines.push(Line::default());
-    // TODO: Replace the hard-coded tip text with a small array of welcome tips
-    // and randomized selection once this becomes a first-class surface.
-    lines.push(Line::from(Span::styled(
-        format!("{pad}Tips: {}", selected_welcome_tip(block)),
-        Style::default().fg(theme::DIM),
-    )));
-    lines.push(Line::default());
-
     lines
+}
+
+fn welcome_field_line(label: &str, value: &str, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(theme::DIM)),
+        Span::styled(value.to_owned(), value_style),
+    ])
+}
+
+fn welcome_value_missing(value: &str) -> bool {
+    value.trim().is_empty() || value == "-"
 }
 
 pub(crate) fn selected_welcome_tip(block: &WelcomeBlock) -> &'static str {
@@ -906,10 +913,12 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
+        assert!(lines.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(!lines.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
         assert!(lines.iter().any(|line| line.contains("Version:")));
-        assert!(lines.iter().any(|line| line.contains("Subscription: -")));
-        assert!(lines.iter().any(|line| line.contains("cwd:          /cwd")));
-        assert!(lines.iter().any(|line| line.contains("Session ID:   -")));
+        assert!(lines.iter().any(|line| line.contains("Subscription: Loading")));
+        assert!(lines.iter().any(|line| line.contains("Cwd: /cwd")));
+        assert!(lines.iter().any(|line| line.contains("Session ID: Loading")));
         assert!(lines.iter().any(|line| line.contains("Tips: ")));
         assert!(
             WELCOME_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),

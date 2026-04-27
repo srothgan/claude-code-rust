@@ -8,7 +8,7 @@ use crate::app::handoff::projection::{
 use crate::app::handoff::types::{
     AssistantCommittedUnit, AssistantTranscriptEntry, CommittedAssistantKind,
     LiveAssistantIndicator, LiveAssistantTurn, LiveAssistantUnit, TerminalMutationState,
-    ToolTranscriptSnapshot, TranscriptEntry, UserTranscriptBlock,
+    ToolTranscriptSnapshot, TranscriptEntry, UserTranscriptBlock, WelcomeTranscriptEntry,
 };
 use crate::app::{
     App, BlockCache, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock,
@@ -16,7 +16,7 @@ use crate::app::{
 };
 use crate::ui::message::{
     MessageRenderContext, MessageRenderOptions, SpinnerState, render_text_block_cached,
-    selected_welcome_tip,
+    welcome_overview_lines,
 };
 use crate::ui::message_rows::{MessageRowSegment, build_message_rows};
 use crate::ui::theme;
@@ -136,12 +136,21 @@ fn serialize_live_projection_rows(
     projection: Vec<InlineOutputItem>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    if projection.is_empty() {
-        return Vec::new();
-    }
-
     let mut rows = Vec::new();
     let mut previous_block_kind = None;
+
+    if let Some(welcome) = uncommitted_live_welcome_entry(app) {
+        let welcome_rows = serialize_compact_welcome_entry(app, &welcome, width);
+        if !welcome_rows.is_empty() {
+            rows.extend(welcome_rows);
+            previous_block_kind = Some(TopLevelInlineBlockKind::Welcome);
+        }
+    }
+
+    if projection.is_empty() {
+        return rows;
+    }
+
     let mut transcript_batch = Vec::new();
 
     for item in projection {
@@ -299,54 +308,69 @@ fn serialize_single_transcript_entry(
 
 fn serialize_compact_welcome_entry(
     app: &App,
-    entry: &crate::app::handoff::types::WelcomeTranscriptEntry,
+    entry: &WelcomeTranscriptEntry,
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ))];
-    lines.push(Line::from(vec![
-        Span::styled("version: ", Style::default().fg(theme::DIM)),
-        Span::styled(entry.version.clone(), Style::default().fg(theme::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("cwd: ", Style::default().fg(theme::DIM)),
-        Span::styled(entry.cwd.clone(), Style::default().fg(theme::DIM)),
-    ]));
-    if !entry.session_id.trim().is_empty() && entry.session_id != "-" {
-        lines.push(Line::from(vec![
-            Span::styled("session: ", Style::default().fg(theme::DIM)),
-            Span::styled(entry.session_id.clone(), Style::default().fg(theme::DIM)),
-        ]));
-    }
-    if !entry.subscription.trim().is_empty() && entry.subscription != "-" {
-        lines.push(Line::from(vec![
-            Span::styled("account: ", Style::default().fg(theme::DIM)),
-            Span::styled(entry.subscription.clone(), Style::default().fg(theme::DIM)),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled("status: ", Style::default().fg(theme::DIM)),
-            Span::styled(status_label(app), Style::default().fg(theme::DIM)),
-        ]));
-    }
-    lines.push(Line::from(Span::styled(
-        format!(
-            "Tip: {}",
-            selected_welcome_tip(&crate::app::WelcomeBlock {
-                version: entry.version.clone(),
-                subscription: entry.subscription.clone(),
-                cwd: entry.cwd.clone(),
-                session_id: entry.session_id.clone(),
-                tip_seed: entry.tip_seed,
-                cache: BlockCache::default(),
-            })
-        ),
-        Style::default().fg(theme::DIM),
-    )));
+    lines.extend(welcome_overview_lines(
+        &crate::app::WelcomeBlock {
+            version: entry.version.clone(),
+            subscription: entry.subscription.clone(),
+            cwd: entry.cwd.clone(),
+            session_id: entry.session_id.clone(),
+            tip_seed: entry.tip_seed,
+            cache: BlockCache::default(),
+        },
+        Some(status_label(app)),
+    ));
 
     wrap_lines_to_physical_rows(&lines, width)
+}
+
+fn uncommitted_live_welcome_entry(app: &App) -> Option<WelcomeTranscriptEntry> {
+    if inline_output_contains_welcome(&app.handoff_shadow.inline_output) {
+        return None;
+    }
+
+    let first = app.messages.first()?;
+    if !matches!(first.role, MessageRole::Welcome) {
+        return None;
+    }
+    let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
+        return None;
+    };
+    if welcome_metadata_ready(welcome) {
+        return None;
+    }
+
+    Some(WelcomeTranscriptEntry {
+        version: welcome.version.clone(),
+        subscription: welcome.subscription.clone(),
+        cwd: welcome.cwd.clone(),
+        session_id: welcome.session_id.clone(),
+        tip_seed: welcome.tip_seed,
+    })
+}
+
+fn inline_output_contains_welcome(
+    inline_output: &crate::app::handoff::projection::InlineOutputState,
+) -> bool {
+    inline_output.items().iter().any(|item| {
+        matches!(
+            &item.kind,
+            InlineOutputItemKind::Transcript { entry: TranscriptEntry::Welcome(_), .. }
+        )
+    })
+}
+
+fn welcome_metadata_ready(welcome: &crate::app::WelcomeBlock) -> bool {
+    !welcome.session_id.trim().is_empty()
+        && welcome.session_id != "-"
+        && !welcome.subscription.trim().is_empty()
+        && welcome.subscription != "-"
 }
 
 fn status_label(app: &App) -> &'static str {
@@ -980,7 +1004,7 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{serialize_live_rows, serialize_transcript_rows, wrap_lines_to_physical_rows};
+    use super::{serialize_live_rows, serialize_transcript_rows};
     use crate::agent::model;
     use crate::app::handoff::shadow::ActiveAssistantShadowTurn;
     use crate::app::handoff::types::{
@@ -989,7 +1013,7 @@ mod tests {
         LiveUnitId, MutableTextTailUnit, TerminalMutationState, ToolTranscriptSnapshot,
         TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry, WelcomeTranscriptEntry,
     };
-    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
+    use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
     use ratatui::text::Line;
 
     fn line_text(line: &Line<'_>) -> String {
@@ -1096,35 +1120,17 @@ mod tests {
         let text: Vec<String> = rows.iter().map(line_text).collect();
 
         assert!(text.iter().any(|line| line.contains("Overview")));
-        assert!(text.iter().any(|line| line.contains("version: 1.2.3")));
-        assert!(text.iter().any(|line| line.contains("cwd: /workspace/demo")));
-        assert!(text.iter().any(|line| line.contains("session: session-123")));
-        assert!(text.iter().any(|line| line.contains("account: Pro")));
-        assert!(text.iter().any(|line| line.starts_with("Tip: ")));
-        assert!(!text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| line.contains("Version: 1.2.3")));
+        assert!(text.iter().any(|line| line.contains("Cwd: /workspace/demo")));
+        assert!(text.iter().any(|line| line.contains("Session ID: session-123")));
+        assert!(text.iter().any(|line| line.contains("Subscription: Pro")));
+        assert!(text.iter().any(|line| line.contains("Tips: ")));
         assert!(!text.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
     }
 
     #[test]
-    fn compact_welcome_stays_smaller_than_full_retained_variant() {
-        let mut full_welcome =
-            ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        App::apply_welcome_tip_seed(&mut full_welcome, 7);
-        let retained_rows = crate::ui::message_rows::build_message_rows(
-            &mut full_welcome,
-            &super::idle_spinner(),
-            super::message_render_context(None, 80),
-        );
-        let retained_physical_rows = retained_rows
-            .segments
-            .iter()
-            .flat_map(|segment| match segment {
-                crate::ui::message_rows::MessageRowSegment::Blank => vec![Line::default()],
-                crate::ui::message_rows::MessageRowSegment::Lines { lines, .. } => {
-                    wrap_lines_to_physical_rows(lines, 80)
-                }
-            })
-            .collect::<Vec<_>>();
+    fn compact_welcome_uses_side_by_side_crab_layout() {
         let compact_rows = serialize_transcript_rows(
             &App::test_default(),
             &[TranscriptEntry::Welcome(WelcomeTranscriptEntry {
@@ -1137,8 +1143,13 @@ mod tests {
             false,
             80,
         );
+        let text = line_texts(&compact_rows);
 
-        assert!(compact_rows.len() < retained_physical_rows.len());
+        assert_eq!(text.first().map(String::as_str), Some("Overview"));
+        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| line.contains("Version: 1.2.3")));
+        assert!(text.iter().any(|line| line.contains("Subscription: Pro")));
+        assert!(!text.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
     }
 
     #[test]
@@ -1279,6 +1290,21 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
+    }
+
+    #[test]
+    fn live_projection_renders_uncommitted_loading_welcome() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+
+        let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
+
+        assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
+        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| line.contains("Subscription: Connecting")));
+        assert!(text.iter().any(|line| line.contains("Session ID: Connecting")));
     }
 
     #[test]
