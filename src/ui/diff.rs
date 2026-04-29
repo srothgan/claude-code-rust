@@ -150,15 +150,12 @@ struct HunkRange {
 fn format_compact_hunk_header(header: &str) -> String {
     parse_unified_hunk_header(header).map_or_else(
         || header.to_owned(),
-        |(old_range, new_range)| {
-            let mut parts = Vec::with_capacity(2);
-            if old_range.count > 0 {
-                parts.push(format_range("-", old_range));
-            }
-            if new_range.count > 0 {
-                parts.push(format_range("+", new_range));
-            }
-            if parts.is_empty() { "lines".to_owned() } else { format!("lines {}", parts.join(" ")) }
+        |(old, new)| match (old.count, new.count) {
+            (0, 0) => "lines".to_owned(),
+            (0, _) => format!("+ {}", labeled_range(new)),
+            (_, 0) => format!("- {}", labeled_range(old)),
+            _ if old.start == new.start && old.count == new.count => labeled_range(old),
+            _ => format!("{} \u{2192} {}", labeled_range(old), bare_range(new)),
         },
     )
 }
@@ -177,12 +174,20 @@ fn parse_prefixed_hunk_range(token: &str, prefix: char) -> Option<HunkRange> {
     Some(HunkRange { start: start.parse().ok()?, count: count.parse().ok()? })
 }
 
-fn format_range(prefix: &str, range: HunkRange) -> String {
+fn labeled_range(range: HunkRange) -> String {
     if range.count <= 1 {
-        format!("{prefix}{}", range.start)
+        format!("line {}", range.start)
+    } else {
+        format!("lines {}", bare_range(range))
+    }
+}
+
+fn bare_range(range: HunkRange) -> String {
+    if range.count <= 1 {
+        range.start.to_string()
     } else {
         let end = range.start.saturating_add(range.count.saturating_sub(1));
-        format!("{prefix}{}-{end}", range.start)
+        format!("{}..{end}", range.start)
     }
 }
 
@@ -378,7 +383,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("lines +1")));
+        assert!(rendered.iter().any(|line| line.contains("+ line 1")));
         assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
         assert!(rendered.iter().any(|line| line.starts_with("      ")));
         assert!(!rendered.iter().any(|line| line == "tmp.md"));
@@ -424,9 +429,12 @@ mod tests {
 
     #[test]
     fn compact_hunk_header_omits_empty_side_and_uses_ranges() {
-        assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
-        assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines -4-6 +4-8");
-        assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "lines -8 +8");
+        assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "+ lines 1..7");
+        assert_eq!(format_compact_hunk_header("@@ -4,3 +0,0 @@"), "- lines 4..6");
+        assert_eq!(format_compact_hunk_header("@@ -1,2 +1,2 @@"), "lines 1..2");
+        assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines 4..6 \u{2192} 4..8");
+        assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "line 8");
+        assert_eq!(format_compact_hunk_header("@@ -8 +10 @@"), "line 8 \u{2192} 10");
     }
 
     #[test]

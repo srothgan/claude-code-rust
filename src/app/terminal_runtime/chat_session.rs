@@ -15,7 +15,7 @@ use anyhow::Context;
 use crossterm::queue;
 use crossterm::terminal::DisableLineWrap;
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::{Position, Rect, Size};
+use ratatui::layout::{Rect, Size};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use std::io::{self, Stdout, Write};
@@ -150,10 +150,6 @@ where
                         composer_area,
                     );
                 }
-                frame.set_cursor_position(Position::new(
-                    composer_area.x.saturating_add(composer_rows.caret_col),
-                    composer_area.y.saturating_add(composer_caret_row),
-                ));
             })
             .context("failed to draw inline chat viewport")?;
 
