@@ -34,6 +34,17 @@ where
     terminal: Terminal<B>,
 }
 
+struct GeometryChangeLog {
+    old_area: Rect,
+    next_area: Rect,
+    screen_size: Size,
+    reclaimed_history_rows: u16,
+    released_history_rows: u16,
+    pending_static_rows: u16,
+    scroll_down_rows: u16,
+    reason: &'static str,
+}
+
 impl ChatTerminalSession<StdoutBackend> {
     pub(super) fn new() -> anyhow::Result<Self> {
         let terminal = build_terminal()?;
@@ -99,7 +110,13 @@ where
         let composer_rows = Self::serialize_composer_rows(app, width);
         let layout_plan = MutableLayoutPlan::new(&live_rows, &composer_rows, screen_size.height);
 
-        self.reconcile_mutable_viewport_geometry(layout_plan.viewport_height, screen_size, app)?;
+        let pending_static_rows = u16::try_from(transcript_plan.rows.len()).unwrap_or(u16::MAX);
+        self.reconcile_mutable_viewport_geometry(
+            layout_plan.viewport_height,
+            screen_size,
+            app,
+            pending_static_rows,
+        )?;
 
         log_inline_chat_draw(&InlineChatDrawSummary {
             app,
@@ -274,6 +291,7 @@ where
         desired_viewport_height: u16,
         screen_size: Size,
         app: &mut App,
+        pending_static_rows: u16,
     ) -> anyhow::Result<()> {
         let next_area = Rect::new(
             0,
@@ -292,28 +310,30 @@ where
                 .clear()
                 .context("failed to clear inline viewport before initial geometry set")?;
             Self::invalidate_live_region_render_state(app);
-            Self::log_mutable_viewport_geometry_change(
+            Self::log_mutable_viewport_geometry_change(&GeometryChangeLog {
                 old_area,
                 next_area,
                 screen_size,
-                0,
-                0,
-                "mutable_height_initialized",
-            );
+                reclaimed_history_rows: 0,
+                released_history_rows: 0,
+                pending_static_rows,
+                scroll_down_rows: 0,
+                reason: "mutable_height_initialized",
+            });
             return Ok(());
         }
 
         let reclaimed_history_rows = old_area.top().saturating_sub(next_area.top());
         let released_history_rows = next_area.top().saturating_sub(old_area.top());
+        let scroll_down_rows = released_history_rows.saturating_sub(pending_static_rows);
         if reclaimed_history_rows > 0 {
             let _ =
                 scroll_screen(&mut self.terminal, ScreenScrollRequest::up(reclaimed_history_rows))
                     .context("failed to scroll terminal history before viewport expansion")?;
             self.terminal.invalidate_viewport();
-        } else if released_history_rows > 0 {
-            let _ =
-                scroll_screen(&mut self.terminal, ScreenScrollRequest::down(released_history_rows))
-                    .context("failed to scroll terminal history before viewport shrink")?;
+        } else if scroll_down_rows > 0 {
+            let _ = scroll_screen(&mut self.terminal, ScreenScrollRequest::down(scroll_down_rows))
+                .context("failed to scroll terminal history before viewport shrink")?;
         } else {
             self.terminal
                 .clear()
@@ -331,14 +351,16 @@ where
         }
         Self::invalidate_live_region_render_state(app);
 
-        Self::log_mutable_viewport_geometry_change(
+        Self::log_mutable_viewport_geometry_change(&GeometryChangeLog {
             old_area,
             next_area,
             screen_size,
             reclaimed_history_rows,
             released_history_rows,
-            "mutable_height_changed",
-        );
+            pending_static_rows,
+            scroll_down_rows,
+            reason: "mutable_height_changed",
+        });
         Ok(())
     }
 
@@ -350,28 +372,23 @@ where
         app.chat_render.live_region.last_rendered_rows = 0;
     }
 
-    fn log_mutable_viewport_geometry_change(
-        old_area: Rect,
-        next_area: Rect,
-        screen_size: Size,
-        reclaimed_history_rows: u16,
-        released_history_rows: u16,
-        reason: &'static str,
-    ) {
+    fn log_mutable_viewport_geometry_change(change: &GeometryChangeLog) {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_resize_or_rebuild",
             message = "inline viewport geometry updated in place",
             outcome = "success",
-            old_top = old_area.top(),
-            old_height = old_area.height,
-            new_top = next_area.top(),
-            new_height = next_area.height,
-            reclaimed_history_rows,
-            released_history_rows,
-            terminal_width = screen_size.width,
-            terminal_height = screen_size.height,
-            reason,
+            old_top = change.old_area.top(),
+            old_height = change.old_area.height,
+            new_top = change.next_area.top(),
+            new_height = change.next_area.height,
+            reclaimed_history_rows = change.reclaimed_history_rows,
+            released_history_rows = change.released_history_rows,
+            pending_static_rows = change.pending_static_rows,
+            scroll_down_rows = change.scroll_down_rows,
+            terminal_width = change.screen_size.width,
+            terminal_height = change.screen_size.height,
+            reason = change.reason,
         );
     }
 
@@ -873,6 +890,31 @@ mod tests {
         );
         assert_eq!(history_bottom_without_live, top_without_live);
         assert!(inline_live_projection(&app).is_empty());
+    }
+
+    #[test]
+    fn pending_static_insert_consumes_released_rows_during_viewport_shrink() {
+        let mut app = App::test_default();
+        app.chat_render.line_wrap_disabled = true;
+        let mut session =
+            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(124, 29)));
+        session.terminal.set_viewport_area(Rect::new(0, 9, 124, 20));
+        session.terminal.record_history_insert(0, 9);
+
+        session
+            .reconcile_mutable_viewport_geometry(4, Size::new(124, 29), &mut app, 15)
+            .expect("viewport shrink should account for pending static rows");
+        let written = String::from_utf8_lossy(&session.terminal.backend_mut().written);
+        assert!(written.contains("\x1b[1T"), "expected one released row to scroll down");
+        assert!(
+            !written.contains("\x1b[16T"),
+            "pending static rows should not be emitted as blank scroll-down rows"
+        );
+
+        super::insert_history_lines(&mut session.terminal, &rows(15)).expect("insert static rows");
+        let (_history_top, history_bottom) =
+            session.terminal.history_bounds().expect("history bounds after insert");
+        assert_eq!(history_bottom, session.terminal.viewport_area.top());
     }
 
     #[test]
