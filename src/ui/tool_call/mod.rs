@@ -701,7 +701,7 @@ mod tests {
             .collect();
 
         assert!(!text.iter().any(|line| line.contains("expand")));
-        assert!(text.iter().any(|line| line.contains("line ")));
+        assert!(text.iter().any(|line| line.contains("(+1, -1)")));
         assert!(text.iter().any(|line| line.contains("+  new")));
         assert!(text.len() > 2);
     }
@@ -722,7 +722,7 @@ mod tests {
             .collect();
 
         assert!(rendered.iter().any(|line| line.starts_with("  │    [acme/project]")));
-        assert!(rendered.iter().any(|line| line.starts_with("  │    line ")));
+        assert!(rendered.iter().any(|line| line.starts_with("  │    (+1, -1)")));
         assert!(rendered.iter().any(|line| {
             (line.starts_with("  │   ") || line.starts_with("  └─   ")) && line.contains("+  new")
         }));
@@ -786,6 +786,10 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
+        assert!(
+            rendered.iter().any(|line| line.starts_with("  │    (+120)"))
+                || rendered.iter().any(|line| line.starts_with("  └─   (+120)"))
+        );
         assert!(
             rendered
                 .iter()
@@ -1050,6 +1054,27 @@ mod tests {
         assert!(rendered[0].contains("diff lines omitted"));
         assert!(!rendered.iter().any(|line| line == "line 0"));
         assert!(rendered.iter().any(|line| line == "line 107"));
+        assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
+    }
+
+    #[test]
+    fn write_diff_cap_preserves_diff_count_header() {
+        use standard::WRITE_DIFF_MAX_LINES;
+
+        let mut lines: Vec<Line<'static>> = vec![Line::from("(+120)")];
+        lines.extend((0..120).map(|idx| Line::from(format!("line {idx}"))));
+
+        let capped = cap_write_diff_lines(lines);
+        let rendered: Vec<String> = capped
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(rendered.len(), WRITE_DIFF_MAX_LINES);
+        assert_eq!(rendered[0], "(+120)");
+        assert!(rendered[1].contains("diff lines omitted"));
+        assert!(!rendered.iter().any(|line| line == "line 0"));
+        assert!(rendered.iter().any(|line| line == "line 108"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 }

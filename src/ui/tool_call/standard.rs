@@ -244,8 +244,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     lines.extend(render_plan_content(&diff.new_text));
                 } else {
                     let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                    let raw =
-                        if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                    let raw = cap_write_diff_lines(raw);
                     lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
                 }
             }
@@ -366,17 +365,39 @@ pub(super) fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'stati
     if lines.len() <= WRITE_DIFF_MAX_LINES {
         return lines;
     }
-    let total = lines.len();
-    let tail = WRITE_DIFF_MAX_LINES.saturating_sub(1);
-    let omitted = total.saturating_sub(tail);
+    let protected = leading_diff_metadata_line_count(&lines);
+    let tail = WRITE_DIFF_MAX_LINES.saturating_sub(protected + 1);
+    let omitted = lines.len().saturating_sub(protected + tail);
 
     let mut out = Vec::with_capacity(WRITE_DIFF_MAX_LINES);
+    out.extend(lines.iter().take(protected).cloned());
     out.push(Line::from(Span::styled(
         format!("... {omitted} diff lines omitted ..."),
         Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
     )));
-    out.extend(lines.into_iter().skip(omitted));
+    out.extend(lines.into_iter().skip(protected + omitted));
     out
+}
+
+fn leading_diff_metadata_line_count(lines: &[Line<'static>]) -> usize {
+    let mut count = 0;
+    if lines.get(count).is_some_and(line_text_starts_with_repository_label) {
+        count += 1;
+    }
+    if lines.get(count).is_some_and(line_text_starts_with_diff_count_header) {
+        count += 1;
+    }
+    count
+}
+
+fn line_text_starts_with_repository_label(line: &Line<'static>) -> bool {
+    let mut chars = line.spans.iter().flat_map(|span| span.content.chars());
+    chars.next() == Some('[')
+}
+
+fn line_text_starts_with_diff_count_header(line: &Line<'static>) -> bool {
+    let mut chars = line.spans.iter().flat_map(|span| span.content.chars());
+    chars.next() == Some('(')
 }
 
 fn cap_tool_content_lines(lines: Vec<Line<'static>>, omitted_label: &str) -> Vec<Line<'static>> {
