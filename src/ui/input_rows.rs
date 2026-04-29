@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::{App, AppStatus, FocusOwner};
-use crate::ui::input;
 use crate::ui::theme;
+use crate::ui::{autocomplete, input};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -32,7 +32,7 @@ pub(crate) struct InputRowsMeasurement {
     pub caret_col: u16,
 }
 
-pub(crate) fn build_input_hint_rows(app: &App) -> Vec<Line<'static>> {
+pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
 
     if let Some(hint) = &app.login_hint {
@@ -57,7 +57,9 @@ pub(crate) fn build_input_hint_rows(app: &App) -> Vec<Line<'static>> {
         ]));
     }
 
-    if app.input.is_empty()
+    if autocomplete::is_active(app) {
+        rows.extend(autocomplete::composer_hint_rows(app));
+    } else if app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
         && let Some(suggestion) = app.prompt_suggestion.as_deref()
         && !suggestion.trim().is_empty()
@@ -76,7 +78,7 @@ pub(crate) fn build_input_hint_rows(app: &App) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn serialize_input_rows(app: &mut App, area_width: u16) -> SerializedInputRows {
-    let hint_rows = build_input_hint_rows(app);
+    let hint_rows = build_composer_hint_rows(app);
     let hint_row_count = u16::try_from(hint_rows.len()).unwrap_or(u16::MAX);
     let geometry =
         input::compute_render_geometry(Rect::new(0, 0, area_width, 1), input::hint_line_count(app));
@@ -395,7 +397,7 @@ fn caret_visual_position(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_input_hint_rows, serialize_input_rows};
+    use super::{build_composer_hint_rows, serialize_input_rows};
     use crate::app::{
         App, AppStatus, CancelOrigin, FocusTarget, LoginHint, SelectionKind, SelectionPoint,
         SelectionState,
@@ -408,28 +410,43 @@ mod tests {
     }
 
     #[test]
-    fn build_input_hint_rows_preserves_login_hint_content() {
+    fn build_composer_hint_rows_preserves_login_hint_content() {
         let mut app = App::test_default();
         app.login_hint = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
 
-        let rows = build_input_hint_rows(&app);
+        let rows = build_composer_hint_rows(&app);
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Authentication required: oauth -- Sign in"));
     }
 
     #[test]
-    fn build_input_hint_rows_preserves_cancel_and_suggestion_rows() {
+    fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
         let mut app = App::test_default();
         app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
         app.prompt_suggestion = Some("Write tests".to_owned());
 
-        let rows = build_input_hint_rows(&app);
+        let rows = build_composer_hint_rows(&app);
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Cancelling current turn"));
         assert!(line_text(&rows[1]).contains("Suggestion: Write tests"));
+    }
+
+    #[test]
+    fn build_composer_hint_rows_prefers_autocomplete_over_prompt_suggestion() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        app.prompt_suggestion = Some("Write tests".to_owned());
+        crate::app::mention::activate(&mut app);
+
+        let rows = build_composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("Type a file or folder name after @"));
+        assert!(!rows.iter().any(|row| line_text(row).contains("Suggestion:")));
     }
 
     #[test]
@@ -444,6 +461,20 @@ mod tests {
         assert_eq!(serialized.measurement.editor_rows, 1);
         assert_eq!(serialized.measurement.caret_row, 0);
         assert_eq!(serialized.measurement.caret_col, 2);
+    }
+
+    #[test]
+    fn serialize_input_rows_includes_autocomplete_before_editor_rows() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        crate::app::mention::activate(&mut app);
+
+        let serialized = serialize_input_rows(&mut app, 80);
+
+        assert_eq!(serialized.measurement.hint_rows, 1);
+        assert!(line_text(&serialized.hint_rows[0]).contains("Type a file or folder name after @"));
+        assert!(line_text(&serialized.editor_rows[0]).contains(crate::ui::theme::PROMPT_CHAR));
     }
 
     #[test]
@@ -600,7 +631,7 @@ mod tests {
         });
         app.claim_focus_target(FocusTarget::TodoList);
 
-        let rows = build_input_hint_rows(&app);
+        let rows = build_composer_hint_rows(&app);
         assert!(rows.is_empty());
     }
 

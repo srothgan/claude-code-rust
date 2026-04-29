@@ -1,10 +1,8 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{App, FocusTarget, dialog::DialogState, file_index};
+use super::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget, dialog::DialogState, file_index};
 
-/// Maximum candidates shown in the dropdown.
-pub const MAX_VISIBLE: usize = 8;
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
 
@@ -59,7 +57,7 @@ impl MentionState {
         }
 
         match self.search_status {
-            MentionSearchStatus::Hint => Some("Type to search files".to_owned()),
+            MentionSearchStatus::Hint => Some("Type a file or folder name after @".to_owned()),
             MentionSearchStatus::Searching => Some("Searching files...".to_owned()),
             MentionSearchStatus::NoMatches => Some("No matching files or folders".to_owned()),
             MentionSearchStatus::Ready => None,
@@ -74,7 +72,7 @@ impl MentionState {
     fn mark_hint(&mut self) {
         self.candidates.clear();
         self.search_status = MentionSearchStatus::Hint;
-        self.dialog.clamp(0, MAX_VISIBLE);
+        self.dialog.clamp(0, AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 
@@ -168,7 +166,7 @@ pub fn refresh_from_file_index(app: &mut App) {
     } else {
         MentionSearchStatus::Searching
     };
-    mention.dialog.clamp(mention.candidates.len(), MAX_VISIBLE);
+    mention.dialog.clamp(mention.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     sync_focus(app);
 }
 
@@ -260,14 +258,14 @@ pub fn deactivate(app: &mut App) {
 /// Move selection up in the candidate list.
 pub fn move_up(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        mention.dialog.move_up(mention.candidates.len(), MAX_VISIBLE);
+        mention.dialog.move_up(mention.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 
 /// Move selection down in the candidate list.
 pub fn move_down(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        mention.dialog.move_down(mention.candidates.len(), MAX_VISIBLE);
+        mention.dialog.move_down(mention.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 
@@ -386,7 +384,10 @@ mod tests {
         let mention = app.mention.as_ref().expect("mention should be active");
         assert_eq!(mention.query, "");
         assert!(mention.candidates.is_empty());
-        assert_eq!(mention.placeholder_message().as_deref(), Some("Type to search files"));
+        assert_eq!(
+            mention.placeholder_message().as_deref(),
+            Some("Type a file or folder name after @")
+        );
     }
 
     #[test]

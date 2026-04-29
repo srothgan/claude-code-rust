@@ -5,8 +5,8 @@
 //! move selection, and confirm.
 
 use super::candidates::{build_slash_state, builtin_argument_confirmation_closes};
-use super::{MAX_VISIBLE, SlashContext, SlashState};
-use crate::app::{App, FocusTarget};
+use super::{SlashContext, SlashState};
+use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget};
 
 fn release_autocomplete_focus_if_idle(app: &mut App) {
     if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {
@@ -81,7 +81,7 @@ pub fn update_query(app: &mut App) {
         slash.context = next_state.context;
         slash.candidates = next_state.candidates;
         slash.dialog = dialog;
-        slash.dialog.clamp(slash.candidates.len(), MAX_VISIBLE);
+        slash.dialog.clamp(slash.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     } else {
         app.slash = Some(next_state);
         app.claim_focus_target(FocusTarget::Mention);
@@ -104,13 +104,13 @@ pub fn deactivate(app: &mut App) {
 
 pub fn move_up(app: &mut App) {
     if let Some(ref mut slash) = app.slash {
-        slash.dialog.move_up(slash.candidates.len(), MAX_VISIBLE);
+        slash.dialog.move_up(slash.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 
 pub fn move_down(app: &mut App) {
     if let Some(ref mut slash) = app.slash {
-        slash.dialog.move_down(slash.candidates.len(), MAX_VISIBLE);
+        slash.dialog.move_down(slash.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 

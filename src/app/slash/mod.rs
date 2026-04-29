@@ -18,7 +18,6 @@ use super::{
 use crate::agent::model;
 use std::rc::Rc;
 
-pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
 const DOCS_TOPICS: [(&str, &str); 5] = [
     ("mode", "Show current and available session modes"),

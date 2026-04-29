@@ -1,24 +1,11 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::App;
-use crate::app::mention::MAX_VISIBLE;
+use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App};
 use crate::app::{file_index, mention, slash, subagent};
-use crate::ui::input;
 use crate::ui::theme;
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
-use unicode_width::UnicodeWidthChar;
-
-/// Max dropdown width (characters).
-const MAX_WIDTH: u16 = 60;
-/// Min dropdown width so list entries stay readable.
-const MIN_WIDTH: u16 = 20;
-/// Vertical gap (in rows) between the trigger line and the dropdown.
-const ANCHOR_VERTICAL_GAP: u16 = 1;
 
 enum Dropdown<'a> {
     Mention(&'a mention::MentionState),
@@ -30,7 +17,6 @@ struct DropdownMeta {
     visible_count: usize,
     start: usize,
     end: usize,
-    title: String,
 }
 
 pub fn is_active(app: &App) -> bool {
@@ -39,69 +25,17 @@ pub fn is_active(app: &App) -> bool {
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
-#[allow(clippy::cast_possible_truncation)]
-pub fn compute_height(app: &App) -> u16 {
-    let count = if let Some(m) = &app.mention {
-        m.candidates.len().max(1)
-    } else if let Some(s) = &app.slash {
-        s.candidates.len()
-    } else if let Some(s) = &app.subagent {
-        s.candidates.len()
-    } else {
-        0
-    };
-
-    if count == 0 {
-        0
-    } else {
-        let visible = count.min(MAX_VISIBLE) as u16;
-        visible.saturating_add(2) // +2 for top/bottom border
-    }
+pub fn composer_hint_height(app: &App) -> u16 {
+    u16::try_from(composer_hint_rows(app).len()).unwrap_or(u16::MAX)
 }
 
-/// Render the autocomplete dropdown as a floating overlay above the input area.
-#[allow(clippy::cast_possible_truncation)]
-pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
+pub fn composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let Some(dropdown) = active_dropdown(app) else {
-        return;
+        return Vec::new();
     };
 
-    let height = compute_height(app);
-    if height == 0 {
-        return;
-    }
-
-    let text_area = input::compute_render_geometry(input_area, input::hint_line_count(app)).text;
-    if text_area.width == 0 || text_area.height == 0 {
-        return;
-    }
-
-    let (trigger_row, trigger_col) = dropdown_trigger(&dropdown);
-    let (anchor_row, anchor_col) =
-        wrapped_visual_pos(app.input.lines(), trigger_row, trigger_col, text_area.width);
-
-    let anchor_x = text_area.x.saturating_add(anchor_col).min(text_area.right().saturating_sub(1));
-    let (x, width) = choose_dropdown_x(anchor_x, text_area.x, text_area.right(), text_area.width);
-    if width == 0 {
-        return;
-    }
-
-    let anchor_y = text_area.y.saturating_add(anchor_row).min(text_area.bottom().saturating_sub(1));
-    let y = choose_dropdown_y(anchor_y, height, frame.area().y, frame.area().bottom());
-
-    let dropdown_area = Rect { x, y, width, height };
     let meta = dropdown_meta(&dropdown);
-    let lines = dropdown_lines(&dropdown, &meta);
-
-    let block = Block::default()
-        .title(Span::styled(meta.title, Style::default().fg(theme::DIM)))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::DIM));
-
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(ratatui::widgets::Clear, dropdown_area);
-    frame.render_widget(paragraph, dropdown_area);
+    with_left_rail(dropdown_lines(&dropdown, &meta))
 }
 
 fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
@@ -121,45 +55,42 @@ fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
     None
 }
 
-fn dropdown_trigger(dropdown: &Dropdown<'_>) -> (usize, usize) {
-    match dropdown {
-        Dropdown::Mention(m) => (m.trigger_row, m.trigger_col),
-        Dropdown::Slash(s) => (s.trigger_row, s.trigger_col),
-        Dropdown::Subagent(s) => (s.trigger_row, s.trigger_col),
-    }
-}
-
 fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
     match dropdown {
         Dropdown::Mention(m) => {
-            let visible_count = m.candidates.len().clamp(1, MAX_VISIBLE);
+            let visible_count = m.candidates.len().clamp(1, AUTOCOMPLETE_VISIBLE_ROWS);
             let (start, end) = if m.candidates.is_empty() {
                 (0, 0)
             } else {
-                m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE)
+                m.dialog.visible_range(m.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS)
             };
-            DropdownMeta { visible_count, start, end, title: " Files & Folders ".to_owned() }
+            DropdownMeta { visible_count, start, end }
         }
         Dropdown::Slash(s) => {
-            let visible_count = s.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
-            let title = match &s.context {
-                slash::SlashContext::CommandName => format!(" Commands ({}) ", s.candidates.len()),
-                slash::SlashContext::Argument { command, .. } => {
-                    format!(" {} Args ({}) ", command, s.candidates.len())
-                }
+            let visible_count = if s.query.is_empty() {
+                1
+            } else {
+                s.candidates.len().min(AUTOCOMPLETE_VISIBLE_ROWS)
             };
-            DropdownMeta { visible_count, start, end, title }
+            let (start, end) = if s.query.is_empty() {
+                (0, 0)
+            } else {
+                s.dialog.visible_range(s.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS)
+            };
+            DropdownMeta { visible_count, start, end }
         }
         Dropdown::Subagent(s) => {
-            let visible_count = s.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
-            DropdownMeta {
-                visible_count,
-                start,
-                end,
-                title: format!(" Subagents ({}) ", s.candidates.len()),
-            }
+            let visible_count = if s.query.is_empty() {
+                1
+            } else {
+                s.candidates.len().min(AUTOCOMPLETE_VISIBLE_ROWS)
+            };
+            let (start, end) = if s.query.is_empty() {
+                (0, 0)
+            } else {
+                s.dialog.visible_range(s.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS)
+            };
+            DropdownMeta { visible_count, start, end }
         }
     }
 }
@@ -177,13 +108,21 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
             }
         }
         Dropdown::Slash(s) => {
-            for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
-                lines.push(slash_candidate_line(s, candidate, meta.start + i));
+            if s.query.is_empty() {
+                lines.push(hint_line("Type a command name after /"));
+            } else {
+                for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
+                    lines.push(slash_candidate_line(s, candidate, meta.start + i));
+                }
             }
         }
         Dropdown::Subagent(s) => {
-            for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
-                lines.push(subagent_candidate_line(s, candidate, meta.start + i));
+            if s.query.is_empty() {
+                lines.push(hint_line("Type a subagent name after &"));
+            } else {
+                for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
+                    lines.push(subagent_candidate_line(s, candidate, meta.start + i));
+                }
             }
         }
     }
@@ -192,7 +131,11 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
 
 fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
     let message = mention.placeholder_message().unwrap_or_default();
-    Line::from(Span::styled(format!("   {message}"), Style::default().fg(theme::DIM)))
+    hint_line(&message)
+}
+
+fn hint_line(message: &str) -> Line<'static> {
+    Line::from(Span::styled(message.to_owned(), Style::default().fg(theme::DIM)))
 }
 
 fn mention_candidate_line(
@@ -206,11 +149,11 @@ fn mention_candidate_line(
     let path = &candidate.rel_path;
     let query = &mention.query;
     if query.is_empty() {
-        spans.push(Span::raw(path.clone()));
+        spans.push(autocomplete_text(path.clone()));
     } else if let Some((match_start, match_end)) = find_case_insensitive_range(path, query) {
         push_highlighted_text(&mut spans, path, match_start, match_end);
     } else {
-        spans.push(Span::raw(path.clone()));
+        spans.push(autocomplete_text(path.clone()));
     }
 
     Line::from(spans)
@@ -225,7 +168,7 @@ fn slash_candidate_line(
     push_selection_prefix(&mut spans, global_idx == slash.dialog.selected);
 
     if slash.query.is_empty() {
-        spans.push(Span::raw(candidate.primary.clone()));
+        spans.push(autocomplete_text(candidate.primary.clone()));
     } else if matches!(slash.context, slash::SlashContext::CommandName) {
         let command_name = &candidate.primary;
         let command_body = command_name.strip_prefix('/').unwrap_or(command_name);
@@ -237,14 +180,14 @@ fn slash_candidate_line(
             let end_idx = prefix_len + match_end;
             push_highlighted_text(&mut spans, command_name, start_idx, end_idx);
         } else {
-            spans.push(Span::raw(command_name.clone()));
+            spans.push(autocomplete_text(command_name.clone()));
         }
     } else if let Some((match_start, match_end)) =
         find_case_insensitive_range(&candidate.primary, &slash.query)
     {
         push_highlighted_text(&mut spans, &candidate.primary, match_start, match_end);
     } else {
-        spans.push(Span::raw(candidate.primary.clone()));
+        spans.push(autocomplete_text(candidate.primary.clone()));
     }
 
     if let Some(secondary) = &candidate.secondary {
@@ -265,13 +208,13 @@ fn subagent_candidate_line(
 
     let primary = format!("&{}", candidate.name);
     if subagent.query.is_empty() {
-        spans.push(Span::raw(primary));
+        spans.push(autocomplete_text(primary));
     } else if let Some((match_start, match_end)) =
         find_case_insensitive_range(&candidate.name, &subagent.query)
     {
         push_highlighted_text(&mut spans, &primary, match_start + 1, match_end + 1);
     } else {
-        spans.push(Span::raw(primary));
+        spans.push(autocomplete_text(primary));
     }
 
     let secondary = match (&candidate.description, &candidate.model) {
@@ -291,12 +234,38 @@ fn subagent_candidate_line(
 fn push_selection_prefix(spans: &mut Vec<Span<'static>>, is_selected: bool) {
     if is_selected {
         spans.push(Span::styled(
-            " \u{25b8} ",
+            "> ",
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ));
     } else {
-        spans.push(Span::raw("   "));
+        spans.push(Span::raw("  "));
     }
+}
+
+fn autocomplete_text(content: String) -> Span<'static> {
+    Span::styled(content, Style::default().fg(theme::DIM))
+}
+
+fn with_left_rail(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let line_count = lines.len();
+    let pipe_style = Style::default().fg(theme::DIM);
+
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let prefix = if line_count == 1 || i + 1 == line_count {
+                "  \u{2514}\u{2500} "
+            } else if i == 0 {
+                "  \u{250c}\u{2500} "
+            } else {
+                "  \u{2502}  "
+            };
+            let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -354,203 +323,173 @@ fn push_highlighted_text(
     let after = &text[match_end..];
 
     if !before.is_empty() {
-        spans.push(Span::raw(before.to_owned()));
+        spans.push(autocomplete_text(before.to_owned()));
     }
     spans.push(Span::styled(
         matched.to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ));
     if !after.is_empty() {
-        spans.push(Span::raw(after.to_owned()));
+        spans.push(autocomplete_text(after.to_owned()));
     }
-}
-
-fn choose_dropdown_x(
-    anchor_x: u16,
-    area_left: u16,
-    area_right: u16,
-    text_area_width: u16,
-) -> (u16, u16) {
-    if area_right <= area_left || text_area_width == 0 {
-        return (area_left, 0);
-    }
-
-    let preferred_width = text_area_width.clamp(1, MAX_WIDTH);
-    let width =
-        if text_area_width >= MIN_WIDTH { preferred_width.max(MIN_WIDTH) } else { preferred_width };
-
-    let anchor_x = anchor_x.clamp(area_left, area_right.saturating_sub(1));
-    let mut x = anchor_x;
-    if x.saturating_add(width) > area_right {
-        x = area_right.saturating_sub(width);
-    }
-    x = x.max(area_left);
-
-    (x, width)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn wrapped_visual_pos(
-    lines: &[String],
-    target_row: usize,
-    target_col: usize,
-    width: u16,
-) -> (u16, u16) {
-    let width = width as usize;
-    if width == 0 {
-        return (0, 0);
-    }
-
-    let mut visual_row: u16 = 0;
-    for (row, line) in lines.iter().enumerate() {
-        let mut col_width: usize = 0;
-        let mut char_idx: usize = 0;
-
-        if row == target_row && target_col == 0 {
-            return (visual_row, 0);
-        }
-
-        for ch in line.chars() {
-            if row == target_row && char_idx == target_col {
-                return (visual_row, col_width as u16);
-            }
-
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if w > 0 && col_width + w > width && col_width > 0 {
-                visual_row = visual_row.saturating_add(1);
-                col_width = 0;
-            }
-
-            if w > width && col_width == 0 {
-                visual_row = visual_row.saturating_add(1);
-                char_idx += 1;
-                continue;
-            }
-
-            if w > 0 {
-                col_width += w;
-            }
-            char_idx += 1;
-        }
-
-        if row == target_row && char_idx == target_col {
-            if col_width >= width {
-                return (visual_row.saturating_add(1), 0);
-            }
-            return (visual_row, col_width as u16);
-        }
-
-        visual_row = visual_row.saturating_add(1);
-    }
-
-    (visual_row, 0)
-}
-
-fn choose_dropdown_y(anchor_y: u16, height: u16, frame_top: u16, frame_bottom: u16) -> u16 {
-    if height == 0 || frame_bottom <= frame_top {
-        return frame_top;
-    }
-
-    let below_y = anchor_y.saturating_add(1).saturating_add(ANCHOR_VERTICAL_GAP);
-    let rows_below_with_gap = frame_bottom.saturating_sub(below_y);
-    let fits_below_with_gap = height <= rows_below_with_gap;
-
-    let above_y = anchor_y.saturating_sub(height.saturating_add(ANCHOR_VERTICAL_GAP));
-    let rows_above_with_gap =
-        anchor_y.saturating_sub(frame_top.saturating_add(ANCHOR_VERTICAL_GAP));
-    let fits_above_with_gap = height <= rows_above_with_gap;
-
-    let mut y = if fits_below_with_gap {
-        below_y
-    } else if fits_above_with_gap {
-        above_y
-    } else if rows_below_with_gap >= rows_above_with_gap {
-        anchor_y.saturating_add(1)
-    } else {
-        anchor_y.saturating_sub(height)
-    };
-
-    let max_y = frame_bottom.saturating_sub(height);
-    y = y.clamp(frame_top, max_y);
-
-    let overlaps_anchor = y <= anchor_y && anchor_y < y.saturating_add(height);
-    if overlaps_anchor {
-        let can_place_below = anchor_y.saturating_add(1).saturating_add(height) <= frame_bottom;
-        let can_place_above = frame_top.saturating_add(height) <= anchor_y;
-        if can_place_below {
-            y = anchor_y.saturating_add(1);
-        } else if can_place_above {
-            y = anchor_y.saturating_sub(height);
-        }
-    }
-
-    y.clamp(frame_top, max_y)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        choose_dropdown_x, choose_dropdown_y, compute_height, find_case_insensitive_range,
-        is_active,
-    };
-    use crate::app::{App, mention};
+    use super::{composer_hint_height, composer_hint_rows, find_case_insensitive_range, is_active};
+    use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, file_index, mention, slash, subagent};
+    use crate::ui::theme;
+    use std::time::SystemTime;
 
-    #[test]
-    fn dropdown_keeps_preferred_width_and_shifts_left_near_right_edge() {
-        let (x, width) = choose_dropdown_x(78, 0, 80, 80);
-        assert_eq!((x, width), (20, 60));
-    }
-
-    #[test]
-    fn dropdown_handles_tiny_area_by_shrinking_width() {
-        let (x, width) = choose_dropdown_x(7, 5, 10, 5);
-        assert_eq!((x, width), (5, 5));
-    }
-
-    #[test]
-    fn dropdown_keeps_anchor_when_room_is_available() {
-        let (x, width) = choose_dropdown_x(12, 0, 80, 80);
-        assert_eq!((x, width), (12, 60));
-    }
-
-    #[test]
-    fn dropdown_prefers_below_with_gap_when_space_available() {
-        let y = choose_dropdown_y(10, 4, 0, 30);
-        assert_eq!(y, 12);
-    }
-
-    #[test]
-    fn dropdown_uses_above_with_gap_when_below_too_small() {
-        let y = choose_dropdown_y(9, 6, 0, 12);
-        assert_eq!(y, 2);
-    }
-
-    #[test]
-    fn dropdown_does_not_cover_anchor_row_when_possible() {
-        let anchor = 5;
-        let height = 5;
-        let y = choose_dropdown_y(anchor, height, 0, 11);
-        assert!(!(y <= anchor && anchor < y + height));
+    fn line_text(line: &ratatui::text::Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
     #[test]
     fn case_insensitive_range_respects_utf8_boundaries() {
-        let haystack = "İstanbul";
+        let haystack = "\u{0130}stanbul";
         let (start, end) =
             find_case_insensitive_range(haystack, "i").expect("case-insensitive match");
         assert!(haystack.is_char_boundary(start));
         assert!(haystack.is_char_boundary(end));
-        assert_eq!(&haystack[start..end], "İ");
+        assert_eq!(&haystack[start..end], "\u{0130}");
     }
 
     #[test]
-    fn empty_mention_still_renders_placeholder_dropdown() {
+    fn empty_mention_renders_single_placeholder_row() {
         let mut app = App::test_default();
         app.input.set_text("@");
         let _ = app.input.set_cursor(0, 1);
         mention::activate(&mut app);
 
+        let rows = composer_hint_rows(&app);
+
         assert!(is_active(&app));
-        assert_eq!(compute_height(&app), 3);
+        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a file or folder name after @");
+    }
+
+    #[test]
+    fn bare_slash_renders_single_placeholder_row() {
+        let mut app = App::test_default();
+        app.input.set_text("/");
+        let _ = app.input.set_cursor(0, 1);
+        slash::sync_with_cursor(&mut app);
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a command name after /");
+    }
+
+    #[test]
+    fn bare_subagent_trigger_renders_single_placeholder_row() {
+        let mut app = App::test_default();
+        app.available_agents =
+            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+        app.input.set_text("&");
+        let _ = app.input.set_cursor(0, 1);
+        subagent::sync_with_cursor(&mut app);
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a subagent name after &");
+    }
+
+    #[test]
+    fn mention_uses_result_count_when_below_max_height() {
+        let mut app = App::test_default();
+        app.mention = Some(mention::MentionState::new(
+            0,
+            0,
+            "rs".to_owned(),
+            vec![
+                file_index::FileCandidate {
+                    rel_path: "src/main.rs".to_owned(),
+                    rel_path_lower: "src/main.rs".to_owned(),
+                    basename_lower: "main.rs".to_owned(),
+                    depth: 1,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: false,
+                },
+                file_index::FileCandidate {
+                    rel_path: "src/lib.rs".to_owned(),
+                    rel_path_lower: "src/lib.rs".to_owned(),
+                    basename_lower: "lib.rs".to_owned(),
+                    depth: 1,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: false,
+                },
+            ],
+        ));
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(composer_hint_height(&app), 2);
+        assert_eq!(rows.len(), 2);
+        assert!(line_text(&rows[0]).starts_with("  \u{250c}\u{2500} "));
+        assert!(line_text(&rows[1]).starts_with("  \u{2514}\u{2500} "));
+        assert!(line_text(&rows[0]).contains("src/main.rs"));
+        assert!(line_text(&rows[1]).contains("src/lib.rs"));
+    }
+
+    #[test]
+    fn slash_rows_use_shared_five_row_max_window() {
+        let mut app = App::test_default();
+        app.input.set_text("/");
+        let _ = app.input.set_cursor(0, 1);
+        slash::sync_with_cursor(&mut app);
+        let state = app.slash.as_mut().expect("slash autocomplete");
+        state.query = "cmd".to_owned();
+        state.candidates = (0..8)
+            .map(|i| slash::SlashCandidate {
+                insert_value: format!("/cmd{i}"),
+                primary: format!("/cmd{i}"),
+                secondary: None,
+            })
+            .collect();
+        state.dialog.selected = 6;
+        state.dialog.scroll_offset = 2;
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), AUTOCOMPLETE_VISIBLE_ROWS);
+        assert!(line_text(&rows[0]).starts_with("  \u{250c}\u{2500} "));
+        assert!(line_text(&rows[1]).starts_with("  \u{2502}  "));
+        assert!(line_text(&rows[4]).starts_with("  \u{2514}\u{2500} "));
+        assert!(line_text(&rows[0]).contains("/cmd2"));
+        assert!(line_text(&rows[4]).contains("/cmd6"));
+        assert!(line_text(&rows[4]).contains("> /cmd6"));
+    }
+
+    #[test]
+    fn autocomplete_candidate_text_uses_dim_style() {
+        let mut app = App::test_default();
+        app.mention = Some(mention::MentionState::new(
+            0,
+            0,
+            String::new(),
+            vec![file_index::FileCandidate {
+                rel_path: "src/main.rs".to_owned(),
+                rel_path_lower: "src/main.rs".to_owned(),
+                basename_lower: "main.rs".to_owned(),
+                depth: 1,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }],
+        ));
+
+        let rows = composer_hint_rows(&app);
+
+        let path_span = rows[0]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "src/main.rs")
+            .expect("candidate path span");
+        assert_eq!(path_span.style.fg, Some(theme::DIM));
     }
 }

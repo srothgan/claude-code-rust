@@ -1,10 +1,8 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{App, FocusTarget, dialog::DialogState};
+use super::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget, dialog::DialogState};
 
-/// Maximum candidates shown in the dropdown.
-pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
 
 #[derive(Debug, Clone)]
@@ -158,7 +156,7 @@ pub fn update_query(app: &mut App) {
         subagent.trigger_col = next_state.trigger_col;
         subagent.query = next_state.query;
         subagent.candidates = next_state.candidates;
-        subagent.dialog.clamp(subagent.candidates.len(), MAX_VISIBLE);
+        subagent.dialog.clamp(subagent.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     } else {
         app.subagent = Some(next_state);
         app.claim_focus_target(FocusTarget::Mention);
@@ -183,13 +181,13 @@ pub fn deactivate(app: &mut App) {
 
 pub fn move_up(app: &mut App) {
     if let Some(ref mut subagent) = app.subagent {
-        subagent.dialog.move_up(subagent.candidates.len(), MAX_VISIBLE);
+        subagent.dialog.move_up(subagent.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 
 pub fn move_down(app: &mut App) {
     if let Some(ref mut subagent) = app.subagent {
-        subagent.dialog.move_down(subagent.candidates.len(), MAX_VISIBLE);
+        subagent.dialog.move_down(subagent.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
 

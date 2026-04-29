@@ -13,6 +13,7 @@ use crate::app::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, handle_inline_interaction_key,
 };
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
+use crate::app::state::AutocompleteKind;
 use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
@@ -268,10 +269,12 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 
     if app.input.version != input_version_before {
         app.sync_help_open_with_input();
-        mention::deactivate(app);
-        slash::deactivate(app);
-        subagent::deactivate(app);
-        app.release_focus_target(FocusTarget::Mention);
+    }
+
+    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
+        mention::sync_with_cursor(app);
+        slash::sync_with_cursor(app);
+        subagent::sync_with_cursor(app);
     }
 
     sync_help_focus(app);
@@ -769,6 +772,30 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     (app.input.cursor_row(), app.input.cursor_col()) != before
 }
 
+fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
+    if app.focus_owner() == FocusOwner::TodoList {
+        return false;
+    }
+
+    match (key.code, key.modifiers) {
+        (
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Enter,
+            _,
+        ) => true,
+        (KeyCode::Char('z' | 'y'), m) if m == KeyModifiers::CONTROL => true,
+        (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
+        _ => false,
+    }
+}
+
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
     if app.todos.is_empty() {
         app.show_todo_panel = false;
@@ -810,11 +837,13 @@ pub(super) fn move_todo_selection_down(app: &mut App) {
 
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
-    mention::deactivate(app);
-    slash::deactivate(app);
-    subagent::deactivate(app);
-    app.release_focus_target(FocusTarget::Mention);
-    handle_normal_key(app, key)
+    match app.active_autocomplete_kind() {
+        Some(AutocompleteKind::Mention) => return handle_mention_key(app, key),
+        Some(AutocompleteKind::Slash) => return handle_slash_key(app, key),
+        Some(AutocompleteKind::Subagent) => return handle_subagent_key(app, key),
+        None => {}
+    }
+    dispatch_key_by_focus(app, key)
 }
 
 fn handle_help_key(app: &mut App, key: KeyEvent) -> bool {
@@ -924,15 +953,21 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) => {
-            slash::move_up(app);
+            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+                slash::move_up(app);
+            }
             true
         }
         (KeyCode::Down, _) => {
-            slash::move_down(app);
+            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+                slash::move_down(app);
+            }
             true
         }
         (KeyCode::Enter | KeyCode::Tab, _) => {
-            slash::confirm_selection(app);
+            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+                slash::confirm_selection(app);
+            }
             true
         }
         (KeyCode::Esc, _) => {
@@ -960,15 +995,21 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) => {
-            subagent::move_up(app);
+            if app.subagent.as_ref().is_some_and(|subagent| !subagent.query.is_empty()) {
+                subagent::move_up(app);
+            }
             true
         }
         (KeyCode::Down, _) => {
-            subagent::move_down(app);
+            if app.subagent.as_ref().is_some_and(|subagent| !subagent.query.is_empty()) {
+                subagent::move_down(app);
+            }
             true
         }
         (KeyCode::Enter | KeyCode::Tab, _) => {
-            subagent::confirm_selection(app);
+            if app.subagent.as_ref().is_some_and(|subagent| !subagent.query.is_empty()) {
+                subagent::confirm_selection(app);
+            }
             true
         }
         (KeyCode::Esc, _) => {
@@ -1031,6 +1072,54 @@ mod tests {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         );
         assert!(blocked);
+    }
+
+    #[test]
+    fn autocomplete_focus_routes_keys_to_active_slash_state() {
+        let mut app = App::test_default();
+        app.slash = Some(slash::SlashState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: "d".to_owned(),
+            context: slash::SlashContext::CommandName,
+            candidates: vec![
+                slash::SlashCandidate {
+                    insert_value: "/config".to_owned(),
+                    primary: "/config".to_owned(),
+                    secondary: None,
+                },
+                slash::SlashCandidate {
+                    insert_value: "/docs".to_owned(),
+                    primary: "/docs".to_owned(),
+                    secondary: None,
+                },
+            ],
+            dialog: DialogState::default(),
+        });
+        app.claim_focus_target(FocusTarget::Mention);
+
+        let handled =
+            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+        assert!(handled);
+        let slash = app.slash.as_ref().expect("slash autocomplete should stay active");
+        assert_eq!(slash.dialog.selected, 1);
+    }
+
+    #[test]
+    fn bare_slash_enter_does_not_confirm_hidden_candidate() {
+        let mut app = App::test_default();
+        app.input.set_text("/");
+        let _ = app.input.set_cursor(0, 1);
+        slash::sync_with_cursor(&mut app);
+        app.claim_focus_target(FocusTarget::Mention);
+
+        let handled =
+            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(handled);
+        assert_eq!(app.input.text(), "/");
+        assert!(app.slash.is_some());
     }
 
     #[test]

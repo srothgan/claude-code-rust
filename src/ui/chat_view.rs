@@ -1,9 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{
-    autocomplete, chat, composer_measure, footer, help, input, input_rows, layout, theme, todo,
-};
+use super::{chat, composer_measure, footer, help, input, input_rows, layout, theme, todo};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -54,11 +52,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
         input::render(frame, areas.input, app);
-    }
-
-    if autocomplete::is_active(app) {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
-        autocomplete::render(frame, areas.input, app);
     }
 
     render_separator(frame, areas.input_bottom_sep);

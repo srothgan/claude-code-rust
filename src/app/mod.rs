@@ -39,6 +39,8 @@ mod update_check;
 pub(crate) mod usage;
 mod view;
 
+pub(crate) const AUTOCOMPLETE_VISIBLE_ROWS: usize = 5;
+
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use cache_policy::{
     CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,

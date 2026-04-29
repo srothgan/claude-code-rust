@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tui_textarea::TextArea;
 
-use super::input_rows;
+use super::{autocomplete, input_rows};
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -65,14 +65,16 @@ fn has_cancel_hint(app: &App) -> bool {
 fn has_prompt_suggestion_hint(app: &App) -> bool {
     app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
+        && !autocomplete::is_active(app)
         && app.prompt_suggestion.as_deref().is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
 
 pub(crate) fn hint_line_count(app: &App) -> u16 {
     let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
     let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
+    let autocomplete = autocomplete::composer_hint_height(app);
     let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
-    login + cancel + suggestion
+    login + cancel + autocomplete + suggestion
 }
 
 pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
@@ -109,7 +111,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let geometry = compute_render_geometry(area, hint_lines);
 
     if let Some(hint_pad) = geometry.hint_pad {
-        let hint_rows = input_rows::build_input_hint_rows(app);
+        let hint_rows = input_rows::build_composer_hint_rows(app);
         if !hint_rows.is_empty() {
             frame.render_widget(Paragraph::new(hint_rows), hint_pad);
         }
@@ -351,6 +353,16 @@ mod tests {
         let mut app = App::test_default();
         app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+    }
+
+    #[test]
+    fn visual_line_count_includes_autocomplete_hint_rows() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        crate::app::mention::activate(&mut app);
+
+        assert_eq!(visual_line_count(&mut app, 80), 2);
     }
 
     #[test]
