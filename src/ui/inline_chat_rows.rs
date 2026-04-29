@@ -331,6 +331,9 @@ fn serialize_compact_welcome_entry(
 }
 
 fn uncommitted_live_welcome_entry(app: &App) -> Option<WelcomeTranscriptEntry> {
+    if !app.show_session_overview {
+        return None;
+    }
     if inline_output_contains_welcome(&app.handoff_shadow.inline_output) {
         return None;
     }

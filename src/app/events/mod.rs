@@ -445,6 +445,8 @@ mod tests {
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::agent::events::TerminalProcess;
+    use crate::app::handoff::projection::InlineOutputItemKind;
+    use crate::app::handoff::types::{AssistantCommittedUnit, TranscriptEntry};
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, FullscreenView,
@@ -852,6 +854,41 @@ mod tests {
 
     fn test_current_model(model_name: &str) -> model::CurrentModel {
         model::CurrentModel::new(model_name, model_name, model_name).authoritative(true)
+    }
+
+    fn inline_transcript_entries(app: &App) -> Vec<&TranscriptEntry> {
+        app.handoff_shadow
+            .inline_output
+            .items()
+            .iter()
+            .filter_map(|item| match &item.kind {
+                InlineOutputItemKind::Transcript { entry, .. } => Some(entry),
+                InlineOutputItemKind::AssistantLive { .. } => None,
+            })
+            .collect()
+    }
+
+    fn inline_transcript_contains_text(app: &App, expected: &str) -> bool {
+        inline_transcript_entries(app).iter().any(|entry| match entry {
+            TranscriptEntry::User(user) => user.blocks.iter().any(|block| match block {
+                crate::app::handoff::types::UserTranscriptBlock::Text(text) => text == expected,
+                crate::app::handoff::types::UserTranscriptBlock::ImageAttachment { .. } => false,
+            }),
+            TranscriptEntry::AssistantOpen(assistant)
+            | TranscriptEntry::AssistantContinue(assistant) => match &assistant.unit {
+                AssistantCommittedUnit::Text(text) => text.text == expected,
+                AssistantCommittedUnit::Notice(notice) => notice.text == expected,
+                AssistantCommittedUnit::Tool(_) => false,
+            },
+            TranscriptEntry::System(system) => system.text == expected,
+            TranscriptEntry::Welcome(_) => false,
+        })
+    }
+
+    fn inline_transcript_has_welcome(app: &App) -> bool {
+        inline_transcript_entries(app)
+            .iter()
+            .any(|entry| matches!(entry, TranscriptEntry::Welcome(_)))
     }
 
     fn connected_event(model_name: &str) -> ClientEvent {
@@ -2013,6 +2050,41 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.subscription, "Claude Max");
+        assert!(inline_transcript_has_welcome(&app));
+    }
+
+    #[test]
+    fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed() {
+        let mut app = make_test_app();
+        app.show_session_overview = false;
+        app.messages.push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "session-1",
+        ));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "session-1".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Claude Max".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.subscription, "Claude Max");
+        assert!(!inline_transcript_has_welcome(&app));
     }
 
     #[test]
@@ -2498,6 +2570,79 @@ mod tests {
             panic!("expected user text block");
         };
         assert_eq!(user_text.text, "first user line");
+        assert!(inline_transcript_contains_text(&app, "first user line"));
+        assert!(inline_transcript_contains_text(&app, "assistant reply"));
+        assert!(!inline_transcript_has_welcome(&app));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "active-456".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Claude Max".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+
+        assert!(!inline_transcript_has_welcome(&app));
+    }
+
+    #[test]
+    fn startup_resume_history_rebuilds_inline_transcript_projection() {
+        let mut app = make_test_app();
+        let history_updates = vec![
+            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("startup user line")),
+            )),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("startup assistant reply")),
+            )),
+        ];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("startup-resume"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates,
+            },
+        );
+
+        assert!(inline_transcript_contains_text(&app, "startup user line"));
+        assert!(inline_transcript_contains_text(&app, "startup assistant reply"));
+        assert!(!inline_transcript_has_welcome(&app));
+        assert!(
+            !app.handoff_shadow
+                .inline_output
+                .items()
+                .iter()
+                .any(|item| matches!(item.kind, InlineOutputItemKind::AssistantLive { .. }))
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "startup-resume".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Claude Max".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+
+        assert!(!inline_transcript_has_welcome(&app));
     }
 
     #[test]

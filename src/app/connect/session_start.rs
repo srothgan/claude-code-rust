@@ -155,10 +155,11 @@ fn log_session_request(
 }
 
 pub(crate) fn start_new_session(
-    app: &App,
+    app: &mut App,
     conn: &AgentConnection,
     reason: SessionStartReason,
 ) -> anyhow::Result<()> {
+    app.show_session_overview = true;
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
     conn.new_session(app.cwd_raw.clone(), launch_settings)
@@ -184,6 +185,7 @@ pub(crate) fn begin_resume_session(
     session_id: String,
 ) -> anyhow::Result<()> {
     app.resuming_session_id = Some(session_id.clone());
+    app.show_session_overview = false;
     resume_session(app, conn, session_id)
 }
 

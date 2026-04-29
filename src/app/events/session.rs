@@ -246,10 +246,10 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         outcome = "success",
     );
 
-    if let Some(ref conn) = app.conn {
+    if let Some(conn) = app.conn.clone() {
         app.pending_command_label = Some("Starting session...".to_owned());
         app.pending_command_ack = None;
-        if let Err(e) = start_new_session(app, conn, SessionStartReason::Logout) {
+        if let Err(e) = start_new_session(app, &conn, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
                 event_name = "logout_session_restart_failed",

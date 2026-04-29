@@ -78,6 +78,28 @@ pub(crate) fn clear_shadow_state(shadow: &mut HandoffShadowState) {
     *shadow = HandoffShadowState::default();
 }
 
+pub(crate) fn rebuild_inline_output_from_messages(app: &mut App) {
+    let transcript_entries = app
+        .messages
+        .iter()
+        .enumerate()
+        .filter_map(|(msg_idx, message)| {
+            if !app.show_session_overview && matches!(message.role, MessageRole::Welcome) {
+                return None;
+            }
+            let entries = transcript_entries_from_message(message);
+            (!entries.is_empty()).then_some((msg_idx, entries))
+        })
+        .collect::<Vec<_>>();
+
+    clear_shadow_state(&mut app.handoff_shadow);
+    for (msg_idx, entries) in transcript_entries {
+        app.handoff_shadow.inline_output.record_message_transcript_entries(msg_idx, entries);
+    }
+    app.reset_committed_output_tracking();
+    app.mark_committed_output_changed();
+}
+
 pub(crate) fn sync_live_indicator(
     shadow: &mut HandoffShadowState,
     indicator: Option<LiveAssistantIndicator>,

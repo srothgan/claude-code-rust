@@ -162,6 +162,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 }
 
 pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
+    app.show_session_overview = false;
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
@@ -182,11 +183,10 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
-    crate::app::handoff::shadow::clear_shadow_state(&mut app.handoff_shadow);
     app.enforce_history_retention_tracked();
+    crate::app::handoff::shadow::rebuild_inline_output_from_messages(app);
     app.viewport = super::super::ChatViewport::new();
     app.viewport.engage_auto_scroll();
-    app.reset_committed_output_tracking();
 }
 
 #[cfg(test)]

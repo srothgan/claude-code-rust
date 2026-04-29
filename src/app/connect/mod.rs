@@ -143,6 +143,10 @@ pub fn create_app(cli: &Cli) -> App {
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
+        show_session_overview: !matches!(
+            &cli.command,
+            Some(Command::Resume { session_id: Some(_) })
+        ),
         pending_command_label: None,
         pending_command_ack: None,
         should_quit: false,

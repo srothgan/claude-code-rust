@@ -144,6 +144,8 @@ pub struct App {
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
     pub resuming_session_id: Option<String>,
+    /// Whether the synthetic session overview is eligible for chat transcript output.
+    pub show_session_overview: bool,
     /// Spinner label shown while a slash command is in flight (`CommandPending`).
     pub pending_command_label: Option<String>,
     /// Ack marker required to clear `CommandPending` for strict completion semantics.
@@ -545,6 +547,7 @@ impl App {
                 !crate::app::handoff::shadow::transcript_entries_from_message(first).is_empty()
             });
             if !previously_committable
+                && self.show_session_overview
                 && now_committable
                 && let Some(first) = self.messages.first()
             {
@@ -855,6 +858,7 @@ impl App {
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
+            show_session_overview: true,
             pending_command_label: None,
             pending_command_ack: None,
             should_quit: false,
