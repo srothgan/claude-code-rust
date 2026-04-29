@@ -92,7 +92,6 @@ pub fn set_active_view(app: &mut App, next: ActiveView) {
 
 fn clear_transient_view_state(app: &mut App) {
     app.selection = None;
-    app.scrollbar_drag = None;
     app.active_paste_session = None;
     app.pending_paste_session = None;
     app.pending_paste_text.clear();

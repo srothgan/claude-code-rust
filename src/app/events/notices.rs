@@ -34,7 +34,6 @@ pub(super) fn upsert_turn_notice(
         TurnNoticeLocation::Inline { msg_idx, block_idx } => {
             if update_inline_notice(app, msg_idx, block_idx, &dedup_key, severity, message) {
                 app.turn_notice_refs[existing_ref_idx].stage = stage;
-                app.viewport.engage_auto_scroll();
                 return;
             }
             app.turn_notice_refs.remove(existing_ref_idx);
@@ -52,7 +51,6 @@ pub(super) fn upsert_turn_notice(
 
             if update_standalone_notice(app, msg_idx, &dedup_key, severity, message) {
                 app.turn_notice_refs[existing_ref_idx].stage = stage;
-                app.viewport.engage_auto_scroll();
                 return;
             }
 
@@ -99,7 +97,6 @@ fn insert_inline_notice(
         stage,
         location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
     });
-    app.viewport.engage_auto_scroll();
     if let Some(MessageBlock::Notice(notice)) =
         app.messages.get(owner_idx).and_then(|message| message.blocks.get(block_idx))
     {
@@ -136,7 +133,6 @@ fn insert_standalone_notice(
         stage,
         location: TurnNoticeLocation::Standalone { msg_idx },
     });
-    app.viewport.engage_auto_scroll();
 }
 
 fn update_inline_notice(

@@ -40,7 +40,7 @@ impl MessageRows {
         if height == 0 {
             return;
         }
-        self.segments.push(MessageRowSegment::Lines { lines, height });
+        self.segments.push(MessageRowSegment::Lines { lines });
         self.height += height;
         self.wrapped_lines += wrapped_lines;
     }
@@ -49,7 +49,7 @@ impl MessageRows {
 #[derive(Clone)]
 pub(crate) enum MessageRowSegment {
     Blank,
-    Lines { lines: Vec<Line<'static>>, height: usize },
+    Lines { lines: Vec<Line<'static>> },
 }
 
 pub(crate) struct RenderedBlockLayout {
@@ -347,17 +347,6 @@ fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
     Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
 }
 
-#[cfg(test)]
-pub(crate) fn rendered_segment_height(segments: &[MessageRowSegment]) -> usize {
-    segments
-        .iter()
-        .map(|segment| match segment {
-            MessageRowSegment::Blank => 1,
-            MessageRowSegment::Lines { height, .. } => *height,
-        })
-        .sum()
-}
-
 fn welcome_block_layout(block: &mut crate::app::WelcomeBlock, width: u16) -> RenderedBlockLayout {
     let had_height = block.cache.height_at(width).is_some();
     let mut lines = Vec::new();
@@ -505,7 +494,7 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_message_rows, rendered_segment_height};
+    use super::build_message_rows;
     use crate::agent::model;
     use crate::app::{
         BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, NoticeBlock,
@@ -543,7 +532,7 @@ mod tests {
         for segment in &rows.segments {
             match segment {
                 super::MessageRowSegment::Blank => out.push(String::new()),
-                super::MessageRowSegment::Lines { lines, .. } => {
+                super::MessageRowSegment::Lines { lines } => {
                     out.extend(lines.iter().map(line_text));
                 }
             }
@@ -617,7 +606,7 @@ mod tests {
             .segments
             .iter()
             .find_map(|segment| match segment {
-                super::MessageRowSegment::Lines { lines, .. } => lines.iter().find(|line| {
+                super::MessageRowSegment::Lines { lines } => lines.iter().find(|line| {
                     line.spans.iter().any(|span| span.content.as_ref().contains("Warning inline"))
                 }),
                 super::MessageRowSegment::Blank => None,
@@ -754,16 +743,5 @@ mod tests {
             .expect("child");
 
         assert!(child_idx > task_idx);
-    }
-
-    #[test]
-    fn message_rows_height_matches_segment_sum() {
-        let mut msg = assistant_message(vec![
-            MessageBlock::Text(TextBlock::from_complete("alpha")),
-            make_tool("tool-1", "Read", false, None),
-        ]);
-
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
-        assert_eq!(rows.height, rendered_segment_height(&rows.segments));
     }
 }

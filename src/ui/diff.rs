@@ -30,16 +30,11 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     // instead of the full file content.
     let udiff = text_diff.unified_diff();
     for hunk in udiff.iter_hunks() {
-        // Extract the @@ header from the hunk's Display output (first line).
-        let hunk_str = hunk.to_string();
-        if let Some(header) = hunk_str.lines().next()
-            && header.starts_with("@@")
-        {
-            lines.push(Line::from(Span::styled(
-                format_compact_hunk_header(header),
-                Style::default().fg(Color::Cyan),
-            )));
-        }
+        let header = hunk.header().to_string();
+        lines.push(Line::from(Span::styled(
+            format_compact_hunk_header(&header),
+            Style::default().fg(Color::Cyan),
+        )));
 
         for change in hunk.iter_changes() {
             let value = change.as_str().unwrap_or("").trim_end_matches('\n');

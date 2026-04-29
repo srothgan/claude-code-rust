@@ -6,7 +6,6 @@ use super::tool_call_info::ToolCallInfo;
 use super::types::MessageUsage;
 use ratatui::style::Color;
 use ratatui::text::Line;
-use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -16,13 +15,12 @@ pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
     pub usage: Option<MessageUsage>,
-    pub render_cache: MessageRenderCache,
 }
 
 impl ChatMessage {
     #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
+        Self { role, blocks, usage }
     }
 
     #[must_use]
@@ -39,157 +37,6 @@ impl ChatMessage {
             })],
             None,
         )
-    }
-
-    pub fn invalidate_render_cache(&mut self) {
-        self.render_cache.invalidate();
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageRenderCacheKey {
-    pub width: u16,
-    pub layout_generation: u64,
-    pub include_trailing_separator: bool,
-    pub render_signature: MessageRenderSignature,
-}
-
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageRenderSignature {
-    pub role: MessageRole,
-    pub show_empty_thinking: bool,
-    pub show_thinking: bool,
-    pub show_compacting: bool,
-    pub assistant_frame: Option<usize>,
-    pub blocks: Vec<MessageBlockRenderSignature>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageBlockRenderSignature {
-    Text {
-        text_hash: u64,
-        trailing_spacing: TextBlockSpacing,
-    },
-    Notice {
-        severity: SystemSeverity,
-        text_hash: u64,
-        trailing_spacing: TextBlockSpacing,
-    },
-    ToolCall {
-        render_epoch: u64,
-        layout_epoch: u64,
-        hidden: bool,
-        status: crate::agent::model::ToolCallStatus,
-        sdk_tool_name: String,
-        current_mode_id: Option<String>,
-        pending_permission: bool,
-        pending_question: bool,
-        frame: Option<usize>,
-    },
-    Welcome {
-        content_hash: u64,
-    },
-    ImageAttachment {
-        count: usize,
-    },
-}
-
-#[derive(Default)]
-pub struct MessageRenderCache {
-    key: Option<MessageRenderCacheKey>,
-    segments: Vec<CachedMessageSegment>,
-    cached_bytes: usize,
-    height: usize,
-    wrapped_lines: usize,
-    last_access_tick: Cell<u64>,
-}
-
-#[derive(Clone)]
-pub enum CachedMessageSegment {
-    Blank,
-    Lines { lines: Vec<Line<'static>>, height: usize },
-}
-
-impl MessageRenderCache {
-    fn touch(&self) {
-        self.last_access_tick.set(super::block_cache::next_cache_access_tick());
-    }
-
-    #[must_use]
-    pub fn matches(&self, key: &MessageRenderCacheKey) -> bool {
-        self.key.as_ref() == Some(key)
-    }
-
-    #[must_use]
-    pub fn segments(&self) -> &[CachedMessageSegment] {
-        self.touch();
-        &self.segments
-    }
-
-    #[must_use]
-    pub fn height(&self) -> usize {
-        self.touch();
-        self.height
-    }
-
-    #[must_use]
-    pub fn wrapped_lines(&self) -> usize {
-        self.touch();
-        self.wrapped_lines
-    }
-
-    #[must_use]
-    pub fn cached_bytes(&self) -> usize {
-        self.cached_bytes
-    }
-
-    #[must_use]
-    pub fn last_access_tick(&self) -> u64 {
-        self.last_access_tick.get()
-    }
-
-    pub fn store(
-        &mut self,
-        key: MessageRenderCacheKey,
-        segments: Vec<CachedMessageSegment>,
-        height: usize,
-        wrapped_lines: usize,
-    ) {
-        let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
-        self.key = Some(key);
-        self.segments = segments;
-        self.cached_bytes = cached_bytes;
-        self.height = height;
-        self.wrapped_lines = wrapped_lines;
-        self.touch();
-    }
-
-    pub fn invalidate(&mut self) {
-        self.key = None;
-        self.segments.clear();
-        self.cached_bytes = 0;
-        self.height = 0;
-        self.wrapped_lines = 0;
-    }
-
-    pub fn evict_cached_render(&mut self) -> usize {
-        let removed = self.cached_bytes;
-        if removed == 0 {
-            return 0;
-        }
-        self.invalidate();
-        removed
-    }
-}
-
-impl CachedMessageSegment {
-    #[must_use]
-    fn cached_bytes(&self) -> usize {
-        match self {
-            Self::Blank => 1,
-            Self::Lines { lines, .. } => lines.iter().map(line_utf8_bytes).sum(),
-        }
     }
 }
 
@@ -216,12 +63,6 @@ fn random_welcome_tip_seed() -> u64 {
     let mut hasher = DefaultHasher::new();
     SystemTime::now().duration_since(UNIX_EPOCH).ok().hash(&mut hasher);
     hasher.finish()
-}
-
-fn line_utf8_bytes(line: &Line<'static>) -> usize {
-    let span_bytes =
-        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
-    span_bytes.saturating_add(1)
 }
 
 /// Text holder for a single message block's markdown source.

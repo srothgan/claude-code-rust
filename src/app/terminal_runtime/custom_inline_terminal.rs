@@ -26,10 +26,6 @@ impl Frame<'_> {
     pub(crate) fn render_widget<W: Widget>(&mut self, widget: W, area: Rect) {
         widget.render(area, self.buffer);
     }
-
-    pub(crate) fn set_cursor_position<P: Into<Position>>(&mut self, position: P) {
-        self.cursor_position = Some(position.into());
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

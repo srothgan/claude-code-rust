@@ -4,8 +4,7 @@
 use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
     current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
-    parent_tool_use_id_from_meta, sdk_tool_name_from_meta, should_jump_on_large_write,
-    tool_scope_name,
+    parent_tool_use_id_from_meta, sdk_tool_name_from_meta, tool_scope_name,
 };
 use crate::agent::model;
 use crate::app::todos::{parse_todos_if_present, set_todos};
@@ -143,9 +142,6 @@ fn apply_tool_call_update_to_indexed_block(
 
         if changed {
             out.changed = true;
-            if should_jump_on_large_write(tc) {
-                app.viewport.engage_auto_scroll();
-            }
             tc.mark_tool_call_layout_dirty();
             app.sync_render_cache_slot(mi, bi);
             out.layout_dirty_idx = Some(mi);

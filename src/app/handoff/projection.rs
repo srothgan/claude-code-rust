@@ -1,21 +1,12 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(dead_code)]
-
 use super::shadow::HandoffShadowState;
 use super::types::{AssistantTurnId, TranscriptEntry};
 use crate::app::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InlineOutputId(u64);
-
-impl InlineOutputId {
-    #[must_use]
-    pub(crate) fn as_u64(self) -> u64 {
-        self.0
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InlineOutputStatus {
@@ -351,8 +342,8 @@ mod tests {
         let first = state.record_message_transcript_entries(0, vec![user_entry("one")]);
         let second = state.record_message_transcript_entries(1, vec![system_entry("two")]);
 
-        assert_eq!(first[0].as_u64(), 1);
-        assert_eq!(second[0].as_u64(), 2);
+        assert_eq!(first[0], InlineOutputId(1));
+        assert_eq!(second[0], InlineOutputId(2));
         assert_eq!(state.items()[0].id, first[0]);
         assert_eq!(state.items()[1].id, second[0]);
     }

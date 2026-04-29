@@ -58,20 +58,17 @@ pub use lifecycle::{
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
-pub(crate) use state::cache_metrics;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, CancelOrigin, ChatMessage,
-    ChatRenderState, ChatRenderTraceState, ChatViewport, ComposerRenderState, ExtraUsage,
-    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
-    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock,
-    MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
-    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
-    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatRenderState,
+    ChatRenderTraceState, ComposerRenderState, ExtraUsage, ImageAttachmentBlock,
+    IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation,
+    LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo,
+    ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck,
+    RateLimitIncidentKey, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
+    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
+    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
+    TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name,
 };
 pub use trust::TrustSelection;
@@ -234,11 +231,6 @@ async fn run_tui_loop(
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.needs_redraw {
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
-        }
-        // Smooth scroll still settling
-        let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
-        if scroll_delta >= 0.01 {
-            app.needs_redraw = true;
         }
         if terminal::update_terminal_outputs(app) {
             app.needs_redraw = true;

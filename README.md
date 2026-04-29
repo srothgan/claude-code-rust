@@ -51,7 +51,7 @@ Claude Code Rust fixes all of these by compiling to a single native binary with 
 
 Three-layer design:
 
-**Presentation** (Rust/Ratatui) - Single binary with an async event loop (Tokio) handling keyboard input and bridge client events concurrently. Virtual-scrolled chat history with syntax-highlighted code blocks.
+**Presentation** (Rust/Ratatui) - Single binary with an async event loop (Tokio) handling keyboard input and bridge client events concurrently. The chat surface is rendered by an embedded inline terminal session; Ratatui handles overlay and fullscreen views (configuration, session picker) and input composition.
 
 **Agent SDK Bridge** (stdio JSON envelopes) - Spawns `agent-sdk/dist/bridge.js` as a child process and communicates via line-delimited JSON envelopes over stdin/stdout. Bidirectional streaming for user messages, tool updates, and permission requests.
 

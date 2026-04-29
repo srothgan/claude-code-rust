@@ -253,26 +253,6 @@ async fn tool_call_content_update() {
     }
 }
 
-// --- Auto-scroll ---
-
-#[tokio::test]
-async fn auto_scroll_maintained_during_streaming() {
-    let mut app = test_app();
-    assert!(app.viewport.auto_scroll);
-
-    for _ in 0..20 {
-        let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-            "More text. ",
-        )));
-        send_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-        );
-    }
-
-    assert!(app.viewport.auto_scroll, "auto_scroll should stay true during streaming");
-}
-
 // --- Stress: many tool calls in one turn ---
 
 #[tokio::test]

@@ -701,7 +701,7 @@ mod tests {
             .collect();
 
         assert!(!text.iter().any(|line| line.contains("expand")));
-        assert!(text.iter().any(|line| line.contains("lines ")));
+        assert!(text.iter().any(|line| line.contains("line ")));
         assert!(text.iter().any(|line| line.contains("+  new")));
         assert!(text.len() > 2);
     }
@@ -722,7 +722,7 @@ mod tests {
             .collect();
 
         assert!(rendered.iter().any(|line| line.starts_with("  │    [acme/project]")));
-        assert!(rendered.iter().any(|line| line.starts_with("  │    lines ")));
+        assert!(rendered.iter().any(|line| line.starts_with("  │    line ")));
         assert!(rendered.iter().any(|line| {
             (line.starts_with("  │   ") || line.starts_with("  └─   ")) && line.contains("+  new")
         }));

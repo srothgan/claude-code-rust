@@ -170,12 +170,11 @@ impl TerminalRuntime {
 
     pub(crate) fn clear_active_surface_with_app(
         &mut self,
-        mut app: Option<&mut App>,
+        app: Option<&mut App>,
     ) -> anyhow::Result<()> {
         match self.session_mut()? {
             SurfaceTerminalSession::Chat(session) => {
-                let app =
-                    app.as_deref_mut().ok_or_else(|| anyhow!("chat clear requires app state"))?;
+                let app = app.ok_or_else(|| anyhow!("chat clear requires app state"))?;
                 session.clear(app)
             }
             SurfaceTerminalSession::Fullscreen(session) => session.clear(),

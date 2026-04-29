@@ -229,7 +229,6 @@ pub(super) fn handle_interaction_focus_cycle(
     }
 
     set_interaction_focused(app, 0, true);
-    app.viewport.engage_auto_scroll();
     Some(true)
 }
 

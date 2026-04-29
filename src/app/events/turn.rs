@@ -85,7 +85,6 @@ pub(super) fn handle_permission_request_event(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport.engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::PermissionRequired,
@@ -187,7 +186,6 @@ pub(super) fn handle_question_request_event(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport.engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::QuestionRequired,
@@ -440,7 +438,6 @@ fn push_interrupted_hint(app: &mut App) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
 }
 
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {

@@ -139,7 +139,6 @@ fn selection_text_for_copy(app: &mut App) -> Option<String> {
     let selection = app.selection?;
     crate::ui::refresh_selection_snapshot(app);
     let lines = match selection.kind {
-        super::SelectionKind::Chat => &app.rendered_chat_lines,
         super::SelectionKind::Input => &app.rendered_input_lines,
     };
     let selected_text = selection_text_from_rendered_lines(lines, selection);
@@ -597,7 +596,6 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.viewport.engage_auto_scroll();
             app.needs_redraw = true;
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
@@ -626,7 +624,6 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.viewport.engage_auto_scroll();
                     app.needs_redraw = true;
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
@@ -970,10 +967,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        ChatMessage, MessageBlock, MessageRole, SelectionKind, SelectionPoint, SelectionState,
-        TextBlock,
-    };
+    use crate::app::{SelectionKind, SelectionPoint, SelectionState};
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
@@ -1073,38 +1067,6 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
-    }
-
-    #[test]
-    fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        app.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
-            None,
-        ));
-        app.bind_active_turn_assistant(0);
-        app.rendered_chat_area = Rect::new(0, 0, 20, 6);
-        app.rendered_chat_lines = vec!["hello".to_owned()];
-        app.selection = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 11 },
-            dragging: false,
-        });
-
-        if let Some(MessageBlock::Text(block)) =
-            app.messages.get_mut(0).and_then(|message| message.blocks.get_mut(0))
-        {
-            block.text.push_str(" world");
-            block.markdown.append(" world");
-            block.cache.invalidate();
-        }
-        app.invalidate_layout(InvalidationLevel::MessageChanged(0));
-
-        assert!(selection_text_for_copy(&mut app).is_some());
-        assert!(app.rendered_chat_lines.iter().any(|line| line.contains("world")));
     }
 
     #[test]

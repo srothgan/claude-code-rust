@@ -16,7 +16,7 @@ const SPINNER_FRAMES: &[char] = &[
     '\u{2807}', '\u{280F}',
 ];
 
-#[allow(dead_code, clippy::struct_field_names)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct SerializedInputRows {
     pub hint_rows: Vec<Line<'static>>,
     pub editor_rows: Vec<Line<'static>>,
@@ -120,8 +120,8 @@ pub(crate) fn serialize_input_rows(app: &mut App, area_width: u16) -> Serialized
         ..measure_input_caret(app, editor_width)
     };
     let mut editor_rows = buffer_rows_to_lines(&buf, editor_area);
-    let mut plain_editor_rows = buffer_rows_to_plain_strings(&buf, editor_area);
-    let measurement = apply_prompt_prefix(&mut editor_rows, &mut plain_editor_rows, measurement);
+    let plain_editor_rows = buffer_rows_to_plain_strings(&buf, editor_area);
+    let measurement = apply_prompt_prefix(&mut editor_rows, measurement);
 
     SerializedInputRows { hint_rows, editor_rows, plain_editor_rows, measurement }
 }
@@ -196,7 +196,6 @@ fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
 
 fn apply_prompt_prefix(
     editor_rows: &mut Vec<Line<'static>>,
-    plain_editor_rows: &mut Vec<String>,
     mut measurement: InputRowsMeasurement,
 ) -> InputRowsMeasurement {
     let prefix = prompt_prefix_text();
@@ -208,12 +207,6 @@ fn apply_prompt_prefix(
         spans.push(Span::styled(prefix.clone(), prefix_style));
         spans.extend(existing);
         *first_row = Line::from(spans);
-    }
-
-    if let Some(first_plain_row) = plain_editor_rows.first_mut() {
-        first_plain_row.insert_str(0, &prefix);
-    } else {
-        plain_editor_rows.push(prefix.clone());
     }
 
     if measurement.caret_row == 0 {
@@ -457,7 +450,7 @@ mod tests {
         assert_eq!(serialized.editor_rows.len(), 1);
         assert!(line_text(&serialized.editor_rows[0]).contains(theme::PROMPT_CHAR));
         assert!(line_text(&serialized.editor_rows[0]).contains("Type a message..."));
-        assert!(serialized.plain_editor_rows[0].starts_with(theme::PROMPT_CHAR));
+        assert!(serialized.plain_editor_rows[0].contains("Type a message..."));
         assert_eq!(serialized.measurement.editor_rows, 1);
         assert_eq!(serialized.measurement.caret_row, 0);
         assert_eq!(serialized.measurement.caret_col, 2);

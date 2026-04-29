@@ -930,7 +930,7 @@ fn segments_to_physical_rows(
         }
         match segment {
             MessageRowSegment::Blank => rows.push(Line::default()),
-            MessageRowSegment::Lines { lines, .. } => {
+            MessageRowSegment::Lines { lines } => {
                 rows.extend(wrap_lines_to_physical_rows(lines, width));
             }
         }

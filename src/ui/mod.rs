@@ -2,40 +2,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod autocomplete;
-mod chat;
-mod chat_view;
 pub(crate) mod composer_measure;
 mod config;
 mod diff;
 mod document_table;
-mod footer;
 pub(crate) mod footer_rows;
 pub(crate) mod help;
 mod highlight;
 pub(crate) mod inline_chat_rows;
 mod input;
 pub(crate) mod input_rows;
-mod layout;
 mod markdown;
 mod message;
 mod message_rows;
 mod session_picker;
 pub mod theme;
-mod todo;
 mod tool_call;
 mod trusted;
 mod two_column_list;
 mod wrap;
 
-pub use message::{SpinnerState, measure_message_height_cached};
+pub use message::SpinnerState;
 
 use crate::app::ActiveView;
 use crate::app::App;
 use ratatui::Frame;
-
-pub fn render_chat_surface(frame: &mut Frame, app: &mut App) {
-    chat_view::render(frame, app);
-}
 
 pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
     match app.active_view {
@@ -43,15 +34,17 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         ActiveView::Trusted => trusted::render(frame, app),
         ActiveView::SessionPicker => session_picker::render(frame, app),
         ActiveView::Chat => {
-            debug_assert!(false, "render_fullscreen_surface called while chat is active");
-            chat_view::render(frame, app);
+            debug_assert!(false, "chat is rendered by the inline terminal session");
         }
     }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
-        ActiveView::Chat => render_chat_surface(frame, app),
+        ActiveView::Chat => {
+            let _ = (frame, app);
+            debug_assert!(false, "chat is rendered by the inline terminal session");
+        }
         ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
             render_fullscreen_surface(frame, app);
         }
@@ -63,14 +56,9 @@ pub(crate) fn refresh_selection_snapshot(app: &mut App) {
         return;
     };
 
-    match (app.active_view, selection.kind) {
-        (ActiveView::Chat, crate::app::SelectionKind::Chat) => {
-            chat::refresh_selection_snapshot(app);
-        }
-        (ActiveView::Chat, crate::app::SelectionKind::Input) => {
-            input::refresh_selection_snapshot(app);
-        }
-        _ => {}
+    if let (ActiveView::Chat, crate::app::SelectionKind::Input) = (app.active_view, selection.kind)
+    {
+        input::refresh_selection_snapshot(app);
     }
 }
 
@@ -90,18 +78,6 @@ mod tests {
             .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    #[test]
-    fn render_chat_surface_draws_chat_view() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-
-        terminal.draw(|frame| render_chat_surface(frame, &mut app)).expect("draw");
-
-        let rendered = buffer_text(&terminal);
-        assert!(rendered.contains("Claude Rust"));
     }
 
     #[test]

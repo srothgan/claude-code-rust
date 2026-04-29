@@ -846,32 +846,6 @@ mod tests {
     }
 
     #[test]
-    fn single_focused_permission_consumes_up_down_without_rotation() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-        app.viewport.scroll_target = 7;
-
-        let consumed_up = crate::app::inline_interactions::handle_interaction_focus_cycle(
-            &mut app,
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            true,
-            false,
-        );
-        let consumed_down = crate::app::inline_interactions::handle_interaction_focus_cycle(
-            &mut app,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            true,
-            false,
-        );
-
-        assert_eq!(consumed_up, Some(true));
-        assert_eq!(consumed_down, Some(true));
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert_eq!(app.viewport.scroll_target, 7);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
     fn esc_cancels_permission_when_no_reject_option_exists() {
         let mut app = App::test_default();
         let mut rx = add_permission(

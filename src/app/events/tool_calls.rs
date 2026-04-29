@@ -21,9 +21,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
-    if should_jump_on_large_write(&tool_info) {
-        app.viewport.engage_auto_scroll();
-    }
     upsert_tool_call_into_assistant_message(app, tool_info);
     crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &id_str);
     crate::app::handoff::shadow::sync_handoff_commit_queue(app);
@@ -400,22 +397,6 @@ pub(super) fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
         return title_norm.replace(&with_sep, "");
     }
     title_norm
-}
-
-pub(super) const WRITE_DIFF_JUMP_THRESHOLD_LINES: usize = 40;
-
-pub(super) fn should_jump_on_large_write(tc: &ToolCallInfo) -> bool {
-    if tc.sdk_tool_name != "Write" {
-        return false;
-    }
-    tc.content.iter().any(|c| match c {
-        model::ToolCallContent::Diff(diff) => {
-            let new_lines = diff.new_text.lines().count();
-            let old_lines = diff.old_text.as_deref().map_or(0, |t| t.lines().count());
-            new_lines.max(old_lines) >= WRITE_DIFF_JUMP_THRESHOLD_LINES
-        }
-        _ => false,
-    })
 }
 
 /// Check if any tool call in the current assistant message is still in-progress.

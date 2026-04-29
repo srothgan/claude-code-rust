@@ -1,19 +1,17 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::{
-    BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
-    MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, TextBlock, WelcomeBlock, hash_text_block_content,
-    hash_welcome_block_content,
-};
+use crate::app::{BlockCache, IncrementalMarkdown, MarkdownRenderKey, TextBlock, WelcomeBlock};
+#[cfg(test)]
+use crate::app::{ChatMessage, MessageRole};
 use crate::ui::theme;
 use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use super::message_rows::{MessageRowSegment, build_message_rows};
+#[cfg(test)]
+use super::message_rows::build_message_rows;
 
 const FERRIS_ART: &[&str] =
     &[r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
@@ -98,7 +96,7 @@ pub(crate) fn render_message(
         0,
         MessageRenderOptions { include_trailing_separator: true },
     );
-    render_message_internal(msg, spinner, render_context, out);
+    render_message_rows(msg, spinner, render_context, out);
 }
 
 #[cfg(test)]
@@ -115,7 +113,7 @@ pub(crate) fn render_message_with_separator(
         0,
         MessageRenderOptions { include_trailing_separator },
     );
-    render_message_internal(msg, spinner, render_context, out);
+    render_message_rows(msg, spinner, render_context, out);
 }
 
 #[cfg(test)]
@@ -133,211 +131,7 @@ pub(crate) fn render_message_with_separator_and_layout_generation(
         layout_generation,
         MessageRenderOptions { include_trailing_separator },
     );
-    render_message_with_separator_and_layout_generation_with_mode(
-        msg,
-        spinner,
-        render_context,
-        out,
-    );
-}
-
-pub(crate) fn render_message_with_separator_and_layout_generation_with_mode(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    out: &mut Vec<Line<'static>>,
-) {
-    render_message_internal(msg, spinner, render_context, out);
-}
-
-fn render_message_internal(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    out: &mut Vec<Line<'static>>,
-) {
-    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
-    render_cached_message(cache.segments(), out);
-}
-
-/// Measure message height from block caches + width-aware wrapped heights.
-/// Returns `(visual_height_rows, lines_wrapped_for_height_updates)`.
-///
-/// Accuracy is preserved because each block height is computed with
-/// `Paragraph::line_count(width)` on the exact rendered `Vec<Line>`.
-pub fn measure_message_height_cached(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-) -> (usize, usize) {
-    measure_message_height_cached_with_separator(msg, spinner, width, layout_generation, true)
-}
-
-pub fn measure_message_height_cached_with_separator(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    include_trailing_separator: bool,
-) -> (usize, usize) {
-    measure_message_height_cached_with_separator_and_mode(
-        msg,
-        spinner,
-        None,
-        width,
-        layout_generation,
-        include_trailing_separator,
-    )
-}
-
-pub fn measure_message_height_cached_with_separator_and_mode(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    current_mode_id: Option<&str>,
-    width: u16,
-    layout_generation: u64,
-    include_trailing_separator: bool,
-) -> (usize, usize) {
-    let render_context = MessageRenderContext::new(
-        current_mode_id,
-        width,
-        layout_generation,
-        MessageRenderOptions { include_trailing_separator },
-    );
-    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
-    (cache.height(), cache.wrapped_lines())
-}
-
-/// Render a message while consuming as many whole leading rows as possible.
-///
-/// `skip_rows` is measured in wrapped visual rows. We skip entire structural parts
-/// (label/separators/full blocks) without rendering them. If skipping lands inside
-/// a block, that block is rendered in full and the remaining skip is returned so
-/// the caller can apply `Paragraph::scroll()` for exact intra-block offset.
-#[cfg(test)]
-pub(crate) fn render_message_from_offset(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    skip_rows: usize,
-    out: &mut Vec<Line<'static>>,
-) -> usize {
-    render_message_from_offset_internal(
-        msg,
-        spinner,
-        width,
-        layout_generation,
-        MessageRenderOptions { include_trailing_separator: true },
-        skip_rows,
-        out,
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn render_message_from_offset_internal(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    options: MessageRenderOptions,
-    skip_rows: usize,
-    out: &mut Vec<Line<'static>>,
-) -> usize {
-    let render_context = MessageRenderContext::new(None, width, layout_generation, options);
-    render_message_from_offset_internal_with_mode(msg, spinner, render_context, skip_rows, out)
-}
-
-pub(crate) fn render_message_from_offset_internal_with_mode(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    skip_rows: usize,
-    out: &mut Vec<Line<'static>>,
-) -> usize {
-    let mut remaining_skip = skip_rows;
-    let cache = get_or_build_message_render_cache(msg, spinner, render_context);
-    let mut can_consume_skip = true;
-    render_cached_message_from_offset(
-        cache.segments(),
-        render_context.width,
-        out,
-        &mut remaining_skip,
-        &mut can_consume_skip,
-    );
-    remaining_skip
-}
-
-fn render_cached_message_from_offset(
-    segments: &[CachedMessageSegment],
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) {
-    for segment in segments {
-        match segment {
-            CachedMessageSegment::Blank => {
-                if *can_consume_skip && *remaining_skip > 0 {
-                    *remaining_skip -= 1;
-                } else {
-                    out.push(Line::default());
-                }
-            }
-            CachedMessageSegment::Lines { lines, height } => {
-                if should_skip_whole_block(*height, remaining_skip, can_consume_skip) {
-                    continue;
-                }
-                render_cached_lines_from_offset(
-                    lines,
-                    width,
-                    out,
-                    remaining_skip,
-                    can_consume_skip,
-                );
-            }
-        }
-    }
-}
-
-fn render_cached_lines_from_offset(
-    lines: &[Line<'static>],
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) {
-    if !*can_consume_skip || *remaining_skip == 0 {
-        out.extend(lines.iter().cloned());
-        return;
-    }
-
-    for line in lines {
-        let logical_lines = split_line_on_newlines(line);
-        for logical_line in logical_lines {
-            if !*can_consume_skip {
-                out.push(logical_line);
-                continue;
-            }
-            let line_height = rendered_line_height(&logical_line, width);
-            if *remaining_skip >= line_height {
-                *remaining_skip -= line_height;
-                continue;
-            }
-            *can_consume_skip = false;
-            out.push(logical_line);
-        }
-    }
-}
-
-fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'static>>) {
-    for segment in segments {
-        match segment {
-            CachedMessageSegment::Blank => out.push(Line::default()),
-            CachedMessageSegment::Lines { lines, .. } => out.extend(lines.iter().cloned()),
-        }
-    }
+    render_message_rows(msg, spinner, render_context, out);
 }
 
 #[derive(Clone, Copy)]
@@ -345,167 +139,20 @@ pub(crate) struct MessageRenderOptions {
     pub include_trailing_separator: bool,
 }
 
-fn get_or_build_message_render_cache<'a>(
-    msg: &'a mut ChatMessage,
+#[cfg(test)]
+fn render_message_rows(
+    msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
-) -> &'a MessageRenderCache {
-    let key = build_message_render_cache_key(msg, spinner, render_context);
-    if !msg.render_cache.matches(&key) {
-        let rows = build_message_rows(msg, spinner, render_context);
-        let height = rows.height;
-        let wrapped_lines = rows.wrapped_lines;
-        let segments = rows
-            .segments
-            .into_iter()
-            .map(|segment| match segment {
-                MessageRowSegment::Blank => CachedMessageSegment::Blank,
-                MessageRowSegment::Lines { lines, height } => {
-                    CachedMessageSegment::Lines { lines, height }
-                }
-            })
-            .collect();
-        msg.render_cache.store(key, segments, height, wrapped_lines);
-    }
-    &msg.render_cache
-}
-
-fn build_message_render_cache_key(
-    msg: &ChatMessage,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-) -> MessageRenderCacheKey {
-    MessageRenderCacheKey {
-        width: render_context.width,
-        layout_generation: render_context.layout_generation,
-        include_trailing_separator: render_context.options.include_trailing_separator,
-        render_signature: build_message_render_signature(
-            msg,
-            spinner,
-            render_context.tool_render_context,
-        ),
-    }
-}
-
-fn build_message_render_signature(
-    msg: &ChatMessage,
-    spinner: &SpinnerState,
-    tool_render_context: tool_call::ToolCallRenderContext<'_>,
-) -> MessageRenderSignature {
-    let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
-        Some(spinner.frame)
-    } else {
-        None
-    };
-    let blocks = msg
-        .blocks
-        .iter()
-        .map(|block| build_message_block_render_signature(block, spinner, tool_render_context))
-        .collect();
-    MessageRenderSignature {
-        role: msg.role.clone(),
-        show_empty_thinking: spinner.show_empty_thinking,
-        show_thinking: spinner.show_thinking,
-        show_compacting: spinner.show_compacting,
-        assistant_frame,
-        blocks,
-    }
-}
-
-fn build_message_block_render_signature(
-    block: &MessageBlock,
-    spinner: &SpinnerState,
-    tool_render_context: tool_call::ToolCallRenderContext<'_>,
-) -> MessageBlockRenderSignature {
-    match block {
-        MessageBlock::Text(block) => MessageBlockRenderSignature::Text {
-            text_hash: hash_text_block_content(&block.text, block.trailing_spacing),
-            trailing_spacing: block.trailing_spacing,
-        },
-        MessageBlock::Notice(block) => MessageBlockRenderSignature::Notice {
-            severity: block.severity,
-            text_hash: hash_text_block_content(&block.text.text, block.text.trailing_spacing),
-            trailing_spacing: block.text.trailing_spacing,
-        },
-        MessageBlock::ToolCall(tc) => MessageBlockRenderSignature::ToolCall {
-            render_epoch: tc.render_epoch,
-            layout_epoch: tc.layout_epoch,
-            hidden: tc.hidden,
-            status: tc.status,
-            sdk_tool_name: tc.sdk_tool_name.clone(),
-            current_mode_id: tool_render_context.current_mode_id.map(str::to_owned),
-            pending_permission: tc.pending_permission.is_some(),
-            pending_question: tc.pending_question.is_some(),
-            frame: tool_call_needs_spinner_frame(tc).then_some(spinner.frame),
-        },
-        MessageBlock::Welcome(block) => {
-            MessageBlockRenderSignature::Welcome { content_hash: hash_welcome_block_content(block) }
-        }
-        MessageBlock::ImageAttachment(block) => {
-            MessageBlockRenderSignature::ImageAttachment { count: block.count }
+    out: &mut Vec<Line<'static>>,
+) {
+    let rows = build_message_rows(msg, spinner, render_context);
+    for segment in rows.segments {
+        match segment {
+            super::message_rows::MessageRowSegment::Blank => out.push(Line::default()),
+            super::message_rows::MessageRowSegment::Lines { lines } => out.extend(lines),
         }
     }
-}
-
-fn message_has_frame_dependent_assistant_lines(msg: &ChatMessage, spinner: &SpinnerState) -> bool {
-    matches!(msg.role, MessageRole::Assistant)
-        && (spinner.show_empty_thinking || spinner.show_thinking || spinner.show_compacting)
-}
-
-fn tool_call_needs_spinner_frame(tc: &crate::app::ToolCallInfo) -> bool {
-    matches!(
-        tc.status,
-        crate::agent::model::ToolCallStatus::Pending
-            | crate::agent::model::ToolCallStatus::InProgress
-    )
-}
-
-fn rendered_line_height(line: &Line<'static>, width: u16) -> usize {
-    Paragraph::new(Text::from(vec![line.clone()]))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .max(1)
-}
-
-fn split_line_on_newlines(line: &Line<'static>) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let mut current_spans = Vec::new();
-
-    for span in &line.spans {
-        for chunk in span.content.as_ref().split_inclusive('\n') {
-            let ends_with_newline = chunk.ends_with('\n');
-            let content = chunk.strip_suffix('\n').unwrap_or(chunk);
-            if !content.is_empty() {
-                let mut next_span = span.clone();
-                next_span.content = content.to_owned().into();
-                current_spans.push(next_span);
-            }
-            if ends_with_newline {
-                lines.push(Line::from(std::mem::take(&mut current_spans)));
-            }
-        }
-    }
-
-    lines.push(Line::from(current_spans));
-    lines
-}
-
-fn should_skip_whole_block(
-    block_h: usize,
-    remaining_skip: &mut usize,
-    can_consume_skip: &mut bool,
-) -> bool {
-    if !*can_consume_skip {
-        return false;
-    }
-    if *remaining_skip >= block_h {
-        *remaining_skip -= block_h;
-        return true;
-    }
-    if *remaining_skip > 0 {
-        *can_consume_skip = false;
-    }
-    false
 }
 
 fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
@@ -1126,14 +773,33 @@ mod tests {
         }
     }
 
-    fn default_options() -> MessageRenderOptions {
-        MessageRenderOptions { include_trailing_separator: true }
-    }
-
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
         let mut lines = Vec::new();
         render_message(msg, spinner, width, &mut lines);
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(width)
+    }
+
+    fn measure_message_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
+        measure_message_height_with_separator(msg, spinner, width, true)
+    }
+
+    fn measure_message_height_with_separator(
+        msg: &mut ChatMessage,
+        spinner: &SpinnerState,
+        width: u16,
+        include_trailing_separator: bool,
+    ) -> usize {
+        build_message_rows(
+            msg,
+            spinner,
+            MessageRenderContext::new(
+                None,
+                width,
+                0,
+                MessageRenderOptions { include_trailing_separator },
+            ),
+        )
+        .height
     }
 
     #[test]
@@ -1144,7 +810,7 @@ mod tests {
         let mut measured_msg = make_text_message(MessageRole::User, &text);
         let mut truth_msg = make_text_message(MessageRole::User, &text);
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 32, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 32);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 32);
 
         assert_eq!(h, truth);
@@ -1156,7 +822,7 @@ mod tests {
         let mut measured_msg = make_text_message(MessageRole::User, "ok");
         let mut truth_msg = make_text_message(MessageRole::User, "ok");
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 2, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 2);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 2);
 
         assert_eq!(h, truth);
@@ -1171,7 +837,7 @@ mod tests {
         let mut truth_msg =
             make_text_message(MessageRole::System(Some(SystemSeverity::Warning)), "rate limit");
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 4, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 4);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
 
         assert_eq!(h, truth);
@@ -1184,7 +850,7 @@ mod tests {
         let mut measured_msg = make_welcome_message("Max", "~/project", "session-1");
         let mut truth_msg = make_welcome_message("Max", "~/project", "session-1");
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 4, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 4);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
 
         assert_eq!(h, truth);
@@ -1255,7 +921,7 @@ mod tests {
         let mut measured_msg = make_assistant_notice_message();
         let mut truth_msg = make_assistant_notice_message();
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 16, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 16);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 16);
 
         assert_eq!(h, truth);
@@ -1267,7 +933,7 @@ mod tests {
         let mut measured = make_assistant_split_message("First paragraph", "Second paragraph");
         let mut truth = make_assistant_split_message("First paragraph", "Second paragraph");
 
-        let (h, _) = measure_message_height_cached(&mut measured, &spinner, 80, 1);
+        let h = measure_message_height(&mut measured, &spinner, 80);
         let truth_h = ground_truth_height(&mut truth, &spinner, 80);
         assert_eq!(h, truth_h);
         assert_eq!(h, 5);
@@ -1283,7 +949,7 @@ mod tests {
 
         assert_eq!(render_lines_to_strings(&lines), vec!["Claude".to_owned(), "hello".to_owned()]);
 
-        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
+        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
         assert_eq!(h, 2);
     }
 
@@ -1304,7 +970,7 @@ mod tests {
         assert_eq!(rendered[0], "Claude");
         assert!(rendered[1].contains("Thinking..."));
 
-        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
+        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
         assert_eq!(h, 2);
     }
 
@@ -1318,8 +984,7 @@ mod tests {
         let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
         let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
 
-        let (h, _) =
-            measure_message_height_cached_with_separator(&mut measured_msg, &spinner, 6, 1, false);
+        let h = measure_message_height_with_separator(&mut measured_msg, &spinner, 6, false);
         let mut truth_lines = Vec::new();
         render_message_with_separator(&mut truth_msg, &spinner, 6, false, &mut truth_lines);
         let truth =
@@ -1346,77 +1011,8 @@ mod tests {
         assert_eq!(rendered[0], "Claude");
         assert!(rendered[1].contains("Compacting context..."));
 
-        let (h, _) = measure_message_height_cached_with_separator(&mut msg, &spinner, 80, 1, false);
+        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
         assert_eq!(h, 2);
-    }
-
-    #[test]
-    fn empty_last_assistant_thinking_offset_render_omits_trailing_separator() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_empty_thinking: true,
-            ..idle_spinner()
-        };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut out = Vec::new();
-
-        let remaining = render_message_from_offset_internal(
-            &mut msg,
-            &spinner,
-            80,
-            1,
-            MessageRenderOptions { include_trailing_separator: false },
-            0,
-            &mut out,
-        );
-
-        assert_eq!(remaining, 0);
-        let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        assert!(rendered[1].contains("Thinking..."));
-        assert!(!rendered.last().is_some_and(String::is_empty));
-    }
-
-    #[test]
-    fn empty_last_assistant_compacting_offset_render_omits_trailing_separator() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_compacting: true,
-            ..idle_spinner()
-        };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut out = Vec::new();
-
-        let remaining = render_message_from_offset_internal(
-            &mut msg,
-            &spinner,
-            80,
-            1,
-            MessageRenderOptions { include_trailing_separator: false },
-            0,
-            &mut out,
-        );
-
-        assert_eq!(remaining, 0);
-        let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        assert!(rendered[1].contains("Compacting context..."));
-        assert!(!rendered.last().is_some_and(String::is_empty));
-    }
-
-    #[test]
-    fn render_from_offset_handles_paragraph_gap_as_structural_rows() {
-        let spinner = idle_spinner();
-        let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
-        let mut out = Vec::new();
-
-        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 2, &mut out);
-
-        assert_eq!(remaining, 0);
-        let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some(""));
-        assert!(rendered.iter().any(|line| line.contains("Second paragraph")));
-        assert_eq!(rendered.last().map(String::as_str), Some(""));
     }
 
     #[test]
@@ -1430,12 +1026,11 @@ mod tests {
         let mut truth_wide = make_text_message(MessageRole::Assistant, &text);
         let mut truth_narrow = make_text_message(MessageRole::Assistant, &text);
 
-        let (h_wide, _) = measure_message_height_cached(&mut measured_msg, &spinner, 100, 1);
+        let h_wide = measure_message_height(&mut measured_msg, &spinner, 100);
         let wide_truth = ground_truth_height(&mut truth_wide, &spinner, 100);
         assert_eq!(h_wide, wide_truth);
 
-        // Reuse the same message to hit width-mismatch cache path.
-        let (h_narrow, _) = measure_message_height_cached(&mut measured_msg, &spinner, 28, 2);
+        let h_narrow = measure_message_height(&mut measured_msg, &spinner, 28);
         let narrow_truth = ground_truth_height(&mut truth_narrow, &spinner, 28);
         assert_eq!(h_narrow, narrow_truth);
     }
@@ -1494,55 +1089,12 @@ mod tests {
     }
 
     #[test]
-    fn render_from_offset_can_skip_entire_message() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::User, "hello\nworld");
-        let mut truth_msg = make_text_message(MessageRole::User, "hello\nworld");
-        let total = ground_truth_height(&mut truth_msg, &spinner, 120);
-
-        let mut out = Vec::new();
-        let rem = render_message_from_offset(&mut msg, &spinner, 120, 1, total + 3, &mut out);
-
-        assert!(out.is_empty());
-        assert_eq!(rem, 3);
-    }
-
-    #[test]
-    fn render_cached_lines_from_offset_consumes_skip_across_cached_lines() {
-        let skip = usize::from(u16::MAX) + 5;
-        let lines =
-            (0..skip + 3).map(|idx| Line::from(format!("line {idx:05}"))).collect::<Vec<_>>();
-        let mut out = Vec::new();
-        let mut remaining = skip;
-        let mut can_consume_skip = true;
-
-        render_cached_lines_from_offset(
-            &lines,
-            40,
-            &mut out,
-            &mut remaining,
-            &mut can_consume_skip,
-        );
-
-        assert_eq!(remaining, 0);
-        assert!(!can_consume_skip);
-        assert_eq!(
-            render_lines_to_strings(&out),
-            vec![
-                format!("line {skip:05}"),
-                format!("line {:05}", skip + 1),
-                format!("line {:05}", skip + 2),
-            ]
-        );
-    }
-
-    #[test]
     fn welcome_height_matches_ground_truth() {
         let spinner = idle_spinner();
         let mut measured_msg = make_welcome_message("Max", "~/project", "session-1");
         let mut truth_msg = make_welcome_message("Max", "~/project", "session-1");
 
-        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52, 1);
+        let h = measure_message_height(&mut measured_msg, &spinner, 52);
         let truth = ground_truth_height(&mut truth_msg, &spinner, 52);
         assert_eq!(h, truth);
     }
@@ -1786,27 +1338,10 @@ mod tests {
         let mut measured = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
         let mut truth = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
 
-        let (h, _) = measure_message_height_cached(&mut measured, &spinner, 80, 1);
+        let h = measure_message_height(&mut measured, &spinner, 80);
         let truth_h = ground_truth_height(&mut truth, &spinner, 80);
 
         assert_eq!(h, truth_h);
-    }
-
-    #[test]
-    fn assistant_heading_at_start_offset_render_omits_leading_blank_row() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
-        let mut out = Vec::new();
-
-        let remaining = render_message_from_offset(&mut msg, &spinner, 80, 1, 0, &mut out);
-        let rendered = render_lines_to_strings(&out);
-
-        assert_eq!(remaining, 0);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        let heading_idx =
-            rendered.iter().position(|line| line.contains("Heading")).expect("heading");
-        assert_eq!(heading_idx, 1);
-        assert!(!rendered[heading_idx].is_empty());
     }
 
     #[test]
@@ -1841,166 +1376,5 @@ mod tests {
 
         assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
         assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
-    }
-
-    #[test]
-    fn assistant_offset_render_suppresses_thinking_line_while_compacting() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_thinking: true,
-            show_compacting: true,
-            ..idle_spinner()
-        };
-        let mut msg = make_text_message(MessageRole::Assistant, "done");
-
-        let mut lines = Vec::new();
-        let remaining = render_message_from_offset(&mut msg, &spinner, 120, 1, 0, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert_eq!(remaining, 0);
-        assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
-    }
-
-    #[test]
-    fn message_render_cache_reuses_segments_for_repeated_render_with_same_inputs() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::Assistant, "cached");
-        let options = default_options();
-
-        let cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 1, options),
-        );
-        let first_segments = cache.segments().to_vec();
-        let first_height = cache.height();
-
-        let cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 1, options),
-        );
-        assert_eq!(cache.segments().len(), first_segments.len());
-        assert_eq!(cache.height(), first_height);
-        assert_eq!(cache.height(), rendered_segment_height(&first_segments));
-    }
-
-    #[test]
-    fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
-        let mut msg = make_text_message(MessageRole::Assistant, "cached");
-        let base_spinner = idle_spinner();
-        let thinking_spinner = SpinnerState { show_thinking: true, frame: 1, ..idle_spinner() };
-        let options = default_options();
-
-        let base_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &base_spinner,
-            MessageRenderContext::new(None, 80, 1, options),
-        );
-        let base_height = base_cache.height();
-        let base_segments = base_cache.segments().to_vec();
-
-        let thinking_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &thinking_spinner,
-            MessageRenderContext::new(None, 80, 1, options),
-        );
-        assert!(thinking_cache.height() >= base_height);
-        assert!(
-            thinking_cache.height() != base_height
-                || thinking_cache.segments().len() != base_segments.len()
-        );
-    }
-
-    #[test]
-    fn message_render_cache_rebuilds_when_trailing_separator_visibility_changes() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::Assistant, "cached");
-        let with_separator = MessageRenderOptions { include_trailing_separator: true };
-        let without_separator = MessageRenderOptions { include_trailing_separator: false };
-
-        let with_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 1, with_separator),
-        );
-        let with_height = with_cache.height();
-        let with_segments = with_cache.segments().len();
-
-        let without_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(None, 80, 1, without_separator),
-        );
-        assert!(without_cache.height() <= with_height);
-        assert!(
-            without_cache.height() != with_height
-                || without_cache.segments().len() != with_segments
-        );
-    }
-
-    #[test]
-    fn message_render_cache_rebuilds_when_mode_changes_for_tool_calls() {
-        let spinner = idle_spinner();
-        let tool = make_tool_call_info(
-            "Write notes/plan.md",
-            "Write",
-            crate::agent::model::ToolCallStatus::Completed,
-            "created plan",
-        );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool))],
-            None,
-        );
-        let options = default_options();
-
-        let code_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(Some("code"), 80, 1, options),
-        );
-        let code_lines: Vec<String> = code_cache
-            .segments()
-            .iter()
-            .flat_map(|segment| match segment {
-                CachedMessageSegment::Blank => vec![String::new()],
-                CachedMessageSegment::Lines { lines, .. } => lines
-                    .iter()
-                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-                    .collect(),
-            })
-            .collect();
-        assert!(code_lines.iter().any(|line| line.contains("Write notes/plan.md")));
-
-        let plan_cache = get_or_build_message_render_cache(
-            &mut msg,
-            &spinner,
-            MessageRenderContext::new(Some("plan"), 80, 1, options),
-        );
-        let plan_lines: Vec<String> = plan_cache
-            .segments()
-            .iter()
-            .flat_map(|segment| match segment {
-                CachedMessageSegment::Blank => vec![String::new()],
-                CachedMessageSegment::Lines { lines, .. } => lines
-                    .iter()
-                    .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-                    .collect(),
-            })
-            .collect();
-        assert!(plan_lines.iter().any(|line| line.contains("Create Plan")));
-        assert!(!plan_lines.iter().any(|line| line.contains("Write notes/plan.md")));
-    }
-
-    fn rendered_segment_height(segments: &[CachedMessageSegment]) -> usize {
-        segments
-            .iter()
-            .map(|segment| match segment {
-                CachedMessageSegment::Blank => 1,
-                CachedMessageSegment::Lines { height, .. } => *height,
-            })
-            .sum()
     }
 }

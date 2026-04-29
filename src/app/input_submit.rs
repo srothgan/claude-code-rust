@@ -158,7 +158,6 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
     crate::app::handoff::shadow::sync_handoff_commit_queue(app);
-    app.viewport.engage_auto_scroll();
 
     let tx = app.event_tx.clone();
     // The text already contains [Image #N] badges from the textarea,

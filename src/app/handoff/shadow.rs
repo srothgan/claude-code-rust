@@ -218,29 +218,6 @@ pub(crate) fn mirror_inline_notice_update(
     }
 }
 
-pub(crate) fn mirror_tool_interaction_flags(
-    shadow: &mut HandoffShadowState,
-    tool_call_id: &str,
-    pending_permission: bool,
-    pending_question: bool,
-) {
-    let turn = ensure_active_turn(shadow);
-    if let Some(existing) = turn.live.tool_mut_by_call_id(tool_call_id) {
-        existing.pending_permission = pending_permission;
-        existing.pending_question = pending_question;
-        return;
-    }
-    if committed_entries_contain_tool(turn, tool_call_id) {
-        tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "handoff_shadow_tool_interaction_ignored",
-            message = "shadow tool interaction update ignored because the tool was already committed",
-            outcome = "ignored",
-            tool_call_id = %tool_call_id,
-        );
-    }
-}
-
 pub(crate) fn mirror_turn_exit(
     shadow: &mut HandoffShadowState,
     final_status: ToolCallStatus,
@@ -1061,8 +1038,6 @@ mod tests {
                 )
             },
         );
-        mirror_tool_interaction_flags(&mut app.handoff_shadow, "tool-1", true, true);
-
         let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
         assert_eq!(turn.committed_entries, committed_before);
         assert!(turn.live.units.is_empty());

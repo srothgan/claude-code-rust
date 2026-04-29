@@ -33,11 +33,11 @@ pub struct SurfaceDirtyState {
 impl SurfaceDirtyState {
     pub fn mark_resize(&mut self, lifecycle: TerminalLifecycleState) {
         match lifecycle {
-            TerminalLifecycleState::Running(SurfaceMode::Chat) => {}
             TerminalLifecycleState::Running(SurfaceMode::Fullscreen(_)) => {
                 self.fullscreen.redraw = true;
             }
-            TerminalLifecycleState::Bootstrapping
+            TerminalLifecycleState::Running(SurfaceMode::Chat)
+            | TerminalLifecycleState::Bootstrapping
             | TerminalLifecycleState::ReleasedToChild(_)
             | TerminalLifecycleState::Restoring
             | TerminalLifecycleState::Exited => {}

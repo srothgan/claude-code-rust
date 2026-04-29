@@ -103,7 +103,6 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
 }
 
 fn require_connection(

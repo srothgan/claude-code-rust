@@ -36,52 +36,6 @@ pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
 }
 
 #[must_use]
-pub(crate) fn truncate_to_width(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if display_width(text) <= width {
-        return text.to_owned();
-    }
-
-    let mut out = String::new();
-    let mut used = 0usize;
-    for grapheme in UnicodeSegmentation::graphemes(text, true) {
-        let grapheme_width = display_width(grapheme);
-        if used + grapheme_width > width {
-            break;
-        }
-        out.push_str(grapheme);
-        used += grapheme_width;
-    }
-    out
-}
-
-#[must_use]
-pub(crate) fn take_prefix_by_width(text: &str, width: usize) -> (String, String) {
-    if width == 0 || text.is_empty() {
-        return (String::new(), text.to_owned());
-    }
-
-    let mut used = 0usize;
-    let mut split_at = 0usize;
-    for (idx, grapheme) in UnicodeSegmentation::grapheme_indices(text, true) {
-        let grapheme_width = display_width(grapheme);
-        if used + grapheme_width > width {
-            break;
-        }
-        used += grapheme_width;
-        split_at = idx + grapheme.len();
-    }
-
-    if split_at == 0 {
-        return (String::new(), text.to_owned());
-    }
-
-    (text[..split_at].to_owned(), text[split_at..].to_owned())
-}
-
-#[must_use]
 pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
     wrap_styled_chunks(&[StyledChunk { text: text.to_owned(), style: Style::default() }], width)
         .into_iter()
@@ -282,14 +236,6 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
-
-    #[test]
-    fn take_prefix_by_width_handles_grapheme_clusters() {
-        let text = "a👩‍💻b";
-        let (chunk, rest) = take_prefix_by_width(text, 3);
-        assert_eq!(chunk, "a👩‍💻");
-        assert_eq!(rest, "b");
-    }
 
     #[test]
     fn wrap_plain_preserves_explicit_newlines() {

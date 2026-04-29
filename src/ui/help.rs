@@ -20,7 +20,7 @@ pub(crate) fn key_help_items(app: &App) -> Vec<(String, String)> {
 }
 
 pub(crate) fn docs_command_items(app: &App) -> Vec<(String, String)> {
-    build_slash_command_items(app, SlashDescription::Long)
+    build_slash_command_items(app)
 }
 
 pub(crate) fn subagent_help_items(app: &App) -> Vec<(String, String)> {
@@ -151,19 +151,10 @@ fn pending_command_help_label(app: &App) -> String {
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
-    build_slash_command_items(app, SlashDescription::Long)
+    build_slash_command_items(app)
 }
 
-#[derive(Clone, Copy)]
-enum SlashDescription {
-    Short,
-    Long,
-}
-
-fn build_slash_command_items(
-    app: &App,
-    description_kind: SlashDescription,
-) -> Vec<(String, String)> {
+fn build_slash_command_items(app: &App) -> Vec<(String, String)> {
     use std::collections::BTreeMap;
 
     let mut rows = Vec::new();
@@ -178,13 +169,7 @@ fn build_slash_command_items(
 
     let mut commands: BTreeMap<String, String> = crate::app::slash::APP_SLASH_COMMANDS
         .iter()
-        .map(|spec| {
-            let description = match description_kind {
-                SlashDescription::Short => spec.short_description,
-                SlashDescription::Long => spec.long_description,
-            };
-            (spec.name.to_owned(), description.to_owned())
-        })
+        .map(|spec| (spec.name.to_owned(), spec.long_description.to_owned()))
         .collect();
 
     for cmd in &app.available_commands {

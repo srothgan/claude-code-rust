@@ -236,7 +236,6 @@ pub enum CancelOrigin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionKind {
-    Chat,
     Input,
 }
 
@@ -252,16 +251,6 @@ pub struct SelectionState {
     pub start: SelectionPoint,
     pub end: SelectionPoint,
     pub dragging: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollbarDragState {
-    /// Row offset from thumb top where the initial click happened.
-    pub thumb_grab_offset: usize,
-    /// Visible track length used when the drag started.
-    pub track_space: usize,
-    /// Maximum scrollable row offset when the drag started.
-    pub max_scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

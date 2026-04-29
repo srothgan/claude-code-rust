@@ -2,7 +2,6 @@ use super::*;
 use crate::app::config::{ConfigOverlayState, OutputStyle, OutputStyleOverlayState};
 use crate::app::dialog::DialogState;
 use crate::app::slash::{SlashContext, SlashState};
-use crate::app::state::types::ScrollbarDragState;
 use crate::app::subagent::SubagentState;
 use crate::app::{
     FocusTarget, FullscreenView, PasteSessionState, ReleaseReason, SelectionKind, SelectionPoint,
@@ -13,13 +12,11 @@ fn busy_view_test_app() -> App {
     let mut app = App::test_default();
     app.input.set_text("draft");
     app.selection = Some(SelectionState {
-        kind: SelectionKind::Chat,
+        kind: SelectionKind::Input,
         start: SelectionPoint { row: 0, col: 0 },
         end: SelectionPoint { row: 0, col: 4 },
         dragging: true,
     });
-    app.scrollbar_drag =
-        Some(ScrollbarDragState { thumb_grab_offset: 1, track_space: 4, max_scroll: 12 });
     app.pending_submit = Some(app.input.snapshot());
     app.pending_paste_text = "blocked".to_owned();
     app.pending_paste_session = Some(PasteSessionState {
@@ -71,7 +68,6 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     assert_eq!(app.active_view, ActiveView::Trusted);
     assert_eq!(app.input.text(), "draft");
     assert!(app.selection.is_none());
-    assert!(app.scrollbar_drag.is_none());
     assert!(app.mention.is_none());
     assert!(app.slash.is_none());
     assert!(app.subagent.is_none());

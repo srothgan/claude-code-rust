@@ -14,7 +14,6 @@ pub(crate) fn normalize_selection(
 
 pub(super) fn clear_selection(app: &mut App) {
     app.selection = None;
-    app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
 }
 
@@ -478,10 +477,10 @@ mod tests {
     }
 
     #[test]
-    fn selection_text_uses_display_columns_for_chat_lines() {
+    fn selection_text_uses_display_columns_for_input_lines() {
         let lines = vec!["a😀b".to_owned()];
         let selection = SelectionState {
-            kind: crate::app::SelectionKind::Chat,
+            kind: crate::app::SelectionKind::Input,
             start: SelectionPoint { row: 0, col: 1 },
             end: SelectionPoint { row: 0, col: 3 },
             dragging: false,

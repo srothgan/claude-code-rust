@@ -2,12 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model;
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::mem::{size_of, size_of_val};
 
 use super::LayoutInvalidation as InvalidationLevel;
-use super::LayoutRemeasureReason;
 use super::messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
     WelcomeBlock,
@@ -24,54 +22,19 @@ pub(super) struct HistoryDropCandidate {
 }
 
 impl super::App {
-    fn remap_anchor_for_insert(
-        anchor: Option<(usize, usize)>,
-        insert_idx: usize,
-    ) -> Option<(usize, usize)> {
-        anchor.map(|(anchor_idx, anchor_offset)| {
-            let next_idx =
-                if anchor_idx >= insert_idx { anchor_idx.saturating_add(1) } else { anchor_idx };
-            (next_idx, anchor_offset)
-        })
-    }
-
-    fn remap_anchor_for_remove(
-        anchor: Option<(usize, usize)>,
-        removed_idx: usize,
-        retained_len: usize,
-    ) -> Option<(usize, usize)> {
-        let (anchor_idx, anchor_offset) = anchor?;
-        if retained_len == 0 {
-            return None;
-        }
-
-        let next_idx = match anchor_idx.cmp(&removed_idx) {
-            Ordering::Less => anchor_idx,
-            Ordering::Greater => anchor_idx.saturating_sub(1),
-            Ordering::Equal => removed_idx.min(retained_len.saturating_sub(1)),
-        };
-        Some((next_idx.min(retained_len.saturating_sub(1)), anchor_offset))
-    }
-
     fn invalidate_tail_transition(
         &mut self,
         previous_tail_after_mutation: Option<usize>,
         new_tail: Option<usize>,
     ) {
-        if let Some(idx) = previous_tail_after_mutation {
-            self.viewport.invalidate_message(idx);
-        }
-        if let Some(idx) = new_tail
-            && Some(idx) != previous_tail_after_mutation
-        {
-            self.viewport.invalidate_message(idx);
+        if previous_tail_after_mutation.is_some() || new_tail.is_some() {
+            self.invalidate_layout(InvalidationLevel::Global);
         }
     }
 
     fn sync_after_message_topology_change(&mut self, start_idx: usize) {
         self.rebuild_tool_indices_and_terminal_refs();
         if self.messages.is_empty() {
-            self.viewport.sync_message_count(0);
             return;
         }
         self.invalidate_layout(InvalidationLevel::MessagesFrom(start_idx));
@@ -332,8 +295,6 @@ impl super::App {
             self.invalidate_tail_transition(None, self.messages.len().checked_sub(1));
         } else if !self.messages.is_empty() {
             self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
-        } else {
-            self.viewport.sync_message_count(0);
         }
         self.needs_redraw = true;
         Some(removed)
@@ -349,7 +310,6 @@ impl super::App {
         self.reset_committed_output_tracking();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
-        self.viewport.sync_message_count(0);
         self.needs_redraw = true;
     }
 
@@ -472,18 +432,14 @@ impl super::App {
         )
     }
 
-    fn upsert_history_hidden_marker(
-        &mut self,
-        preserved_anchor: Option<(usize, usize)>,
-    ) -> Option<(usize, usize)> {
+    fn upsert_history_hidden_marker(&mut self) {
         self.ensure_history_retention_accounting();
         let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
-                return Self::remap_anchor_for_remove(preserved_anchor, idx, self.messages.len());
             }
-            return preserved_anchor;
+            return;
         }
 
         let marker_text = Self::history_hidden_marker_text(
@@ -503,7 +459,7 @@ impl super::App {
                 self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }
-            return preserved_anchor;
+            return;
         }
 
         let insert_idx = usize::from(
@@ -517,16 +473,13 @@ impl super::App {
                 None,
             ),
         );
-        Self::remap_anchor_for_insert(preserved_anchor, insert_idx)
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
         self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
         let active_turn_owner = self.active_turn_assistant_idx();
-        let mut preserved_anchor = self.viewport.capture_manual_scroll_anchor();
         stats.total_before_bytes = self.retained_history_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
@@ -558,20 +511,8 @@ impl super::App {
             }
 
             if !drop_candidates.is_empty() {
-                preserved_anchor = self.apply_history_retention_drop(
-                    &drop_candidates,
-                    active_turn_owner,
-                    preserved_anchor,
-                );
+                self.apply_history_retention_drop(&drop_candidates, active_turn_owner);
                 self.rebuild_tool_indices_and_terminal_refs();
-                self.viewport.sync_message_count(self.messages.len());
-                if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
-                    self.viewport.preserve_scroll_anchor(
-                        LayoutRemeasureReason::MessagesFrom,
-                        anchor_idx,
-                        anchor_offset,
-                    );
-                }
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
                 self.needs_redraw = true;
             }
@@ -585,15 +526,7 @@ impl super::App {
         self.history_retention_stats.total_dropped_bytes =
             self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
 
-        preserved_anchor = self.upsert_history_hidden_marker(preserved_anchor);
-        self.viewport.sync_message_count(self.messages.len());
-        if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
-            self.viewport.preserve_scroll_anchor(
-                LayoutRemeasureReason::MessagesFrom,
-                anchor_idx,
-                anchor_offset,
-            );
-        }
+        self.upsert_history_hidden_marker();
 
         stats.total_after_bytes = self.retained_history_bytes;
         self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
@@ -616,8 +549,7 @@ impl super::App {
         &mut self,
         drop_candidates: &[HistoryDropCandidate],
         active_turn_owner: Option<usize>,
-        preserved_anchor: Option<(usize, usize)>,
-    ) -> Option<(usize, usize)> {
+    ) {
         let drop_set: HashSet<usize> =
             drop_candidates.iter().map(|candidate| candidate.msg_idx).collect();
 
@@ -643,15 +575,5 @@ impl super::App {
         self.message_retained_bytes = retained_bytes;
         self.active_turn_assistant_message_idx = remapped_active_turn_owner;
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);
-
-        let (anchor_idx, anchor_offset) = preserved_anchor?;
-        if let Some(new_idx) = old_to_new.get(anchor_idx).copied().flatten() {
-            return Some((new_idx, anchor_offset));
-        }
-
-        let fallback_old_idx = ((anchor_idx + 1)..old_to_new.len())
-            .find(|&idx| old_to_new[idx].is_some())
-            .or_else(|| (0..anchor_idx).rev().find(|&idx| old_to_new[idx].is_some()))?;
-        old_to_new[fallback_old_idx].map(|new_idx| (new_idx, 0))
     }
 }

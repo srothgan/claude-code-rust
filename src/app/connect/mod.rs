@@ -22,7 +22,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::{ActiveView, SurfaceMode};
-use super::{App, AppStatus, ChatViewport, FocusManager, SelectionState, TodoItem};
+use super::{App, AppStatus, FocusManager, SelectionState, TodoItem};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
@@ -139,7 +139,6 @@ pub fn create_app(cli: &Cli) -> App {
         )],
         message_retained_bytes: Vec::new(),
         retained_history_bytes: 0,
-        viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
@@ -191,9 +190,6 @@ pub fn create_app(cli: &Cli) -> App {
         session_picker: SessionPickerState::default(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
-        scrollbar_drag: None,
-        rendered_chat_lines: Vec::new(),
-        rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         chat_render: super::ChatRenderState::default(),
@@ -238,7 +234,6 @@ pub fn create_app(cli: &Cli) -> App {
         fps_ema: None,
         last_frame_at: None,
         last_chat_render_trace_state: None,
-        last_active_turn_height_state: None,
         startup_connection_requested: false,
         connection_started: false,
         startup_bridge_script: cli.bridge_script.clone(),

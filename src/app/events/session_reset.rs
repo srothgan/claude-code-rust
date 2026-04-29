@@ -65,7 +65,6 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    app.viewport = super::super::ChatViewport::new();
     crate::app::handoff::shadow::clear_shadow_state(&mut app.handoff_shadow);
 }
 
@@ -95,9 +94,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
 
 fn reset_render_state_for_new_session(app: &mut App) {
     app.selection = None;
-    app.scrollbar_drag = None;
-    app.rendered_chat_lines.clear();
-    app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
     app.chat_render.reset();
@@ -185,8 +181,6 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     crate::app::handoff::shadow::rebuild_inline_output_from_messages(app);
-    app.viewport = super::super::ChatViewport::new();
-    app.viewport.engage_auto_scroll();
 }
 
 #[cfg(test)]

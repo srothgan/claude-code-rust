@@ -159,8 +159,7 @@ mod tests {
     use crate::agent::events::TerminalProcess;
     use crate::agent::model;
     use crate::app::{
-        App, BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, TextBlock,
-        ToolCallInfo,
+        App, BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, ToolCallInfo,
     };
     use std::sync::{Arc, Mutex};
 
@@ -196,53 +195,6 @@ mod tests {
             }))],
             None,
         )
-    }
-
-    fn user_message(text: &str) -> ChatMessage {
-        ChatMessage::new(
-            MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
-        )
-    }
-
-    #[test]
-    fn terminal_updates_invalidate_all_dirty_messages() {
-        let mut app = App::test_default();
-        app.messages.push(bash_tool_message("bash-1", "term-1"));
-        app.messages.push(user_message("gap"));
-        app.messages.push(bash_tool_message("bash-2", "term-2"));
-        app.index_tool_call("bash-1".to_owned(), 0, 0);
-        app.index_tool_call("bash-2".to_owned(), 2, 0);
-        app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        app.sync_terminal_tool_call("term-2".to_owned(), 2, 0);
-        app.terminals.borrow_mut().insert(
-            "term-1".to_owned(),
-            TerminalProcess {
-                child: None,
-                output_buffer: Arc::new(Mutex::new(b"alpha\n".to_vec())),
-                command: "echo alpha".to_owned(),
-            },
-        );
-        app.terminals.borrow_mut().insert(
-            "term-2".to_owned(),
-            TerminalProcess {
-                child: None,
-                output_buffer: Arc::new(Mutex::new(b"beta\n".to_vec())),
-                command: "echo beta".to_owned(),
-            },
-        );
-
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
-
-        assert!(update_terminal_outputs(&mut app));
-        assert!(!app.viewport.message_height_is_current(0));
-        assert!(app.viewport.message_height_is_current(1));
-        assert!(!app.viewport.message_height_is_current(2));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
     }
 
     #[test]

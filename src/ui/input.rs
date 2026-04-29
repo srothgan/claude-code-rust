@@ -4,13 +4,10 @@
 use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
 use crate::app::subagent;
-use crate::app::{App, AppStatus, FocusOwner};
+use crate::app::{App, FocusOwner};
 use crate::ui::theme;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use tui_textarea::TextArea;
 
 use super::{autocomplete, input_rows};
@@ -32,24 +29,15 @@ const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
 const HIGHLIGHT_PASTE_PRIORITY: u8 = 9;
 const HIGHLIGHT_IMAGE_BADGE_PRIORITY: u8 = 10;
 
-/// Braille spinner frames (same as message.rs) for the connecting animation.
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
-
 /// Height of the login hint banner in lines (0 when no hint is active).
-/// Used internally by `visual_line_count` and `render` so the layout
-/// calculation and rendering stay in sync.
+/// Used internally by `visual_line_count` so layout calculation stays in sync.
 const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
 const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
-    pub hint_pad: Option<Rect>,
     pub padded: Rect,
-    pub prompt: Rect,
     pub text: Rect,
 }
 
@@ -78,20 +66,14 @@ pub(crate) fn hint_line_count(app: &App) -> u16 {
 }
 
 pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
-    let (hint_area, input_main_area) = if hint_lines > 0 {
+    let input_main_area = if hint_lines > 0 {
         let [hint, main] =
             Layout::vertical([Constraint::Length(hint_lines), Constraint::Min(1)]).areas(area);
-        (Some(hint), main)
+        let _ = hint;
+        main
     } else {
-        (None, area)
+        area
     };
-
-    let hint_pad = hint_area.map(|hint| Rect {
-        x: hint.x.saturating_add(INPUT_PAD),
-        y: hint.y,
-        width: hint.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-        height: hint.height,
-    });
 
     let padded = Rect {
         x: input_main_area.x.saturating_add(INPUT_PAD),
@@ -99,84 +81,10 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
-    let [prompt, text] =
+    let [_prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
-    InputRenderGeometry { hint_pad, padded, prompt, text }
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let hint_lines = hint_line_count(app);
-    let geometry = compute_render_geometry(area, hint_lines);
-
-    if let Some(hint_pad) = geometry.hint_pad {
-        let hint_rows = input_rows::build_composer_hint_rows(app);
-        if !hint_rows.is_empty() {
-            frame.render_widget(Paragraph::new(hint_rows), hint_pad);
-        }
-    }
-
-    // During Connecting state, show a spinner with static text
-    if app.status == AppStatus::Connecting {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let line = Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(line), geometry.padded);
-        return;
-    }
-
-    if app.status == AppStatus::CommandPending {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
-        let line = Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(line), geometry.padded);
-        return;
-    }
-
-    if app.status == AppStatus::Error {
-        let lines = vec![
-            Line::from(Span::styled(
-                "Input disabled due to error",
-                Style::default().fg(theme::STATUS_ERROR),
-            )),
-            Line::from(Span::styled(
-                "Press Ctrl+Q to quit and try again.",
-                Style::default().fg(theme::DIM),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(lines), geometry.padded);
-        return;
-    }
-
-    // Render prompt icon
-    let prompt = Line::from(Span::styled(
-        format!("{} ", theme::PROMPT_CHAR),
-        Style::default().fg(theme::RUST_ORANGE),
-    ));
-    frame.render_widget(Paragraph::new(prompt), geometry.prompt);
-
-    if geometry.text.width == 0 {
-        return;
-    }
-
-    configure_input_textarea(app);
-    app.rendered_input_area = geometry.text;
-    if app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
-        refresh_selection_snapshot(app);
-    }
-    frame.render_widget(app.input.editor(), geometry.text);
-
-    if let Some(sel) = app.selection
-        && sel.kind == crate::app::SelectionKind::Input
-    {
-        frame.render_widget(input_rows::SelectionOverlay { selection: sel }, geometry.text);
-    }
+    InputRenderGeometry { padded, text }
 }
 
 pub(super) fn refresh_selection_snapshot(app: &mut App) {
