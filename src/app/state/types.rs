@@ -16,14 +16,6 @@ pub struct ModeState {
     pub available_modes: Vec<ModeInfo>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HelpView {
-    #[default]
-    Keys,
-    SlashCommands,
-    Subagents,
-}
-
 /// Login hint displayed when authentication is required during connection.
 /// Rendered as a banner above the input field.
 pub struct LoginHint {

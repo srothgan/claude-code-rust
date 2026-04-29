@@ -27,7 +27,6 @@ pub(super) fn submit_input(app: &mut App) {
     if slash::is_cancel_command(&text) {
         app.pending_auto_submit_after_cancel = false;
         app.input.clear();
-        app.sync_help_open_with_input();
         dispatch_submission(app, text);
         return;
     }
@@ -61,7 +60,6 @@ pub(super) fn submit_input(app: &mut App) {
 
     app.pending_auto_submit_after_cancel = false;
     app.input.clear();
-    app.sync_help_open_with_input();
     dispatch_submission(app, text);
 }
 
@@ -323,8 +321,9 @@ mod tests {
     #[test]
     fn supported_advertised_slash_submit_falls_through_to_prompt_turn() {
         let (mut app, mut rx) = app_with_connection();
-        app.available_commands = vec![model::AvailableCommand::new("/help", "Show SDK help")];
-        app.input.set_text("/help");
+        app.available_commands =
+            vec![model::AvailableCommand::new("/remote-command", "Remote command")];
+        app.input.set_text("/remote-command");
 
         submit_input(&mut app);
 
@@ -339,7 +338,10 @@ mod tests {
                 assert_eq!(session_id, "session-1");
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].kind, "text");
-                assert_eq!(chunks[0].value, serde_json::Value::String("/help".to_owned()));
+                assert_eq!(
+                    chunks[0].value,
+                    serde_json::Value::String("/remote-command".to_owned())
+                );
             }
             other => panic!("expected prompt command, got {other:?}"),
         }

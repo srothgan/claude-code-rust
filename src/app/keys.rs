@@ -1,11 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
-    ModeState,
+    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, InvalidationLevel, ModeInfo, ModeState,
 };
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
@@ -20,9 +18,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
-
-const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
-const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
 #[cfg(target_os = "macos")]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
@@ -197,15 +192,12 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return handle_blocked_input_shortcuts(app, key);
     }
 
-    sync_help_focus(app);
-
     if handle_global_shortcuts(app, key) {
         return true;
     }
 
     match app.focus_owner() {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
-        FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Permission => {
             if should_reclaim_input_focus_before_inline_interaction(app, key) {
                 reclaim_input_from_inline_prompt_if_needed(app);
@@ -258,7 +250,6 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 }
 
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
-    sync_help_focus(app);
     let input_version_before = app.input.version;
 
     if should_ignore_key_during_paste(app, key) {
@@ -267,17 +258,12 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 
     let changed = handle_normal_key_actions(app, key);
 
-    if app.input.version != input_version_before {
-        app.sync_help_open_with_input();
-    }
-
     if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
         slash::sync_with_cursor(app);
         subagent::sync_with_cursor(app);
     }
 
-    sync_help_focus(app);
     changed
 }
 
@@ -408,24 +394,35 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('z'), m) if m == CMD_MOD => {
-            app.input.textarea_undo();
-            true
-        }
-
-        #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => {
-            app.input.textarea_redo();
-            true
-        }
-        #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => {
-            app.input.textarea_redo();
-            true
-        }
-        _ => false,
+    if is_undo_shortcut(key.code, key.modifiers) {
+        app.input.textarea_undo();
+        return true;
     }
+    if is_redo_shortcut(key.code, key.modifiers) {
+        app.input.textarea_redo();
+        return true;
+    }
+    false
+}
+
+fn is_undo_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('z')) && modifiers == CMD_MOD
+}
+
+#[cfg(target_os = "macos")]
+fn is_redo_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    let command_shift_z = matches!(code, KeyCode::Char('z' | 'Z'))
+        && modifiers.contains(CMD_MOD)
+        && modifiers.contains(KeyModifiers::SHIFT)
+        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    let command_upper_z = matches!(code, KeyCode::Char('Z')) && modifiers == CMD_MOD;
+    let command_y = matches!(code, KeyCode::Char('y')) && modifiers == CMD_MOD;
+    command_shift_z || command_upper_z || command_y
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_redo_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Char('y')) && modifiers == CMD_MOD
 }
 
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
@@ -526,7 +523,6 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     app.input.set_text(&suggestion);
-    app.sync_help_open_with_input();
     true
 }
 
@@ -790,7 +786,7 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
-        (KeyCode::Char('z' | 'y'), m) if m == KeyModifiers::CONTROL => true,
+        (code, modifiers) if is_undo_shortcut(code, modifiers) || is_redo_shortcut(code, modifiers) => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
@@ -844,68 +840,6 @@ pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
         None => {}
     }
     dispatch_key_by_focus(app, key)
-}
-
-fn handle_help_key(app: &mut App, key: KeyEvent) -> bool {
-    match (key.code, key.modifiers) {
-        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => {
-            set_help_view(app, prev_help_view(app.help_view));
-            true
-        }
-        (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
-            set_help_view(app, next_help_view(app.help_view));
-            true
-        }
-        (KeyCode::Up, m) if m == KeyModifiers::NONE => {
-            if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
-                let count = crate::ui::help::help_item_count(app);
-                app.help_dialog.move_up(count, app.help_visible_count);
-            }
-            true
-        }
-        (KeyCode::Down, m) if m == KeyModifiers::NONE => {
-            if matches!(app.help_view, HelpView::SlashCommands | HelpView::Subagents) {
-                let count = crate::ui::help::help_item_count(app);
-                app.help_dialog.move_down(count, app.help_visible_count);
-            }
-            true
-        }
-        _ => handle_normal_key(app, key),
-    }
-}
-
-const fn next_help_view(current: HelpView) -> HelpView {
-    match current {
-        HelpView::Keys => HelpView::SlashCommands,
-        HelpView::SlashCommands => HelpView::Subagents,
-        HelpView::Subagents => HelpView::Keys,
-    }
-}
-
-const fn prev_help_view(current: HelpView) -> HelpView {
-    match current {
-        HelpView::Keys => HelpView::Subagents,
-        HelpView::SlashCommands => HelpView::Keys,
-        HelpView::Subagents => HelpView::SlashCommands,
-    }
-}
-
-fn set_help_view(app: &mut App, next: HelpView) {
-    if app.help_view != next {
-        app.help_view = next;
-        app.help_dialog = DialogState::default();
-    }
-}
-
-fn sync_help_focus(app: &mut App) {
-    if app.is_help_active()
-        && app.pending_interaction_ids.is_empty()
-        && !app.autocomplete_focus_available()
-    {
-        app.claim_focus_target(FocusTarget::Help);
-    } else {
-        app.release_focus_target(FocusTarget::Help);
-    }
 }
 
 /// Handle keystrokes while the `@` mention autocomplete dropdown is active.
@@ -1094,7 +1028,7 @@ mod tests {
                     secondary: None,
                 },
             ],
-            dialog: DialogState::default(),
+            dialog: crate::app::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);
 

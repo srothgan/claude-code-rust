@@ -4,7 +4,8 @@
 //! Slash command candidate detection, filtering, and building.
 
 use super::{
-    MAX_CANDIDATES, SlashCandidate, SlashContext, SlashDetection, SlashState, normalize_slash_name,
+    APP_SLASH_COMMANDS, AppSlashCommand, MAX_CANDIDATES, SlashCandidate, SlashContext,
+    SlashDetection, SlashState, command_spec, normalize_slash_name,
 };
 use crate::app::App;
 use crate::app::config::store;
@@ -158,18 +159,17 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(
-        command_name,
-        "/1m-context" | "/docs" | "/mode" | "/model" | "/opus-version" | "/resume"
-    )
+    command_spec(command_name).is_some_and(|spec| {
+        !spec.args.is_empty()
+            || matches!(
+                spec.command,
+                AppSlashCommand::Mode | AppSlashCommand::Model | AppSlashCommand::Resume
+            )
+    })
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
-    arg_index == 0
-        && matches!(
-            command_name,
-            "/1m-context" | "/docs" | "/mode" | "/model" | "/opus-version" | "/resume"
-        )
+    arg_index == 0 && is_builtin_variable_input_command(command_name)
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -186,22 +186,9 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     use std::collections::BTreeMap;
 
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
-    by_name.insert("/1m-context".into(), "Manage 1M context for this folder".into());
-    by_name.insert("/cancel".into(), "Cancel active turn".into());
-    by_name.insert("/compact".into(), "Compact session context".into());
-    by_name.insert("/config".into(), "Open settings".into());
-    by_name.insert("/docs".into(), "Show in-chat help topics".into());
-    by_name.insert("/login".into(), "Authenticate with Claude".into());
-    by_name.insert("/logout".into(), "Sign out of Claude".into());
-    by_name.insert("/mcp".into(), "Open MCP".into());
-    by_name.insert("/mode".into(), "Set session mode".into());
-    by_name.insert("/model".into(), "Set session model".into());
-    by_name.insert("/new-session".into(), "Start a fresh session".into());
-    by_name.insert("/opus-version".into(), "Pin the Opus alias version for this folder".into());
-    by_name.insert("/resume".into(), "Resume a session by ID".into());
-    by_name.insert("/plugins".into(), "Open plugins".into());
-    by_name.insert("/status".into(), "Show session status".into());
-    by_name.insert("/usage".into(), "Open usage".into());
+    for spec in APP_SLASH_COMMANDS {
+        by_name.insert(spec.name.to_owned(), spec.short_description.to_owned());
+    }
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
@@ -264,6 +251,19 @@ pub(super) fn filter_argument_candidates(
         .collect()
 }
 
+fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
+    command_spec(command_name).map_or_else(Vec::new, |spec| {
+        spec.args
+            .iter()
+            .map(|arg| SlashCandidate {
+                insert_value: arg.value.to_owned(),
+                primary: arg.value.to_owned(),
+                secondary: Some(arg.description.to_owned()),
+            })
+            .collect()
+    })
+}
+
 fn now_epoch_seconds() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
@@ -316,50 +316,7 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
-        "/1m-context" => [
-            ("disable", "Disable 1M context for future sessions in this folder"),
-            ("enable", "Enable 1M context for future sessions in this folder"),
-            ("status", "Show the current 1M context setting for this folder"),
-        ]
-        .into_iter()
-        .map(|(value, description)| SlashCandidate {
-            insert_value: value.to_owned(),
-            primary: value.to_owned(),
-            secondary: Some(description.to_owned()),
-        })
-        .collect(),
-        "/docs" => super::DOCS_TOPICS
-            .iter()
-            .map(|(topic, description)| SlashCandidate {
-                insert_value: (*topic).to_owned(),
-                primary: (*topic).to_owned(),
-                secondary: Some((*description).to_owned()),
-            })
-            .collect(),
-        "/opus-version" => [
-            ("4.5", "Claude Opus 4.5", OPUS_4_5_MODEL_ID),
-            ("4.6", "Claude Opus 4.6", OPUS_4_6_MODEL_ID),
-            ("4.7", "Claude Opus 4.7", OPUS_4_7_MODEL_ID),
-        ]
-        .into_iter()
-        .map(|(value, label, _model_id)| SlashCandidate {
-            insert_value: value.to_owned(),
-            primary: value.to_owned(),
-            secondary: Some(label.to_owned()),
-        })
-        .chain([
-            SlashCandidate {
-                insert_value: "default".to_owned(),
-                primary: "default".to_owned(),
-                secondary: Some("Use Claude default Opus alias".to_owned()),
-            },
-            SlashCandidate {
-                insert_value: "status".to_owned(),
-                primary: "status".to_owned(),
-                secondary: Some("Show current project-local Opus pin".to_owned()),
-            },
-        ])
-        .collect(),
+        "/1m-context" | "/docs" | "/opus-version" => static_argument_candidates(command_name),
         "/resume" => app
             .recent_sessions
             .iter()
@@ -431,20 +388,6 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
 }
 
 pub fn is_supported_command(app: &App, command_name: &str) -> bool {
-    matches!(
-        command_name,
-        "/1m-context"
-            | "/cancel"
-            | "/compact"
-            | "/config"
-            | "/mcp"
-            | "/mode"
-            | "/model"
-            | "/new-session"
-            | "/opus-version"
-            | "/resume"
-            | "/plugins"
-            | "/status"
-            | "/usage"
-    ) || advertised_commands(app).iter().any(|c| c == command_name)
+    command_spec(command_name).is_some()
+        || advertised_commands(app).iter().any(|c| c == command_name)
 }

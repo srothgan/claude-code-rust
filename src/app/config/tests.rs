@@ -250,7 +250,7 @@ fn tab_navigation_wraps_and_clears_status_message() {
 
     handle_key(&mut app, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
 
-    assert_eq!(app.config.active_tab, ConfigTab::Mcp);
+    assert_eq!(app.config.active_tab, ConfigTab::Help);
     assert!(app.config.status_message.is_none());
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -260,6 +260,22 @@ fn tab_navigation_wraps_and_clears_status_message() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
     assert_eq!(app.config.active_tab, ConfigTab::Mcp);
+}
+
+#[test]
+fn help_tab_left_right_switches_help_sections() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Help;
+    app.config.help_section = ConfigHelpSection::Shortcuts;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.config.help_section, ConfigHelpSection::Commands);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.config.help_section, ConfigHelpSection::Subagents);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.config.help_section, ConfigHelpSection::Commands);
 }
 
 #[test]

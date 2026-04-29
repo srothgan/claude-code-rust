@@ -47,7 +47,7 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
-pub use config::{ConfigState, ConfigTab};
+pub use config::{ConfigHelpSection, ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
@@ -61,7 +61,7 @@ pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, CancelOrigin, ChatMessage,
-    ChatRenderState, ChatRenderTraceState, ChatViewport, ComposerRenderState, ExtraUsage, HelpView,
+    ChatRenderState, ChatRenderTraceState, ChatViewport, ComposerRenderState, ExtraUsage,
     ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock,
     MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn sending_lone_question_mark_closes_help_overlay() {
+    fn sending_lone_question_mark_submits_as_prompt() {
         let (mut app, mut rx) = app_with_connection();
 
         events::handle_terminal_event(
@@ -746,7 +746,6 @@ mod tests {
         );
 
         assert_eq!(app.input.text(), "?");
-        assert!(app.is_help_active());
 
         events::handle_terminal_event(
             &mut app,
@@ -758,7 +757,6 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert!(app.input.text().is_empty());
-        assert!(!app.is_help_active());
         assert!(matches!(
             app.messages[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "?"

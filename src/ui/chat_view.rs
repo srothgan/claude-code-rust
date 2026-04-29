@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{chat, composer_measure, footer, help, input, input_rows, layout, theme, todo};
+use super::{chat, composer_measure, footer, input, input_rows, layout, theme, todo};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -22,18 +22,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("ui::todo_height"));
         todo::compute_height(app)
     };
-    help::sync_geometry_state(app, frame_area.width);
-    let help_height = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::help_height"));
-        help::compute_height(app, frame_area.width)
-    };
     let input_visual_lines = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
         input::visual_line_count(app, frame_area.width)
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(frame_area, input_visual_lines, todo_height, help_height)
+        layout::compute(frame_area, input_visual_lines, todo_height)
     };
     update_chat_render_measurement(app, frame_area, areas.input.width, areas.footer.is_some());
 
@@ -55,11 +50,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_separator(frame, areas.input_bottom_sep);
-
-    if areas.help.height > 0 {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
-        help::render(frame, areas.help, app);
-    }
 
     if let Some(footer_area) = areas.footer {
         let _t = app.perf.as_ref().map(|p| p.start("ui::footer"));

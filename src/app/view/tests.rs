@@ -124,25 +124,6 @@ fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft(
 }
 
 #[test]
-fn set_active_view_closes_help_without_clearing_question_mark_draft() {
-    let mut app = App::test_default();
-    app.input.set_text("?");
-    app.help_open = true;
-    app.help_view = crate::app::HelpView::Subagents;
-    app.help_visible_count = 7;
-
-    set_active_view(&mut app, ActiveView::Trusted);
-    assert_eq!(app.input.text(), "?");
-    assert!(!app.is_help_active());
-    assert_eq!(app.help_view, crate::app::HelpView::Keys);
-    assert_eq!(app.help_visible_count, 0);
-
-    set_active_view(&mut app, ActiveView::Chat);
-    assert_eq!(app.input.text(), "?");
-    assert!(!app.is_help_active());
-}
-
-#[test]
 fn leaving_config_clears_config_overlay() {
     let mut app = App::test_default();
     app.active_view = ActiveView::Config;

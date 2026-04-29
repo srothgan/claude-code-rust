@@ -9,6 +9,7 @@
 //! - `executors`: slash command execution handlers
 
 mod candidates;
+mod catalog;
 mod executors;
 mod navigation;
 
@@ -21,15 +22,8 @@ use crate::app::events::push_system_message_with_severity;
 use std::rc::Rc;
 
 const MAX_CANDIDATES: usize = 50;
-const DOCS_TOPICS: [(&str, &str); 5] = [
-    ("mode", "Show current and available session modes"),
-    ("models", "Show advertised models and capabilities"),
-    ("shortcuts", "Show live keyboard shortcuts for the current app state"),
-    ("commands", "Show app and SDK slash commands"),
-    ("agents", "Show advertised subagents"),
-];
-
 // Re-export public API
+pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, command_spec};
 pub use executors::try_handle_submit;
 #[allow(unused_imports)]
 pub use navigation::{
@@ -180,8 +174,9 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.available_commands = vec![model::AvailableCommand::new("/help", "Help")];
-        let consumed = try_handle_submit(&mut app, "/help");
+        app.available_commands =
+            vec![model::AvailableCommand::new("/remote-command", "Remote command")];
+        let consumed = try_handle_submit(&mut app, "/remote-command");
         assert!(!consumed);
     }
 
@@ -202,6 +197,14 @@ mod tests {
     }
 
     #[test]
+    fn app_slash_catalog_roundtrips_command_names() {
+        for spec in APP_SLASH_COMMANDS {
+            assert_eq!(AppSlashCommand::from_name(spec.name), Some(spec.command));
+            assert_eq!(spec.command.name(), spec.name);
+        }
+    }
+
+    #[test]
     fn config_without_args_opens_settings_view() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
@@ -211,6 +214,19 @@ mod tests {
 
         assert!(consumed);
         assert_eq!(app.active_view, super::super::ActiveView::Config);
+    }
+
+    #[test]
+    fn help_without_args_opens_help_tab() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+
+        let consumed = try_handle_submit(&mut app, "/help");
+
+        assert!(consumed);
+        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(app.config.active_tab, super::super::ConfigTab::Help);
     }
 
     #[test]
@@ -774,9 +790,17 @@ mod tests {
             panic!("expected text block");
         };
         assert!(block.text.contains("| Command | Description |"));
+        assert!(block.text.contains("/1m-context"));
+        assert!(block.text.contains("project-local 1M context"));
+        assert!(block.text.contains("/cancel"));
+        assert!(block.text.contains("/compact"));
         assert!(block.text.contains("/config"));
         assert!(block.text.contains("/docs"));
         assert!(block.text.contains("/help"));
+        assert!(block.text.contains("/mode"));
+        assert!(block.text.contains("/model"));
+        assert!(block.text.contains("/new-session"));
+        assert!(block.text.contains("/resume"));
     }
 
     #[test]

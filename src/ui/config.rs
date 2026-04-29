@@ -1,6 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+mod help;
 mod input;
 mod mcp;
 mod overlay;
@@ -60,6 +61,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Usage => usage::render(frame, chunks[1], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
+        ConfigTab::Help => help::render(frame, chunks[1], app),
     }
 
     if app.config.model_and_effort_overlay().is_some() {
@@ -147,6 +149,10 @@ fn config_help_text(app: &App) -> String {
         }
         ConfigTab::Mcp => {
             "Up/Down select | Enter actions | r refresh | Tab next tab | Shift+Tab prev tab | Esc close"
+                .to_owned()
+        }
+        ConfigTab::Help => {
+            "Left/Right switch section | Up/Down scroll | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
                 .to_owned()
         }
         ConfigTab::Status => {

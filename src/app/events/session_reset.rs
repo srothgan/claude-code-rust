@@ -71,7 +71,6 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 
 fn reset_input_state_for_new_session(app: &mut App) {
     app.input.clear();
-    app.help_open = false;
     app.pending_submit = None;
     app.pending_paste_text.clear();
     app.pending_paste_session = None;
@@ -106,9 +105,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
     crate::app::file_index::reset(app);
     app.slash = None;
     app.subagent = None;
-    app.help_view = super::super::HelpView::default();
-    app.help_dialog = crate::app::dialog::DialogState::default();
-    app.help_visible_count = 0;
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {

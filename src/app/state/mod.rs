@@ -26,8 +26,8 @@ pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
 };
 pub use types::{
-    AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
-    LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
+    AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
+    McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
     SelectionState, SessionPickerState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
     UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
@@ -47,7 +47,6 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use super::config::ConfigState;
-use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
@@ -169,15 +168,6 @@ pub struct App {
     /// When true, the current/next turn completion should clear local conversation history.
     /// Set by `/compact` once the command is accepted for bridge forwarding.
     pub pending_compact_clear: bool,
-    /// Active help overlay view when `?` help is open.
-    pub help_view: HelpView,
-    /// Whether the help overlay is explicitly open.
-    pub help_open: bool,
-    /// Scroll/selection state for the Slash and Subagents help tabs.
-    pub help_dialog: dialog::DialogState,
-    /// Number of items that currently fit in the help viewport (updated each render).
-    /// Used by key handlers for accurate scroll step size.
-    pub help_visible_count: usize,
     /// Tool call IDs with pending inline interactions, ordered by arrival.
     /// The first entry is the focused interaction that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -883,10 +873,6 @@ impl App {
             config_options: BTreeMap::new(),
             login_hint: None,
             pending_compact_clear: false,
-            help_view: HelpView::Keys,
-            help_open: false,
-            help_dialog: dialog::DialogState::default(),
-            help_visible_count: 0,
             pending_interaction_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             pending_cancel_origin: None,
@@ -1142,18 +1128,6 @@ impl App {
     }
 
     #[must_use]
-    pub fn is_help_active(&self) -> bool {
-        self.help_open
-    }
-
-    pub fn sync_help_open_with_input(&mut self) {
-        if self.help_open && self.input.text().trim() != "?" {
-            self.help_open = false;
-            self.release_focus_target(FocusTarget::Help);
-        }
-    }
-
-    #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
         self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
             || self.slash.is_some()
@@ -1187,15 +1161,6 @@ impl App {
             self.release_focus_target(FocusTarget::Mention);
         }
 
-        if self.is_help_active()
-            && self.pending_interaction_ids.is_empty()
-            && !self.autocomplete_focus_available()
-        {
-            self.claim_focus_target(FocusTarget::Help);
-        } else {
-            self.release_focus_target(FocusTarget::Help);
-        }
-
         self.normalize_focus_stack();
     }
 
@@ -1225,7 +1190,6 @@ impl App {
             self.autocomplete_focus_available(),
             !self.pending_interaction_ids.is_empty(),
         )
-        .with_help(self.is_help_active())
     }
 }
 
@@ -1236,7 +1200,6 @@ mod tests {
     // =====
 
     use super::*;
-    use crate::app::dialog;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
@@ -3195,7 +3158,7 @@ mod tests {
                 primary: "/config".into(),
                 secondary: Some("Open settings".into()),
             }],
-            dialog: dialog::DialogState::default(),
+            dialog: crate::app::dialog::DialogState::default(),
         });
         app
     }

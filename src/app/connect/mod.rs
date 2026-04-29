@@ -14,7 +14,6 @@ mod session_start;
 mod type_converters;
 
 use super::config::ConfigState;
-use super::dialog::DialogState;
 use super::handoff::shadow::HandoffShadowState;
 use super::plugins::PluginsState;
 use super::state::{
@@ -23,7 +22,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::{ActiveView, SurfaceMode};
-use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
+use super::{App, AppStatus, ChatViewport, FocusManager, SelectionState, TodoItem};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
@@ -159,10 +158,6 @@ pub fn create_app(cli: &Cli) -> App {
         config_options: std::collections::BTreeMap::new(),
         login_hint: None,
         pending_compact_clear: false,
-        help_view: HelpView::Keys,
-        help_open: false,
-        help_dialog: DialogState::default(),
-        help_visible_count: 0,
         pending_interaction_ids: Vec::new(),
         cancelled_turn_pending_hint: false,
         pending_cancel_origin: None,

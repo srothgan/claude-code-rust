@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Shared list-dialog navigation state used by autocomplete/dropdown UIs.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DialogState {
     /// Index of the currently selected item.
     pub selected: usize,
