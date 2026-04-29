@@ -21,7 +21,7 @@ struct DropdownMeta {
 
 pub fn is_active(app: &App) -> bool {
     app.mention.is_some()
-        || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
+        || app.slash.is_some()
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
@@ -42,9 +42,7 @@ fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
     if let Some(m) = &app.mention {
         return Some(Dropdown::Mention(m));
     }
-    if let Some(s) = &app.slash
-        && !s.candidates.is_empty()
-    {
+    if let Some(s) = &app.slash {
         return Some(Dropdown::Slash(s));
     }
     if let Some(s) = &app.subagent
@@ -67,12 +65,12 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
             DropdownMeta { visible_count, start, end }
         }
         Dropdown::Slash(s) => {
-            let visible_count = if s.query.is_empty() {
+            let visible_count = if s.candidates.is_empty() {
                 1
             } else {
                 s.candidates.len().min(AUTOCOMPLETE_VISIBLE_ROWS)
             };
-            let (start, end) = if s.query.is_empty() {
+            let (start, end) = if s.candidates.is_empty() {
                 (0, 0)
             } else {
                 s.dialog.visible_range(s.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS)
@@ -108,7 +106,7 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
             }
         }
         Dropdown::Slash(s) => {
-            if s.query.is_empty() {
+            if s.candidates.is_empty() {
                 lines.push(hint_line("Type a command name after /"));
             } else {
                 for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
@@ -254,7 +252,9 @@ fn with_left_rail(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .into_iter()
         .enumerate()
         .map(|(i, line)| {
-            let prefix = if line_count == 1 || i + 1 == line_count {
+            let prefix = if line_count == 1 {
+                "  [ "
+            } else if i + 1 == line_count {
                 "  \u{2514}\u{2500} "
             } else if i == 0 {
                 "  \u{250c}\u{2500} "
@@ -367,11 +367,11 @@ mod tests {
         assert!(is_active(&app));
         assert_eq!(composer_hint_height(&app), 1);
         assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a file or folder name after @");
+        assert_eq!(line_text(&rows[0]), "  [ Type a file or folder name after @");
     }
 
     #[test]
-    fn bare_slash_renders_single_placeholder_row() {
+    fn bare_slash_renders_command_candidates() {
         let mut app = App::test_default();
         app.input.set_text("/");
         let _ = app.input.set_cursor(0, 1);
@@ -379,9 +379,9 @@ mod tests {
 
         let rows = composer_hint_rows(&app);
 
-        assert_eq!(composer_hint_height(&app), 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a command name after /");
+        assert_eq!(composer_hint_height(&app), 5);
+        assert_eq!(rows.len(), 5);
+        assert!(line_text(&rows[0]).contains("/1m-context"));
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
 
         assert_eq!(composer_hint_height(&app), 1);
         assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  \u{2514}\u{2500} Type a subagent name after &");
+        assert_eq!(line_text(&rows[0]), "  [ Type a subagent name after &");
     }
 
     #[test]

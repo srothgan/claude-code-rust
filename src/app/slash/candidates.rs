@@ -420,10 +420,6 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
             )
         }
     };
-    if candidates.is_empty() {
-        return None;
-    }
-
     Some(SlashState {
         trigger_row: detection.trigger_row,
         trigger_col: detection.trigger_col,

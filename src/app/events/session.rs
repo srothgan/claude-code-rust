@@ -5,10 +5,7 @@ use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
-use super::super::{
-    App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
-    UpdateNoticeState,
-};
+use super::super::{App, AppStatus, LoginHint, SystemSeverity, UpdateNoticeState};
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
 use crate::agent::client::AgentConnection;
@@ -193,13 +190,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
         app.needs_redraw = true;
         return;
     }
-    app.push_message_tracked(ChatMessage::new(
-        MessageRole::System(None),
-        vec![MessageBlock::Text(TextBlock::from_complete(msg))],
-        None,
-    ));
-    app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    push_system_message_with_severity(app, Some(SystemSeverity::Error), msg);
     clear_pending_command(app);
     app.resuming_session_id = None;
 }

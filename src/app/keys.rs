@@ -953,19 +953,19 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_up(app);
             }
             true
         }
         (KeyCode::Down, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_down(app);
             }
             true
         }
         (KeyCode::Enter | KeyCode::Tab, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.query.is_empty()) {
+            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::confirm_selection(app);
             }
             true
@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_slash_enter_does_not_confirm_hidden_candidate() {
+    fn bare_slash_enter_confirms_visible_candidate() {
         let mut app = App::test_default();
         app.input.set_text("/");
         let _ = app.input.set_cursor(0, 1);
@@ -1118,7 +1118,7 @@ mod tests {
             handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(handled);
-        assert_eq!(app.input.text(), "/");
+        assert_eq!(app.input.text(), "/1m-context ");
         assert!(app.slash.is_some());
     }
 

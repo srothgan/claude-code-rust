@@ -129,9 +129,6 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
 }
 
 fn dispatch_submission(app: &mut App, text: String) {
-    if slash::try_handle_inline_chat_migration_submit(app, &text) {
-        return;
-    }
     if slash::try_handle_submit(app, &text) {
         return;
     }
@@ -321,6 +318,85 @@ mod tests {
             panic!("expected docs system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
+    }
+
+    #[test]
+    fn supported_advertised_slash_submit_falls_through_to_prompt_turn() {
+        let (mut app, mut rx) = app_with_connection();
+        app.available_commands = vec![model::AvailableCommand::new("/help", "Show SDK help")];
+        app.input.set_text("/help");
+
+        submit_input(&mut app);
+
+        assert!(app.input.text().is_empty());
+        assert!(matches!(app.status, AppStatus::Thinking));
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+        let envelope = rx.try_recv().expect("advertised slash command should be sent");
+        match envelope.command {
+            BridgeCommand::Prompt { session_id, chunks } => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(chunks.len(), 1);
+                assert_eq!(chunks[0].kind, "text");
+                assert_eq!(chunks[0].value, serde_json::Value::String("/help".to_owned()));
+            }
+            other => panic!("expected prompt command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_slash_submit_opens_config_without_prompt_turn() {
+        let (mut app, mut rx) = app_with_connection();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.input.set_text("/config");
+
+        submit_input(&mut app);
+
+        assert_eq!(app.active_view, ActiveView::Config);
+        assert!(app.input.text().is_empty());
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
+    }
+
+    #[test]
+    fn local_custom_slash_submit_is_consumed() {
+        let (mut app, mut rx) = app_with_connection();
+        let dir = tempfile::tempdir().expect("tempdir");
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.input.set_text("/1m-context status");
+
+        submit_input(&mut app);
+
+        assert!(app.input.text().is_empty());
+        assert!(matches!(app.status, AppStatus::Ready));
+        let Some(last) = app.messages.last() else {
+            panic!("expected /1m-context status message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
+        assert!(rx.try_recv().is_err(), "local custom slash command should not dispatch a prompt");
+    }
+
+    #[test]
+    fn auth_slash_usage_error_is_consumed() {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("/login extra");
+
+        submit_input(&mut app);
+
+        assert!(app.input.text().is_empty());
+        assert!(matches!(app.status, AppStatus::Ready));
+        let Some(last) = app.messages.last() else {
+            panic!("expected /login usage message");
+        };
+        assert!(matches!(
+            last.role,
+            MessageRole::System(Some(super::super::SystemSeverity::Error))
+        ));
+        assert!(rx.try_recv().is_err(), "auth slash usage error should not dispatch a prompt");
     }
 
     #[test]

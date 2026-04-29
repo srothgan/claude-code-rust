@@ -13,9 +13,11 @@ mod executors;
 mod navigation;
 
 use super::{
-    App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, dialog::DialogState,
+    App, AppStatus, ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    dialog::DialogState,
 };
 use crate::agent::model;
+use crate::app::events::push_system_message_with_severity;
 use std::rc::Rc;
 
 const MAX_CANDIDATES: usize = 50;
@@ -33,9 +35,6 @@ pub use executors::try_handle_submit;
 pub use navigation::{
     activate, confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
 };
-
-const INLINE_CHAT_MIGRATION_MESSAGE: &str =
-    "Slash commands are temporarily unavailable during the inline-chat migration.";
 
 #[derive(Debug, Clone)]
 pub struct SlashCandidate {
@@ -93,27 +92,13 @@ pub fn is_cancel_command(text: &str) -> bool {
     parse(text).is_some_and(|parsed| parsed.name == "/cancel")
 }
 
-pub fn try_handle_inline_chat_migration_submit(app: &mut App, text: &str) -> bool {
-    if parse(text).is_none() {
-        return false;
-    }
-    push_system_message(app, INLINE_CHAT_MIGRATION_MESSAGE);
-    true
-}
-
 fn normalize_slash_name(name: &str) -> String {
     if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }
 
 fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    app.push_message_tracked(ChatMessage::new(
-        MessageRole::System(None),
-        vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-        None,
-    ));
-    app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    push_system_message_with_severity(app, Some(SystemSeverity::Error), &text);
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -854,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn variable_command_argument_mode_deactivates_when_no_match() {
+    fn variable_command_argument_mode_stays_active_without_matches() {
         let mut app = App::test_default();
         app.mode = Some(super::super::ModeState {
             current_mode_id: "plan".to_owned(),
@@ -867,7 +852,9 @@ mod tests {
         app.input.set_text("/mode xyz");
         let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
-        assert!(app.slash.is_none());
+        let slash =
+            app.slash.as_ref().expect("slash state should stay active for empty result hint");
+        assert!(slash.candidates.is_empty());
     }
 
     #[test]
