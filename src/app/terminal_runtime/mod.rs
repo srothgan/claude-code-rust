@@ -7,6 +7,7 @@ mod fullscreen_session;
 mod insert_history;
 mod modes;
 mod panic_hook;
+mod release_guard;
 mod screen_scroll;
 
 use self::chat_session::ChatTerminalSession;
@@ -20,6 +21,8 @@ use crate::app::{App, FullscreenView, SurfaceMode, TerminalLifecycleState};
 use anyhow::{Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) use release_guard::TerminalReleaseGuard;
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

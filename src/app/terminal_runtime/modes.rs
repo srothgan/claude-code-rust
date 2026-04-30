@@ -51,6 +51,15 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::DisableRawMode,
 ];
 
+const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
+    TerminalModeAction::ShowCursor,
+    TerminalModeAction::EnableLineWrap,
+    TerminalModeAction::DisableFocusChange,
+    TerminalModeAction::DisableRawMode,
+];
+
+const RETURN_FROM_CHILD_ACTIONS: &[TerminalModeAction] = CHAT_STARTUP_ACTIONS;
+
 pub(super) fn chat_startup_actions() -> &'static [TerminalModeAction] {
     CHAT_STARTUP_ACTIONS
 }
@@ -65,6 +74,14 @@ pub(super) fn exit_fullscreen_actions() -> &'static [TerminalModeAction] {
 
 pub(super) fn shutdown_restore_actions() -> &'static [TerminalModeAction] {
     SHUTDOWN_RESTORE_ACTIONS
+}
+
+pub(super) fn release_to_child_actions() -> &'static [TerminalModeAction] {
+    RELEASE_TO_CHILD_ACTIONS
+}
+
+pub(super) fn return_from_child_actions() -> &'static [TerminalModeAction] {
+    RETURN_FROM_CHILD_ACTIONS
 }
 
 pub(super) fn apply_actions(
@@ -160,6 +177,24 @@ mod tests {
                 TerminalModeAction::DisableRawMode,
             ]
         );
+    }
+
+    #[test]
+    fn release_to_child_actions_match_expected_order() {
+        assert_eq!(
+            release_to_child_actions(),
+            &[
+                TerminalModeAction::ShowCursor,
+                TerminalModeAction::EnableLineWrap,
+                TerminalModeAction::DisableFocusChange,
+                TerminalModeAction::DisableRawMode,
+            ]
+        );
+    }
+
+    #[test]
+    fn return_from_child_actions_match_chat_startup() {
+        assert_eq!(return_from_child_actions(), chat_startup_actions());
     }
 
     #[test]

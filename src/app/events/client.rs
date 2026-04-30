@@ -67,6 +67,20 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SlashCommandError(msg) => {
             session::handle_slash_command_error_event(app, &msg);
         }
+        ClientEvent::TerminalReleasedToChild { reason } => {
+            app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
+            app.needs_redraw = false;
+        }
+        ClientEvent::TerminalReturnedFromChild { reason: _ } => {
+            app.terminal_lifecycle =
+                crate::app::TerminalLifecycleState::Running(crate::app::SurfaceMode::Chat);
+            app.surface_dirty.terminal_mode = true;
+            app.chat_render.clear_measurements();
+            app.chat_render.invalidate_live_anchor();
+            app.reset_committed_output_tracking();
+            app.force_redraw = true;
+            app.needs_redraw = true;
+        }
         ClientEvent::RuntimeReloadCompleted { session_id } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())

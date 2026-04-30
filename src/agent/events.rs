@@ -4,7 +4,7 @@
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
 use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
-use crate::app::{UsageSnapshot, UsageSourceKind};
+use crate::app::{ReleaseReason, UsageSnapshot, UsageSourceKind};
 use crate::error::AppError;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -61,6 +61,10 @@ pub enum ClientEvent {
     AuthRequired { method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.
     SlashCommandError(String),
+    /// Terminal ownership was handed to a child process.
+    TerminalReleasedToChild { reason: ReleaseReason },
+    /// Terminal ownership returned from a child process.
+    TerminalReturnedFromChild { reason: ReleaseReason },
     /// Session runtime plugin reload completed successfully.
     RuntimeReloadCompleted { session_id: String },
     /// Session runtime plugin reload failed after dispatch.

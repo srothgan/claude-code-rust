@@ -183,6 +183,17 @@ where
         Ok(())
     }
 
+    pub(crate) fn clear_visible_screen(&mut self) -> io::Result<()> {
+        self.backend.set_cursor_position(Position::ORIGIN)?;
+        self.backend.clear()?;
+        self.buffers[0].reset();
+        self.buffers[1].reset();
+        self.history_top = None;
+        self.history_bottom_exclusive = 0;
+        self.last_known_cursor_pos = Position::ORIGIN;
+        Ok(())
+    }
+
     pub(crate) fn invalidate_viewport(&mut self) {
         self.buffers[1 - self.current].reset();
     }

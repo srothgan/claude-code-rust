@@ -81,9 +81,8 @@ where
 
     pub(super) fn clear(&mut self, app: &mut App) -> anyhow::Result<()> {
         self.ensure_line_wrap_disabled(app)?;
-        self.terminal.clear().context("failed to clear inline viewport")?;
-        Write::flush(self.terminal.backend_mut())
-            .context("failed to flush inline viewport clear")?;
+        self.terminal.clear_visible_screen().context("failed to clear inline screen")?;
+        Write::flush(self.terminal.backend_mut()).context("failed to flush inline screen clear")?;
         app.chat_render.invalidate_live_anchor();
         app.reset_committed_output_tracking();
         Ok(())
@@ -1008,6 +1007,22 @@ mod tests {
     }
 
     #[test]
+    fn force_clear_uses_full_screen_clear_and_resets_history_bounds() {
+        let mut app = App::test_default();
+        let mut session =
+            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
+        session.terminal.set_viewport_area(Rect::new(0, 20, 80, 4));
+        session.terminal.record_history_insert(0, 20);
+
+        session.clear(&mut app).expect("force clear should clear visible screen");
+
+        let backend = session.terminal.backend_mut();
+        assert_eq!(backend.clear_calls, 1);
+        assert_eq!(backend.clear_region_calls, 0);
+        assert!(session.terminal.history_bounds().is_none());
+    }
+
+    #[test]
     fn successful_history_replay_marks_pending_ids_inserted_and_history_synced() {
         let (mut app, _inserted_id, _pending_id) = app_with_unsynced_replay();
         let mut session =
@@ -1110,6 +1125,7 @@ mod tests {
         fail_writes: bool,
         fail_backend_flush: bool,
         clear_region_calls: usize,
+        clear_calls: usize,
     }
 
     impl RecordingBackend {
@@ -1121,6 +1137,7 @@ mod tests {
                 fail_writes: false,
                 fail_backend_flush: false,
                 clear_region_calls: 0,
+                clear_calls: 0,
             }
         }
     }
@@ -1167,6 +1184,7 @@ mod tests {
         }
 
         fn clear(&mut self) -> io::Result<()> {
+            self.clear_calls = self.clear_calls.saturating_add(1);
             Ok(())
         }
 

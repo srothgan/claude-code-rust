@@ -28,6 +28,12 @@ use crossterm::event::{Event, KeyEventKind};
 pub use client::handle_client_event;
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
+    if matches!(app.terminal_lifecycle, super::TerminalLifecycleState::ReleasedToChild(_))
+        && !matches!(&event, Event::Resize(_, _))
+    {
+        return;
+    }
+
     let changed = match event {
         Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
@@ -2047,6 +2053,56 @@ mod tests {
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
+    }
+
+    #[test]
+    fn terminal_release_event_marks_child_process_lifecycle_without_redraw() {
+        let mut app = make_test_app();
+        app.needs_redraw = true;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow },
+        );
+
+        assert_eq!(
+            app.terminal_lifecycle,
+            TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow)
+        );
+        assert!(!app.needs_redraw);
+    }
+
+    #[test]
+    fn terminal_events_are_ignored_while_released_to_child_except_resize() {
+        let mut app = make_test_app();
+        app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn terminal_return_event_restores_chat_lifecycle_and_rebuilds_chat() {
+        let mut app = make_test_app();
+        app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
+        app.chat_render.live_region.anchor_valid = true;
+        app.force_redraw = false;
+        app.needs_redraw = false;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow },
+        );
+
+        assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
+        assert!(app.surface_dirty.terminal_mode);
+        assert!(!app.chat_render.live_region.anchor_valid);
+        assert!(app.force_redraw);
+        assert!(app.needs_redraw);
     }
 
     #[test]

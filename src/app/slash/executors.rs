@@ -11,8 +11,11 @@ use crate::agent::events::ClientEvent;
 use crate::app::config::{self, SettingFile, store};
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
 use crate::app::events::push_system_message_with_severity;
-use crate::app::{App, AppStatus, CancelOrigin, SystemSeverity};
+use crate::app::{App, AppStatus, CancelOrigin, ReleaseReason, SystemSeverity};
 use std::fmt::Write as _;
+use std::path::Path;
+use std::process::{ExitStatus, Stdio};
+use tokio::sync::mpsc;
 
 const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
@@ -463,19 +466,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
             outcome = "start",
             auth_command = "login",
         );
-        crate::app::suspend_terminal();
-
-        let result = tokio::process::Command::new(&claude_path)
-            .args(["auth", "login"])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await;
-
-        crate::app::resume_terminal();
-
-        match result {
+        match run_auth_child_command(&tx, &claude_path, "login").await {
             Ok(status) => {
                 tracing::debug!(
                     target: crate::logging::targets::APP_AUTH,
@@ -510,10 +501,8 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                     )));
                 }
             }
-            Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                    "Failed to run claude auth login: {e}"
-                )));
+            Err(message) => {
+                let _ = tx.send(ClientEvent::SlashCommandError(message));
             }
         }
     });
@@ -558,19 +547,7 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
             outcome = "start",
             auth_command = "logout",
         );
-        crate::app::suspend_terminal();
-
-        let result = tokio::process::Command::new(&claude_path)
-            .args(["auth", "logout"])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await;
-
-        crate::app::resume_terminal();
-
-        match result {
+        match run_auth_child_command(&tx, &claude_path, "logout").await {
             Ok(status) => {
                 tracing::debug!(
                     target: crate::logging::targets::APP_AUTH,
@@ -598,14 +575,49 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
                     )));
                 }
             }
-            Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError(format!(
-                    "Failed to run claude auth logout: {e}"
-                )));
+            Err(message) => {
+                let _ = tx.send(ClientEvent::SlashCommandError(message));
             }
         }
     });
     true
+}
+
+async fn run_auth_child_command(
+    tx: &mpsc::UnboundedSender<ClientEvent>,
+    claude_path: &Path,
+    subcommand: &'static str,
+) -> Result<ExitStatus, String> {
+    let _ = tx.send(ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow });
+    let terminal_release = crate::app::terminal_runtime::TerminalReleaseGuard::release(
+        ReleaseReason::AuthFlow,
+        subcommand,
+    )
+    .map_err(|err| {
+        send_terminal_returned_from_child(tx);
+        format!("Failed to release terminal for claude auth {subcommand}: {err}")
+    })?;
+
+    let result = tokio::process::Command::new(claude_path)
+        .args(["auth", subcommand])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .map_err(|err| format!("Failed to run claude auth {subcommand}: {err}"));
+
+    let restore_result = terminal_release.restore();
+    send_terminal_returned_from_child(tx);
+    restore_result.map_err(|err| {
+        format!("Failed to restore terminal after claude auth {subcommand}: {err}")
+    })?;
+
+    result
+}
+
+fn send_terminal_returned_from_child(tx: &mpsc::UnboundedSender<ClientEvent>) {
+    let _ = tx.send(ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow });
 }
 
 /// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.

@@ -32,7 +32,7 @@ mod state;
 pub(crate) mod subagent;
 mod tab_title;
 mod terminal;
-mod terminal_runtime;
+pub(crate) mod terminal_runtime;
 mod todos;
 mod trust;
 mod update_check;
@@ -82,31 +82,6 @@ use std::time::{Duration, Instant};
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
-
-// ---------------------------------------------------------------------------
-// Terminal suspend / resume helpers (reused by /login, /logout)
-// ---------------------------------------------------------------------------
-
-/// Disable raw mode and crossterm features so a child process can own the
-/// terminal (e.g. `claude auth login` which opens a browser flow).
-pub(crate) fn suspend_terminal() {
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange
-    );
-    let _ = crossterm::terminal::disable_raw_mode();
-}
-
-/// Re-enable raw mode and crossterm features after a child process finishes.
-pub(crate) fn resume_terminal() {
-    let _ = crossterm::terminal::enable_raw_mode();
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableFocusChange
-    );
-}
 
 // ---------------------------------------------------------------------------
 // TUI event loop
@@ -239,6 +214,10 @@ async fn run_tui_loop(
             terminal_runtime.clear_active_surface_with_app(Some(app))?;
             app.force_redraw = false;
             app.needs_redraw = true;
+        }
+        if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
+            app.force_redraw = false;
+            app.needs_redraw = false;
         }
         if app.needs_redraw {
             if let Some(ref mut perf) = app.perf {
