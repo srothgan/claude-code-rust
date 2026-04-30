@@ -212,7 +212,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/config");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
     }
 
     #[test]
@@ -224,7 +227,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/help");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Help);
     }
 
@@ -552,7 +558,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
     }
 
@@ -565,7 +574,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/mcp");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Mcp);
     }
 
@@ -594,7 +606,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins extra");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
     }
 
@@ -1319,7 +1334,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/status");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Status);
     }
 
@@ -1332,7 +1350,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/usage");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Usage);
     }
 

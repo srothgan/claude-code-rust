@@ -24,37 +24,37 @@ mod wrap;
 
 pub use message::SpinnerState;
 
-use crate::app::ActiveView;
 use crate::app::App;
+use crate::app::{FullscreenView, SurfaceMode};
 use ratatui::Frame;
 
 pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
-    match app.active_view {
-        ActiveView::Config => config::render(frame, app),
-        ActiveView::Trusted => trusted::render(frame, app),
-        ActiveView::SessionPicker => session_picker::render(frame, app),
-        ActiveView::Chat => {
+    match app.surface_mode {
+        SurfaceMode::Fullscreen(FullscreenView::Config) => config::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Trusted) => trusted::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
+            session_picker::render(frame, app);
+        }
+        SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }
     }
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    match app.active_view {
-        ActiveView::Chat => {
+    match app.surface_mode {
+        SurfaceMode::Chat => {
             let _ = (frame, app);
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }
-        ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
-            render_fullscreen_surface(frame, app);
-        }
+        SurfaceMode::Fullscreen(_) => render_fullscreen_surface(frame, app),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ActiveView, App};
+    use crate::app::{App, FullscreenView, SurfaceMode};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -74,7 +74,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = ActiveView::Config;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
 
         terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 
@@ -87,7 +87,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
 
         terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 
@@ -100,7 +100,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
 
         terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 

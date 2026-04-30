@@ -71,7 +71,7 @@ pub use state::{
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
-pub use view::{ActiveView, FullscreenView, SurfaceMode};
+pub use view::{FullscreenView, SurfaceMode};
 
 use crate::agent::model;
 use crossterm::event::EventStream;
@@ -154,7 +154,7 @@ async fn run_tui_loop(
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
-        if app.active_view == ActiveView::Chat
+        if app.surface_mode == SurfaceMode::Chat
             && let Some(action) = app.paste_burst.tick(Instant::now())
         {
             match action {
@@ -168,7 +168,7 @@ async fn run_tui_loop(
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.active_view == ActiveView::Chat && !app.pending_paste_text.is_empty() {
+        if app.surface_mode == SurfaceMode::Chat && !app.pending_paste_text.is_empty() {
             finalize_pending_paste_event(app);
         }
 
@@ -176,7 +176,7 @@ async fn run_tui_loop(
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
         // submit that unchanged draft.
-        if app.active_view == ActiveView::Chat && app.pending_submit.is_some() {
+        if app.surface_mode == SurfaceMode::Chat && app.pending_submit.is_some() {
             finalize_deferred_submit(app);
         }
 

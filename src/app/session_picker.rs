@@ -3,7 +3,7 @@
 
 use super::connect::begin_resume_session;
 use super::events::push_system_message_with_severity;
-use super::view::{self, ActiveView};
+use super::view;
 use super::{App, AppStatus, SystemSeverity};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -33,7 +33,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if session_count == 0 {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
             app.startup_session_picker_resolved = true;
-            view::set_active_view(app, ActiveView::Chat);
+            view::set_chat_surface(app);
         }
         return;
     }
@@ -51,7 +51,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app),
         (KeyCode::Esc, KeyModifiers::NONE) => {
             app.startup_session_picker_resolved = true;
-            view::set_active_view(app, ActiveView::Chat);
+            view::set_chat_surface(app);
         }
         _ => {}
     }
@@ -66,7 +66,7 @@ fn activate_selection(app: &mut App) {
     let session_id = session.session_id.clone();
     let Some(conn) = app.conn.clone() else {
         app.startup_session_picker_resolved = true;
-        view::set_active_view(app, ActiveView::Chat);
+        view::set_chat_surface(app);
         return;
     };
 
@@ -86,7 +86,7 @@ fn activate_selection(app: &mut App) {
         );
     }
 
-    view::set_active_view(app, ActiveView::Chat);
+    view::set_chat_surface(app);
 }
 
 fn is_ctrl(key: KeyEvent, ch: char) -> bool {
@@ -98,13 +98,13 @@ mod tests {
     use super::handle_key;
     use crate::agent::client::AgentConnection;
     use crate::agent::wire::{BridgeCommand, CommandEnvelope};
-    use crate::app::{ActiveView, App, AppStatus, RecentSessionInfo};
+    use crate::app::{App, AppStatus, FullscreenView, RecentSessionInfo, SurfaceMode};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::rc::Rc;
 
     fn picker_app() -> App {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
         app.recent_sessions = vec![
             RecentSessionInfo {
                 session_id: "session-1".to_owned(),
@@ -140,7 +140,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
         assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(matches!(app.status, AppStatus::CommandPending));
         assert_eq!(app.resuming_session_id.as_deref(), Some("session-1"));
         let envelope = rx.try_recv().expect("resume command");
@@ -181,7 +181,7 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(app.startup_session_picker_resolved);
     }
 
@@ -194,7 +194,7 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
         assert!(app.pending_command_label.is_none());

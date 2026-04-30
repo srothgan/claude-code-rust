@@ -1182,7 +1182,7 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
             draft: "E".to_owned(),
             cursor: 1,
@@ -1236,7 +1236,7 @@ mod tests {
         let backend = TestBackend::new(80, 16);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.selected_setting_index = setting_specs()
             .iter()
             .position(|spec| spec.id == SettingId::OutputStyle)
@@ -1267,7 +1267,7 @@ mod tests {
         let backend = TestBackend::new(42, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.selected_setting_index = setting_specs()
             .iter()
             .position(|spec| spec.id == SettingId::OutputStyle)
@@ -1299,7 +1299,7 @@ mod tests {
         let backend = TestBackend::new(80, 16);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.selected_setting_index = setting_specs().len().saturating_sub(1);
         app.config.settings_scroll_offset = 0;
 
@@ -1327,7 +1327,7 @@ mod tests {
         let backend = TestBackend::new(180, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
 
         terminal
             .draw(|frame| {
@@ -1356,7 +1356,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
 
         terminal
             .draw(|frame| {
@@ -1396,7 +1396,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Status;
 
         terminal
@@ -1426,7 +1426,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Status;
 
         terminal
@@ -1456,7 +1456,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Usage;
 
         terminal
@@ -1485,7 +1485,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Settings;
 
         terminal
@@ -1515,7 +1515,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
@@ -1574,7 +1574,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
         app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
@@ -1614,7 +1614,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.cwd_raw = "C:\\work\\project-b".to_owned();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.installed = vec![
             crate::app::plugins::InstalledPluginEntry {
@@ -1686,7 +1686,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.loading = true;
 
@@ -1716,7 +1716,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
 
@@ -1746,7 +1746,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
             crate::app::config::InstalledPluginActionOverlayState {
@@ -1794,7 +1794,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
             crate::app::config::PluginInstallOverlayState {
@@ -1839,7 +1839,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::MarketplaceActions(
             crate::app::config::MarketplaceActionsOverlayState {
@@ -1882,7 +1882,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
             crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
@@ -1918,7 +1918,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Mcp;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
             crate::app::config::McpDetailsOverlayState {
@@ -1981,7 +1981,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Status;
         app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
 
@@ -2011,7 +2011,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.status_message = Some("Renaming session...".to_owned());
 
         terminal

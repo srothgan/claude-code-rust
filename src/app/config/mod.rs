@@ -8,7 +8,7 @@ mod mcp_edit;
 mod resolve;
 pub mod store;
 
-use super::view::{self, ActiveView};
+use super::view::{self, FullscreenView, SurfaceMode};
 use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crate::app::dialog::DialogState;
@@ -1453,13 +1453,13 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let notice = loaded.notice.clone();
     app.config.apply_loaded(loaded, notice, false);
     app.reconcile_runtime_from_persisted_settings_change();
-    view::set_active_view(app, ActiveView::Config);
+    view::set_fullscreen_view(app, FullscreenView::Config);
     request_active_tab_side_effects(app);
     Ok(())
 }
 
 pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
-    if app.active_view != ActiveView::Config {
+    if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Config) {
         return;
     }
     request_status_snapshot_if_needed(app);
@@ -1472,7 +1472,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
 }
 
 pub fn close(app: &mut App) {
-    view::set_active_view(app, ActiveView::Chat);
+    view::set_chat_surface(app);
 }
 
 pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {

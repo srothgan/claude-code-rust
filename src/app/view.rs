@@ -6,14 +6,6 @@ use crate::app::App;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveView {
-    Chat,
-    Config,
-    Trusted,
-    SessionPicker,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenView {
     Config,
     Trusted,
@@ -26,68 +18,41 @@ pub enum SurfaceMode {
     Fullscreen(FullscreenView),
 }
 
-impl ActiveView {
-    #[must_use]
-    pub fn surface_mode(self) -> SurfaceMode {
-        match self {
-            Self::Chat => SurfaceMode::Chat,
-            Self::Config => SurfaceMode::Fullscreen(FullscreenView::Config),
-            Self::Trusted => SurfaceMode::Fullscreen(FullscreenView::Trusted),
-            Self::SessionPicker => SurfaceMode::Fullscreen(FullscreenView::SessionPicker),
-        }
-    }
-
-    #[must_use]
-    pub fn fullscreen_view(self) -> Option<FullscreenView> {
-        match self {
-            Self::Chat => None,
-            Self::Config => Some(FullscreenView::Config),
-            Self::Trusted => Some(FullscreenView::Trusted),
-            Self::SessionPicker => Some(FullscreenView::SessionPicker),
-        }
-    }
-}
-
-impl FullscreenView {
-    #[must_use]
-    pub fn active_view(self) -> ActiveView {
-        match self {
-            Self::Config => ActiveView::Config,
-            Self::Trusted => ActiveView::Trusted,
-            Self::SessionPicker => ActiveView::SessionPicker,
-        }
-    }
-}
-
 impl SurfaceMode {
     #[must_use]
-    pub fn active_view(self) -> ActiveView {
-        match self {
-            Self::Chat => ActiveView::Chat,
-            Self::Fullscreen(view) => view.active_view(),
-        }
+    pub fn fullscreen_view(self) -> Option<FullscreenView> {
+        let Self::Fullscreen(view) = self else {
+            return None;
+        };
+        Some(view)
     }
 }
 
-pub fn set_active_view(app: &mut App, next: ActiveView) {
-    if app.active_view == next {
+pub fn set_surface_mode(app: &mut App, next: SurfaceMode) {
+    if app.surface_mode == next {
         return;
     }
 
     let previous_surface = app.surface_mode;
-    let next_surface = next.surface_mode();
     clear_transient_view_state(app);
-    app.active_view = next;
-    app.surface_mode = next_surface;
-    app.surface_dirty.mark_view_transition(previous_surface, next_surface);
+    app.surface_mode = next;
+    app.surface_dirty.mark_view_transition(previous_surface, next);
     app.chat_render.invalidate_live_anchor();
     if let TerminalLifecycleState::Running(_) = app.terminal_lifecycle {
-        app.terminal_lifecycle = TerminalLifecycleState::Running(next_surface);
+        app.terminal_lifecycle = TerminalLifecycleState::Running(next);
     }
-    if next == ActiveView::Chat {
+    if next == SurfaceMode::Chat {
         app.rebuild_chat_focus_from_state();
     }
     app.request_active_surface_repaint();
+}
+
+pub fn set_fullscreen_view(app: &mut App, next: FullscreenView) {
+    set_surface_mode(app, SurfaceMode::Fullscreen(next));
+}
+
+pub fn set_chat_surface(app: &mut App) {
+    set_surface_mode(app, SurfaceMode::Chat);
 }
 
 fn clear_transient_view_state(app: &mut App) {
@@ -98,7 +63,7 @@ fn clear_transient_view_state(app: &mut App) {
     app.mention = None;
     app.slash = None;
     app.subagent = None;
-    if app.active_view == ActiveView::Config {
+    if app.surface_mode == SurfaceMode::Fullscreen(FullscreenView::Config) {
         app.config.overlay = None;
     }
     app.release_focus_target(crate::app::FocusTarget::Mention);

@@ -52,7 +52,7 @@ use super::plugins::PluginsState;
 use super::slash;
 use super::subagent;
 use super::trust::TrustState;
-use super::view::{ActiveView, SurfaceMode};
+use super::view::SurfaceMode;
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,7 +127,6 @@ pub use LayoutInvalidation as InvalidationLevel;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub active_view: ActiveView,
     pub surface_mode: SurfaceMode,
     pub terminal_lifecycle: TerminalLifecycleState,
     pub surface_dirty: SurfaceDirtyState,
@@ -824,7 +823,6 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         Self {
-            active_view: ActiveView::Chat,
             surface_mode: SurfaceMode::Chat,
             terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),
             surface_dirty: SurfaceDirtyState::initial_chat(),
@@ -1118,7 +1116,7 @@ impl App {
     }
 
     pub fn rebuild_chat_focus_from_state(&mut self) {
-        if self.active_view != ActiveView::Chat {
+        if self.surface_mode != SurfaceMode::Chat {
             return;
         }
 

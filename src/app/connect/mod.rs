@@ -21,7 +21,7 @@ use super::state::{
     SessionPickerState,
 };
 use super::trust;
-use super::view::{ActiveView, SurfaceMode};
+use super::view::SurfaceMode;
 use super::{App, AppStatus, FocusManager, TodoItem};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
@@ -123,7 +123,6 @@ pub fn create_app(cli: &Cli) -> App {
 
     let cwd_display = shorten_cwd(&cwd);
     let mut app = App {
-        active_view: ActiveView::Chat,
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
         surface_dirty: SurfaceDirtyState::initial_chat(),
@@ -323,7 +322,7 @@ mod tests {
     use crate::Cli;
     use crate::agent::model;
     use crate::agent::types;
-    use crate::app::TerminalLifecycleState;
+    use crate::app::{FullscreenView, SurfaceMode, TerminalLifecycleState};
 
     #[test]
     fn map_session_update_preserves_config_option_update() {
@@ -340,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn create_app_prewarms_file_index_for_startup_cwd() {
+    fn create_app_prewarms_file_index_and_routes_untrusted_cwd_to_trust_surface() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = Cli {
             command: None,
@@ -362,7 +361,7 @@ mod tests {
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
-        assert_eq!(app.surface_mode, app.active_view.surface_mode());
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
         assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
     }
 }

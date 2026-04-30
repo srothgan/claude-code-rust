@@ -283,8 +283,8 @@ fn plan_surface_transition(from: SurfaceMode, to: SurfaceMode) -> SurfaceTransit
 mod tests {
     use super::*;
     use crate::app::terminal_runtime::fullscreen_session::draw_fullscreen_surface_frame;
-    use crate::app::view::set_active_view;
-    use crate::app::{ActiveView, AppStatus, FullscreenView, SurfaceMode};
+    use crate::app::view::set_surface_mode;
+    use crate::app::{AppStatus, FullscreenView, SurfaceMode};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -294,7 +294,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        set_active_view(&mut app, ActiveView::Config);
+        set_surface_mode(&mut app, SurfaceMode::Fullscreen(FullscreenView::Config));
 
         draw_fullscreen_surface_frame(&mut terminal, &mut app).expect("draw fullscreen view");
     }

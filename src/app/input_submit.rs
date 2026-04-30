@@ -186,7 +186,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 mod tests {
     use super::*;
     use crate::agent::wire::BridgeCommand;
-    use crate::app::ActiveView;
+    use crate::app::{FullscreenView, SurfaceMode};
 
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
@@ -356,7 +356,7 @@ mod tests {
 
         submit_input(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Config);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
@@ -449,7 +449,7 @@ mod tests {
 
         submit_input(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert_eq!(app.input.text(), "/config");
         assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
@@ -463,7 +463,7 @@ mod tests {
         maybe_auto_submit_after_cancel(&mut app);
 
         assert!(!app.pending_auto_submit_after_cancel);
-        assert_eq!(app.active_view, ActiveView::Config);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");

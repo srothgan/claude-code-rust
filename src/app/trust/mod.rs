@@ -1,7 +1,7 @@
 pub(crate) mod store;
 
 use super::App;
-use super::view::{self, ActiveView};
+use super::view::{self, FullscreenView, SurfaceMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -50,13 +50,13 @@ pub fn initialize(app: &mut App) {
     app.startup_connection_requested = app.trust.is_trusted();
     if app.trust.is_trusted() {
         let next_view = if app.startup_session_picker_requested {
-            ActiveView::SessionPicker
+            SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
         } else {
-            ActiveView::Chat
+            SurfaceMode::Chat
         };
-        view::set_active_view(app, next_view);
+        view::set_surface_mode(app, next_view);
     } else {
-        view::set_active_view(app, ActiveView::Trusted);
+        view::set_fullscreen_view(app, FullscreenView::Trusted);
     }
 }
 
@@ -97,11 +97,11 @@ pub fn accept(app: &mut App) -> Result<(), String> {
     app.trust.last_error = None;
     app.startup_connection_requested = true;
     let next_view = if app.startup_session_picker_requested {
-        ActiveView::SessionPicker
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
     } else {
-        ActiveView::Chat
+        SurfaceMode::Chat
     };
-    view::set_active_view(app, next_view);
+    view::set_surface_mode(app, next_view);
     Ok(())
 }
 
@@ -145,7 +145,7 @@ mod tests {
 
         initialize(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Trusted);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
         assert!(!app.is_project_trusted());
         assert_eq!(app.trust.selection, TrustSelection::Yes);
         assert!(!app.startup_connection_requested);
@@ -167,7 +167,7 @@ mod tests {
 
         initialize(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(app.is_project_trusted());
         assert!(app.startup_connection_requested);
     }
@@ -179,7 +179,7 @@ mod tests {
         std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
 
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
         app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
         app.config.preferences_path = Some(path.clone());
         app.trust.status = TrustStatus::Untrusted;
@@ -189,7 +189,7 @@ mod tests {
 
         let raw = std::fs::read_to_string(path).expect("read");
         assert!(raw.contains("\"hasTrustDialogAccepted\": true"));
-        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(app.is_project_trusted());
         assert!(app.startup_connection_requested);
     }
@@ -211,7 +211,7 @@ mod tests {
 
         initialize(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
         assert!(app.startup_connection_requested);
     }
 
@@ -222,7 +222,7 @@ mod tests {
         std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
 
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
         app.startup_session_picker_requested = true;
         app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
         app.config.preferences_path = Some(path);
@@ -231,14 +231,14 @@ mod tests {
 
         accept(&mut app).expect("accept");
 
-        assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
         assert!(app.startup_connection_requested);
     }
 
     #[test]
     fn handle_key_declines_with_n() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
 
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn handle_key_moves_selection_with_up_and_down() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
         app.trust.selection = TrustSelection::Yes;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn handle_key_enter_declines_when_no_is_selected() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::Trusted;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
         app.trust.selection = TrustSelection::No;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

@@ -161,7 +161,7 @@ fn format_relative_age(last_modified_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::app::{ActiveView, App, RecentSessionInfo};
+    use crate::app::{App, FullscreenView, RecentSessionInfo, SurfaceMode};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn renders_session_titles() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
         app.recent_sessions = vec![session("s1", "First Session")];
 
         let text = draw_text(&mut app);
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn highlights_selected_session_with_marker() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
         app.recent_sessions = vec![session("s1", "First"), session("s2", "Second")];
         app.session_picker.selected = 1;
 
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn renders_empty_state_when_no_sessions_exist() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
 
         let text = draw_text(&mut app);
 
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn renders_loading_state_before_sessions_are_ready() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
         app.startup_session_picker_requested = true;
 
         let text = draw_text(&mut app);
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn limits_picker_to_ten_recent_sessions() {
         let mut app = App::test_default();
-        app.active_view = ActiveView::SessionPicker;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
         app.recent_sessions =
             (1..=11).map(|idx| session(&format!("s{idx}"), &format!("Session {idx}"))).collect();
 

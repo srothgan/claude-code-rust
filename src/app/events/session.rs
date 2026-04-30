@@ -4,7 +4,7 @@
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
-use super::super::view::{self, ActiveView};
+use super::super::view::{self, FullscreenView};
 use super::super::{App, AppStatus, LoginHint, SystemSeverity, UpdateNoticeState};
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
@@ -481,7 +481,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 
     app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
     app.session_picker.scroll_offset = 0;
-    view::set_active_view(app, ActiveView::SessionPicker);
+    view::set_fullscreen_view(app, FullscreenView::SessionPicker);
 }
 
 #[cfg(test)]

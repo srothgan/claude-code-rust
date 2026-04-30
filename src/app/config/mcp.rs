@@ -1,6 +1,6 @@
 use super::{ConfigOverlayState, ConfigState, ConfigTab};
 use crate::app::App;
-use crate::app::view::{self, ActiveView};
+use crate::app::view::{self, FullscreenView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,7 +517,7 @@ pub(crate) fn present_mcp_elicitation_request(
     let has_url = request.url.is_some();
     let has_requested_schema = request.requested_schema.is_some();
     app.mcp.pending_elicitation = Some(request.clone());
-    view::set_active_view(app, ActiveView::Config);
+    view::set_fullscreen_view(app, FullscreenView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
     let (browser_opened, browser_open_error) =
@@ -558,7 +558,7 @@ pub(crate) fn present_mcp_auth_redirect(
     redirect: crate::agent::types::McpAuthRedirect,
 ) {
     let server_name_for_log = redirect.server_name.clone();
-    view::set_active_view(app, ActiveView::Config);
+    view::set_fullscreen_view(app, FullscreenView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
     let (browser_opened, browser_open_error) = match open_url_in_browser(&redirect.auth_url) {

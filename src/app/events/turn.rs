@@ -320,7 +320,7 @@ pub(super) fn handle_turn_complete_event(
             super::super::notify::NotifyEvent::TurnComplete,
         );
     }
-    if app.active_view == super::super::ActiveView::Chat {
+    if app.surface_mode == super::super::SurfaceMode::Chat {
         super::super::input_submit::maybe_auto_submit_after_cancel(app);
     }
 }
@@ -346,7 +346,7 @@ pub(super) fn handle_turn_error_event(
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         crate::app::session_runtime::request_context_usage_refresh(app);
-        if app.active_view == super::super::ActiveView::Chat {
+        if app.surface_mode == super::super::SurfaceMode::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
         }
         return;
