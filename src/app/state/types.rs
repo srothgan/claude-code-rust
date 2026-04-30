@@ -235,22 +235,9 @@ pub enum CancelOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectionKind {
-    Input,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionPoint {
     pub row: usize,
     pub col: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SelectionState {
-    pub kind: SelectionKind,
-    pub start: SelectionPoint,
-    pub end: SelectionPoint,
-    pub dragging: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

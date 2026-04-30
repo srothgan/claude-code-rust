@@ -287,7 +287,6 @@ where
         let footer = serialize_footer_rows(app, width);
         let measurement = measure_composer(width, input.measurement, true);
 
-        app.rendered_input_lines = input.plain_editor_rows;
         app.chat_render.composer.width = measurement.width;
         app.chat_render.composer.hint_rows = measurement.hint_rows;
         app.chat_render.composer.editor_rows = measurement.editor_rows;

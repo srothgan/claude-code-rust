@@ -10,12 +10,9 @@ use crate::app::SystemSeverity;
 use crate::app::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, handle_inline_interaction_key,
 };
-use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
 use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-#[cfg(test)]
-use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -68,116 +65,10 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     if is_ctrl_char_shortcut(key, 'c') {
-        match copy_selection_to_clipboard(app) {
-            ClipboardCopyResult::Copied => {
-                clear_selection(app);
-                return true;
-            }
-            ClipboardCopyResult::Failed => {
-                return true;
-            }
-            ClipboardCopyResult::NoText => {}
-        }
         app.should_quit = true;
         return true;
     }
     false
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipboardCopyResult {
-    Copied,
-    Failed,
-    NoText,
-}
-
-fn copy_selection_to_clipboard(app: &mut App) -> ClipboardCopyResult {
-    let Some(selected_text) = selection_text_for_copy(app) else {
-        return ClipboardCopyResult::NoText;
-    };
-
-    write_text_to_clipboard(selected_text)
-}
-
-fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
-    #[cfg(test)]
-    {
-        match TEST_CLIPBOARD_MODE.with(Cell::get) {
-            TestClipboardMode::Succeed => return ClipboardCopyResult::Copied,
-            TestClipboardMode::Fail => return ClipboardCopyResult::Failed,
-            TestClipboardMode::System => {}
-        }
-    }
-
-    let selected_chars = selected_text.chars().count();
-    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "clipboard_access_failed",
-            message = "failed to access the clipboard while copying selection",
-            outcome = "failure",
-            selected_chars,
-        );
-        return ClipboardCopyResult::Failed;
-    };
-
-    if clipboard.set_text(selected_text).is_ok() {
-        ClipboardCopyResult::Copied
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "clipboard_write_failed",
-            message = "failed to write selection text to the clipboard",
-            outcome = "failure",
-            selected_chars,
-        );
-        ClipboardCopyResult::Failed
-    }
-}
-
-fn selection_text_for_copy(app: &mut App) -> Option<String> {
-    let selection = app.selection?;
-    crate::ui::refresh_selection_snapshot(app);
-    let lines = match selection.kind {
-        super::SelectionKind::Input => &app.rendered_input_lines,
-    };
-    let selected_text = selection_text_from_rendered_lines(lines, selection);
-    (!selected_text.is_empty()).then_some(selected_text)
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TestClipboardMode {
-    System,
-    Succeed,
-    Fail,
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_CLIPBOARD_MODE: Cell<TestClipboardMode> = const { Cell::new(TestClipboardMode::System) };
-}
-
-#[cfg(test)]
-pub(crate) struct TestClipboardGuard {
-    previous: TestClipboardMode,
-}
-
-#[cfg(test)]
-impl Drop for TestClipboardGuard {
-    fn drop(&mut self) {
-        TEST_CLIPBOARD_MODE.with(|mode| mode.set(self.previous));
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn override_test_clipboard(mode: TestClipboardMode) -> TestClipboardGuard {
-    let previous = TEST_CLIPBOARD_MODE.with(|current| {
-        let previous = current.get();
-        current.set(mode);
-        previous
-    });
-    TestClipboardGuard { previous }
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
@@ -967,9 +858,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{SelectionKind, SelectionPoint, SelectionState};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1067,23 +956,5 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
-    }
-
-    #[test]
-    fn selection_text_for_copy_refreshes_input_snapshot_before_redraw() {
-        let mut app = App::test_default();
-        app.input.set_text("hello");
-        app.rendered_input_area = Rect::new(0, 0, 20, 4);
-        app.rendered_input_lines = vec!["hello".to_owned()];
-        app.selection = Some(SelectionState {
-            kind: SelectionKind::Input,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 11 },
-            dragging: false,
-        });
-
-        app.input.set_text("hello world");
-
-        assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
 }

@@ -6,7 +6,7 @@ use crate::ui::theme;
 use crate::ui::{autocomplete, input};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -20,7 +20,6 @@ const SPINNER_FRAMES: &[char] = &[
 pub(crate) struct SerializedInputRows {
     pub hint_rows: Vec<Line<'static>>,
     pub editor_rows: Vec<Line<'static>>,
-    pub plain_editor_rows: Vec<String>,
     pub measurement: InputRowsMeasurement,
 }
 
@@ -91,7 +90,6 @@ pub(crate) fn serialize_input_rows(app: &mut App, area_width: u16) -> Serialized
         return SerializedInputRows {
             hint_rows,
             editor_rows: Vec::new(),
-            plain_editor_rows: Vec::new(),
             measurement: InputRowsMeasurement {
                 hint_rows: hint_row_count,
                 editor_rows: 0,
@@ -108,11 +106,6 @@ pub(crate) fn serialize_input_rows(app: &mut App, area_width: u16) -> Serialized
 
     input::configure_input_textarea(app);
     app.input.editor().render(editor_area, &mut buf);
-    if let Some(selection) = app.selection
-        && selection.kind == crate::app::SelectionKind::Input
-    {
-        SelectionOverlay { selection }.render(editor_area, &mut buf);
-    }
 
     let measurement = InputRowsMeasurement {
         hint_rows: hint_row_count,
@@ -120,10 +113,9 @@ pub(crate) fn serialize_input_rows(app: &mut App, area_width: u16) -> Serialized
         ..measure_input_caret(app, editor_width)
     };
     let mut editor_rows = buffer_rows_to_lines(&buf, editor_area);
-    let plain_editor_rows = buffer_rows_to_plain_strings(&buf, editor_area);
     let measurement = apply_prompt_prefix(&mut editor_rows, measurement);
 
-    SerializedInputRows { hint_rows, editor_rows, plain_editor_rows, measurement }
+    SerializedInputRows { hint_rows, editor_rows, measurement }
 }
 
 fn serialize_blocked_input_rows(
@@ -136,7 +128,6 @@ fn serialize_blocked_input_rows(
         return SerializedInputRows {
             hint_rows,
             editor_rows: Vec::new(),
-            plain_editor_rows: Vec::new(),
             measurement: InputRowsMeasurement {
                 hint_rows: hint_row_count,
                 editor_rows: 0,
@@ -148,12 +139,10 @@ fn serialize_blocked_input_rows(
 
     let editor_rows = blocked_input_lines(app);
     let editor_row_count = u16::try_from(editor_rows.len()).unwrap_or(u16::MAX);
-    let plain_editor_rows = editor_rows.iter().map(line_plain_text).collect();
 
     SerializedInputRows {
         hint_rows,
         editor_rows,
-        plain_editor_rows,
         measurement: InputRowsMeasurement {
             hint_rows: hint_row_count,
             editor_rows: editor_row_count,
@@ -223,56 +212,8 @@ fn prompt_prefix_width() -> u16 {
     u16::try_from(UnicodeWidthStr::width(prompt_prefix_text().as_str())).unwrap_or(u16::MAX)
 }
 
-fn line_plain_text(line: &Line<'_>) -> String {
-    line.spans.iter().map(|span| span.content.as_ref()).collect()
-}
-
-pub(super) struct SelectionOverlay {
-    pub selection: crate::app::SelectionState,
-}
-
-impl Widget for SelectionOverlay {
-    #[allow(clippy::cast_possible_truncation)]
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let (start, end) =
-            crate::app::normalize_selection(self.selection.start, self.selection.end);
-        for row in start.row..=end.row {
-            let y = area.y.saturating_add(row as u16);
-            if y >= area.bottom() {
-                break;
-            }
-            let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
-            for col in row_start..row_end {
-                let x = area.x.saturating_add(col as u16);
-                if x >= area.right() {
-                    break;
-                }
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
-                }
-            }
-        }
-    }
-}
-
 fn buffer_rows_to_lines(buf: &Buffer, area: Rect) -> Vec<Line<'static>> {
     (0..area.height).map(|row| buffer_row_to_line(buf, area, row)).collect()
-}
-
-fn buffer_rows_to_plain_strings(buf: &Buffer, area: Rect) -> Vec<String> {
-    let mut rows = Vec::with_capacity(area.height as usize);
-    for row in 0..area.height {
-        let y = area.y.saturating_add(row);
-        let mut line = String::new();
-        for x in 0..area.width {
-            if let Some(cell) = buf.cell((area.x.saturating_add(x), y)) {
-                line.push_str(cell.symbol());
-            }
-        }
-        rows.push(line.trim_end().to_owned());
-    }
-    rows
 }
 
 fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
@@ -391,10 +332,7 @@ fn caret_visual_position(
 #[cfg(test)]
 mod tests {
     use super::{build_composer_hint_rows, serialize_input_rows};
-    use crate::app::{
-        App, AppStatus, CancelOrigin, FocusTarget, LoginHint, SelectionKind, SelectionPoint,
-        SelectionState,
-    };
+    use crate::app::{App, AppStatus, CancelOrigin, FocusTarget, LoginHint};
     use crate::ui::theme;
     use ratatui::style::Modifier;
 
@@ -450,7 +388,6 @@ mod tests {
         assert_eq!(serialized.editor_rows.len(), 1);
         assert!(line_text(&serialized.editor_rows[0]).contains(theme::PROMPT_CHAR));
         assert!(line_text(&serialized.editor_rows[0]).contains("Type a message..."));
-        assert!(serialized.plain_editor_rows[0].contains("Type a message..."));
         assert_eq!(serialized.measurement.editor_rows, 1);
         assert_eq!(serialized.measurement.caret_row, 0);
         assert_eq!(serialized.measurement.caret_col, 2);
@@ -468,16 +405,6 @@ mod tests {
         assert_eq!(serialized.measurement.hint_rows, 1);
         assert!(line_text(&serialized.hint_rows[0]).contains("Type a file or folder name after @"));
         assert!(line_text(&serialized.editor_rows[0]).contains(crate::ui::theme::PROMPT_CHAR));
-    }
-
-    #[test]
-    fn multiline_snapshot_matches_plain_rows() {
-        let mut app = App::test_default();
-        app.input.set_text("alpha beta gamma delta\nepsilon");
-
-        let serialized = serialize_input_rows(&mut app, 16);
-        assert!(serialized.plain_editor_rows.iter().any(|row| row.contains("alpha")));
-        assert!(serialized.plain_editor_rows.iter().any(|row| row.contains("epsilon")));
     }
 
     #[test]
@@ -589,27 +516,6 @@ mod tests {
             .expect("image badge span");
         assert_eq!(span.style.fg, Some(ratatui::style::Color::Cyan));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn input_selection_overlay_is_reflected_in_serialized_rows() {
-        let mut app = App::test_default();
-        app.input.set_text("abcdef");
-        app.selection = Some(SelectionState {
-            kind: SelectionKind::Input,
-            start: SelectionPoint { row: 0, col: 1 },
-            end: SelectionPoint { row: 0, col: 4 },
-            dragging: false,
-        });
-
-        let serialized = serialize_input_rows(&mut app, 80);
-        let selected_span = serialized.editor_rows[0]
-            .spans
-            .iter()
-            .find(|span| span.style.add_modifier.contains(Modifier::REVERSED))
-            .expect("selected span");
-        assert!(selected_span.content.as_ref().contains("bcd"));
-        assert_eq!(serialized.plain_editor_rows[0], "abcdef");
     }
 
     #[test]

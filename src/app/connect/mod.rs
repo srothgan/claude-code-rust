@@ -22,7 +22,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::{ActiveView, SurfaceMode};
-use super::{App, AppStatus, FocusManager, SelectionState, TodoItem};
+use super::{App, AppStatus, FocusManager, TodoItem};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
@@ -187,10 +187,6 @@ pub fn create_app(cli: &Cli) -> App {
         available_models: Vec::new(),
         recent_sessions: Vec::new(),
         session_picker: SessionPickerState::default(),
-        cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
-        selection: Option::<SelectionState>::None,
-        rendered_input_lines: Vec::new(),
-        rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         chat_render: super::ChatRenderState::default(),
         mention: None,
         file_index: super::file_index::FileIndexState::default(),

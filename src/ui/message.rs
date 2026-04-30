@@ -218,7 +218,7 @@ fn welcome_value_missing(value: &str) -> bool {
 
 pub(crate) fn selected_welcome_tip(block: &WelcomeBlock) -> &'static str {
     let Some(first_tip) = WELCOME_TIPS.first().copied() else {
-        return "Enter sends, Shift+Enter inserts a newline, and Ctrl+C copies a selection or quits";
+        return "Enter sends, Shift+Enter inserts a newline, and Ctrl+C quits";
     };
     let len_u64 = u64::try_from(WELCOME_TIPS.len()).unwrap_or(1);
     let idx_u64 = block.tip_seed % len_u64;

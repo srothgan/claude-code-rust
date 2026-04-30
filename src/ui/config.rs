@@ -34,7 +34,6 @@ const MIN_SETTINGS_PANEL_HEIGHT: u16 = 3;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
-    app.cached_frame_area = frame_area;
 
     let outer = Block::default()
         .borders(Borders::ALL)

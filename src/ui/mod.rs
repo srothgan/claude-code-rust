@@ -51,17 +51,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-pub(crate) fn refresh_selection_snapshot(app: &mut App) {
-    let Some(selection) = app.selection else {
-        return;
-    };
-
-    if let (ActiveView::Chat, crate::app::SelectionKind::Input) = (app.active_view, selection.kind)
-    {
-        input::refresh_selection_snapshot(app);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

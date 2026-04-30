@@ -23,7 +23,6 @@ pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
 mod questions;
-mod selection;
 mod service_status_check;
 pub(crate) mod session_picker;
 mod session_runtime;
@@ -56,7 +55,6 @@ pub use lifecycle::{
     ChatRebuildKind, ChatSurfaceDirtyState, FullscreenSurfaceDirtyState, ReleaseReason,
     SurfaceDirtyState, TerminalLifecycleState,
 };
-pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
@@ -65,12 +63,11 @@ pub use state::{
     IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation,
     LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo,
     ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck,
-    RateLimitIncidentKey, RecentSessionInfo, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name,
+    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
+    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
+    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

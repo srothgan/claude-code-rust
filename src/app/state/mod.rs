@@ -26,9 +26,9 @@ pub use tool_call_info::{
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
-    RecentSessionInfo, RenderCacheBudget, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope, UpdateNoticeState,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
+    TodoItem, TodoStatus, ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow,
 };
 
 use crate::agent::events::ClientEvent;
@@ -114,7 +114,6 @@ pub struct ChatRenderTraceState {
     pub rendered_line_count: usize,
     pub last_message_idx: Option<usize>,
     pub last_message_height: Option<usize>,
-    pub selection_snapshot_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,14 +224,6 @@ pub struct App {
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
     pub session_picker: SessionPickerState,
-    /// Last known frame area (for mouse selection mapping).
-    pub cached_frame_area: ratatui::layout::Rect,
-    /// Current selection state for mouse-based selection.
-    pub selection: Option<SelectionState>,
-    /// Cached rendered input lines for selection/copy.
-    pub rendered_input_lines: Vec<String>,
-    /// Area where input content was rendered (for selection mapping).
-    pub rendered_input_area: ratatui::layout::Rect,
     /// Deterministic measurement state for the future mutable chat region.
     pub chat_render: ChatRenderState,
     /// Active `@` file mention autocomplete state.
@@ -892,10 +883,6 @@ impl App {
             available_models: Vec::new(),
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
-            cached_frame_area: ratatui::layout::Rect::default(),
-            selection: None,
-            rendered_input_lines: Vec::new(),
-            rendered_input_area: ratatui::layout::Rect::default(),
             chat_render: ChatRenderState::default(),
             mention: None,
             file_index: file_index::FileIndexState::default(),

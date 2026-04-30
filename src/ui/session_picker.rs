@@ -10,7 +10,6 @@ use super::theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    app.cached_frame_area = area;
 
     let outer = Block::default()
         .borders(Borders::ALL)

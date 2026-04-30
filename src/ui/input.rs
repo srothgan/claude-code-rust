@@ -10,7 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use tui_textarea::TextArea;
 
-use super::{autocomplete, input_rows};
+use super::autocomplete;
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -85,21 +85,6 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
     InputRenderGeometry { padded, text }
-}
-
-pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
-        return;
-    }
-
-    let area = app.rendered_input_area;
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let total_width = area.width.saturating_add(INPUT_PAD * 2 + INPUT_RIGHT_PAD + PROMPT_WIDTH);
-    let serialized = input_rows::serialize_input_rows(app, total_width);
-    app.rendered_input_lines = serialized.plain_editor_rows;
 }
 
 pub(super) fn configure_input_textarea(app: &mut App) {

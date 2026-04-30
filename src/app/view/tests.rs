@@ -4,19 +4,13 @@ use crate::app::dialog::DialogState;
 use crate::app::slash::{SlashContext, SlashState};
 use crate::app::subagent::SubagentState;
 use crate::app::{
-    FocusTarget, FullscreenView, PasteSessionState, ReleaseReason, SelectionKind, SelectionPoint,
-    SelectionState, SurfaceMode, TerminalLifecycleState, TodoItem, TodoStatus,
+    FocusTarget, FullscreenView, PasteSessionState, ReleaseReason, SelectionPoint, SurfaceMode,
+    TerminalLifecycleState, TodoItem, TodoStatus,
 };
 
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
     app.input.set_text("draft");
-    app.selection = Some(SelectionState {
-        kind: SelectionKind::Input,
-        start: SelectionPoint { row: 0, col: 0 },
-        end: SelectionPoint { row: 0, col: 4 },
-        dragging: true,
-    });
     app.pending_submit = Some(app.input.snapshot());
     app.pending_paste_text = "blocked".to_owned();
     app.pending_paste_session = Some(PasteSessionState {
@@ -67,7 +61,6 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
 
     assert_eq!(app.active_view, ActiveView::Trusted);
     assert_eq!(app.input.text(), "draft");
-    assert!(app.selection.is_none());
     assert!(app.mention.is_none());
     assert!(app.slash.is_none());
     assert!(app.subagent.is_none());
@@ -87,7 +80,6 @@ fn set_active_view_switches_to_config_from_trusted() {
     set_active_view(&mut app, ActiveView::Config);
 
     assert_eq!(app.active_view, ActiveView::Config);
-    assert!(app.selection.is_none());
     assert!(app.pending_paste_text.is_empty());
 }
 
@@ -99,7 +91,6 @@ fn set_active_view_same_view_is_noop() {
     set_active_view(&mut app, ActiveView::Chat);
 
     assert_eq!(app.active_view, ActiveView::Chat);
-    assert!(app.selection.is_some());
     assert!(app.mention.is_some());
     assert!(!app.pending_paste_text.is_empty());
     assert!(app.pending_submit.is_some());
