@@ -109,6 +109,12 @@ where
         };
         let composer_rows = Self::serialize_composer_rows(app, width);
         let layout_plan = MutableLayoutPlan::new(&live_rows, &composer_rows, screen_size.height);
+        let composer_rows_total = composer_rows.all_rows();
+        let visible_input_rows = layout_plan.input_visible_rows(&composer_rows.input_rows).to_vec();
+        let visible_footer_rows =
+            layout_plan.footer_visible_rows(&composer_rows.footer_rows).to_vec();
+        let visible_composer_rows =
+            ComposerRows::join_visible_rows(&visible_input_rows, &visible_footer_rows);
 
         let pending_static_rows = u16::try_from(transcript_plan.rows.len()).unwrap_or(u16::MAX);
         self.reconcile_mutable_viewport_geometry(
@@ -123,8 +129,8 @@ where
             transcript_rows: &transcript_plan.rows,
             live_rows_total: &live_rows,
             live_rows_visible: layout_plan.live_visible_rows(&live_rows),
-            composer_rows_total: &composer_rows.rows,
-            composer_rows_visible: layout_plan.composer_visible_rows(&composer_rows.rows),
+            composer_rows_total: &composer_rows_total,
+            composer_rows_visible: &visible_composer_rows,
             live_rows_hidden_above: layout_plan.live_window.hidden_rows_above(),
             full_rebuild: transcript_plan.full_rebuild,
         });
@@ -132,29 +138,28 @@ where
         self.insert_transcript_rows(&transcript_plan)?;
         complete_transcript_flush(app, &transcript_plan);
         let visible_live_rows = layout_plan.live_visible_rows(&live_rows).to_vec();
-        let visible_composer_rows = layout_plan.composer_visible_rows(&composer_rows.rows).to_vec();
         let visible_live_row_count = visible_live_rows.len();
         let visible_composer_row_count = visible_composer_rows.len();
-        let composer_caret_row = layout_plan.visible_composer_caret_row(composer_rows.caret_row);
+        let input_caret_row = layout_plan.visible_input_caret_row(composer_rows.caret_row);
         let completed = self
             .terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (live_area, composer_area) = layout_plan.areas(area);
+                let (live_area, input_area, footer_area) = layout_plan.areas(area);
                 if !live_area.is_empty() {
                     frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
                 }
-                if !composer_area.is_empty() {
-                    frame.render_widget(
-                        Paragraph::new(visible_composer_rows.clone()),
-                        composer_area,
-                    );
+                if !input_area.is_empty() {
+                    frame.render_widget(Paragraph::new(visible_input_rows.clone()), input_area);
+                }
+                if !footer_area.is_empty() {
+                    frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
                 }
             })
             .context("failed to draw inline chat viewport")?;
 
         let viewport_area = completed.area;
-        let (live_area, composer_area) = layout_plan.areas(viewport_area);
+        let (live_area, input_area, footer_area) = layout_plan.areas(viewport_area);
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.total_rows = u16::try_from(live_rows.len()).unwrap_or(u16::MAX);
         app.chat_render.live_region.hidden_rows_above =
@@ -174,19 +179,21 @@ where
             viewport_height = viewport_area.height,
             live_top = live_area.top(),
             live_height = live_area.height,
-            composer_top = composer_area.top(),
-            composer_height = composer_area.height,
+            composer_top = input_area.top(),
+            composer_height = input_area.height.saturating_add(footer_area.height),
+            footer_top = footer_area.top(),
+            footer_height = footer_area.height,
             terminal_width = screen_size.width,
             terminal_height = screen_size.height,
             mutable_rows = visible_live_row_count + visible_composer_row_count,
             live_rows_total = live_rows.len(),
             live_rows_visible = visible_live_row_count,
             live_rows_hidden_above = layout_plan.live_window.hidden_rows_above(),
-            composer_rows_total = composer_rows.rows.len(),
+            composer_rows_total = composer_rows.total_len(),
             composer_rows_visible = visible_composer_row_count,
             history_bounds = ?self.terminal.history_bounds(),
-            caret_row = composer_area.y.saturating_add(composer_caret_row),
-            caret_col = composer_area.x.saturating_add(composer_rows.caret_col),
+            caret_row = input_area.y.saturating_add(input_caret_row),
+            caret_col = input_area.x.saturating_add(composer_rows.caret_col),
         );
 
         Ok(())
@@ -231,6 +238,11 @@ where
         );
         let insert_outcome = insert_history_lines(&mut self.terminal, &plan.rows)
             .context("failed to insert committed transcript above inline viewport")?;
+        if insert_outcome.scroll_up_amount > 0 {
+            self.terminal
+                .clear()
+                .context("failed to clear inline viewport after committed transcript scroll")?;
+        }
         Write::flush(self.terminal.backend_mut())
             .context("failed to flush committed transcript insertion")?;
         let history_bounds = self.terminal.history_bounds();
@@ -275,11 +287,16 @@ where
         app.chat_render.composer.caret_row = measurement.caret_row;
         app.chat_render.composer.caret_col = measurement.caret_col;
 
-        let mut rows = input.hint_rows;
-        rows.extend(input.editor_rows);
-        rows.extend(footer.rows);
+        let mut input_rows = input.hint_rows;
+        input_rows.extend(input.editor_rows);
+        let footer_rows = Vec::from(footer.rows);
 
-        ComposerRows { rows, caret_row: measurement.caret_row, caret_col: measurement.caret_col }
+        ComposerRows {
+            input_rows,
+            footer_rows,
+            caret_row: measurement.caret_row,
+            caret_col: measurement.caret_col,
+        }
     }
 
     fn reconcile_mutable_viewport_geometry(
@@ -441,9 +458,27 @@ fn complete_transcript_flush(app: &mut App, plan: &TranscriptFlushPlan) {
 }
 
 struct ComposerRows {
-    rows: Vec<Line<'static>>,
+    input_rows: Vec<Line<'static>>,
+    footer_rows: Vec<Line<'static>>,
     caret_row: u16,
     caret_col: u16,
+}
+
+impl ComposerRows {
+    fn total_len(&self) -> usize {
+        self.input_rows.len().saturating_add(self.footer_rows.len())
+    }
+
+    fn all_rows(&self) -> Vec<Line<'static>> {
+        Self::join_visible_rows(&self.input_rows, &self.footer_rows)
+    }
+
+    fn join_visible_rows(
+        input_rows: &[Line<'static>],
+        footer_rows: &[Line<'static>],
+    ) -> Vec<Line<'static>> {
+        input_rows.iter().chain(footer_rows.iter()).cloned().collect::<Vec<_>>()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,51 +523,75 @@ impl RowWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MutableLayoutPlan {
     live_window: RowWindow,
-    composer_window: RowWindow,
+    input_window: RowWindow,
+    footer_window: RowWindow,
     viewport_height: u16,
 }
 
 impl MutableLayoutPlan {
     fn new(live_rows: &[Line<'static>], composer_rows: &ComposerRows, screen_height: u16) -> Self {
-        let composer_window = RowWindow::tail(composer_rows.rows.len(), screen_height);
-        let live_budget = screen_height.saturating_sub(composer_window.visible_len_u16());
+        let footer_window = RowWindow::tail(composer_rows.footer_rows.len(), screen_height);
+        let input_budget = screen_height.saturating_sub(footer_window.visible_len_u16());
+        let input_window = RowWindow::tail(composer_rows.input_rows.len(), input_budget);
+        let live_budget = screen_height
+            .saturating_sub(footer_window.visible_len_u16())
+            .saturating_sub(input_window.visible_len_u16());
         let live_window = RowWindow::tail(live_rows.len(), live_budget);
         let viewport_height = live_window
             .visible_len_u16()
-            .saturating_add(composer_window.visible_len_u16())
+            .saturating_add(input_window.visible_len_u16())
+            .saturating_add(footer_window.visible_len_u16())
             .max(1)
             .min(screen_height);
 
-        Self { live_window, composer_window, viewport_height }
+        Self { live_window, input_window, footer_window, viewport_height }
     }
 
     fn live_visible_rows<'rows>(self, live_rows: &'rows [Line<'static>]) -> &'rows [Line<'static>] {
         self.live_window.slice(live_rows)
     }
 
-    fn composer_visible_rows<'rows>(
+    fn input_visible_rows<'rows>(
         self,
-        composer_rows: &'rows [Line<'static>],
+        input_rows: &'rows [Line<'static>],
     ) -> &'rows [Line<'static>] {
-        self.composer_window.slice(composer_rows)
+        self.input_window.slice(input_rows)
     }
 
-    fn visible_composer_caret_row(self, full_caret_row: u16) -> u16 {
-        self.composer_window.translate_row(full_caret_row)
+    fn footer_visible_rows<'rows>(
+        self,
+        footer_rows: &'rows [Line<'static>],
+    ) -> &'rows [Line<'static>] {
+        self.footer_window.slice(footer_rows)
     }
 
-    fn areas(self, viewport_area: Rect) -> (Rect, Rect) {
-        let composer_height = self.composer_window.visible_len_u16().min(viewport_area.height);
-        let live_height = viewport_area.height.saturating_sub(composer_height);
+    fn visible_input_caret_row(self, full_caret_row: u16) -> u16 {
+        self.input_window.translate_row(full_caret_row)
+    }
+
+    fn areas(self, viewport_area: Rect) -> (Rect, Rect, Rect) {
+        let footer_height = self.footer_window.visible_len_u16().min(viewport_area.height);
+        let input_height = self
+            .input_window
+            .visible_len_u16()
+            .min(viewport_area.height.saturating_sub(footer_height));
+        let live_height =
+            viewport_area.height.saturating_sub(input_height).saturating_sub(footer_height);
         let live_area =
             Rect::new(viewport_area.x, viewport_area.y, viewport_area.width, live_height);
-        let composer_area = Rect::new(
+        let input_area = Rect::new(
             viewport_area.x,
             viewport_area.y.saturating_add(live_height),
             viewport_area.width,
-            composer_height,
+            input_height,
         );
-        (live_area, composer_area)
+        let footer_area = Rect::new(
+            viewport_area.x,
+            viewport_area.y.saturating_add(live_height).saturating_add(input_height),
+            viewport_area.width,
+            footer_height,
+        );
+        (live_area, input_area, footer_area)
     }
 }
 
@@ -611,6 +670,15 @@ mod tests {
             .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn composer_rows(input_rows: usize, footer_rows: usize, caret_row: u16) -> ComposerRows {
+        ComposerRows {
+            input_rows: rows(input_rows),
+            footer_rows: rows(footer_rows),
+            caret_row,
+            caret_col: 0,
+        }
     }
 
     fn user_entry(text: &str) -> TranscriptEntry {
@@ -708,38 +776,43 @@ mod tests {
     #[test]
     fn mutable_layout_reserves_bottom_space_for_composer() {
         let live_rows = rows(313);
-        let composer_rows = ComposerRows { rows: rows(3), caret_row: 1, caret_col: 0 };
+        let composer_rows = composer_rows(1, 2, 0);
         let plan = MutableLayoutPlan::new(&live_rows, &composer_rows, 40);
 
         assert_eq!(plan.viewport_height, 40);
         assert_eq!(plan.live_window.visible_len_u16(), 37);
         assert_eq!(plan.live_window.hidden_rows_above(), 276);
-        assert_eq!(plan.composer_window.visible_len_u16(), 3);
+        assert_eq!(plan.input_window.visible_len_u16(), 1);
+        assert_eq!(plan.footer_window.visible_len_u16(), 2);
     }
 
     #[test]
-    fn mutable_layout_areas_pin_composer_to_bottom() {
+    fn mutable_layout_areas_pin_input_and_footer_to_bottom() {
         let plan = MutableLayoutPlan {
             live_window: RowWindow { start: 20, visible_len: 37 },
-            composer_window: RowWindow { start: 0, visible_len: 3 },
+            input_window: RowWindow { start: 0, visible_len: 1 },
+            footer_window: RowWindow { start: 0, visible_len: 2 },
             viewport_height: 40,
         };
         let viewport_area = Rect::new(0, 10, 120, 40);
-        let (live_area, composer_area) = plan.areas(viewport_area);
+        let (live_area, input_area, footer_area) = plan.areas(viewport_area);
 
         assert_eq!(live_area, Rect::new(0, 10, 120, 37));
-        assert_eq!(composer_area, Rect::new(0, 47, 120, 3));
+        assert_eq!(input_area, Rect::new(0, 47, 120, 1));
+        assert_eq!(footer_area, Rect::new(0, 48, 120, 2));
     }
 
     #[test]
-    fn composer_window_keeps_footer_and_caret_visible_when_composer_exceeds_screen() {
+    fn mutable_layout_keeps_footer_pinned_when_input_exceeds_screen() {
         let live_rows = rows(10);
-        let composer_rows = ComposerRows { rows: rows(50), caret_row: 49, caret_col: 2 };
+        let composer_rows = composer_rows(50, 2, 49);
         let plan = MutableLayoutPlan::new(&live_rows, &composer_rows, 40);
 
-        assert_eq!(plan.composer_window.hidden_rows_above(), 10);
+        assert_eq!(plan.input_window.hidden_rows_above(), 12);
+        assert_eq!(plan.input_window.visible_len_u16(), 38);
+        assert_eq!(plan.footer_window.visible_len_u16(), 2);
         assert_eq!(plan.live_window.visible_len_u16(), 0);
-        assert_eq!(plan.visible_composer_caret_row(49), 39);
+        assert_eq!(plan.visible_input_caret_row(49), 37);
     }
 
     #[test]
@@ -914,6 +987,27 @@ mod tests {
     }
 
     #[test]
+    fn static_insert_clears_mutable_viewport_after_terminal_scroll() {
+        let mut session =
+            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 6)));
+        session.terminal.set_viewport_area(Rect::new(0, 3, 80, 3));
+        session.terminal.record_history_insert(0, 3);
+        let plan = super::TranscriptFlushPlan {
+            rows: rows(4),
+            inserted_ids: Vec::new(),
+            full_rebuild: false,
+        };
+
+        session.insert_transcript_rows(&plan).expect("insert should clear after scroll");
+
+        let backend = session.terminal.backend_mut();
+        assert!(
+            backend.clear_region_calls > 0,
+            "history insertion that scrolls the screen must physically clear the mutable viewport"
+        );
+    }
+
+    #[test]
     fn successful_history_replay_marks_pending_ids_inserted_and_history_synced() {
         let (mut app, _inserted_id, _pending_id) = app_with_unsynced_replay();
         let mut session =
@@ -1015,6 +1109,7 @@ mod tests {
         written: Vec<u8>,
         fail_writes: bool,
         fail_backend_flush: bool,
+        clear_region_calls: usize,
     }
 
     impl RecordingBackend {
@@ -1025,6 +1120,7 @@ mod tests {
                 written: Vec::new(),
                 fail_writes: false,
                 fail_backend_flush: false,
+                clear_region_calls: 0,
             }
         }
     }
@@ -1075,6 +1171,7 @@ mod tests {
         }
 
         fn clear_region(&mut self, _clear_type: ClearType) -> io::Result<()> {
+            self.clear_region_calls = self.clear_region_calls.saturating_add(1);
             Ok(())
         }
 
