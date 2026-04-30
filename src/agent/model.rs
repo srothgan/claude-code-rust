@@ -965,7 +965,7 @@ pub enum SessionUpdate {
     ApiRetryUpdate {
         attempt: u64,
         max_retries: u64,
-        retry_delay_ms: u64,
+        retry_delay_ms: f64,
         error_status: Option<u16>,
         error: ApiRetryError,
     },

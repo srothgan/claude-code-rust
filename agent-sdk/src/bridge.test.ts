@@ -1373,7 +1373,34 @@ test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
       error: "unknown",
     },
   );
+  assert.deepEqual(
+    buildApiRetryUpdate({
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 549.8881698459426,
+      error_status: null,
+      error: "unexpected",
+    }),
+    {
+      type: "api_retry_update",
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 549.8881698459426,
+      error_status: null,
+      error: "unknown",
+    },
+  );
   assert.equal(buildApiRetryUpdate({ attempt: 1 }), null);
+  assert.equal(
+    buildApiRetryUpdate({
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: -1,
+      error_status: null,
+      error: "server_error",
+    }),
+    null,
+  );
 });
 
 test("normalizeSettingsParseError accepts only SDK-shaped errors", () => {

@@ -9,7 +9,7 @@ pub(super) fn handle_api_retry_update(
     app: &mut App,
     attempt: u64,
     max_retries: u64,
-    retry_delay_ms: u64,
+    retry_delay_ms: f64,
     error_status: Option<u16>,
     error: ApiRetryError,
 ) {
@@ -27,7 +27,7 @@ pub(super) fn handle_api_retry_update(
 fn format_api_retry_message(
     attempt: u64,
     max_retries: u64,
-    retry_delay_ms: u64,
+    retry_delay_ms: f64,
     error_status: Option<u16>,
     error: ApiRetryError,
 ) -> String {
@@ -49,12 +49,12 @@ fn api_retry_error_label(error: ApiRetryError) -> &'static str {
     }
 }
 
-fn format_retry_delay(retry_delay_ms: u64) -> String {
-    if retry_delay_ms >= 1000 {
-        let tenths = (retry_delay_ms + 50) / 100;
-        format!("{}.{:01}s", tenths / 10, tenths % 10)
+fn format_retry_delay(retry_delay_ms: f64) -> String {
+    if retry_delay_ms >= 1000.0 {
+        let tenths = (retry_delay_ms / 100.0).ceil();
+        format!("{:.1}s", tenths / 10.0)
     } else {
-        format!("{retry_delay_ms}ms")
+        format!("{:.0}ms", retry_delay_ms.ceil())
     }
 }
 
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn formats_api_retry_http_status() {
         assert_eq!(
-            format_api_retry_message(2, 4, 1500, Some(529), ApiRetryError::ServerError),
+            format_api_retry_message(2, 4, 1500.0, Some(529), ApiRetryError::ServerError),
             "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",
         );
     }
@@ -74,13 +74,18 @@ mod tests {
     #[test]
     fn formats_api_retry_without_http_response() {
         assert_eq!(
-            format_api_retry_message(1, 4, 250, None, ApiRetryError::Unknown),
+            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::Unknown),
             "API retry 1/4 after connection error, retrying in 250ms",
         );
     }
 
     #[test]
     fn formats_second_delay_with_one_decimal() {
-        assert_eq!(format_retry_delay(1000), "1.0s");
+        assert_eq!(format_retry_delay(1000.0), "1.0s");
+    }
+
+    #[test]
+    fn formats_fractional_delay_at_display_boundary() {
+        assert_eq!(format_retry_delay(549.888_169_845_942_6), "550ms");
     }
 }

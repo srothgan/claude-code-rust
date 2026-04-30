@@ -18,6 +18,14 @@ export function numberField(record: Record<string, unknown>, ...keys: string[]):
   return undefined;
 }
 
+function nonNegativeNumberField(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+  const value = numberField(record, ...keys);
+  if (value === undefined || value < 0) {
+    return undefined;
+  }
+  return value;
+}
+
 export function parseFastModeState(value: unknown): FastModeState | null {
   if (value === "off" || value === "cooldown" || value === "on") {
     return value;
@@ -116,7 +124,7 @@ export function buildApiRetryUpdate(
 ): Extract<SessionUpdate, { type: "api_retry_update" }> | null {
   const attempt = numberField(message, "attempt");
   const maxRetries = numberField(message, "max_retries", "maxRetries");
-  const retryDelayMs = numberField(message, "retry_delay_ms", "retryDelayMs");
+  const retryDelayMs = nonNegativeNumberField(message, "retry_delay_ms", "retryDelayMs");
   if (attempt === undefined || maxRetries === undefined || retryDelayMs === undefined) {
     return null;
   }

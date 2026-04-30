@@ -298,7 +298,8 @@ pub enum SessionUpdate {
     ApiRetryUpdate {
         attempt: u64,
         max_retries: u64,
-        retry_delay_ms: u64,
+        #[serde(deserialize_with = "deserialize_retry_delay_ms")]
+        retry_delay_ms: f64,
         error_status: Option<u16>,
         error: ApiRetryError,
     },
@@ -320,6 +321,19 @@ pub enum SessionUpdate {
         trigger: CompactionTrigger,
         pre_tokens: u64,
     },
+}
+
+fn deserialize_retry_delay_ms<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let delay = f64::deserialize(deserializer)?;
+    if !delay.is_finite() || delay < 0.0 {
+        return Err(serde::de::Error::custom(
+            "retry_delay_ms must be a finite non-negative number",
+        ));
+    }
+    Ok(delay)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -654,5 +668,38 @@ mod tests {
             update,
             SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
         ));
+    }
+
+    #[test]
+    fn api_retry_update_deserializes_fractional_retry_delay() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "api_retry_update",
+            "attempt": 1,
+            "max_retries": 10,
+            "retry_delay_ms": 549.888_169_845_942_6,
+            "error_status": null,
+            "error": "unknown"
+        }))
+        .expect("deserialize fractional api retry update");
+
+        let SessionUpdate::ApiRetryUpdate { retry_delay_ms, .. } = update else {
+            panic!("expected api retry update");
+        };
+        assert!((retry_delay_ms - 549.888_169_845_942_6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn api_retry_update_rejects_negative_retry_delay() {
+        let error = serde_json::from_value::<SessionUpdate>(serde_json::json!({
+            "type": "api_retry_update",
+            "attempt": 1,
+            "max_retries": 10,
+            "retry_delay_ms": -1.0,
+            "error_status": null,
+            "error": "unknown"
+        }))
+        .expect_err("negative retry delay should be rejected");
+
+        assert!(error.to_string().contains("retry_delay_ms must be a finite non-negative number"));
     }
 }
