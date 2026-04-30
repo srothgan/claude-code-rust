@@ -438,9 +438,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
+    let mod_key =
+        if cfg!(target_os = "macos") { KeyModifiers::SUPER } else { KeyModifiers::CONTROL };
     match (key.code, key.modifiers) {
-        (KeyCode::Char('z'), m) if m == KeyModifiers::CONTROL => app.input.textarea_undo(),
-        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => app.input.textarea_redo(),
+        (KeyCode::Char('z'), m) if m == mod_key => app.input.textarea_undo(),
+        (KeyCode::Char('y'), m) if m == mod_key => app.input.textarea_redo(),
         _ => false,
     }
 }
@@ -449,15 +451,19 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Left, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
+                    || !cfg!(target_os = "macos")
+                        && m.contains(KeyModifiers::CONTROL)
+                        && !m.contains(KeyModifiers::ALT)) =>
         {
             app.input.textarea_move_word_left()
         }
         (KeyCode::Right, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
+                    || !cfg!(target_os = "macos")
+                        && m.contains(KeyModifiers::CONTROL)
+                        && !m.contains(KeyModifiers::ALT)) =>
         {
             app.input.textarea_move_word_right()
         }
@@ -677,8 +683,10 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
+                    || !cfg!(target_os = "macos")
+                        && m.contains(KeyModifiers::CONTROL)
+                        && !m.contains(KeyModifiers::ALT)) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
@@ -688,8 +696,10 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Delete, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
+                    || !cfg!(target_os = "macos")
+                        && m.contains(KeyModifiers::CONTROL)
+                        && !m.contains(KeyModifiers::ALT)) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {

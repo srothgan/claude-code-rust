@@ -3392,12 +3392,14 @@ mod tests {
     fn ctrl_backspace_and_delete_use_word_operations() {
         let mut app = make_test_app();
         app.input.set_text("hello world");
+        let mod_key =
+            if cfg!(target_os = "macos") { KeyModifiers::ALT } else { KeyModifiers::CONTROL };
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, mod_key));
         assert_eq!(app.input.text(), "hello ");
 
         app.input.move_home();
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, mod_key));
         assert_eq!(app.input.text(), " ");
     }
 
@@ -3405,14 +3407,18 @@ mod tests {
     fn ctrl_z_and_y_undo_and_redo_textarea_history() {
         let mut app = make_test_app();
         app.input.set_text("hello world");
+        let delete_mod_key =
+            if cfg!(target_os = "macos") { KeyModifiers::ALT } else { KeyModifiers::CONTROL };
+        let history_mod_key =
+            if cfg!(target_os = "macos") { KeyModifiers::SUPER } else { KeyModifiers::CONTROL };
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, delete_mod_key));
         assert_eq!(app.input.text(), "hello ");
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), history_mod_key));
         assert_eq!(app.input.text(), "hello world");
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), history_mod_key));
         assert_eq!(app.input.text(), "hello ");
     }
 
