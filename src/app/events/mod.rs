@@ -57,7 +57,9 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         // Non-press key events (Release, Repeat) -- ignored.
         Event::Key(_) => false,
     };
-    app.needs_redraw |= changed;
+    if changed {
+        app.request_active_surface_repaint();
+    }
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
@@ -66,7 +68,18 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) {
-    app.surface_dirty.mark_resize(app.terminal_lifecycle);
+    match app.terminal_lifecycle {
+        super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
+            app.request_chat_mutable_rebuild();
+        }
+        super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
+            app.request_fullscreen_repaint();
+        }
+        super::TerminalLifecycleState::Bootstrapping
+        | super::TerminalLifecycleState::ReleasedToChild(_)
+        | super::TerminalLifecycleState::Restoring
+        | super::TerminalLifecycleState::Exited => {}
+    }
     app.chat_render.set_terminal_size(width, height);
     app.chat_render.clear_measurements();
     app.chat_render.invalidate_live_anchor();
@@ -445,10 +458,10 @@ mod tests {
     use crate::app::handoff::types::{AssistantCommittedUnit, TranscriptEntry};
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
-        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, FullscreenView,
-        InlinePermission, InlineQuestion, ReleaseReason, SurfaceMode, TerminalLifecycleState,
-        TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
-        UsageSourceKind, mention,
+        ActiveView, BlockCache, CancelOrigin, ChatRebuildKind, FocusOwner, FocusTarget,
+        FullscreenView, InlinePermission, InlineQuestion, ReleaseReason, SurfaceMode,
+        TerminalLifecycleState, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+        ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
@@ -1291,7 +1304,7 @@ mod tests {
         assert!(app.session_id.is_none());
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
-        assert!(!app.force_redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.selection.is_none());
@@ -2058,7 +2071,7 @@ mod tests {
     #[test]
     fn terminal_release_event_marks_child_process_lifecycle_without_redraw() {
         let mut app = make_test_app();
-        app.needs_redraw = true;
+        app.request_chat_repaint();
 
         handle_client_event(
             &mut app,
@@ -2069,7 +2082,7 @@ mod tests {
             app.terminal_lifecycle,
             TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow)
         );
-        assert!(!app.needs_redraw);
+        assert!(!app.surface_dirty.chat.repaint);
     }
 
     #[test]
@@ -2090,8 +2103,7 @@ mod tests {
         let mut app = make_test_app();
         app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
         app.chat_render.live_region.anchor_valid = true;
-        app.force_redraw = false;
-        app.needs_redraw = false;
+        app.surface_dirty.chat.repaint = false;
 
         handle_client_event(
             &mut app,
@@ -2101,8 +2113,8 @@ mod tests {
         assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
         assert!(app.surface_dirty.terminal_mode);
         assert!(!app.chat_render.live_region.anchor_valid);
-        assert!(app.force_redraw);
-        assert!(app.needs_redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
+        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]
@@ -4785,7 +4797,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_paste_char_does_not_force_redraw() {
+    fn buffered_paste_char_does_not_request_redraw() {
         let mut app = make_test_app();
         let now = Instant::now();
 
@@ -4802,13 +4814,13 @@ mod tests {
             super::super::paste_burst::CharAction::RetroCapture(1)
         );
 
-        app.needs_redraw = false;
+        app.surface_dirty.chat.repaint = false;
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
         );
 
-        assert!(!app.needs_redraw);
+        assert!(!app.surface_dirty.chat.repaint);
         assert!(app.input.is_empty());
     }
 

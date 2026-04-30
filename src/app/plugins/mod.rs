@@ -307,7 +307,7 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     app.plugins.loading = true;
     app.plugins.clear_feedback();
     app.plugins.status_message = Some("Refreshing plugin inventory...".to_owned());
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
     let event_tx = app.event_tx.clone();
     let cwd_context = app.cwd_raw.clone();
     let cwd_raw = app.cwd_raw.clone();
@@ -675,7 +675,7 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
     app.plugins.last_inventory_refresh_at = None;
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
     let event_tx = app.event_tx.clone();
     let cwd_context = app.cwd_raw.clone();
     let cached_claude_path = app.plugins.claude_path.clone();
@@ -735,7 +735,7 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
     app.plugins.last_inventory_refresh_at = None;
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
     let cwd_context = app.cwd_raw.clone();
@@ -780,7 +780,7 @@ fn execute_selected_marketplace_action(app: &mut App) {
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
     app.plugins.last_inventory_refresh_at = None;
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
     let cwd_context = app.cwd_raw.clone();
@@ -833,7 +833,7 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     app.config.status_message = Some(format!("Adding marketplace {source}..."));
     app.plugins.loading = true;
     app.plugins.last_inventory_refresh_at = None;
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
     let event_tx = app.event_tx.clone();
     let cwd_raw = app.cwd_raw.clone();
     let cwd_context = app.cwd_raw.clone();

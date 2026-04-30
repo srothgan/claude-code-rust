@@ -87,7 +87,7 @@ pub fn set_active_view(app: &mut App, next: ActiveView) {
     if next == ActiveView::Chat {
         app.rebuild_chat_focus_from_state();
     }
-    app.needs_redraw = true;
+    app.request_active_surface_repaint();
 }
 
 fn clear_transient_view_state(app: &mut App) {

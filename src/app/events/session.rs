@@ -187,7 +187,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
-        app.needs_redraw = true;
+        app.request_active_surface_repaint();
         return;
     }
     push_system_message_with_severity(app, Some(SystemSeverity::Error), msg);
@@ -204,7 +204,7 @@ pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnecti
         Some(SystemSeverity::Info),
         "Authentication successful. Starting new session...",
     );
-    app.force_redraw = true;
+    app.request_chat_visible_rebuild();
     tracing::info!(
         target: crate::logging::targets::APP_AUTH,
         event_name = "login_completed",
@@ -238,7 +238,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
-    app.force_redraw = true;
+    app.request_chat_visible_rebuild();
     tracing::info!(
         target: crate::logging::targets::APP_AUTH,
         event_name = "logout_completed",

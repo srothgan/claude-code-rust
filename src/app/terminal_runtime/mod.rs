@@ -17,7 +17,7 @@ use self::modes::{
     shutdown_restore_actions,
 };
 use self::panic_hook::{PanicRestoreHook, restore_once};
-use crate::app::{App, FullscreenView, SurfaceMode, TerminalLifecycleState};
+use crate::app::{App, ChatRebuildKind, FullscreenView, SurfaceMode, TerminalLifecycleState};
 use anyhow::{Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -135,16 +135,14 @@ impl TerminalRuntime {
                     Some(SurfaceTerminalSession::Fullscreen(FullscreenTerminalSession::new()?));
                 self.active_surface = SurfaceMode::Fullscreen(view);
                 app.terminal_lifecycle = TerminalLifecycleState::Running(self.active_surface);
-                app.force_redraw = true;
-                app.needs_redraw = true;
-                app.surface_dirty.fullscreen.redraw = true;
+                app.surface_dirty.terminal_mode = true;
+                app.request_fullscreen_repaint();
             }
             SurfaceTransitionPlan::RetargetFullscreen { to, .. } => match self.session {
                 Some(SurfaceTerminalSession::Fullscreen(_)) => {
                     self.active_surface = SurfaceMode::Fullscreen(to);
                     app.terminal_lifecycle = TerminalLifecycleState::Running(self.active_surface);
-                    app.needs_redraw = true;
-                    app.surface_dirty.fullscreen.redraw = true;
+                    app.request_fullscreen_repaint();
                 }
                 _ => return Err(anyhow!("fullscreen session missing during fullscreen retarget")),
             },
@@ -163,24 +161,22 @@ impl TerminalRuntime {
                 self.session = Some(SurfaceTerminalSession::Chat(ChatTerminalSession::new()?));
                 self.active_surface = SurfaceMode::Chat;
                 app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-                app.force_redraw = true;
-                app.needs_redraw = true;
+                app.surface_dirty.terminal_mode = true;
+                app.request_chat_visible_rebuild();
             }
         }
 
         Ok(())
     }
 
-    pub(crate) fn clear_active_surface_with_app(
-        &mut self,
-        app: Option<&mut App>,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn apply_surface_rebuilds(&mut self, app: &mut App) -> anyhow::Result<()> {
         match self.session_mut()? {
-            SurfaceTerminalSession::Chat(session) => {
-                let app = app.ok_or_else(|| anyhow!("chat clear requires app state"))?;
-                session.clear(app)
-            }
-            SurfaceTerminalSession::Fullscreen(session) => session.clear(),
+            SurfaceTerminalSession::Chat(session) => match app.surface_dirty.chat.take_rebuild() {
+                ChatRebuildKind::None => Ok(()),
+                ChatRebuildKind::MutableViewport => session.clear_mutable_viewport(app),
+                ChatRebuildKind::VisibleScreen => session.clear(app),
+            },
+            SurfaceTerminalSession::Fullscreen(_) => Ok(()),
         }
     }
 

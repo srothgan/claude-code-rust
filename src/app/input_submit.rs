@@ -305,11 +305,11 @@ mod tests {
     fn local_slash_submit_marks_redraw() {
         let (mut app, _rx) = app_with_connection();
         app.input.set_text("/docs commands");
-        app.needs_redraw = false;
+        app.surface_dirty.chat.repaint = false;
 
         submit_input(&mut app);
 
-        assert!(app.needs_redraw);
+        assert!(app.surface_dirty.chat.repaint);
         assert!(app.input.text().is_empty());
         let Some(last) = app.messages.last() else {
             panic!("expected docs system message");

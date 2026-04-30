@@ -231,7 +231,7 @@ fn refresh_after_mutation(app: &mut App) {
     if app.mention.is_some() {
         super::mention::refresh_from_file_index(app);
     }
-    app.needs_redraw = true;
+    app.request_chat_repaint();
 }
 
 fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndexChange) {
@@ -823,7 +823,7 @@ mod tests {
 
         drain_events(&mut app);
 
-        assert!(app.needs_redraw);
+        assert!(app.surface_dirty.chat.repaint);
         let mention = app.mention.as_ref().expect("mention");
         assert_eq!(
             mention

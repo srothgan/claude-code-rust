@@ -53,7 +53,8 @@ pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use lifecycle::{
-    FullscreenSurfaceDirtyState, ReleaseReason, SurfaceDirtyState, TerminalLifecycleState,
+    ChatRebuildKind, ChatSurfaceDirtyState, FullscreenSurfaceDirtyState, ReleaseReason,
+    SurfaceDirtyState, TerminalLifecycleState,
 };
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
@@ -199,27 +200,23 @@ async fn run_tui_loop(
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
-            app.needs_redraw = true;
+            app.request_active_surface_repaint();
         } else {
             app.spinner_last_advance_at = None;
         }
         // Update tab title on non-animating state transitions (Ready, Error).
-        if !is_animating && app.needs_redraw {
+        if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
         }
         if terminal::update_terminal_outputs(app) {
-            app.needs_redraw = true;
-        }
-        if app.force_redraw {
-            terminal_runtime.clear_active_surface_with_app(Some(app))?;
-            app.force_redraw = false;
-            app.needs_redraw = true;
+            app.request_chat_repaint();
         }
         if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
-            app.force_redraw = false;
-            app.needs_redraw = false;
+            app.surface_dirty.clear_for_child_release();
+        } else {
+            terminal_runtime.apply_surface_rebuilds(app)?;
         }
-        if app.needs_redraw {
+        if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
@@ -234,7 +231,6 @@ async fn run_tui_loop(
                 drop(draw_timer);
                 drop(timer);
             }
-            app.needs_redraw = false;
             last_render = Instant::now();
         }
     }
@@ -351,7 +347,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         && app.input.append_to_active_paste_block(&pasted);
     if appended {
         app.active_paste_session = Some(session);
-        app.needs_redraw = true;
+        app.request_chat_repaint();
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_placeholder_appended",
@@ -395,7 +391,7 @@ fn finalize_pending_paste_event(app: &mut App) {
             lines = app.input.lines().len(),
         );
     }
-    app.needs_redraw = true;
+    app.request_chat_repaint();
 }
 
 fn cursor_gt(a: SelectionPoint, b: SelectionPoint) -> bool {
@@ -550,12 +546,12 @@ mod tests {
     #[test]
     fn pending_paste_finalization_marks_redraw() {
         let mut app = App::test_default();
-        app.needs_redraw = false;
+        app.surface_dirty.chat.repaint = false;
         app.pending_paste_text = "hello\nworld".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
-        assert!(app.needs_redraw);
+        assert!(app.surface_dirty.chat.repaint);
         assert_eq!(app.input.lines(), vec!["hello", "world"]);
     }
 

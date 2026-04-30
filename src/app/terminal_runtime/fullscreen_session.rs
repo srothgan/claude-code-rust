@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::App;
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::io::Stdout;
@@ -18,10 +18,6 @@ impl FullscreenTerminalSession {
         Terminal::new(CrosstermBackend::new(std::io::stdout()))
             .map(|terminal| Self { terminal })
             .map_err(|err| anyhow!("failed to construct fullscreen terminal session: {err}"))
-    }
-
-    pub(super) fn clear(&mut self) -> anyhow::Result<()> {
-        self.terminal.clear().context("failed to clear fullscreen surface")
     }
 
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {

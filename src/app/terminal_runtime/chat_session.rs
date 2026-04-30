@@ -88,6 +88,15 @@ where
         Ok(())
     }
 
+    pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) -> anyhow::Result<()> {
+        self.ensure_line_wrap_disabled(app)?;
+        self.terminal.clear().context("failed to clear inline viewport")?;
+        Write::flush(self.terminal.backend_mut())
+            .context("failed to flush inline viewport clear")?;
+        Self::invalidate_live_region_render_state(app);
+        Ok(())
+    }
+
     pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) -> anyhow::Result<()> {
         self.clear(app)
     }
@@ -195,6 +204,7 @@ where
             caret_col = input_area.x.saturating_add(composer_rows.caret_col),
         );
 
+        app.surface_dirty.chat.take_repaint();
         Ok(())
     }
 

@@ -241,7 +241,6 @@ impl super::App {
             .inline_output
             .record_message_transcript_entries(msg_idx, transcript_entries);
         self.mark_committed_output_changed();
-        self.needs_redraw = true;
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
@@ -274,7 +273,6 @@ impl super::App {
                 .record_message_transcript_entries(insert_idx, transcript_entries);
         }
         self.mark_committed_output_changed();
-        self.needs_redraw = true;
     }
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
@@ -296,7 +294,7 @@ impl super::App {
         } else if !self.messages.is_empty() {
             self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
         }
-        self.needs_redraw = true;
+        self.request_chat_repaint();
         Some(removed)
     }
 
@@ -310,7 +308,7 @@ impl super::App {
         self.reset_committed_output_tracking();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
-        self.needs_redraw = true;
+        self.request_chat_repaint();
     }
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
@@ -514,7 +512,6 @@ impl super::App {
                 self.apply_history_retention_drop(&drop_candidates, active_turn_owner);
                 self.rebuild_tool_indices_and_terminal_refs();
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
-                self.needs_redraw = true;
             }
         }
 

@@ -94,7 +94,7 @@ fn set_active_view_switches_to_config_from_trusted() {
 #[test]
 fn set_active_view_same_view_is_noop() {
     let mut app = busy_view_test_app();
-    app.needs_redraw = false;
+    app.surface_dirty.chat.repaint = false;
 
     set_active_view(&mut app, ActiveView::Chat);
 
@@ -103,7 +103,7 @@ fn set_active_view_same_view_is_noop() {
     assert!(app.mention.is_some());
     assert!(!app.pending_paste_text.is_empty());
     assert!(app.pending_submit.is_some());
-    assert!(!app.needs_redraw);
+    assert!(!app.surface_dirty.chat.repaint);
 }
 
 #[test]

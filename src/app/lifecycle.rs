@@ -24,24 +24,77 @@ pub struct FullscreenSurfaceDirtyState {
     pub redraw: bool,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChatRebuildKind {
+    #[default]
+    None,
+    MutableViewport,
+    VisibleScreen,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChatSurfaceDirtyState {
+    pub repaint: bool,
+    pub rebuild: ChatRebuildKind,
+}
+
+impl ChatSurfaceDirtyState {
+    pub fn request_repaint(&mut self) {
+        self.repaint = true;
+    }
+
+    pub fn request_mutable_rebuild(&mut self) {
+        self.rebuild = self.rebuild.max(ChatRebuildKind::MutableViewport);
+        self.repaint = true;
+    }
+
+    pub fn request_visible_screen_rebuild(&mut self) {
+        self.rebuild = ChatRebuildKind::VisibleScreen;
+        self.repaint = true;
+    }
+
+    pub fn take_rebuild(&mut self) -> ChatRebuildKind {
+        let rebuild = self.rebuild;
+        self.rebuild = ChatRebuildKind::None;
+        rebuild
+    }
+
+    pub fn take_repaint(&mut self) -> bool {
+        let repaint = self.repaint;
+        self.repaint = false;
+        repaint
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SurfaceDirtyState {
+    pub chat: ChatSurfaceDirtyState,
     pub fullscreen: FullscreenSurfaceDirtyState,
     pub terminal_mode: bool,
 }
 
 impl SurfaceDirtyState {
-    pub fn mark_resize(&mut self, lifecycle: TerminalLifecycleState) {
+    pub fn initial_chat() -> Self {
+        let mut dirty = Self::default();
+        dirty.chat.request_repaint();
+        dirty
+    }
+
+    pub fn active_surface_needs_draw(self, lifecycle: TerminalLifecycleState) -> bool {
         match lifecycle {
-            TerminalLifecycleState::Running(SurfaceMode::Fullscreen(_)) => {
-                self.fullscreen.redraw = true;
-            }
+            TerminalLifecycleState::Running(SurfaceMode::Fullscreen(_)) => self.fullscreen.redraw,
             TerminalLifecycleState::Running(SurfaceMode::Chat)
-            | TerminalLifecycleState::Bootstrapping
-            | TerminalLifecycleState::ReleasedToChild(_)
+            | TerminalLifecycleState::Bootstrapping => self.chat.repaint,
+            TerminalLifecycleState::ReleasedToChild(_)
             | TerminalLifecycleState::Restoring
-            | TerminalLifecycleState::Exited => {}
+            | TerminalLifecycleState::Exited => false,
         }
+    }
+
+    pub fn clear_for_child_release(&mut self) {
+        self.chat.repaint = false;
+        self.chat.rebuild = ChatRebuildKind::None;
+        self.fullscreen.redraw = false;
     }
 
     pub fn mark_view_transition(&mut self, from: SurfaceMode, to: SurfaceMode) {
@@ -51,6 +104,7 @@ impl SurfaceDirtyState {
                 self.terminal_mode = true;
             }
             (SurfaceMode::Fullscreen(_), SurfaceMode::Chat) => {
+                self.chat.request_visible_screen_rebuild();
                 self.terminal_mode = true;
             }
             (SurfaceMode::Fullscreen(from_view), SurfaceMode::Fullscreen(to_view))
@@ -92,6 +146,7 @@ mod tests {
 
         assert!(dirty.terminal_mode);
         assert!(!dirty.fullscreen.redraw);
+        assert_eq!(dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
     }
 
     #[test]
@@ -114,5 +169,27 @@ mod tests {
         dirty.mark_view_transition(SurfaceMode::Chat, SurfaceMode::Chat);
 
         assert_eq!(dirty, SurfaceDirtyState::default());
+    }
+
+    #[test]
+    fn chat_visible_screen_rebuild_dominates_mutable_rebuild() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+
+        dirty.request_mutable_rebuild();
+        dirty.request_visible_screen_rebuild();
+        dirty.request_mutable_rebuild();
+
+        assert_eq!(dirty.rebuild, ChatRebuildKind::VisibleScreen);
+        assert!(dirty.repaint);
+    }
+
+    #[test]
+    fn chat_rebuild_take_clears_rebuild_without_clearing_repaint() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+        dirty.request_mutable_rebuild();
+
+        assert_eq!(dirty.take_rebuild(), ChatRebuildKind::MutableViewport);
+        assert_eq!(dirty.rebuild, ChatRebuildKind::None);
+        assert!(dirty.repaint);
     }
 }

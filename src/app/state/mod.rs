@@ -199,8 +199,6 @@ pub struct App {
     pub tool_call_scopes: HashMap<String, ToolCallScope>,
     /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::agent::events::TerminalMap,
-    /// Force a full terminal clear on next render frame.
-    pub force_redraw: bool,
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `lookup_tool_call()`, `index_tool_call()`.
     pub tool_call_index: HashMap<String, (usize, usize)>,
@@ -301,8 +299,6 @@ pub struct App {
     pub terminal_tool_calls: Vec<TerminalToolCallRef>,
     /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
     pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
-    /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
-    pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
     pub notifications: super::notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
@@ -402,11 +398,42 @@ impl App {
     }
 
     pub(crate) fn mark_committed_output_changed(&mut self) {
-        self.needs_redraw = true;
+        self.request_chat_repaint();
     }
 
     pub(crate) fn reset_committed_output_tracking(&mut self) {
         self.chat_render.reset_committed_output();
+    }
+
+    pub(crate) fn request_chat_repaint(&mut self) {
+        self.surface_dirty.chat.request_repaint();
+    }
+
+    pub(crate) fn request_chat_mutable_rebuild(&mut self) {
+        self.surface_dirty.chat.request_mutable_rebuild();
+    }
+
+    pub(crate) fn request_chat_visible_rebuild(&mut self) {
+        self.surface_dirty.chat.request_visible_screen_rebuild();
+    }
+
+    pub(crate) fn request_fullscreen_repaint(&mut self) {
+        self.surface_dirty.fullscreen.redraw = true;
+    }
+
+    pub(crate) fn request_active_surface_repaint(&mut self) {
+        match self.terminal_lifecycle {
+            TerminalLifecycleState::Running(SurfaceMode::Fullscreen(_)) => {
+                self.request_fullscreen_repaint();
+            }
+            TerminalLifecycleState::Running(SurfaceMode::Chat)
+            | TerminalLifecycleState::Bootstrapping => {
+                self.request_chat_repaint();
+            }
+            TerminalLifecycleState::ReleasedToChild(_)
+            | TerminalLifecycleState::Restoring
+            | TerminalLifecycleState::Exited => {}
+        }
     }
 
     /// Mark one presented frame at `now`, updating smoothed FPS.
@@ -645,7 +672,7 @@ impl App {
     pub fn invalidate_layout(&mut self, _level: LayoutInvalidation) {
         self.chat_render.clear_measurements();
         self.chat_render.invalidate_live_anchor();
-        self.needs_redraw = true;
+        self.request_chat_repaint();
     }
 
     pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
@@ -809,7 +836,7 @@ impl App {
             active_view: ActiveView::Chat,
             surface_mode: SurfaceMode::Chat,
             terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),
-            surface_dirty: SurfaceDirtyState::default(),
+            surface_dirty: SurfaceDirtyState::initial_chat(),
             handoff_shadow: HandoffShadowState::default(),
             config: ConfigState::default(),
             trust: TrustState::default(),
@@ -853,7 +880,6 @@ impl App {
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
             terminals: std::rc::Rc::default(),
-            force_redraw: false,
             tool_call_index: HashMap::default(),
             todos: Vec::new(),
             show_todo_panel: false,
@@ -897,7 +923,6 @@ impl App {
             account_info: None,
             terminal_tool_calls: Vec::new(),
             terminal_tool_call_membership: HashSet::new(),
-            needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
@@ -929,11 +954,15 @@ impl App {
     }
 
     pub fn sync_git_context(&mut self) {
-        self.needs_redraw |= self.git_context.sync_to_cwd(Path::new(&self.cwd_raw));
+        if self.git_context.sync_to_cwd(Path::new(&self.cwd_raw)) {
+            self.request_chat_repaint();
+        }
     }
 
     pub fn tick_git_context(&mut self, now: Instant) {
-        self.needs_redraw |= self.git_context.tick(Path::new(&self.cwd_raw), now);
+        if self.git_context.tick(Path::new(&self.cwd_raw), now) {
+            self.request_chat_repaint();
+        }
     }
 
     #[cfg(test)]

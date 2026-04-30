@@ -215,7 +215,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
 /// navigation/help shortcuts.
 fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     if is_ctrl_char_shortcut(key, 'l') {
-        app.force_redraw = true;
+        app.request_chat_visible_rebuild();
         return true;
     }
     false
@@ -234,7 +234,7 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
-            app.force_redraw = true;
+            app.request_chat_visible_rebuild();
             true
         }
         _ => false,
@@ -328,7 +328,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     // Clear any pending image attachments on Escape.
     if !app.pending_images.is_empty() {
         app.pending_images.clear();
-        app.needs_redraw = true;
+        app.request_chat_repaint();
     }
     if app.focus_owner() == FocusOwner::TodoList {
         app.release_focus_target(FocusTarget::TodoList);
@@ -596,7 +596,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.needs_redraw = true;
+            app.request_chat_repaint();
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
         };
@@ -611,7 +611,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                     let idx = app.pending_images.len();
                     let badge = format!("[Image #{idx}]");
                     app.input.insert_str(&badge);
-                    app.needs_redraw = true;
+                    app.request_chat_repaint();
                     tracing::debug!(
                         count = app.pending_images.len(),
                         "clipboard_paste: attached image from clipboard"
@@ -624,7 +624,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.needs_redraw = true;
+                    app.request_chat_repaint();
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
                 }
@@ -699,7 +699,7 @@ fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
         app.pending_images.remove(array_idx);
     }
     app.input.renumber_image_badges();
-    app.needs_redraw = true;
+    app.request_chat_repaint();
     true
 }
 
