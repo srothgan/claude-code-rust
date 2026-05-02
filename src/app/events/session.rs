@@ -127,6 +127,7 @@ pub(super) fn handle_auth_required_event(
 ) {
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
+    app.status = AppStatus::Ready;
     app.resuming_session_id = None;
     app.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
@@ -404,11 +405,13 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.pending_command_ack = None;
 }
 
-/// Clear the `CommandPending` state and restore `Ready`.
+/// Clear pending slash-command UI. Turn and session lifecycle handlers own non-command status.
 pub(super) fn clear_pending_command(app: &mut App) {
     app.pending_command_label = None;
     app.pending_command_ack = None;
-    app.status = AppStatus::Ready;
+    if matches!(app.status, AppStatus::CommandPending) {
+        app.status = AppStatus::Ready;
+    }
 }
 
 fn push_connection_error_message(app: &mut App, error: &str) {

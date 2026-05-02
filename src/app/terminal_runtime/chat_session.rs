@@ -109,7 +109,7 @@ impl ChatTerminalSession {
             full_rebuild: transcript_plan.full_rebuild,
         });
 
-        self.prepare_mutable_viewport_for_draw(&transcript_plan, layout_plan.viewport_height)?;
+        self.prepare_mutable_viewport_for_draw(layout_plan.viewport_height)?;
         self.insert_transcript_rows(&transcript_plan)?;
         complete_transcript_flush(app, &transcript_plan);
         self.has_committed_output = self.has_committed_output || !transcript_plan.rows.is_empty();
@@ -217,15 +217,7 @@ impl ChatTerminalSession {
         Ok(())
     }
 
-    fn prepare_mutable_viewport_for_draw(
-        &mut self,
-        transcript_plan: &TranscriptFlushPlan,
-        desired_height: u16,
-    ) -> anyhow::Result<()> {
-        if !transcript_plan.rows.is_empty() {
-            self.clear_previous_mutable_viewport()
-                .context("failed to clear mutable viewport before transcript insert")?;
-        }
+    fn prepare_mutable_viewport_for_draw(&mut self, desired_height: u16) -> anyhow::Result<()> {
         self.ensure_inline_terminal_height(desired_height)
     }
 

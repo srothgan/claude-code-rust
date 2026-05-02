@@ -2059,6 +2059,34 @@ mod tests {
     }
 
     #[test]
+    fn slash_command_error_during_running_turn_does_not_stop_turn_status() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.pending_command_label = Some("Switching mode...".into());
+        app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+        handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set mode".into()));
+
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+    }
+
+    #[test]
+    fn slash_command_error_during_thinking_turn_does_not_stop_turn_status() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.pending_command_label = Some("Switching model...".into());
+        app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
+
+        handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set model".into()));
+
+        assert!(matches!(app.status, AppStatus::Thinking));
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+    }
+
+    #[test]
     fn terminal_release_event_marks_child_process_lifecycle_without_redraw() {
         let mut app = make_test_app();
         app.request_chat_repaint();
