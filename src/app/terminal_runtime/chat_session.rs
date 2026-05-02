@@ -11,103 +11,77 @@ use crate::ui::inline_chat_rows::{
     serialize_live_rows, serialize_live_rows_after_static_insert, serialize_transcript_rows,
 };
 use crate::ui::input_rows::serialize_input_rows;
-use anyhow::Context;
+use anyhow::{Context, anyhow};
+use crossterm::cursor::MoveTo;
 use crossterm::queue;
-use crossterm::terminal::DisableLineWrap;
-use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::{Rect, Size};
+use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-use std::io::{self, Stdout, Write};
-
-use super::custom_inline_terminal::Terminal;
-use super::insert_history::insert_history_lines;
-use super::screen_scroll::{ScreenScrollRequest, scroll_screen};
+use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
+use ratatui::{Terminal, TerminalOptions, Viewport};
+use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
 
-pub(super) struct ChatTerminalSession<B = StdoutBackend>
-where
-    B: Backend<Error = io::Error> + Write,
-{
-    terminal: Terminal<B>,
+pub(super) struct ChatTerminalSession {
+    terminal: Option<StdoutTerminal>,
+    inline_height: u16,
+    last_frame_area: Option<Rect>,
+    has_committed_output: bool,
 }
 
-struct GeometryChangeLog {
-    old_area: Rect,
-    next_area: Rect,
-    screen_size: Size,
-    reclaimed_history_rows: u16,
-    released_history_rows: u16,
-    pending_static_rows: u16,
-    scroll_down_rows: u16,
-    reason: &'static str,
-}
-
-impl ChatTerminalSession<StdoutBackend> {
+impl ChatTerminalSession {
     pub(super) fn new() -> anyhow::Result<Self> {
-        let terminal = build_terminal()?;
-        let screen_size = terminal.size().context("failed to read inline terminal size")?;
+        let (width, height) =
+            crossterm::terminal::size().context("failed to read chat terminal size")?;
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_backend_mode",
-            message = "chat runtime configured for custom inline terminal",
+            message = "chat runtime configured for ratatui inline viewport",
             outcome = "success",
-            backend = "custom_inline_terminal",
+            backend = "ratatui_inline_viewport",
         );
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_terminal_initialized",
-            message = "custom inline chat terminal constructed",
+            message = "ratatui inline chat terminal session initialized",
             outcome = "success",
-            terminal_width = screen_size.width,
-            terminal_height = screen_size.height,
+            terminal_width = width,
+            terminal_height = height,
         );
 
-        Ok(Self { terminal })
-    }
-}
-
-impl<B> ChatTerminalSession<B>
-where
-    B: Backend<Error = io::Error> + Write,
-{
-    #[cfg(test)]
-    fn from_terminal(terminal: Terminal<B>) -> Self {
-        Self { terminal }
+        Ok(Self {
+            terminal: None,
+            inline_height: 0,
+            last_frame_area: None,
+            has_committed_output: false,
+        })
     }
 
-    pub(super) fn clear(&mut self, app: &mut App) -> anyhow::Result<()> {
-        self.ensure_line_wrap_disabled(app)?;
-        self.terminal.clear_visible_screen().context("failed to clear inline screen")?;
-        Write::flush(self.terminal.backend_mut()).context("failed to flush inline screen clear")?;
-        app.chat_render.invalidate_live_anchor();
+    pub(super) fn clear(&mut self, app: &mut App) {
+        self.reset_inline_terminal(app);
         app.reset_committed_output_tracking();
-        Ok(())
     }
 
-    pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) -> anyhow::Result<()> {
-        self.ensure_line_wrap_disabled(app)?;
-        self.terminal.clear().context("failed to clear inline viewport")?;
-        Write::flush(self.terminal.backend_mut())
-            .context("failed to flush inline viewport clear")?;
-        Self::invalidate_live_region_render_state(app);
-        Ok(())
+    pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
+        self.reset_inline_terminal(app);
     }
 
-    pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) -> anyhow::Result<()> {
-        self.clear(app)
+    pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) {
+        self.reset_inline_terminal(app);
     }
 
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
-        self.ensure_terminal_size(app)?;
-        self.ensure_line_wrap_disabled(app)?;
+        Self::ensure_line_wrap_disabled(app)?;
 
-        let screen_size = self.terminal.size().context("failed to read inline viewport size")?;
-        let width = screen_size.width.max(1);
-        app.chat_render.set_terminal_size(screen_size.width, screen_size.height);
+        let screen_size =
+            crossterm::terminal::size().context("failed to read chat terminal size")?;
+        let width = screen_size.0.max(1);
+        let terminal_height = screen_size.1.max(1);
+        app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
         let transcript_plan = self.prepare_transcript_flush(app, width);
         let live_rows = if transcript_plan.inserted_ids.is_empty() {
@@ -116,21 +90,13 @@ where
             serialize_live_rows_after_static_insert(app, width, &transcript_plan.inserted_ids)
         };
         let composer_rows = Self::serialize_composer_rows(app, width);
-        let layout_plan = MutableLayoutPlan::new(&live_rows, &composer_rows, screen_size.height);
+        let layout_plan = MutableLayoutPlan::new(&live_rows, &composer_rows, terminal_height);
         let composer_rows_total = composer_rows.all_rows();
         let visible_input_rows = layout_plan.input_visible_rows(&composer_rows.input_rows).to_vec();
         let visible_footer_rows =
             layout_plan.footer_visible_rows(&composer_rows.footer_rows).to_vec();
         let visible_composer_rows =
             ComposerRows::join_visible_rows(&visible_input_rows, &visible_footer_rows);
-
-        let pending_static_rows = u16::try_from(transcript_plan.rows.len()).unwrap_or(u16::MAX);
-        self.reconcile_mutable_viewport_geometry(
-            layout_plan.viewport_height,
-            screen_size,
-            app,
-            pending_static_rows,
-        )?;
 
         log_inline_chat_draw(&InlineChatDrawSummary {
             app,
@@ -143,17 +109,25 @@ where
             full_rebuild: transcript_plan.full_rebuild,
         });
 
+        self.prepare_mutable_viewport_for_draw(&transcript_plan, layout_plan.viewport_height)?;
         self.insert_transcript_rows(&transcript_plan)?;
         complete_transcript_flush(app, &transcript_plan);
+        self.has_committed_output = self.has_committed_output || !transcript_plan.rows.is_empty();
+
         let visible_live_rows = layout_plan.live_visible_rows(&live_rows).to_vec();
         let visible_live_row_count = visible_live_rows.len();
         let visible_composer_row_count = visible_composer_rows.len();
         let input_caret_row = layout_plan.visible_input_caret_row(composer_rows.caret_row);
-        let completed = self
+        let terminal = self
             .terminal
+            .as_mut()
+            .ok_or_else(|| anyhow!("inline chat terminal missing before draw"))?;
+        let mut viewport_area = Rect::new(0, 0, 0, 0);
+        terminal
             .draw(|frame| {
-                let area = frame.area();
-                let (live_area, input_area, footer_area) = layout_plan.areas(area);
+                viewport_area = frame.area();
+                frame.render_widget(RatatuiClear, viewport_area);
+                let (live_area, input_area, footer_area) = layout_plan.areas(viewport_area);
                 if !live_area.is_empty() {
                     frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
                 }
@@ -164,15 +138,15 @@ where
                     frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
                 }
             })
-            .context("failed to draw inline chat viewport")?;
+            .context("failed to draw ratatui inline chat viewport")?;
 
-        let viewport_area = completed.area;
         let (live_area, input_area, footer_area) = layout_plan.areas(viewport_area);
+        self.last_frame_area = Some(viewport_area);
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.total_rows = u16::try_from(live_rows.len()).unwrap_or(u16::MAX);
         app.chat_render.live_region.hidden_rows_above =
             u16::try_from(layout_plan.live_window.hidden_rows_above()).unwrap_or(u16::MAX);
-        app.chat_render.live_region.viewport_height = live_area.height;
+        app.chat_render.live_region.viewport_height = viewport_area.height;
         app.chat_render.live_region.last_rendered_rows =
             u16::try_from(visible_live_row_count).unwrap_or(u16::MAX);
         app.chat_render.composer.last_rendered_rows =
@@ -181,7 +155,7 @@ where
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_viewport_draw",
-            message = "inline viewport repainted with mutable chat rows",
+            message = "ratatui inline viewport repainted with mutable chat rows",
             outcome = "success",
             viewport_top = viewport_area.top(),
             viewport_height = viewport_area.height,
@@ -191,15 +165,15 @@ where
             composer_height = input_area.height.saturating_add(footer_area.height),
             footer_top = footer_area.top(),
             footer_height = footer_area.height,
-            terminal_width = screen_size.width,
-            terminal_height = screen_size.height,
+            requested_inline_height = layout_plan.viewport_height,
+            terminal_width = screen_size.0,
+            terminal_height = screen_size.1,
             mutable_rows = visible_live_row_count + visible_composer_row_count,
             live_rows_total = live_rows.len(),
             live_rows_visible = visible_live_row_count,
             live_rows_hidden_above = layout_plan.live_window.hidden_rows_above(),
             composer_rows_total = composer_rows.total_len(),
             composer_rows_visible = visible_composer_row_count,
-            history_bounds = ?self.terminal.history_bounds(),
             caret_row = input_area.y.saturating_add(input_caret_row),
             caret_col = input_area.x.saturating_add(composer_rows.caret_col),
         );
@@ -208,25 +182,58 @@ where
         Ok(())
     }
 
-    fn ensure_terminal_size(&mut self, app: &mut App) -> anyhow::Result<()> {
-        let size = self.terminal.size().context("failed to read terminal size")?;
-        if size.width != app.chat_render.terminal_width
-            || size.height != app.chat_render.terminal_height
-        {
-            tracing::debug!(
+    fn reset_inline_terminal(&mut self, app: &mut App) {
+        if let Err(err) = self.clear_previous_mutable_viewport() {
+            tracing::warn!(
                 target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_resize_or_rebuild",
-                message = "terminal size changed for inline chat viewport",
-                outcome = "success",
-                old_width = app.chat_render.terminal_width,
-                old_height = app.chat_render.terminal_height,
-                new_width = size.width,
-                new_height = size.height,
-                reason = "terminal_size_changed",
+                event_name = "inline_chat_mutable_viewport_clear_failed",
+                message = "failed to clear mutable viewport before inline terminal reset",
+                outcome = "failure",
+                error_message = %err,
             );
-            app.chat_render.set_terminal_size(size.width, size.height);
         }
+        self.terminal = None;
+        self.inline_height = 0;
+        // Keep the cleared anchor so the next inline terminal is recreated in
+        // the same screen slot instead of bottom-aligning and leaving a gap.
+        self.has_committed_output = false;
+        app.chat_render.invalidate_live_anchor();
+    }
+
+    fn ensure_inline_terminal_height(&mut self, desired_height: u16) -> anyhow::Result<()> {
+        let next_height = desired_height.max(1);
+        if self.terminal.is_some() && self.inline_height == next_height {
+            return Ok(());
+        }
+
+        if let Some(area) = self.last_frame_area {
+            move_cursor_to(area).context("failed to restore inline viewport anchor")?;
+        }
+
+        let mut terminal = create_inline_terminal(next_height)?;
+        terminal.clear().context("failed to clear new inline terminal viewport")?;
+        self.terminal = Some(terminal);
+        self.inline_height = next_height;
         Ok(())
+    }
+
+    fn prepare_mutable_viewport_for_draw(
+        &mut self,
+        transcript_plan: &TranscriptFlushPlan,
+        desired_height: u16,
+    ) -> anyhow::Result<()> {
+        if !transcript_plan.rows.is_empty() {
+            self.clear_previous_mutable_viewport()
+                .context("failed to clear mutable viewport before transcript insert")?;
+        }
+        self.ensure_inline_terminal_height(desired_height)
+    }
+
+    fn clear_previous_mutable_viewport(&self) -> anyhow::Result<()> {
+        let Some(area) = self.last_frame_area else {
+            return Ok(());
+        };
+        clear_area_rows(area).context("failed to clear previous inline viewport rows")
     }
 
     fn insert_transcript_rows(&mut self, plan: &TranscriptFlushPlan) -> anyhow::Result<()> {
@@ -237,47 +244,42 @@ where
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_committed_insert_request",
-            message = "committed transcript rows scheduled for inline history insertion",
+            message = "committed transcript rows scheduled for ratatui inline insertion",
             outcome = "prepared",
             flushed_rows = plan.rows.len(),
             full_rebuild = plan.full_rebuild,
-            viewport_top = self.terminal.viewport_area.top(),
-            viewport_height = self.terminal.viewport_area.height,
             preview = %preview_rows(&plan.rows, 4),
         );
-        let insert_outcome = insert_history_lines(&mut self.terminal, &plan.rows)
+
+        let row_count = u16::try_from(plan.rows.len()).unwrap_or(u16::MAX).max(1);
+        let rows = plan.rows.clone();
+        let terminal = self
+            .terminal
+            .as_mut()
+            .ok_or_else(|| anyhow!("inline chat terminal missing before transcript insert"))?;
+        terminal
+            .insert_before(row_count, |buffer| {
+                Paragraph::new(rows).render(buffer.area, buffer);
+            })
             .context("failed to insert committed transcript above inline viewport")?;
-        if insert_outcome.scroll_up_amount > 0 {
-            self.terminal
-                .clear()
-                .context("failed to clear inline viewport after committed transcript scroll")?;
-        }
-        Write::flush(self.terminal.backend_mut())
-            .context("failed to flush committed transcript insertion")?;
-        let history_bounds = self.terminal.history_bounds();
+
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_committed_insert_applied",
-            message = "committed transcript rows inserted into terminal history",
+            message = "committed transcript rows inserted before ratatui inline viewport",
             outcome = "success",
-            insert_top = insert_outcome.insert_top,
-            inserted_rows = insert_outcome.inserted_rows,
-            scroll_up_amount = insert_outcome.scroll_up_amount,
-            history_top = history_bounds.map(|(top, _)| top),
-            history_bottom_exclusive = history_bounds.map(|(_, bottom)| bottom),
-            viewport_top = self.terminal.viewport_area.top(),
-            viewport_height = self.terminal.viewport_area.height,
+            inserted_rows = row_count,
         );
         Ok(())
     }
 
-    fn ensure_line_wrap_disabled(&mut self, app: &mut App) -> anyhow::Result<()> {
+    fn ensure_line_wrap_disabled(app: &mut App) -> anyhow::Result<()> {
         if app.chat_render.line_wrap_disabled {
             return Ok(());
         }
-        queue!(self.terminal.backend_mut(), DisableLineWrap)
-            .context("failed to disable inline viewport line wrap")?;
-        Write::flush(self.terminal.backend_mut()).context("failed to flush line-wrap disable")?;
+        let mut stdout = std::io::stdout();
+        queue!(stdout, DisableLineWrap).context("failed to disable inline viewport line wrap")?;
+        stdout.flush().context("failed to flush line-wrap disable")?;
         app.chat_render.line_wrap_disabled = true;
         Ok(())
     }
@@ -307,112 +309,6 @@ where
         }
     }
 
-    fn reconcile_mutable_viewport_geometry(
-        &mut self,
-        desired_viewport_height: u16,
-        screen_size: Size,
-        app: &mut App,
-        pending_static_rows: u16,
-    ) -> anyhow::Result<()> {
-        let next_area = Rect::new(
-            0,
-            screen_size.height.saturating_sub(desired_viewport_height),
-            screen_size.width,
-            desired_viewport_height,
-        );
-        if next_area == self.terminal.viewport_area {
-            return Ok(());
-        }
-
-        let old_area = self.terminal.viewport_area;
-        if old_area.is_empty() {
-            self.terminal.set_viewport_area(next_area);
-            self.terminal
-                .clear()
-                .context("failed to clear inline viewport before initial geometry set")?;
-            Self::invalidate_live_region_render_state(app);
-            Self::log_mutable_viewport_geometry_change(&GeometryChangeLog {
-                old_area,
-                next_area,
-                screen_size,
-                reclaimed_history_rows: 0,
-                released_history_rows: 0,
-                pending_static_rows,
-                scroll_down_rows: 0,
-                reason: "mutable_height_initialized",
-            });
-            return Ok(());
-        }
-
-        let reclaimed_history_rows = old_area.top().saturating_sub(next_area.top());
-        let released_history_rows = next_area.top().saturating_sub(old_area.top());
-        let scroll_down_rows = released_history_rows.saturating_sub(pending_static_rows);
-        if reclaimed_history_rows > 0 {
-            let _ =
-                scroll_screen(&mut self.terminal, ScreenScrollRequest::up(reclaimed_history_rows))
-                    .context("failed to scroll terminal history before viewport expansion")?;
-            self.terminal.invalidate_viewport();
-        } else if scroll_down_rows > 0 {
-            let _ = scroll_screen(&mut self.terminal, ScreenScrollRequest::down(scroll_down_rows))
-                .context("failed to scroll terminal history before viewport shrink")?;
-        } else {
-            self.terminal
-                .clear()
-                .context("failed to clear inline viewport before geometry update")?;
-        }
-        self.terminal.set_viewport_area(next_area);
-        if reclaimed_history_rows > 0 {
-            self.terminal
-                .clear()
-                .context("failed to clear expanded inline viewport after history scroll")?;
-        } else if released_history_rows > 0 {
-            self.terminal
-                .clear()
-                .context("failed to clear shrunken inline viewport after history scroll")?;
-        }
-        Self::invalidate_live_region_render_state(app);
-
-        Self::log_mutable_viewport_geometry_change(&GeometryChangeLog {
-            old_area,
-            next_area,
-            screen_size,
-            reclaimed_history_rows,
-            released_history_rows,
-            pending_static_rows,
-            scroll_down_rows,
-            reason: "mutable_height_changed",
-        });
-        Ok(())
-    }
-
-    fn invalidate_live_region_render_state(app: &mut App) {
-        app.chat_render.live_region.anchor_valid = false;
-        app.chat_render.live_region.total_rows = 0;
-        app.chat_render.live_region.hidden_rows_above = 0;
-        app.chat_render.live_region.viewport_height = 0;
-        app.chat_render.live_region.last_rendered_rows = 0;
-    }
-
-    fn log_mutable_viewport_geometry_change(change: &GeometryChangeLog) {
-        tracing::debug!(
-            target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_resize_or_rebuild",
-            message = "inline viewport geometry updated in place",
-            outcome = "success",
-            old_top = change.old_area.top(),
-            old_height = change.old_area.height,
-            new_top = change.next_area.top(),
-            new_height = change.next_area.height,
-            reclaimed_history_rows = change.reclaimed_history_rows,
-            released_history_rows = change.released_history_rows,
-            pending_static_rows = change.pending_static_rows,
-            scroll_down_rows = change.scroll_down_rows,
-            terminal_width = change.screen_size.width,
-            terminal_height = change.screen_size.height,
-            reason = change.reason,
-        );
-    }
-
     fn prepare_transcript_flush(&mut self, app: &mut App, width: u16) -> TranscriptFlushPlan {
         if !app.chat_render.terminal_history_is_synced() {
             let plan = inline_history_replay_plan(app);
@@ -432,21 +328,44 @@ where
         let entries = plan.items.into_iter().map(|item| item.entry).collect::<Vec<_>>();
 
         TranscriptFlushPlan {
-            rows: serialize_transcript_rows(
-                app,
-                &entries,
-                self.terminal.history_is_visible(),
-                width,
-            ),
+            rows: serialize_transcript_rows(app, &entries, self.has_committed_output, width),
             inserted_ids,
             full_rebuild: false,
         }
     }
 }
 
-fn build_terminal() -> anyhow::Result<StdoutTerminal> {
-    Terminal::with_options(CrosstermBackend::new(std::io::stdout()))
-        .context("failed to construct inline chat terminal")
+fn create_inline_terminal(height: u16) -> anyhow::Result<StdoutTerminal> {
+    Terminal::with_options(
+        CrosstermBackend::new(std::io::stdout()),
+        TerminalOptions { viewport: Viewport::Inline(height.max(1)) },
+    )
+    .context("failed to construct ratatui inline chat terminal")
+}
+
+fn move_cursor_to(area: Rect) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout();
+    queue!(stdout, MoveTo(area.x, area.y)).context("failed to queue cursor move")?;
+    stdout.flush().context("failed to flush cursor move")?;
+    Ok(())
+}
+
+fn clear_area_rows(area: Rect) -> anyhow::Result<()> {
+    if area.is_empty() {
+        return Ok(());
+    }
+
+    let mut stdout = std::io::stdout();
+    for offset in 0..area.height {
+        queue!(
+            stdout,
+            MoveTo(area.x, area.y.saturating_add(offset)),
+            Clear(ClearType::CurrentLine)
+        )
+        .context("failed to queue inline row clear")?;
+    }
+    stdout.flush().context("failed to flush inline row clear")?;
+    Ok(())
 }
 
 #[derive(Default)]
@@ -550,7 +469,7 @@ impl MutableLayoutPlan {
             .saturating_add(input_window.visible_len_u16())
             .saturating_add(footer_window.visible_len_u16())
             .max(1)
-            .min(screen_height);
+            .min(screen_height.max(1));
 
         Self { live_window, input_window, footer_window, viewport_height }
     }
@@ -648,589 +567,4 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ChatTerminalSession, ComposerRows, MutableLayoutPlan, RowWindow};
-    use crate::app::handoff::projection::{
-        InlineOutputItemKind, InlineOutputStatus, inline_live_projection,
-    };
-    use crate::app::handoff::types::{
-        SystemTranscriptEntry, TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry,
-    };
-    use crate::app::{App, AppStatus, ChatMessage, MessageRole, SystemSeverity};
-    use ratatui::backend::{Backend, ClearType, WindowSize};
-    use ratatui::buffer::Cell;
-    use ratatui::layout::{Position, Rect, Size};
-    use ratatui::text::Line;
-    use std::io;
-    use std::io::Write;
-
-    use super::Terminal;
-
-    fn rows(count: usize) -> Vec<Line<'static>> {
-        (0..count).map(|idx| Line::raw(format!("row {idx}"))).collect()
-    }
-
-    fn row_text(rows: &[Line<'static>]) -> String {
-        rows.iter()
-            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn composer_rows(input_rows: usize, footer_rows: usize, caret_row: u16) -> ComposerRows {
-        ComposerRows {
-            input_rows: rows(input_rows),
-            footer_rows: rows(footer_rows),
-            caret_row,
-            caret_col: 0,
-        }
-    }
-
-    fn user_entry(text: &str) -> TranscriptEntry {
-        TranscriptEntry::User(UserTranscriptEntry {
-            blocks: vec![UserTranscriptBlock::Text(text.to_owned())],
-        })
-    }
-
-    fn system_entry(text: &str) -> TranscriptEntry {
-        TranscriptEntry::System(SystemTranscriptEntry {
-            severity: Some(SystemSeverity::Info),
-            text: text.to_owned(),
-        })
-    }
-
-    fn test_terminal(backend: RecordingBackend) -> Terminal<RecordingBackend> {
-        match Terminal::with_options(backend) {
-            Ok(terminal) => terminal,
-            Err(err) => panic!("failed to construct test terminal: {err}"),
-        }
-    }
-
-    fn app_with_pending_user(text: &str) -> (App, super::InlineOutputId) {
-        let mut app = App::test_default();
-        app.chat_render.line_wrap_disabled = true;
-        app.chat_render.mark_terminal_history_synced();
-        let ids = app
-            .handoff_shadow
-            .inline_output
-            .record_message_transcript_entries(0, vec![user_entry(text)]);
-        (app, ids[0])
-    }
-
-    fn app_with_pending_user_and_live_assistant(text: &str) -> App {
-        let (mut app, _id) = app_with_pending_user(text);
-        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
-        app.status = AppStatus::Thinking;
-        crate::app::handoff::shadow::sync_handoff_commit_queue(&mut app);
-        app
-    }
-
-    fn app_with_unsynced_replay() -> (App, super::InlineOutputId, super::InlineOutputId) {
-        let mut app = App::test_default();
-        app.chat_render.line_wrap_disabled = true;
-        let inserted_ids = app
-            .handoff_shadow
-            .inline_output
-            .record_message_transcript_entries(0, vec![user_entry("replay inserted")]);
-        let pending_ids = app
-            .handoff_shadow
-            .inline_output
-            .record_message_transcript_entries(1, vec![system_entry("replay pending")]);
-        app.handoff_shadow.inline_output.confirm_static_inserted(&inserted_ids);
-        (app, inserted_ids[0], pending_ids[0])
-    }
-
-    fn assert_inline_item_pending(app: &App) {
-        assert!(matches!(
-            app.handoff_shadow.inline_output.items()[0].kind,
-            InlineOutputItemKind::Transcript { status: InlineOutputStatus::PendingInsert, .. }
-        ));
-    }
-
-    fn assert_inline_item_inserted(app: &App) {
-        assert!(matches!(
-            app.handoff_shadow.inline_output.items()[0].kind,
-            InlineOutputItemKind::Transcript { status: InlineOutputStatus::Inserted, .. }
-        ));
-    }
-
-    fn assert_inline_item_pending_at(app: &App, idx: usize) {
-        assert!(matches!(
-            app.handoff_shadow.inline_output.items()[idx].kind,
-            InlineOutputItemKind::Transcript { status: InlineOutputStatus::PendingInsert, .. }
-        ));
-    }
-
-    fn assert_inline_item_inserted_at(app: &App, idx: usize) {
-        assert!(matches!(
-            app.handoff_shadow.inline_output.items()[idx].kind,
-            InlineOutputItemKind::Transcript { status: InlineOutputStatus::Inserted, .. }
-        ));
-    }
-
-    #[test]
-    fn row_window_keeps_tail_within_budget() {
-        let window = RowWindow::tail(12, 5);
-
-        assert_eq!(window.hidden_rows_above(), 7);
-        assert_eq!(window.visible_len_u16(), 5);
-    }
-
-    #[test]
-    fn mutable_layout_reserves_bottom_space_for_composer() {
-        let live_rows = rows(313);
-        let composer_rows = composer_rows(1, 2, 0);
-        let plan = MutableLayoutPlan::new(&live_rows, &composer_rows, 40);
-
-        assert_eq!(plan.viewport_height, 40);
-        assert_eq!(plan.live_window.visible_len_u16(), 37);
-        assert_eq!(plan.live_window.hidden_rows_above(), 276);
-        assert_eq!(plan.input_window.visible_len_u16(), 1);
-        assert_eq!(plan.footer_window.visible_len_u16(), 2);
-    }
-
-    #[test]
-    fn mutable_layout_areas_pin_input_and_footer_to_bottom() {
-        let plan = MutableLayoutPlan {
-            live_window: RowWindow { start: 20, visible_len: 37 },
-            input_window: RowWindow { start: 0, visible_len: 1 },
-            footer_window: RowWindow { start: 0, visible_len: 2 },
-            viewport_height: 40,
-        };
-        let viewport_area = Rect::new(0, 10, 120, 40);
-        let (live_area, input_area, footer_area) = plan.areas(viewport_area);
-
-        assert_eq!(live_area, Rect::new(0, 10, 120, 37));
-        assert_eq!(input_area, Rect::new(0, 47, 120, 1));
-        assert_eq!(footer_area, Rect::new(0, 48, 120, 2));
-    }
-
-    #[test]
-    fn mutable_layout_keeps_footer_pinned_when_input_exceeds_screen() {
-        let live_rows = rows(10);
-        let composer_rows = composer_rows(50, 2, 49);
-        let plan = MutableLayoutPlan::new(&live_rows, &composer_rows, 40);
-
-        assert_eq!(plan.input_window.hidden_rows_above(), 12);
-        assert_eq!(plan.input_window.visible_len_u16(), 38);
-        assert_eq!(plan.footer_window.visible_len_u16(), 2);
-        assert_eq!(plan.live_window.visible_len_u16(), 0);
-        assert_eq!(plan.visible_input_caret_row(49), 37);
-    }
-
-    #[test]
-    fn prepare_transcript_flush_uses_handoff_static_plan() {
-        let (mut app, id) = app_with_pending_user("handoff row");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        let plan = session.prepare_transcript_flush(&mut app, 80);
-
-        assert_eq!(plan.inserted_ids, vec![id]);
-        assert!(row_text(&plan.rows).contains("handoff row"));
-    }
-
-    #[test]
-    fn prepare_transcript_flush_uses_handoff_replay_plan() {
-        let (mut app, _inserted_id, pending_id) = app_with_unsynced_replay();
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        let plan = session.prepare_transcript_flush(&mut app, 80);
-        let rows = row_text(&plan.rows);
-
-        assert!(plan.full_rebuild);
-        assert_eq!(plan.inserted_ids, vec![pending_id]);
-        assert!(rows.contains("replay inserted"));
-        assert!(rows.contains("replay pending"));
-    }
-
-    #[test]
-    fn successful_insert_and_draw_marks_static_ids_inserted() {
-        let (mut app, _id) = app_with_pending_user("insert me");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_ok());
-        assert_inline_item_inserted(&app);
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn static_insert_targets_final_composer_viewport_without_leaving_gap() {
-        let (mut app, _id) = app_with_pending_user("insert me");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        session.draw(&mut app).expect("draw inserts pending transcript");
-
-        let (_history_top, history_bottom) =
-            session.terminal.history_bounds().expect("history bounds");
-        assert_eq!(history_bottom, session.terminal.viewport_area.top());
-        assert_eq!(app.chat_render.live_region.total_rows, 0);
-    }
-
-    #[test]
-    fn static_insert_targets_final_live_viewport_without_leaving_gap() {
-        let mut app = app_with_pending_user_and_live_assistant("insert me");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        session.draw(&mut app).expect("draw inserts pending transcript");
-
-        let (_history_top, history_bottom) =
-            session.terminal.history_bounds().expect("history bounds");
-        assert_eq!(history_bottom, session.terminal.viewport_area.top());
-        assert_eq!(app.chat_render.live_region.total_rows, 2);
-        assert_eq!(inline_live_projection(&app).len(), 1);
-    }
-
-    #[test]
-    fn confirmed_static_history_survives_next_live_viewport_shrink() {
-        let (mut app, _id) = app_with_pending_user("persist me");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        session.draw(&mut app).expect("first draw inserts pending transcript");
-        let first_bounds = session.terminal.history_bounds();
-        assert!(first_bounds.is_some());
-        assert!(inline_live_projection(&app).is_empty());
-
-        session.draw(&mut app).expect("second draw shrinks live viewport after confirmation");
-
-        assert_eq!(session.terminal.history_bounds(), first_bounds);
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn prompt_suggestion_disappearing_scrolls_history_down_through_geometry_reconciler() {
-        let mut app = app_with_pending_user_and_live_assistant("insert me");
-        app.prompt_suggestion = Some("Write focused tests".to_owned());
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        session.draw(&mut app).expect("draw with prompt suggestion");
-        let top_with_suggestion = session.terminal.viewport_area.top();
-        let (history_top_with_suggestion, history_bottom_with_suggestion) =
-            session.terminal.history_bounds().expect("history bounds after first draw");
-        assert_eq!(history_bottom_with_suggestion, top_with_suggestion);
-
-        app.prompt_suggestion = None;
-        session.draw(&mut app).expect("draw after prompt suggestion disappears");
-
-        let top_without_suggestion = session.terminal.viewport_area.top();
-        let (history_top_without_suggestion, history_bottom_without_suggestion) =
-            session.terminal.history_bounds().expect("history bounds after shrink");
-        assert_eq!(top_without_suggestion, top_with_suggestion.saturating_add(1));
-        assert_eq!(history_top_without_suggestion, history_top_with_suggestion.saturating_add(1));
-        assert_eq!(
-            history_bottom_without_suggestion,
-            history_bottom_with_suggestion.saturating_add(1)
-        );
-        assert_eq!(history_bottom_without_suggestion, top_without_suggestion);
-    }
-
-    #[test]
-    fn live_assistant_removal_scrolls_history_down_through_geometry_reconciler() {
-        let mut app = app_with_pending_user_and_live_assistant("insert me");
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        session.draw(&mut app).expect("draw with live assistant rows");
-        let top_with_live = session.terminal.viewport_area.top();
-        let (history_top_with_live, history_bottom_with_live) =
-            session.terminal.history_bounds().expect("history bounds after first draw");
-        let (msg_idx, turn_id) =
-            crate::app::handoff::shadow::active_assistant_projection_anchor(&app)
-                .expect("active assistant anchor");
-
-        app.handoff_shadow.active_turn = None;
-        app.handoff_shadow.inline_output.remove_assistant_live_slot(msg_idx, turn_id);
-        session.draw(&mut app).expect("draw after live assistant rows are removed");
-
-        let top_without_live = session.terminal.viewport_area.top();
-        let released_rows = top_without_live.saturating_sub(top_with_live);
-        let (history_top_without_live, history_bottom_without_live) =
-            session.terminal.history_bounds().expect("history bounds after shrink");
-        assert!(released_rows > 0);
-        assert_eq!(history_top_without_live, history_top_with_live.saturating_add(released_rows));
-        assert_eq!(
-            history_bottom_without_live,
-            history_bottom_with_live.saturating_add(released_rows)
-        );
-        assert_eq!(history_bottom_without_live, top_without_live);
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn pending_static_insert_consumes_released_rows_during_viewport_shrink() {
-        let mut app = App::test_default();
-        app.chat_render.line_wrap_disabled = true;
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(124, 29)));
-        session.terminal.set_viewport_area(Rect::new(0, 9, 124, 20));
-        session.terminal.record_history_insert(0, 9);
-
-        session
-            .reconcile_mutable_viewport_geometry(4, Size::new(124, 29), &mut app, 15)
-            .expect("viewport shrink should account for pending static rows");
-        let written = String::from_utf8_lossy(&session.terminal.backend_mut().written);
-        assert!(written.contains("\x1b[1T"), "expected one released row to scroll down");
-        assert!(
-            !written.contains("\x1b[16T"),
-            "pending static rows should not be emitted as blank scroll-down rows"
-        );
-
-        super::insert_history_lines(&mut session.terminal, &rows(15)).expect("insert static rows");
-        let (_history_top, history_bottom) =
-            session.terminal.history_bounds().expect("history bounds after insert");
-        assert_eq!(history_bottom, session.terminal.viewport_area.top());
-    }
-
-    #[test]
-    fn static_insert_clears_mutable_viewport_after_terminal_scroll() {
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 6)));
-        session.terminal.set_viewport_area(Rect::new(0, 3, 80, 3));
-        session.terminal.record_history_insert(0, 3);
-        let plan = super::TranscriptFlushPlan {
-            rows: rows(4),
-            inserted_ids: Vec::new(),
-            full_rebuild: false,
-        };
-
-        session.insert_transcript_rows(&plan).expect("insert should clear after scroll");
-
-        let backend = session.terminal.backend_mut();
-        assert!(
-            backend.clear_region_calls > 0,
-            "history insertion that scrolls the screen must physically clear the mutable viewport"
-        );
-    }
-
-    #[test]
-    fn force_clear_uses_full_screen_clear_and_resets_history_bounds() {
-        let mut app = App::test_default();
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-        session.terminal.set_viewport_area(Rect::new(0, 20, 80, 4));
-        session.terminal.record_history_insert(0, 20);
-
-        session.clear(&mut app).expect("force clear should clear visible screen");
-
-        let backend = session.terminal.backend_mut();
-        assert_eq!(backend.clear_calls, 1);
-        assert_eq!(backend.clear_region_calls, 0);
-        assert!(session.terminal.history_bounds().is_none());
-    }
-
-    #[test]
-    fn successful_history_replay_marks_pending_ids_inserted_and_history_synced() {
-        let (mut app, _inserted_id, _pending_id) = app_with_unsynced_replay();
-        let mut session =
-            ChatTerminalSession::from_terminal(test_terminal(RecordingBackend::new(80, 24)));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_ok());
-        assert_inline_item_inserted_at(&app, 0);
-        assert_inline_item_inserted_at(&app, 1);
-        assert!(app.chat_render.terminal_history_is_synced());
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn failed_history_insert_leaves_static_ids_pending_and_live() {
-        let (mut app, _id) = app_with_pending_user("still live");
-        let mut backend = RecordingBackend::new(80, 24);
-        backend.fail_writes = true;
-        let mut session = ChatTerminalSession::from_terminal(test_terminal(backend));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_err());
-        assert_inline_item_pending(&app);
-        assert_eq!(inline_live_projection(&app).len(), 1);
-    }
-
-    #[test]
-    fn failed_history_replay_insert_leaves_pending_ids_live_and_history_unsynced() {
-        let (mut app, _inserted_id, _pending_id) = app_with_unsynced_replay();
-        let mut backend = RecordingBackend::new(80, 24);
-        backend.fail_writes = true;
-        let mut session = ChatTerminalSession::from_terminal(test_terminal(backend));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_err());
-        assert_inline_item_inserted_at(&app, 0);
-        assert_inline_item_pending_at(&app, 1);
-        assert!(!app.chat_render.terminal_history_is_synced());
-        assert_eq!(inline_live_projection(&app).len(), 1);
-    }
-
-    #[test]
-    fn failed_backend_flush_after_history_insert_keeps_flushed_static_ids_inserted() {
-        let (mut app, _id) = app_with_pending_user("flush failure");
-        let mut backend = RecordingBackend::new(80, 24);
-        backend.fail_backend_flush = true;
-        let mut session = ChatTerminalSession::from_terminal(test_terminal(backend));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_err());
-        assert_inline_item_inserted(&app);
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn failed_backend_flush_after_history_replay_keeps_flushed_static_ids_inserted() {
-        let (mut app, _inserted_id, _pending_id) = app_with_unsynced_replay();
-        let mut backend = RecordingBackend::new(80, 24);
-        backend.fail_backend_flush = true;
-        let mut session = ChatTerminalSession::from_terminal(test_terminal(backend));
-
-        let result = session.draw(&mut app);
-
-        assert!(result.is_err());
-        assert_inline_item_inserted_at(&app, 0);
-        assert_inline_item_inserted_at(&app, 1);
-        assert!(app.chat_render.terminal_history_is_synced());
-        assert!(inline_live_projection(&app).is_empty());
-    }
-
-    #[test]
-    fn viewport_resize_failures_do_not_drop_unconfirmed_static_ids() {
-        let (mut app, _id) = app_with_pending_user("resize pending");
-        let mut backend = RecordingBackend::new(80, 18);
-        backend.fail_writes = true;
-        let mut session = ChatTerminalSession::from_terminal(test_terminal(backend));
-
-        assert!(session.draw(&mut app).is_err());
-        assert_inline_item_pending(&app);
-
-        session.terminal.backend_mut().size = Size::new(80, 10);
-        assert!(session.draw(&mut app).is_err());
-        assert_inline_item_pending(&app);
-
-        session.terminal.backend_mut().size = Size::new(80, 30);
-        assert!(session.draw(&mut app).is_err());
-        assert_inline_item_pending(&app);
-        assert_eq!(inline_live_projection(&app).len(), 1);
-    }
-
-    #[derive(Debug)]
-    struct RecordingBackend {
-        size: Size,
-        cursor: Position,
-        written: Vec<u8>,
-        fail_writes: bool,
-        fail_backend_flush: bool,
-        clear_region_calls: usize,
-        clear_calls: usize,
-    }
-
-    impl RecordingBackend {
-        const fn new(width: u16, height: u16) -> Self {
-            Self {
-                size: Size::new(width, height),
-                cursor: Position::ORIGIN,
-                written: Vec::new(),
-                fail_writes: false,
-                fail_backend_flush: false,
-                clear_region_calls: 0,
-                clear_calls: 0,
-            }
-        }
-    }
-
-    impl Write for RecordingBackend {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            if self.fail_writes {
-                return Err(io::Error::other("test write failure"));
-            }
-            self.written.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl Backend for RecordingBackend {
-        type Error = io::Error;
-
-        fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
-        where
-            I: Iterator<Item = (u16, u16, &'a Cell)>,
-        {
-            Ok(())
-        }
-
-        fn hide_cursor(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn show_cursor(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn get_cursor_position(&mut self) -> io::Result<Position> {
-            Ok(self.cursor)
-        }
-
-        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-            self.cursor = position.into();
-            Ok(())
-        }
-
-        fn clear(&mut self) -> io::Result<()> {
-            self.clear_calls = self.clear_calls.saturating_add(1);
-            Ok(())
-        }
-
-        fn clear_region(&mut self, _clear_type: ClearType) -> io::Result<()> {
-            self.clear_region_calls = self.clear_region_calls.saturating_add(1);
-            Ok(())
-        }
-
-        fn size(&self) -> io::Result<Size> {
-            Ok(self.size)
-        }
-
-        fn window_size(&mut self) -> io::Result<WindowSize> {
-            Ok(WindowSize { columns_rows: self.size, pixels: self.size })
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            if self.fail_backend_flush {
-                return Err(io::Error::other("test backend flush failure"));
-            }
-            Ok(())
-        }
-
-        fn scroll_region_up(
-            &mut self,
-            _region: std::ops::Range<u16>,
-            _line_count: u16,
-        ) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn scroll_region_down(
-            &mut self,
-            _region: std::ops::Range<u16>,
-            _line_count: u16,
-        ) -> io::Result<()> {
-            Ok(())
-        }
-    }
 }

@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod chat_session;
-mod custom_inline_terminal;
 mod fullscreen_session;
-mod insert_history;
 mod modes;
 mod panic_hook;
 mod release_guard;
-mod screen_scroll;
 
 use self::chat_session::ChatTerminalSession;
 use self::fullscreen_session::FullscreenTerminalSession;
@@ -120,7 +117,7 @@ impl TerminalRuntime {
             SurfaceTransitionPlan::EnterFullscreen { view } => {
                 match self.session.take() {
                     Some(SurfaceTerminalSession::Chat(mut session)) => {
-                        session.prepare_for_fullscreen(app)?;
+                        session.prepare_for_fullscreen(app);
                     }
                     Some(SurfaceTerminalSession::Fullscreen(_)) | None => {
                         return Err(anyhow!("chat session missing before fullscreen entry"));
@@ -173,8 +170,14 @@ impl TerminalRuntime {
         match self.session_mut()? {
             SurfaceTerminalSession::Chat(session) => match app.surface_dirty.chat.take_rebuild() {
                 ChatRebuildKind::None => Ok(()),
-                ChatRebuildKind::MutableViewport => session.clear_mutable_viewport(app),
-                ChatRebuildKind::VisibleScreen => session.clear(app),
+                ChatRebuildKind::MutableViewport => {
+                    session.clear_mutable_viewport(app);
+                    Ok(())
+                }
+                ChatRebuildKind::VisibleScreen => {
+                    session.clear(app);
+                    Ok(())
+                }
             },
             SurfaceTerminalSession::Fullscreen(_) => Ok(()),
         }
