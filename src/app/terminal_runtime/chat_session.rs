@@ -15,7 +15,7 @@ use crate::ui::theme;
 use anyhow::{Context, anyhow};
 use crossterm::cursor::MoveTo;
 use crossterm::queue;
-use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
+use crossterm::terminal::DisableLineWrap;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -92,7 +92,13 @@ impl ChatTerminalSession {
             serialize_live_rows_after_static_insert(app, width, &transcript_plan.inserted_ids)
         };
         let composer = Self::build_composer_surface(app, width);
-        let layout_plan = MutableLayoutPlan::new(&live_rows, &composer, terminal_height);
+        let requested_layout_plan = MutableLayoutPlan::new(&live_rows, &composer, terminal_height);
+        let resolved_viewport_height = self.prepare_mutable_viewport_for_draw(
+            requested_layout_plan.viewport_height,
+            width,
+            terminal_height,
+        )?;
+        let layout_plan = MutableLayoutPlan::new(&live_rows, &composer, resolved_viewport_height);
         let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
         let visible_editor_rows = composer.editor_visible_rows(layout_plan.editor_height).to_vec();
         let visible_footer_rows = layout_plan.footer_visible_rows(&composer.footer_rows).to_vec();
@@ -112,7 +118,6 @@ impl ChatTerminalSession {
             full_rebuild: transcript_plan.full_rebuild,
         });
 
-        self.prepare_mutable_viewport_for_draw(layout_plan.viewport_height)?;
         self.insert_transcript_rows(&transcript_plan)?;
         complete_transcript_flush(app, &transcript_plan);
         self.has_committed_output = self.has_committed_output || !transcript_plan.rows.is_empty();
@@ -163,7 +168,7 @@ impl ChatTerminalSession {
             hint_area,
             editor_area,
             footer_area,
-            requested_inline_height: layout_plan.viewport_height,
+            requested_inline_height: requested_layout_plan.viewport_height,
             terminal_width: screen_size.0,
             terminal_height: screen_size.1,
             live_rows_total: live_rows.len(),
@@ -178,11 +183,11 @@ impl ChatTerminalSession {
     }
 
     fn reset_inline_terminal(&mut self, app: &mut App) {
-        if let Err(err) = self.clear_previous_mutable_viewport() {
+        if let Err(err) = self.clear_inline_terminal_viewport() {
             tracing::warn!(
                 target: crate::logging::targets::APP_RENDER,
                 event_name = "inline_chat_mutable_viewport_clear_failed",
-                message = "failed to clear mutable viewport before inline terminal reset",
+                message = "failed to clear inline terminal before reset",
                 outcome = "failure",
                 error_message = %err,
             );
@@ -195,13 +200,21 @@ impl ChatTerminalSession {
         app.chat_render.invalidate_live_anchor();
     }
 
-    fn ensure_inline_terminal_height(&mut self, desired_height: u16) -> anyhow::Result<()> {
+    fn ensure_inline_terminal_height(
+        &mut self,
+        desired_height: u16,
+        anchor_area: Option<Rect>,
+    ) -> anyhow::Result<()> {
         let next_height = desired_height.max(1);
-        if self.terminal.is_some() && self.inline_height == next_height {
+        let current_anchor = self.last_frame_area;
+        let anchor_changed = anchor_area.zip(current_anchor).is_some_and(|(next, current)| {
+            next.x != current.x || next.y != current.y || next.width != current.width
+        });
+        if self.terminal.is_some() && self.inline_height == next_height && !anchor_changed {
             return Ok(());
         }
 
-        if let Some(area) = self.last_frame_area {
+        if let Some(area) = anchor_area.or(self.last_frame_area) {
             move_cursor_to(area).context("failed to restore inline viewport anchor")?;
         }
 
@@ -212,15 +225,28 @@ impl ChatTerminalSession {
         Ok(())
     }
 
-    fn prepare_mutable_viewport_for_draw(&mut self, desired_height: u16) -> anyhow::Result<()> {
-        self.ensure_inline_terminal_height(desired_height)
+    fn prepare_mutable_viewport_for_draw(
+        &mut self,
+        desired_height: u16,
+        terminal_width: u16,
+        terminal_height: u16,
+    ) -> anyhow::Result<u16> {
+        let geometry_plan = plan_inline_geometry(
+            self.last_frame_area,
+            desired_height,
+            terminal_width,
+            terminal_height,
+        );
+        log_inline_geometry_plan(&geometry_plan);
+        self.ensure_inline_terminal_height(geometry_plan.height, geometry_plan.target_area)?;
+        Ok(geometry_plan.height)
     }
 
-    fn clear_previous_mutable_viewport(&self) -> anyhow::Result<()> {
-        let Some(area) = self.last_frame_area else {
+    fn clear_inline_terminal_viewport(&mut self) -> anyhow::Result<()> {
+        let Some(terminal) = self.terminal.as_mut() else {
             return Ok(());
         };
-        clear_area_rows(area).context("failed to clear previous inline viewport rows")
+        terminal.clear().context("failed to clear inline terminal viewport")
     }
 
     fn insert_transcript_rows(&mut self, plan: &TranscriptFlushPlan) -> anyhow::Result<()> {
@@ -345,29 +371,52 @@ fn move_cursor_to(area: Rect) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn clear_area_rows(area: Rect) -> anyhow::Result<()> {
-    if area.is_empty() {
-        return Ok(());
-    }
-
-    let mut stdout = std::io::stdout();
-    for offset in 0..area.height {
-        queue!(
-            stdout,
-            MoveTo(area.x, area.y.saturating_add(offset)),
-            Clear(ClearType::CurrentLine)
-        )
-        .context("failed to queue inline row clear")?;
-    }
-    stdout.flush().context("failed to flush inline row clear")?;
-    Ok(())
-}
-
 #[derive(Default)]
 struct TranscriptFlushPlan {
     rows: Vec<Line<'static>>,
     inserted_ids: Vec<InlineOutputId>,
     full_rebuild: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineGeometryPlan {
+    old_area: Option<Rect>,
+    target_area: Option<Rect>,
+    height: u16,
+}
+
+fn plan_inline_geometry(
+    last_frame_area: Option<Rect>,
+    desired_height: u16,
+    terminal_width: u16,
+    terminal_height: u16,
+) -> InlineGeometryPlan {
+    let screen_height = terminal_height.max(1);
+    let height = desired_height;
+    let Some(old_area) = last_frame_area.filter(|area| !area.is_empty()) else {
+        return InlineGeometryPlan { old_area: last_frame_area, target_area: None, height };
+    };
+
+    let target_top = old_area.y.min(screen_height.saturating_sub(1));
+    let target_area = Rect::new(0, target_top, terminal_width.max(1), height);
+    InlineGeometryPlan { old_area: Some(old_area), target_area: Some(target_area), height }
+}
+
+fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
+    if plan.old_area == plan.target_area {
+        return;
+    }
+
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = "inline_chat_geometry_reconciled",
+        message = "inline viewport geometry reconciled before draw",
+        outcome = "prepared",
+        old_top = plan.old_area.map(Rect::top),
+        old_height = plan.old_area.map(|area| area.height),
+        target_top = plan.target_area.map(Rect::top),
+        target_height = plan.target_area.map(|area| area.height),
+    );
 }
 
 fn complete_transcript_flush(app: &mut App, plan: &TranscriptFlushPlan) {
@@ -709,7 +758,7 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposerEditor, ComposerSurface, MutableLayoutPlan};
+    use super::{ComposerEditor, ComposerSurface, MutableLayoutPlan, plan_inline_geometry};
     use ratatui::layout::Rect;
     use ratatui::text::Line;
 
@@ -757,5 +806,74 @@ mod tests {
         assert_eq!(hint_area.height, 2);
         assert_eq!(live_area.height, 1);
         assert_eq!(plan.viewport_height, 5);
+    }
+
+    #[test]
+    fn resolved_geometry_keeps_required_live_rows_visible_near_terminal_bottom() {
+        let live_rows = rows(3);
+        let composer = textarea_composer(0, 1, 2);
+        let requested_plan = MutableLayoutPlan::new(&live_rows, &composer, 40);
+        let geometry_plan = plan_inline_geometry(
+            Some(Rect::new(0, 37, 120, requested_plan.viewport_height)),
+            requested_plan.viewport_height,
+            120,
+            40,
+        );
+
+        let resolved_plan = MutableLayoutPlan::new(&live_rows, &composer, geometry_plan.height);
+        let (live_area, _, editor_area, footer_area) =
+            resolved_plan.areas(Rect::new(0, 37, 120, geometry_plan.height));
+
+        assert_eq!(requested_plan.viewport_height, 6);
+        assert_eq!(geometry_plan.height, 6);
+        assert_eq!(resolved_plan.live_visible_rows(&live_rows).len(), 3);
+        assert_eq!(live_area.height, 3);
+        assert_eq!(editor_area.height.saturating_add(footer_area.height), 3);
+    }
+
+    #[test]
+    fn plan_for_pending_static_insert_preserves_existing_viewport_area() {
+        let area = Rect::new(0, 20, 120, 8);
+
+        let plan = plan_inline_geometry(Some(area), 8, 120, 40);
+
+        assert_eq!(plan.target_area, Some(area));
+    }
+
+    #[test]
+    fn plan_for_unchanged_geometry_without_insert_does_not_clear() {
+        let area = Rect::new(0, 20, 120, 8);
+
+        let plan = plan_inline_geometry(Some(area), 8, 120, 40);
+
+        assert_eq!(plan.target_area, Some(area));
+    }
+
+    #[test]
+    fn plan_for_composer_expansion_with_room_preserves_transcript_anchor() {
+        let old_area = Rect::new(0, 10, 120, 3);
+
+        let plan = plan_inline_geometry(Some(old_area), 4, 120, 40);
+
+        assert_eq!(plan.target_area, Some(Rect::new(0, 10, 120, 4)));
+    }
+
+    #[test]
+    fn plan_for_composer_expansion_at_bottom_preserves_required_height() {
+        let old_area = Rect::new(0, 34, 120, 3);
+
+        let plan = plan_inline_geometry(Some(old_area), 4, 120, 37);
+
+        assert_eq!(plan.target_area, Some(Rect::new(0, 34, 120, 4)));
+        assert_eq!(plan.height, 4);
+    }
+
+    #[test]
+    fn plan_for_composer_shrink_preserves_transcript_anchor() {
+        let old_area = Rect::new(0, 20, 120, 4);
+
+        let plan = plan_inline_geometry(Some(old_area), 3, 120, 40);
+
+        assert_eq!(plan.target_area, Some(Rect::new(0, 20, 120, 3)));
     }
 }
