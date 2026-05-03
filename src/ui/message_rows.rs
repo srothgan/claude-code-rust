@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::SpinnerState;
-use super::message::{MessageRenderContext, render_text_block_cached, render_welcome_cached};
+use super::message::{MessageRenderContext, render_text_block_cached};
 
 pub(crate) struct MessageRows {
     pub segments: Vec<MessageRowSegment>,
@@ -71,10 +71,15 @@ pub(crate) fn build_message_rows(
     render_context: MessageRenderContext<'_>,
 ) -> MessageRows {
     let mut rows = MessageRows::new();
+    if matches!(msg.role, MessageRole::Welcome) {
+        // Welcome overview rendering belongs to inline_chat_rows.
+        return rows;
+    }
+
     rows.push_wrapped_line(role_label_line(&msg.role), render_context.width);
 
     match msg.role {
-        MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut rows),
+        MessageRole::Welcome => {}
         MessageRole::User => append_user_blocks(msg, render_context.width, &mut rows),
         MessageRole::Assistant => append_assistant_blocks(msg, spinner, render_context, &mut rows),
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut rows),
@@ -85,15 +90,6 @@ pub(crate) fn build_message_rows(
     }
 
     rows
-}
-
-fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
-    for block in &mut msg.blocks {
-        if let MessageBlock::Welcome(welcome) = block {
-            let rendered = welcome_block_layout(welcome, width);
-            rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-        }
-    }
 }
 
 fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
@@ -345,19 +341,6 @@ fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
         return 0;
     }
     Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
-}
-
-fn welcome_block_layout(block: &mut crate::app::WelcomeBlock, width: u16) -> RenderedBlockLayout {
-    let had_height = block.cache.height_at(width).is_some();
-    let mut lines = Vec::new();
-    render_welcome_cached(block, width, &mut lines);
-    let height = block.cache.height_at(width).unwrap_or_else(|| {
-        let height = rendered_lines_height(&lines, width);
-        block.cache.set_height(height, width);
-        height
-    });
-    let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
 }
 
 fn text_block_layout(

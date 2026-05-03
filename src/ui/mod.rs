@@ -19,6 +19,7 @@ pub mod theme;
 mod tool_call;
 mod trusted;
 mod two_column_list;
+mod welcome;
 mod wrap;
 
 pub use message::SpinnerState;

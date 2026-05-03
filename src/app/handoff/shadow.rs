@@ -456,13 +456,10 @@ fn transcript_entries_from_welcome_message(message: &ChatMessage) -> Vec<Transcr
     let session_ready = !session_id.trim().is_empty() && session_id != "-";
     let subscription_ready = !subscription.trim().is_empty() && subscription != "-";
 
-    // Temporary gate: commit the welcome only once the overview has the key
-    // metadata we want to show in transcript history.
-    //
-    // TODO(inline-welcome): move welcome rendering into the live area so it
-    // appears immediately and can progressively populate overview fields as
-    // session/account data arrives. Remove this committed-output gate once the
-    // live welcome path exists.
+    // Keep placeholder welcome metadata in the live inline area. Once the entry
+    // is inserted into scrollback through the inline viewport, it is static, so
+    // commit only after the overview has the session/account fields we want to
+    // preserve in transcript history.
     if !session_ready || !subscription_ready {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,

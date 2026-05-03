@@ -16,11 +16,11 @@ use crate::app::{
 };
 use crate::ui::message::{
     MessageRenderContext, MessageRenderOptions, SpinnerState, render_text_block_cached,
-    welcome_overview_lines,
 };
 use crate::ui::message_rows::{MessageRowSegment, build_message_rows};
 use crate::ui::theme;
 use crate::ui::tool_call;
+use crate::ui::welcome;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -315,7 +315,7 @@ fn serialize_compact_welcome_entry(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ))];
-    lines.extend(welcome_overview_lines(
+    lines.extend(welcome::overview_lines(
         &crate::app::WelcomeBlock {
             version: entry.version.clone(),
             subscription: entry.subscription.clone(),
