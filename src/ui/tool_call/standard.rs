@@ -25,6 +25,8 @@ use super::{
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
 const DEFAULT_TEXT_SUMMARY_LIMIT: usize = 60;
 const IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT: usize = 180;
+const READ_BODY_HEAD_LINES: usize = 3;
+const READ_BODY_TAIL_LINES: usize = 4;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
@@ -261,11 +263,38 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     }
 
     debug_failed_tool_render(tc);
+    if is_read_tool(tc) {
+        return cap_read_content_lines(lines);
+    }
     lines
 }
 
 fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
-    matches!(tc.sdk_tool_name.as_str(), "Read" | "Agent" | "Task" | "WebSearch" | "WebFetch")
+    tc.is_exit_plan_mode_tool()
+        || matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task" | "WebSearch" | "WebFetch")
+}
+
+fn is_read_tool(tc: &ToolCallInfo) -> bool {
+    tc.sdk_tool_name.eq_ignore_ascii_case("read")
+}
+
+fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let visible_content_lines = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
+    let capped_line_count = visible_content_lines.saturating_add(1);
+    if lines.len() <= capped_line_count {
+        return lines;
+    }
+
+    let omitted = lines.len().saturating_sub(visible_content_lines);
+    let tail_start = lines.len().saturating_sub(READ_BODY_TAIL_LINES);
+    let mut out = Vec::with_capacity(capped_line_count);
+    out.extend(lines.iter().take(READ_BODY_HEAD_LINES).cloned());
+    out.push(Line::from(Span::styled(
+        format!("... {omitted} lines hidden ..."),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+    )));
+    out.extend(lines.into_iter().skip(tail_start));
+    out
 }
 
 fn render_plan_content(text: &str) -> Vec<Line<'static>> {

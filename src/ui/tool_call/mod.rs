@@ -35,7 +35,7 @@ use errors::{
 #[cfg(test)]
 use standard::{cap_write_diff_lines, content_summary};
 
-pub(super) const TOOL_MAX_RENDER_LINES: usize = 15;
+pub(super) const TOOL_MAX_RENDER_LINES: usize = 10;
 pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
 /// Spinner frames as `&'static str` for use in `status_icon` return type.
@@ -647,26 +647,31 @@ mod tests {
     }
 
     #[test]
-    fn read_tool_renders_only_summary_line() {
-        let mut tc = test_tool_call("tc-read-summary", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("alpha\nbeta".to_owned())];
+    fn read_tool_renders_head_hidden_marker_and_tail() {
+        let mut tc = test_tool_call("tc-read-body", "Read", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from(
+            (0..12).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n"),
+        )];
 
-        let mut rendered = Vec::new();
-        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, &mut rendered);
-        let rendered_text: Vec<String> = rendered
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered_text: Vec<String> = body
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered_text.first().is_some_and(|line| line.contains("tc-read-summary")));
-        assert!(rendered_text.iter().any(|line| line.contains("alpha")));
-        assert!(!rendered_text.iter().any(|line| line.contains("beta")));
-        assert_eq!(rendered_text.len(), 2);
+        assert_eq!(rendered_text.len(), 8);
+        for visible in ["line 0", "line 1", "line 2", "line 8", "line 9", "line 10", "line 11"] {
+            assert!(rendered_text.iter().any(|line| line.contains(visible)));
+        }
+        assert!(rendered_text.iter().any(|line| line.contains("5 lines hidden")));
+        for hidden in ["line 3", "line 4", "line 5", "line 6", "line 7"] {
+            assert!(!rendered_text.iter().any(|line| line.contains(hidden)));
+        }
     }
 
     #[test]
-    fn web_and_agent_tools_render_only_summary_line() {
-        for sdk_tool_name in ["Agent", "Task", "WebSearch", "WebFetch"] {
+    fn compact_tools_render_only_summary_line() {
+        for sdk_tool_name in ["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"] {
             let mut tc = test_tool_call(
                 &format!("tc-{sdk_tool_name}"),
                 sdk_tool_name,
@@ -762,7 +767,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("+          This")));
+        assert!(rendered.iter().any(|line| line.contains("diff lines")));
         assert!(
             rendered.iter().any(|line| line.starts_with("  │                  "))
                 || rendered.iter().any(|line| line.starts_with("  └─                  "))
@@ -1034,7 +1039,7 @@ mod tests {
         assert!(rendered[0].contains("$ cd path with spaces"));
         assert!(rendered[1].contains("lines hidden"));
         assert!(!rendered.iter().any(|line| line == "line 0"));
-        assert!(rendered.iter().any(|line| line == "line 18"));
+        assert!(rendered.iter().any(|line| line == "line 23"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 29"));
     }
 
@@ -1053,7 +1058,7 @@ mod tests {
         assert_eq!(rendered.len(), WRITE_DIFF_MAX_LINES);
         assert!(rendered[0].contains("diff lines omitted"));
         assert!(!rendered.iter().any(|line| line == "line 0"));
-        assert!(rendered.iter().any(|line| line == "line 107"));
+        assert!(rendered.iter().any(|line| line == "line 112"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 
@@ -1074,7 +1079,7 @@ mod tests {
         assert_eq!(rendered[0], "(+120)");
         assert!(rendered[1].contains("diff lines omitted"));
         assert!(!rendered.iter().any(|line| line == "line 0"));
-        assert!(rendered.iter().any(|line| line == "line 108"));
+        assert!(rendered.iter().any(|line| line == "line 113"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
     }
 }
