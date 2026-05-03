@@ -438,11 +438,27 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
-    let mod_key =
-        if cfg!(target_os = "macos") { KeyModifiers::SUPER } else { KeyModifiers::CONTROL };
     match (key.code, key.modifiers) {
-        (KeyCode::Char('z'), m) if m == mod_key => app.input.textarea_undo(),
-        (KeyCode::Char('y'), m) if m == mod_key => app.input.textarea_redo(),
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('z'), m) if m == KeyModifiers::SUPER => {
+            app.input.textarea_undo();
+            true
+        }
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('Z'), m) if m == KeyModifiers::SUPER => {
+            app.input.textarea_redo();
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Char('z'), m) if m == KeyModifiers::META => {
+            app.input.textarea_undo();
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Char('y'), m) if m == KeyModifiers::META => {
+            app.input.textarea_redo();
+            true
+        }
         _ => false,
     }
 }

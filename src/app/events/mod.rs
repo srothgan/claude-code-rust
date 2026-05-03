@@ -3409,16 +3409,20 @@ mod tests {
         app.input.set_text("hello world");
         let delete_mod_key =
             if cfg!(target_os = "macos") { KeyModifiers::ALT } else { KeyModifiers::CONTROL };
-        let history_mod_key =
-            if cfg!(target_os = "macos") { KeyModifiers::SUPER } else { KeyModifiers::CONTROL };
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, delete_mod_key));
         assert_eq!(app.input.text(), "hello ");
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), history_mod_key));
+        #[cfg(target_os = "macos")]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
+        #[cfg(not(target_os = "macos"))]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
         assert_eq!(app.input.text(), "hello world");
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), history_mod_key));
+        #[cfg(target_os = "macos")]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SUPER));
+        #[cfg(not(target_os = "macos"))]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
         assert_eq!(app.input.text(), "hello ");
     }
 
