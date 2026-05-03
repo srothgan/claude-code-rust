@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod autocomplete;
-pub(crate) mod composer_measure;
 mod config;
 mod diff;
 mod document_table;
@@ -10,7 +9,7 @@ pub(crate) mod footer_rows;
 pub(crate) mod help;
 mod highlight;
 pub(crate) mod inline_chat_rows;
-mod input;
+pub(crate) mod input;
 pub(crate) mod input_rows;
 mod markdown;
 mod message;

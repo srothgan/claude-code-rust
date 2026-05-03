@@ -37,7 +37,7 @@ const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
-    pub padded: Rect,
+    pub prompt: Rect,
     pub text: Rect,
 }
 
@@ -81,13 +81,17 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
-    let [_prompt, text] =
+    let [prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
-    InputRenderGeometry { padded, text }
+    InputRenderGeometry { prompt, text }
 }
 
-pub(super) fn configure_input_textarea(app: &mut App) {
+pub(crate) fn prompt_prefix_text() -> String {
+    format!("{} ", theme::PROMPT_CHAR)
+}
+
+pub(crate) fn configure_input_textarea(app: &mut App) {
     let needs_highlight_update = app.input.highlight_version != app.input.content_version;
 
     {
@@ -185,10 +189,14 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
 mod tests {
     use super::{
         CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
-        slash_command_range, visual_line_count,
+        configure_input_textarea, slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, CancelOrigin, FocusTarget, LoginHint};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    use ratatui::widgets::Widget;
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -278,5 +286,21 @@ mod tests {
         });
         app.claim_focus_target(FocusTarget::TodoList);
         assert_eq!(visual_line_count(&mut app, 80), 1);
+    }
+
+    #[test]
+    fn direct_textarea_render_preserves_cursor_cell_at_line_end() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        let _ = app.input.set_cursor(0, 5);
+        configure_input_textarea(&mut app);
+
+        let area = Rect::new(0, 0, 12, 1);
+        let mut buffer = Buffer::empty(area);
+        app.input.editor().render(area, &mut buffer);
+
+        let cursor_cell = buffer.cell((5, 0)).expect("cursor cell");
+        assert_eq!(cursor_cell.symbol(), " ");
+        assert!(cursor_cell.style().add_modifier.contains(Modifier::REVERSED));
     }
 }

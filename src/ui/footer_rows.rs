@@ -17,7 +17,6 @@ const SECONDARY_ROW_LEFT_MIN_WIDTH: u16 = 28;
 const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
 const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
 const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
-pub(crate) const FOOTER_ROW_COUNT: u16 = 2;
 
 type FooterItem = Option<(String, Color)>;
 
