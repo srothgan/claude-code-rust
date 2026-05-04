@@ -3746,9 +3746,9 @@ dependencies = [
 
 [[package]]
 name = "tui-textarea-2"
-version = "0.10.2"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74a31ca0965e3ff6a7ac5ecb02b20a88b4f68ebf138d8ae438e8510b27a1f00f"
+checksum = "db511c6000af883f4140245239ff98ff212e32e8d2f0e6cfc9f5acc018f2b800"
 dependencies = [
  "crossterm",
  "portable-atomic",
