@@ -34,7 +34,7 @@ notify = "8.2.0"
 notify-rust = "4.16.0"
 pulldown-cmark = "0.13.3"
 ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 similar = "3.1"
