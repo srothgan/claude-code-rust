@@ -19,6 +19,8 @@ use super::{
 };
 use crate::agent::model;
 use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
+#[cfg(test)]
+use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
 use crate::app::todos::apply_plan_todos;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
@@ -3392,14 +3394,12 @@ mod tests {
     fn ctrl_backspace_and_delete_use_word_operations() {
         let mut app = make_test_app();
         app.input.set_text("hello world");
-        let mod_key =
-            if cfg!(target_os = "macos") { KeyModifiers::ALT } else { KeyModifiers::CONTROL };
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, mod_key));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
         assert_eq!(app.input.text(), "hello ");
 
         app.input.move_home();
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, mod_key));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, WORD_NAV_MOD));
         assert_eq!(app.input.text(), " ");
     }
 
@@ -3407,22 +3407,17 @@ mod tests {
     fn ctrl_z_and_y_undo_and_redo_textarea_history() {
         let mut app = make_test_app();
         app.input.set_text("hello world");
-        let delete_mod_key =
-            if cfg!(target_os = "macos") { KeyModifiers::ALT } else { KeyModifiers::CONTROL };
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, delete_mod_key));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
         assert_eq!(app.input.text(), "hello ");
 
-        #[cfg(target_os = "macos")]
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
-        #[cfg(not(target_os = "macos"))]
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
         assert_eq!(app.input.text(), "hello world");
 
         #[cfg(target_os = "macos")]
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SUPER));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('Z'), CMD_MOD));
         #[cfg(not(target_os = "macos"))]
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), CMD_MOD));
         assert_eq!(app.input.text(), "hello ");
     }
 
@@ -3432,10 +3427,10 @@ mod tests {
         app.input.set_text("hello world");
         app.input.move_home();
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, WORD_NAV_MOD));
         assert!(app.input.cursor_col() > 0);
 
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, WORD_NAV_MOD));
         assert_eq!(app.input.cursor_col(), 0);
     }
 

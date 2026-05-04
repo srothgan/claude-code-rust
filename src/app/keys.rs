@@ -24,6 +24,21 @@ use std::time::Instant;
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
 const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
+#[cfg(target_os = "macos")]
+pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
+
+#[cfg(target_os = "macos")]
+pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::CONTROL;
+
+#[cfg(target_os = "macos")]
+pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::empty();
+#[cfg(not(target_os = "macos"))]
+pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::ALT;
+
 fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
 }
@@ -439,23 +454,18 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     match (key.code, key.modifiers) {
-        #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == KeyModifiers::SUPER => {
+        (KeyCode::Char('z'), m) if m == CMD_MOD => {
             app.input.textarea_undo();
             true
         }
+
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == KeyModifiers::SUPER => {
+        (KeyCode::Char('Z'), m) if m == CMD_MOD => {
             app.input.textarea_redo();
             true
         }
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('z'), m) if m == KeyModifiers::META => {
-            app.input.textarea_undo();
-            true
-        }
-        #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == KeyModifiers::META => {
+        (KeyCode::Char('y'), m) if m == CMD_MOD => {
             app.input.textarea_redo();
             true
         }
@@ -467,19 +477,15 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Left, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
-                    || !cfg!(target_os = "macos")
-                        && m.contains(KeyModifiers::CONTROL)
-                        && !m.contains(KeyModifiers::ALT)) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             app.input.textarea_move_word_left()
         }
         (KeyCode::Right, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
-                    || !cfg!(target_os = "macos")
-                        && m.contains(KeyModifiers::CONTROL)
-                        && !m.contains(KeyModifiers::ALT)) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             app.input.textarea_move_word_right()
         }
@@ -699,10 +705,8 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
-                    || !cfg!(target_os = "macos")
-                        && m.contains(KeyModifiers::CONTROL)
-                        && !m.contains(KeyModifiers::ALT)) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
@@ -712,10 +716,8 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Delete, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && (cfg!(target_os = "macos") && m.contains(KeyModifiers::ALT)
-                    || !cfg!(target_os = "macos")
-                        && m.contains(KeyModifiers::CONTROL)
-                        && !m.contains(KeyModifiers::ALT)) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
