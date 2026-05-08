@@ -47,15 +47,14 @@ The stock Claude Code TUI runs on Node.js with React Ink. This causes real probl
 
 Claude Code Rust fixes all of these by compiling to a single native binary with direct terminal control via Crossterm.
 
-## Architecture
+## Custom Commands
 
-Three-layer design:
+Claude Code Rust adds project-local slash commands that set environment variables via `.claude/settings.local.json` without leaving the TUI. Changes apply on the next session.
 
-**Presentation** (Rust/Ratatui) - Single binary with an async event loop (Tokio) handling keyboard input and bridge client events concurrently. The chat surface is rendered by an embedded inline terminal session; Ratatui handles overlay and fullscreen views (configuration, session picker) and input composition.
-
-**Agent SDK Bridge** (stdio JSON envelopes) - Spawns `agent-sdk/dist/bridge.js` as a child process and communicates via line-delimited JSON envelopes over stdin/stdout. Bidirectional streaming for user messages, tool updates, and permission requests.
-
-**Agent Runtime** (Anthropic Agent SDK) - The TypeScript bridge drives `@anthropic-ai/claude-agent-sdk`, which manages authentication, session/query lifecycle, and tool execution.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `/1m-context` | `/1m-context <enable\|disable\|status>` | Disable the 1 million token context window to improve model performance and prevent quality degradation on large context windows. |
+| `/opus-version` | `/opus-version <4.5\|4.6\|4.7\|default\|status>` | Pin the Opus model version for the current folder. Useful for switching to 4.6 or 4.5 to avoid 4.7's tokenization issues. Use `default` to clear the pin. |
 
 ## Status
 
