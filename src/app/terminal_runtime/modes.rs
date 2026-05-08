@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange};
+use crossterm::event::{
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -22,10 +25,13 @@ pub(super) enum TerminalModeAction {
     ShowCursor,
     DisableLineWrap,
     EnableLineWrap,
+    PushKeyboardEnhancement,
+    PopKeyboardEnhancement,
 }
 
 const CHAT_STARTUP_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::EnableRawMode,
+    TerminalModeAction::PushKeyboardEnhancement,
     TerminalModeAction::EnableFocusChange,
     TerminalModeAction::DisableLineWrap,
     TerminalModeAction::ShowCursor,
@@ -48,6 +54,7 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableMouseCapture,
     TerminalModeAction::DisableFocusChange,
+    TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
 
@@ -55,6 +62,7 @@ const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
+    TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
 
@@ -105,6 +113,13 @@ pub(super) fn apply_actions(
             TerminalModeAction::EnableLineWrap => {
                 execute!(stdout, crossterm::terminal::EnableLineWrap)
             }
+            TerminalModeAction::PushKeyboardEnhancement => execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            ),
+            TerminalModeAction::PopKeyboardEnhancement => {
+                execute!(stdout, PopKeyboardEnhancementFlags)
+            }
         };
 
         if let Err(err) = result
@@ -134,6 +149,7 @@ mod tests {
             chat_startup_actions(),
             &[
                 TerminalModeAction::EnableRawMode,
+                TerminalModeAction::PushKeyboardEnhancement,
                 TerminalModeAction::EnableFocusChange,
                 TerminalModeAction::DisableLineWrap,
                 TerminalModeAction::ShowCursor,
@@ -174,6 +190,7 @@ mod tests {
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableMouseCapture,
                 TerminalModeAction::DisableFocusChange,
+                TerminalModeAction::PopKeyboardEnhancement,
                 TerminalModeAction::DisableRawMode,
             ]
         );
@@ -187,6 +204,7 @@ mod tests {
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableFocusChange,
+                TerminalModeAction::PopKeyboardEnhancement,
                 TerminalModeAction::DisableRawMode,
             ]
         );
@@ -214,5 +232,11 @@ mod tests {
     fn shutdown_restore_actions_restore_shell_friendly_defaults() {
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::ShowCursor));
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::EnableLineWrap));
+        assert!(shutdown_restore_actions().contains(&TerminalModeAction::PopKeyboardEnhancement));
+    }
+
+    #[test]
+    fn chat_startup_actions_enable_keyboard_enhancement() {
+        assert!(chat_startup_actions().contains(&TerminalModeAction::PushKeyboardEnhancement));
     }
 }

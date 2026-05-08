@@ -674,7 +674,11 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
-        (code, modifiers) if is_undo_shortcut(code, modifiers) || is_redo_shortcut(code, modifiers) => true,
+        (code, modifiers)
+            if is_undo_shortcut(code, modifiers) || is_redo_shortcut(code, modifiers) =>
+        {
+            true
+        }
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
