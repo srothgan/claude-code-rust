@@ -1,36 +1,32 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+use super::chat_terminal::{
+    ChatDrawOutcome, ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch,
+};
+use super::history_insert::RenderedHistoryRows;
 use crate::app::App;
 use crate::app::handoff::projection::{
-    InlineOutputId, confirm_static_inserted, inline_history_replay_plan, inline_static_insert_plan,
+    InlineHistoryReplayItem, InlineOutputId, confirm_static_inserted, inline_history_replay_plan,
+    inline_static_insert_plan,
 };
+use crate::app::handoff::types::TranscriptEntry;
 use crate::ui::footer_rows::serialize_footer_rows;
 use crate::ui::inline_chat_rows::{
-    serialize_live_rows, serialize_live_rows_after_static_insert, serialize_transcript_rows,
+    serialize_live_rows, serialize_live_rows_after_static_insert, serialize_transcript_row_batches,
+    serialize_transcript_rows,
 };
 use crate::ui::input;
 use crate::ui::input_rows::{blocked_input_lines, build_composer_hint_rows};
 use crate::ui::theme;
-use anyhow::{Context, anyhow};
-use crossterm::cursor::MoveTo;
-use crossterm::queue;
-use crossterm::terminal::DisableLineWrap;
-use ratatui::backend::CrosstermBackend;
+use anyhow::Context;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
-use ratatui::{Terminal, TerminalOptions, Viewport};
-use std::io::{Stdout, Write};
-
-type StdoutBackend = CrosstermBackend<Stdout>;
-type StdoutTerminal = Terminal<StdoutBackend>;
+use ratatui::widgets::Paragraph;
 
 pub(super) struct ChatTerminalSession {
-    terminal: Option<StdoutTerminal>,
-    inline_height: u16,
-    last_frame_area: Option<Rect>,
+    terminal: ChatTerminal,
     has_committed_output: bool,
 }
 
@@ -38,6 +34,9 @@ impl ChatTerminalSession {
     pub(super) fn new() -> anyhow::Result<Self> {
         let (width, height) =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
+        let (cursor_x, cursor_y) =
+            crossterm::cursor::position().context("failed to read chat terminal cursor")?;
+        let owned_top = cursor_y.min(height.saturating_sub(1));
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -53,14 +52,12 @@ impl ChatTerminalSession {
             outcome = "success",
             terminal_width = width,
             terminal_height = height,
+            cursor_x,
+            cursor_y,
+            owned_top,
         );
 
-        Ok(Self {
-            terminal: None,
-            inline_height: 0,
-            last_frame_area: None,
-            has_committed_output: false,
-        })
+        Ok(Self { terminal: ChatTerminal::new(owned_top), has_committed_output: false })
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
@@ -69,7 +66,16 @@ impl ChatTerminalSession {
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
-        self.reset_inline_terminal(app);
+        if let Err(err) = self.terminal.reset_mutable_viewport() {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_mutable_viewport_clear_failed",
+                message = "failed to clear inline terminal mutable viewport",
+                outcome = "failure",
+                error_message = %err,
+            );
+        }
+        app.chat_render.invalidate_live_anchor();
     }
 
     pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) {
@@ -77,7 +83,7 @@ impl ChatTerminalSession {
     }
 
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
-        Self::ensure_line_wrap_disabled(app)?;
+        ChatTerminal::ensure_line_wrap_disabled(&mut app.chat_render.line_wrap_disabled)?;
 
         let screen_size =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
@@ -93,12 +99,8 @@ impl ChatTerminalSession {
         };
         let composer = Self::build_composer_surface(app, width);
         let requested_layout_plan = MutableLayoutPlan::new(&live_rows, &composer, terminal_height);
-        let resolved_viewport_height = self.prepare_mutable_viewport_for_draw(
-            requested_layout_plan.viewport_height,
-            width,
-            terminal_height,
-        )?;
-        let layout_plan = MutableLayoutPlan::new(&live_rows, &composer, resolved_viewport_height);
+        let layout_plan =
+            MutableLayoutPlan::new(&live_rows, &composer, requested_layout_plan.viewport_height);
         let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
         let visible_editor_rows = composer.editor_visible_rows(layout_plan.editor_height).to_vec();
         let visible_footer_rows = layout_plan.footer_visible_rows(&composer.footer_rows).to_vec();
@@ -118,40 +120,44 @@ impl ChatTerminalSession {
             full_rebuild: transcript_plan.full_rebuild,
         });
 
-        self.insert_transcript_rows(&transcript_plan)?;
-        complete_transcript_flush(app, &transcript_plan);
-        self.has_committed_output = self.has_committed_output || !transcript_plan.rows.is_empty();
+        self.queue_transcript_plan(transcript_plan.action);
 
         let visible_live_rows = layout_plan.live_visible_rows(&live_rows).to_vec();
         let visible_live_row_count = visible_live_rows.len();
-        let terminal = self
-            .terminal
-            .as_mut()
-            .ok_or_else(|| anyhow!("inline chat terminal missing before draw"))?;
-        let mut viewport_area = Rect::new(0, 0, 0, 0);
-        terminal
-            .draw(|frame| {
-                viewport_area = frame.area();
-                frame.render_widget(RatatuiClear, viewport_area);
-                let (live_area, hint_area, editor_area, footer_area) =
-                    layout_plan.areas(viewport_area);
-                if !live_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
-                }
-                if !hint_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
-                }
-                if !editor_area.is_empty() {
-                    render_composer_editor(frame, app, &composer.editor, editor_area);
-                }
-                if !footer_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
-                }
-            })
-            .context("failed to draw ratatui inline chat viewport")?;
+        let chat_frame = ChatDrawRequest {
+            requested_inline_height: requested_layout_plan.viewport_height,
+            terminal_width: width,
+            terminal_height,
+        };
+        let outcome_result = self.terminal.draw_chat_frame(chat_frame, |frame, viewport_area| {
+            let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
+            if !live_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
+            }
+            if !hint_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
+            }
+            if !editor_area.is_empty() {
+                render_composer_editor(frame, app, &composer.editor, editor_area);
+            }
+            if !footer_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
+            }
+        });
+        let outcome = match outcome_result {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                mark_chat_terminal_history_out_of_sync(app);
+                return Err(err);
+            }
+        };
+        complete_transcript_flush(app, &outcome);
+        self.has_committed_output = self.has_committed_output
+            || outcome.flushed_history.flushed_rows > 0
+            || outcome.flushed_history.replay_complete;
 
+        let viewport_area = outcome.viewport_area;
         let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
-        self.last_frame_area = Some(viewport_area);
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.total_rows = u16::try_from(live_rows.len()).unwrap_or(u16::MAX);
         app.chat_render.live_region.hidden_rows_above =
@@ -179,11 +185,14 @@ impl ChatTerminalSession {
         });
 
         app.surface_dirty.chat.take_repaint();
+        if outcome.flushed_history.replay_incomplete || outcome.flushed_history.replay_complete {
+            app.request_chat_repaint();
+        }
         Ok(())
     }
 
     fn reset_inline_terminal(&mut self, app: &mut App) {
-        if let Err(err) = self.clear_inline_terminal_viewport() {
+        if let Err(err) = self.terminal.reset_visible() {
             tracing::warn!(
                 target: crate::logging::targets::APP_RENDER,
                 event_name = "inline_chat_mutable_viewport_clear_failed",
@@ -192,109 +201,8 @@ impl ChatTerminalSession {
                 error_message = %err,
             );
         }
-        self.terminal = None;
-        self.inline_height = 0;
-        // Keep the cleared anchor so the next inline terminal is recreated in
-        // the same screen slot instead of bottom-aligning and leaving a gap.
         self.has_committed_output = false;
         app.chat_render.invalidate_live_anchor();
-    }
-
-    fn ensure_inline_terminal_height(
-        &mut self,
-        desired_height: u16,
-        anchor_area: Option<Rect>,
-    ) -> anyhow::Result<()> {
-        let next_height = desired_height.max(1);
-        let current_anchor = self.last_frame_area;
-        let anchor_changed = anchor_area.zip(current_anchor).is_some_and(|(next, current)| {
-            next.x != current.x || next.y != current.y || next.width != current.width
-        });
-        if self.terminal.is_some() && self.inline_height == next_height && !anchor_changed {
-            return Ok(());
-        }
-
-        if let Some(area) = anchor_area.or(self.last_frame_area) {
-            move_cursor_to(area).context("failed to restore inline viewport anchor")?;
-        }
-
-        let mut terminal = create_inline_terminal(next_height)?;
-        terminal.clear().context("failed to clear new inline terminal viewport")?;
-        self.terminal = Some(terminal);
-        self.inline_height = next_height;
-        Ok(())
-    }
-
-    fn prepare_mutable_viewport_for_draw(
-        &mut self,
-        desired_height: u16,
-        terminal_width: u16,
-        terminal_height: u16,
-    ) -> anyhow::Result<u16> {
-        let geometry_plan = plan_inline_geometry(
-            self.last_frame_area,
-            desired_height,
-            terminal_width,
-            terminal_height,
-        );
-        log_inline_geometry_plan(&geometry_plan);
-        self.ensure_inline_terminal_height(geometry_plan.height, geometry_plan.target_area)?;
-        Ok(geometry_plan.height)
-    }
-
-    fn clear_inline_terminal_viewport(&mut self) -> anyhow::Result<()> {
-        let Some(terminal) = self.terminal.as_mut() else {
-            return Ok(());
-        };
-        terminal.clear().context("failed to clear inline terminal viewport")
-    }
-
-    fn insert_transcript_rows(&mut self, plan: &TranscriptFlushPlan) -> anyhow::Result<()> {
-        if plan.rows.is_empty() {
-            return Ok(());
-        }
-
-        tracing::debug!(
-            target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_committed_insert_request",
-            message = "committed transcript rows scheduled for ratatui inline insertion",
-            outcome = "prepared",
-            flushed_rows = plan.rows.len(),
-            full_rebuild = plan.full_rebuild,
-            preview = %preview_rows(&plan.rows, 4),
-        );
-
-        let row_count = u16::try_from(plan.rows.len()).unwrap_or(u16::MAX).max(1);
-        let rows = plan.rows.clone();
-        let terminal = self
-            .terminal
-            .as_mut()
-            .ok_or_else(|| anyhow!("inline chat terminal missing before transcript insert"))?;
-        terminal
-            .insert_before(row_count, |buffer| {
-                Paragraph::new(rows).render(buffer.area, buffer);
-            })
-            .context("failed to insert committed transcript above inline viewport")?;
-
-        tracing::debug!(
-            target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_committed_insert_applied",
-            message = "committed transcript rows inserted before ratatui inline viewport",
-            outcome = "success",
-            inserted_rows = row_count,
-        );
-        Ok(())
-    }
-
-    fn ensure_line_wrap_disabled(app: &mut App) -> anyhow::Result<()> {
-        if app.chat_render.line_wrap_disabled {
-            return Ok(());
-        }
-        let mut stdout = std::io::stdout();
-        queue!(stdout, DisableLineWrap).context("failed to disable inline viewport line wrap")?;
-        stdout.flush().context("failed to flush line-wrap disable")?;
-        app.chat_render.line_wrap_disabled = true;
-        Ok(())
     }
 
     fn build_composer_surface(app: &mut App, width: u16) -> ComposerSurface {
@@ -330,14 +238,47 @@ impl ChatTerminalSession {
         ComposerSurface { hint_rows, editor, footer_rows }
     }
 
+    fn queue_transcript_plan(&mut self, action: TranscriptFlushAction) {
+        match action {
+            TranscriptFlushAction::None => {}
+            TranscriptFlushAction::QueueStatic(batch) => {
+                self.terminal.queue_static_history(batch);
+            }
+            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
+                self.terminal.start_replay(render_width, batches, confirm_ids);
+            }
+        }
+    }
+
     fn prepare_transcript_flush(&mut self, app: &mut App, width: u16) -> TranscriptFlushPlan {
+        let width = width.max(1);
         if !app.chat_render.terminal_history_is_synced() {
+            if self.terminal.is_replay_active() {
+                if self.terminal.active_replay_matches_width(width) {
+                    return TranscriptFlushPlan {
+                        inserted_ids: self.terminal.replay_pending_ids().to_vec(),
+                        full_rebuild: true,
+                        action: TranscriptFlushAction::None,
+                        ..TranscriptFlushPlan::default()
+                    };
+                }
+
+                self.terminal.cancel_replay();
+            }
+
             let plan = inline_history_replay_plan(app);
-            let rows = serialize_transcript_rows(app, &plan.entries, false, width);
+            let batches = build_replay_history_batches(app, &plan.items, width);
+            let rows =
+                batches.iter().flat_map(|batch| batch.rows.iter().cloned()).collect::<Vec<_>>();
             return TranscriptFlushPlan {
                 rows,
                 full_rebuild: true,
-                inserted_ids: plan.pending_ids,
+                inserted_ids: plan.pending_ids.clone(),
+                action: TranscriptFlushAction::StartReplay {
+                    render_width: width,
+                    batches,
+                    confirm_ids: plan.pending_ids,
+                },
             };
         }
 
@@ -347,28 +288,19 @@ impl ChatTerminalSession {
         }
         let inserted_ids = plan.items.iter().map(|item| item.id).collect::<Vec<_>>();
         let entries = plan.items.into_iter().map(|item| item.entry).collect::<Vec<_>>();
+        let rows = serialize_transcript_rows(app, &entries, self.has_committed_output, width);
 
         TranscriptFlushPlan {
-            rows: serialize_transcript_rows(app, &entries, self.has_committed_output, width),
-            inserted_ids,
+            rows: rows.clone(),
+            inserted_ids: inserted_ids.clone(),
             full_rebuild: false,
+            action: TranscriptFlushAction::QueueStatic(PendingHistoryBatch {
+                kind: HistoryBatchKind::Normal,
+                rows: RenderedHistoryRows::new(width, rows),
+                confirm_ids: inserted_ids,
+            }),
         }
     }
-}
-
-fn create_inline_terminal(height: u16) -> anyhow::Result<StdoutTerminal> {
-    Terminal::with_options(
-        CrosstermBackend::new(std::io::stdout()),
-        TerminalOptions { viewport: Viewport::Inline(height.max(1)) },
-    )
-    .context("failed to construct ratatui inline chat terminal")
-}
-
-fn move_cursor_to(area: Rect) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout();
-    queue!(stdout, MoveTo(area.x, area.y)).context("failed to queue cursor move")?;
-    stdout.flush().context("failed to flush cursor move")?;
-    Ok(())
 }
 
 #[derive(Default)]
@@ -376,56 +308,87 @@ struct TranscriptFlushPlan {
     rows: Vec<Line<'static>>,
     inserted_ids: Vec<InlineOutputId>,
     full_rebuild: bool,
+    action: TranscriptFlushAction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InlineGeometryPlan {
-    old_area: Option<Rect>,
-    target_area: Option<Rect>,
-    height: u16,
+#[derive(Default)]
+enum TranscriptFlushAction {
+    #[default]
+    None,
+    QueueStatic(PendingHistoryBatch),
+    StartReplay {
+        render_width: u16,
+        batches: Vec<PendingHistoryBatch>,
+        confirm_ids: Vec<InlineOutputId>,
+    },
 }
 
-fn plan_inline_geometry(
-    last_frame_area: Option<Rect>,
-    desired_height: u16,
-    terminal_width: u16,
-    terminal_height: u16,
-) -> InlineGeometryPlan {
-    let screen_height = terminal_height.max(1);
-    let height = desired_height;
-    let Some(old_area) = last_frame_area.filter(|area| !area.is_empty()) else {
-        return InlineGeometryPlan { old_area: last_frame_area, target_area: None, height };
-    };
-
-    let target_top = old_area.y.min(screen_height.saturating_sub(1));
-    let target_area = Rect::new(0, target_top, terminal_width.max(1), height);
-    InlineGeometryPlan { old_area: Some(old_area), target_area: Some(target_area), height }
-}
-
-fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
-    if plan.old_area == plan.target_area {
-        return;
+fn complete_transcript_flush(app: &mut App, outcome: &ChatDrawOutcome) {
+    if !outcome.flushed_history.confirmed_ids.is_empty() {
+        confirm_static_inserted(&mut app.handoff_shadow, &outcome.flushed_history.confirmed_ids);
     }
-
-    tracing::debug!(
-        target: crate::logging::targets::APP_RENDER,
-        event_name = "inline_chat_geometry_reconciled",
-        message = "inline viewport geometry reconciled before draw",
-        outcome = "prepared",
-        old_top = plan.old_area.map(Rect::top),
-        old_height = plan.old_area.map(|area| area.height),
-        target_top = plan.target_area.map(Rect::top),
-        target_height = plan.target_area.map(|area| area.height),
-    );
-}
-
-fn complete_transcript_flush(app: &mut App, plan: &TranscriptFlushPlan) {
-    if !plan.inserted_ids.is_empty() {
-        confirm_static_inserted(&mut app.handoff_shadow, &plan.inserted_ids);
-    }
-    if plan.full_rebuild {
+    if outcome.flushed_history.replay_complete {
         app.chat_render.mark_terminal_history_synced();
     }
+}
+
+fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
+    app.reset_committed_output_tracking();
+    app.request_chat_visible_rebuild();
+}
+
+fn build_replay_history_batches(
+    app: &App,
+    items: &[InlineHistoryReplayItem],
+    width: u16,
+) -> Vec<PendingHistoryBatch> {
+    let entries = items.iter().map(|item| item.entry.clone()).collect::<Vec<_>>();
+    let row_batches = serialize_transcript_row_batches(app, &entries, false, width);
+    let id_batches = group_replay_items(items);
+    debug_assert_eq!(row_batches.len(), id_batches.len());
+
+    row_batches
+        .into_iter()
+        .zip(id_batches)
+        .map(|(rows, ids)| PendingHistoryBatch {
+            kind: HistoryBatchKind::Replay,
+            rows: RenderedHistoryRows::new(width, rows),
+            confirm_ids: ids,
+        })
+        .collect()
+}
+
+fn group_replay_items(items: &[InlineHistoryReplayItem]) -> Vec<Vec<InlineOutputId>> {
+    let mut groups = Vec::new();
+    let mut idx = 0usize;
+
+    while idx < items.len() {
+        let start_idx = idx;
+        if matches!(
+            &items[idx].entry,
+            TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_)
+        ) {
+            while idx < items.len()
+                && matches!(
+                    &items[idx].entry,
+                    TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_)
+                )
+            {
+                idx += 1;
+            }
+        } else {
+            idx += 1;
+        }
+
+        groups.push(
+            items[start_idx..idx]
+                .iter()
+                .filter_map(|item| item.pending.then_some(item.id))
+                .collect(),
+        );
+    }
+
+    groups
 }
 
 struct ComposerSurface {
@@ -758,7 +721,15 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposerEditor, ComposerSurface, MutableLayoutPlan, plan_inline_geometry};
+    use super::{
+        ChatTerminalSession, ComposerEditor, ComposerSurface, MutableLayoutPlan,
+        TranscriptFlushAction,
+    };
+    use crate::app::App;
+    use crate::app::handoff::projection::inline_history_replay_plan;
+    use crate::app::handoff::types::{TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry};
+    use crate::app::terminal_runtime::chat_terminal::{ChatTerminal, plan_inline_geometry};
+    use crate::ui::inline_chat_rows::serialize_transcript_rows;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
 
@@ -776,6 +747,16 @@ mod tests {
             editor: ComposerEditor::TextArea { desired_height: editor_height },
             footer_rows: rows(footer_rows),
         }
+    }
+
+    fn test_chat_session() -> ChatTerminalSession {
+        ChatTerminalSession { terminal: ChatTerminal::new(0), has_committed_output: false }
+    }
+
+    fn user_entry(text: &str) -> TranscriptEntry {
+        TranscriptEntry::User(UserTranscriptEntry {
+            blocks: vec![UserTranscriptBlock::Text(text.to_owned())],
+        })
     }
 
     #[test]
@@ -821,8 +802,8 @@ mod tests {
         );
 
         let resolved_plan = MutableLayoutPlan::new(&live_rows, &composer, geometry_plan.height);
-        let (live_area, _, editor_area, footer_area) =
-            resolved_plan.areas(Rect::new(0, 37, 120, geometry_plan.height));
+        let (live_area, _, editor_area, footer_area) = resolved_plan
+            .areas(geometry_plan.target_area.expect("geometry should resolve a viewport"));
 
         assert_eq!(requested_plan.viewport_height, 6);
         assert_eq!(geometry_plan.height, 6);
@@ -832,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_pending_static_insert_preserves_existing_viewport_area() {
+    fn plan_for_pending_static_insert_preserves_viewport_anchor() {
         let area = Rect::new(0, 20, 120, 8);
 
         let plan = plan_inline_geometry(Some(area), 8, 120, 40);
@@ -850,7 +831,60 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_composer_expansion_with_room_preserves_transcript_anchor() {
+    fn replay_restart_discards_active_replay_when_width_changes() {
+        let mut app = App::test_default();
+        let entry = user_entry(
+            "this transcript line is intentionally long enough to wrap differently at narrow and wide replay widths",
+        );
+        let pending_ids = app
+            .handoff_shadow
+            .inline_output
+            .record_message_transcript_entries(0, vec![entry.clone()]);
+        app.reset_committed_output_tracking();
+        let mut session = test_chat_session();
+
+        let narrow_width = 24;
+        let narrow_plan = session.prepare_transcript_flush(&mut app, narrow_width);
+        let narrow_rows = narrow_plan.rows.clone();
+        match &narrow_plan.action {
+            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
+                assert_eq!(*render_width, narrow_width);
+                assert_eq!(confirm_ids, &pending_ids);
+                assert!(batches.iter().all(|batch| batch.rows.width == narrow_width));
+            }
+            TranscriptFlushAction::None | TranscriptFlushAction::QueueStatic(_) => {
+                panic!("unsynced terminal history must start replay")
+            }
+        }
+        session.queue_transcript_plan(narrow_plan.action);
+        assert!(session.terminal.active_replay_matches_width(narrow_width));
+
+        let wide_width = 80;
+        let wide_plan = session.prepare_transcript_flush(&mut app, wide_width);
+        let expected_wide_rows = serialize_transcript_rows(&app, &[entry], false, wide_width);
+
+        assert!(!session.terminal.is_replay_active());
+        assert_eq!(wide_plan.inserted_ids, pending_ids);
+        assert_eq!(wide_plan.rows, expected_wide_rows);
+        assert_ne!(wide_plan.rows, narrow_rows);
+        assert_eq!(inline_history_replay_plan(&app).pending_ids, pending_ids);
+        match &wide_plan.action {
+            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
+                assert_eq!(*render_width, wide_width);
+                assert_eq!(confirm_ids, &pending_ids);
+                assert!(batches.iter().all(|batch| batch.rows.width == wide_width));
+            }
+            TranscriptFlushAction::None | TranscriptFlushAction::QueueStatic(_) => {
+                panic!("width mismatch must rebuild replay from source")
+            }
+        }
+        session.queue_transcript_plan(wide_plan.action);
+
+        assert!(session.terminal.active_replay_matches_width(wide_width));
+    }
+
+    #[test]
+    fn plan_for_composer_expansion_with_room_preserves_viewport_anchor() {
         let old_area = Rect::new(0, 10, 120, 3);
 
         let plan = plan_inline_geometry(Some(old_area), 4, 120, 40);
@@ -869,11 +903,11 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_composer_shrink_preserves_transcript_anchor() {
-        let old_area = Rect::new(0, 20, 120, 4);
+    fn plan_for_composer_shrink_preserves_viewport_anchor() {
+        let old_area = Rect::new(0, 36, 120, 4);
 
         let plan = plan_inline_geometry(Some(old_area), 3, 120, 40);
 
-        assert_eq!(plan.target_area, Some(Rect::new(0, 20, 120, 3)));
+        assert_eq!(plan.target_area, Some(Rect::new(0, 36, 120, 3)));
     }
 }

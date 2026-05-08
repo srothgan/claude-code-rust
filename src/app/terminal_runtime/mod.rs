@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod chat_session;
+mod chat_terminal;
 mod fullscreen_session;
+mod history_insert;
 mod modes;
 mod panic_hook;
 mod release_guard;

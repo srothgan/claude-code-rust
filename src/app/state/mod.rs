@@ -399,10 +399,6 @@ impl App {
         self.surface_dirty.chat.request_repaint();
     }
 
-    pub(crate) fn request_chat_mutable_rebuild(&mut self) {
-        self.surface_dirty.chat.request_mutable_rebuild();
-    }
-
     pub(crate) fn request_chat_visible_rebuild(&mut self) {
         self.surface_dirty.chat.request_visible_screen_rebuild();
     }

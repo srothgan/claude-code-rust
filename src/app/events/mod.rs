@@ -70,7 +70,8 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
 fn handle_resize(app: &mut App, width: u16, height: u16) {
     match app.terminal_lifecycle {
         super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
-            app.request_chat_mutable_rebuild();
+            app.request_chat_visible_rebuild();
+            app.reset_committed_output_tracking();
         }
         super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
             app.request_fullscreen_repaint();
@@ -1315,16 +1316,19 @@ mod tests {
         app.chat_render.composer.last_rendered_rows = 4;
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.last_rendered_rows = 7;
+        app.chat_render.mark_terminal_history_synced();
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
         assert!(!app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
         assert_eq!(app.chat_render.terminal_width, 120);
         assert_eq!(app.chat_render.terminal_height, 40);
         assert_eq!(app.chat_render.composer.total_rows, 0);
         assert_eq!(app.chat_render.composer.last_rendered_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+        assert!(!app.chat_render.terminal_history_is_synced());
     }
 
     #[test]

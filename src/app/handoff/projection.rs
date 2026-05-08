@@ -47,8 +47,16 @@ pub(crate) struct InlineStaticInsertPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct InlineHistoryReplayPlan {
+    pub items: Vec<InlineHistoryReplayItem>,
     pub entries: Vec<TranscriptEntry>,
     pub pending_ids: Vec<InlineOutputId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InlineHistoryReplayItem {
+    pub id: InlineOutputId,
+    pub entry: TranscriptEntry,
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -103,6 +111,7 @@ pub(crate) fn inline_static_insert_plan(app: &App) -> InlineStaticInsertPlan {
 
 #[must_use]
 pub(crate) fn inline_history_replay_plan(app: &App) -> InlineHistoryReplayPlan {
+    let mut items = Vec::new();
     let mut entries = Vec::new();
     let mut pending_ids = Vec::new();
 
@@ -112,12 +121,14 @@ pub(crate) fn inline_history_replay_plan(app: &App) -> InlineHistoryReplayPlan {
         };
 
         entries.push(entry.clone());
-        if *status == InlineOutputStatus::PendingInsert {
+        let pending = *status == InlineOutputStatus::PendingInsert;
+        if pending {
             pending_ids.push(item.id);
         }
+        items.push(InlineHistoryReplayItem { id: item.id, entry: entry.clone(), pending });
     }
 
-    InlineHistoryReplayPlan { entries, pending_ids }
+    InlineHistoryReplayPlan { items, entries, pending_ids }
 }
 
 pub(crate) fn confirm_static_inserted(shadow: &mut HandoffShadowState, ids: &[InlineOutputId]) {
@@ -616,6 +627,11 @@ mod tests {
         let plan = inline_history_replay_plan(&app);
         assert_eq!(plan.entries, vec![user_entry("inserted"), system_entry("pending")]);
         assert_eq!(plan.pending_ids, pending_ids);
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.items[0].id, inserted_ids[0]);
+        assert!(!plan.items[0].pending);
+        assert_eq!(plan.items[1].id, pending_ids[0]);
+        assert!(plan.items[1].pending);
     }
 
     #[test]

@@ -42,19 +42,37 @@ pub(crate) fn serialize_transcript_rows(
     has_prior_committed_history: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut rows = Vec::new();
-    let mut previous_block_kind =
-        has_prior_committed_history.then_some(TopLevelInlineBlockKind::ExistingHistory);
-    extend_serialized_transcript_rows(app, entries, &mut previous_block_kind, width, &mut rows);
-    rows
+    serialize_transcript_row_batches(app, entries, has_prior_committed_history, width)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
-fn extend_serialized_transcript_rows(
+pub(crate) fn serialize_transcript_row_batches(
+    app: &App,
+    entries: &[TranscriptEntry],
+    has_prior_committed_history: bool,
+    width: u16,
+) -> Vec<Vec<Line<'static>>> {
+    let mut batches = Vec::new();
+    let mut previous_block_kind =
+        has_prior_committed_history.then_some(TopLevelInlineBlockKind::ExistingHistory);
+    extend_serialized_transcript_row_batches(
+        app,
+        entries,
+        &mut previous_block_kind,
+        width,
+        &mut batches,
+    );
+    batches
+}
+
+fn extend_serialized_transcript_row_batches(
     app: &App,
     entries: &[TranscriptEntry],
     previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
     width: u16,
-    rows: &mut Vec<Line<'static>>,
+    batches: &mut Vec<Vec<Line<'static>>>,
 ) {
     let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.as_str());
     let mut idx = 0usize;
@@ -76,6 +94,7 @@ fn extend_serialized_transcript_rows(
                     current_mode_id,
                     width,
                 );
+                let mut rows = Vec::new();
                 if !batch_rows.is_empty() {
                     rows.extend(
                         std::iter::repeat_with(Line::default)
@@ -84,9 +103,11 @@ fn extend_serialized_transcript_rows(
                     rows.extend(batch_rows);
                     *previous_block_kind = Some(batch_kind);
                 }
+                batches.push(rows);
             }
             entry => {
                 let block_kind = transcript_entry_block_kind(entry);
+                let mut rows = Vec::new();
                 if let TranscriptEntry::Welcome(welcome) = entry {
                     let welcome_rows = serialize_compact_welcome_entry(app, welcome, width);
                     if !welcome_rows.is_empty() {
@@ -111,10 +132,29 @@ fn extend_serialized_transcript_rows(
                         *previous_block_kind = Some(block_kind);
                     }
                 }
+                batches.push(rows);
                 idx += 1;
             }
         }
     }
+}
+
+fn extend_serialized_transcript_rows(
+    app: &App,
+    entries: &[TranscriptEntry],
+    previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
+    width: u16,
+    rows: &mut Vec<Line<'static>>,
+) {
+    let mut batches = Vec::new();
+    extend_serialized_transcript_row_batches(
+        app,
+        entries,
+        previous_block_kind,
+        width,
+        &mut batches,
+    );
+    rows.extend(batches.into_iter().flatten());
 }
 
 pub(crate) fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
@@ -1007,7 +1047,7 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{serialize_live_rows, serialize_transcript_rows};
+    use super::{serialize_live_rows, serialize_transcript_row_batches, serialize_transcript_rows};
     use crate::agent::model;
     use crate::app::handoff::shadow::ActiveAssistantShadowTurn;
     use crate::app::handoff::types::{
@@ -1178,6 +1218,38 @@ mod tests {
         let text = rows.iter().map(line_text).collect::<Vec<_>>();
 
         assert_eq!(text, vec!["User", "hello", "Claude", "hi"]);
+    }
+
+    #[test]
+    fn transcript_row_batches_preserve_flattened_transcript_rendering() {
+        let app = App::test_default();
+        let entries = vec![
+            TranscriptEntry::User(UserTranscriptEntry {
+                blocks: vec![UserTranscriptBlock::Text("hello".to_owned())],
+            }),
+            TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
+                leading_blank_lines: 0,
+                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
+                    text: "hi".to_owned(),
+                    trailing_spacing: crate::app::TextBlockSpacing::None,
+                }),
+            }),
+            TranscriptEntry::AssistantContinue(AssistantTranscriptEntry {
+                leading_blank_lines: 0,
+                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
+                    text: "again".to_owned(),
+                    trailing_spacing: crate::app::TextBlockSpacing::None,
+                }),
+            }),
+        ];
+
+        let flat_rows = serialize_transcript_rows(&app, &entries, false, 120);
+        let batched_rows = serialize_transcript_row_batches(&app, &entries, false, 120)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+
+        assert_eq!(line_texts(&batched_rows), line_texts(&flat_rows));
     }
 
     #[test]
