@@ -300,6 +300,7 @@ pub(super) fn handle_session_replaced_event(
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
+    app.request_chat_session_boundary_rebuild();
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);

@@ -65,6 +65,21 @@ impl ChatTerminalSession {
         app.reset_committed_output_tracking();
     }
 
+    pub(super) fn clear_session_boundary(&mut self, app: &mut App) {
+        if let Err(err) = self.terminal.reset_session_boundary() {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_session_boundary_clear_failed",
+                message = "failed to clear inline terminal for session boundary",
+                outcome = "failure",
+                error_message = %err,
+            );
+        }
+        self.has_committed_output = false;
+        app.chat_render.invalidate_live_anchor();
+        app.reset_committed_output_tracking();
+    }
+
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
         if let Err(err) = self.terminal.reset_mutable_viewport() {
             tracing::warn!(

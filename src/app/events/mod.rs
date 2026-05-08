@@ -1795,6 +1795,7 @@ mod tests {
         };
         assert_eq!(welcome.cwd, "/replacement");
         assert_ne!(welcome.tip_seed, 5);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::SessionBoundary);
     }
 
     #[test]

@@ -180,6 +180,10 @@ impl TerminalRuntime {
                     session.clear(app);
                     Ok(())
                 }
+                ChatRebuildKind::SessionBoundary => {
+                    session.clear_session_boundary(app);
+                    Ok(())
+                }
             },
             SurfaceTerminalSession::Fullscreen(_) => Ok(()),
         }

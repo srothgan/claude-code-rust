@@ -143,12 +143,31 @@ impl ChatTerminal {
     }
 
     pub(super) fn reset_visible(&mut self) -> anyhow::Result<()> {
-        self.clear_owned_region("visible_reset")?;
+        self.reset_visible_with_reason("visible_reset")
+    }
+
+    pub(super) fn reset_session_boundary(&mut self) -> anyhow::Result<()> {
+        let cleared_area = self.clear_owned_region("session_boundary_reset")?;
+        self.reset_visible_state();
+        if let Some(area) = cleared_area {
+            self.anchor_next_viewport_to_cleared_region(area);
+        } else {
+            self.state.area = None;
+        }
+        Ok(())
+    }
+
+    fn reset_visible_with_reason(&mut self, reason: &'static str) -> anyhow::Result<()> {
+        let _ = self.clear_owned_region(reason)?;
+        self.reset_visible_state();
+        Ok(())
+    }
+
+    fn reset_visible_state(&mut self) {
         self.terminal = None;
         self.state.visible_history_rows = 0;
         self.pending_history.clear();
         self.replay = None;
-        Ok(())
     }
 
     pub(super) fn reset_mutable_viewport(&mut self) -> anyhow::Result<()> {
@@ -324,6 +343,11 @@ impl ChatTerminal {
         );
 
         let terminal = create_inline_terminal(next_height)?;
+        self.track_owned_region_scroll(
+            inline_viewport_scroll_rows_after_create(cursor_y, next_height, screen_height),
+            screen_height,
+            "inline_terminal_ensure",
+        );
         self.terminal = Some(terminal);
         self.state.area = Some(predicted_area);
         self.mark_area_owned(predicted_area, screen_height, "inline_terminal_ensure");
@@ -337,16 +361,18 @@ impl ChatTerminal {
         self.clear_owned_area(area, reason)
     }
 
-    fn clear_owned_region(&mut self, reason: &'static str) -> anyhow::Result<()> {
+    fn clear_owned_region(&mut self, reason: &'static str) -> anyhow::Result<Option<Rect>> {
         let (terminal_width, terminal_height) =
             crossterm::terminal::size().context("failed to read terminal size before clear")?;
         let top = self.state.owned_top.min(terminal_height);
         let bottom = self.state.owned_bottom.min(terminal_height);
         if top >= bottom {
-            return Ok(());
+            return Ok(None);
         }
 
-        self.clear_owned_area(Rect::new(0, top, terminal_width.max(1), bottom - top), reason)
+        let area = Rect::new(0, top, terminal_width.max(1), bottom - top);
+        self.clear_owned_area(area, reason)?;
+        Ok(Some(area))
     }
 
     fn flush_queued_history(
@@ -607,6 +633,45 @@ impl ChatTerminal {
         Ok(())
     }
 
+    fn track_owned_region_scroll(&mut self, rows: u16, terminal_height: u16, reason: &'static str) {
+        if rows == 0 || self.state.owned_top == self.state.owned_bottom {
+            return;
+        }
+
+        let old_top = self.state.owned_top;
+        let old_bottom = self.state.owned_bottom;
+        self.state.owned_top = self.state.owned_top.saturating_sub(rows).min(terminal_height);
+        self.state.owned_bottom = self.state.owned_bottom.saturating_sub(rows).min(terminal_height);
+        self.state.area = self.state.area.map(|area| shift_area_up(area, rows));
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_owned_region_scrolled",
+            message = "inline chat ownership range shifted after terminal scroll",
+            outcome = "success",
+            reason,
+            rows,
+            old_owned_top = old_top,
+            old_owned_bottom = old_bottom,
+            owned_top = self.state.owned_top,
+            owned_bottom = self.state.owned_bottom,
+            terminal_height,
+        );
+    }
+
+    fn anchor_next_viewport_to_cleared_region(&mut self, area: Rect) {
+        self.state.area = Some(Rect::new(area.x, area.y, area.width.max(1), 1));
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_session_boundary_anchor_reset",
+            message = "next inline viewport anchored to top of cleared session region",
+            outcome = "success",
+            anchor_top = area.top(),
+            anchor_bottom = area.top().saturating_add(1),
+            cleared_top = area.top(),
+            cleared_bottom = area.bottom(),
+        );
+    }
+
     fn clear_owned_area(&mut self, area: Rect, reason: &'static str) -> anyhow::Result<()> {
         if area.is_empty() {
             return Ok(());
@@ -728,6 +793,16 @@ fn inline_viewport_top_after_create(cursor_y: u16, height: u16, terminal_height:
     row.saturating_sub(lines_after_cursor.saturating_sub(available_lines))
 }
 
+fn inline_viewport_scroll_rows_after_create(
+    cursor_y: u16,
+    height: u16,
+    terminal_height: u16,
+) -> u16 {
+    cursor_y
+        .min(terminal_height.max(1).saturating_sub(1))
+        .saturating_sub(inline_viewport_top_after_create(cursor_y, height, terminal_height))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OwnedInsertPlan {
     allowed: bool,
@@ -793,7 +868,9 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 mod tests {
     use super::{
         ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch, ReplayState,
-        plan_owned_insert, replay_batch_row_budget, shift_area_up, viewport_area_after_insert,
+        inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
+        plan_inline_geometry, plan_owned_insert, replay_batch_row_budget, shift_area_up,
+        viewport_area_after_insert,
     };
     use crate::app::terminal_runtime::history_insert::RenderedHistoryRows;
     use ratatui::layout::Rect;
@@ -919,5 +996,40 @@ mod tests {
             viewport_area_after_insert(Rect::new(0, 23, 120, 5), 9, 37),
             Rect::new(0, 32, 120, 5)
         );
+    }
+
+    #[test]
+    fn inline_viewport_scroll_rows_track_bottom_reconfigure_scroll() {
+        assert_eq!(inline_viewport_scroll_rows_after_create(31, 8, 37), 2);
+        assert_eq!(inline_viewport_scroll_rows_after_create(23, 11, 37), 0);
+    }
+
+    #[test]
+    fn owned_region_tracks_inline_terminal_scroll() {
+        let mut terminal = ChatTerminal::new(23);
+        terminal.state.owned_bottom = 34;
+        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
+
+        terminal.track_owned_region_scroll(5, 37, "test");
+
+        assert_eq!(terminal.state.owned_top, 18);
+        assert_eq!(terminal.state.owned_bottom, 29);
+        assert_eq!(terminal.state.area, Some(Rect::new(0, 26, 120, 3)));
+    }
+
+    #[test]
+    fn session_boundary_anchor_restarts_next_viewport_at_cleared_top() {
+        let mut terminal = ChatTerminal::new(17);
+        terminal.state.owned_bottom = 37;
+        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
+
+        terminal.anchor_next_viewport_to_cleared_region(Rect::new(0, 17, 120, 20));
+
+        assert_eq!(terminal.state.area, Some(Rect::new(0, 17, 120, 1)));
+
+        let plan = plan_inline_geometry(terminal.state.area, 11, 120, 37);
+
+        assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
+        assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
     }
 }
