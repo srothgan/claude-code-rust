@@ -35,6 +35,22 @@ pub(super) fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>>
         .collect()
 }
 
+pub(super) fn render_failed_tool_text_content(
+    status: model::ToolCallStatus,
+    text: &str,
+) -> Option<Vec<Line<'static>>> {
+    if !is_failed_or_killed(status) {
+        return None;
+    }
+    if let Some(message) = extract_failed_xml_error_message(text) {
+        return Some(render_tool_use_error_content(&message));
+    }
+    if looks_like_internal_error(text) {
+        return Some(render_internal_failure_content(text));
+    }
+    None
+}
+
 pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     if !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed) {
         return;
@@ -87,25 +103,65 @@ fn preview_for_log(input: &str) -> String {
 }
 
 pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
-    if let Some(msg) = extract_tool_use_error_message(output) {
+    if let Some(msg) = failed_tool_text_summary(model::ToolCallStatus::Failed, output) {
         return Some(msg);
     }
     output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
+}
+
+pub(super) fn failed_tool_text_summary(
+    status: model::ToolCallStatus,
+    text: &str,
+) -> Option<String> {
+    if !is_failed_or_killed(status) {
+        return None;
+    }
+    if let Some(message) = extract_failed_xml_error_message(text) {
+        return Some(message);
+    }
+    if looks_like_internal_error(text) {
+        let summary = summarize_internal_error(text);
+        if !summary.is_empty() {
+            return Some(summary);
+        }
+    }
+    None
 }
 
 pub(super) fn looks_like_internal_error(input: &str) -> bool {
     shared_looks_like_internal_error(input)
 }
 
+#[cfg(test)]
 pub(super) fn extract_tool_use_error_message(input: &str) -> Option<String> {
+    extract_tool_use_error_message_inner(input)
+}
+
+fn extract_tool_use_error_message_inner(input: &str) -> Option<String> {
     extract_xml_tag_value(input, "tool_use_error")
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 
+fn extract_failed_xml_error_message(input: &str) -> Option<String> {
+    if let Some(message) = extract_tool_use_error_message_inner(input) {
+        return Some(message);
+    }
+    for tag in ["message", "error", "fault"] {
+        if let Some(value) = extract_xml_tag_value(input, tag) {
+            return Some(value.to_owned());
+        }
+    }
+    extract_simple_xml_wrapper_value(input).map(str::to_owned)
+}
+
 pub(super) fn summarize_internal_error(input: &str) -> String {
     shared_summarize_internal_error(input)
+}
+
+fn is_failed_or_killed(status: model::ToolCallStatus) -> bool {
+    matches!(status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
 }
 
 fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
@@ -116,4 +172,32 @@ fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     let end = start + lower[start..].find(&close)?;
     let value = input[start..end].trim();
     (!value.is_empty()).then_some(value)
+}
+
+fn extract_simple_xml_wrapper_value(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix('<')?;
+    let tag_end = rest.find('>')?;
+    let tag = &rest[..tag_end];
+    if !is_simple_xml_tag_name(tag) {
+        return None;
+    }
+    let close = format!("</{tag}>");
+    let lower_trimmed = trimmed.to_ascii_lowercase();
+    let lower_close = close.to_ascii_lowercase();
+    if !lower_trimmed.ends_with(&lower_close) {
+        return None;
+    }
+    let value_start = tag_end + 2;
+    let value_end = trimmed.len().saturating_sub(close.len());
+    let value = trimmed[value_start..value_end].trim();
+    if value.is_empty() || value.contains('<') || value.contains('>') {
+        return None;
+    }
+    Some(value)
+}
+
+fn is_simple_xml_tag_name(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':'))
 }

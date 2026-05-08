@@ -13,8 +13,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::errors::{
-    debug_failed_tool_render, extract_tool_use_error_message, failed_execute_first_line,
-    looks_like_internal_error, render_internal_failure_content, render_tool_use_error_content,
+    debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
+    render_failed_tool_text_content,
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
@@ -176,6 +176,9 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                     );
                 }
                 if let Some(text) = resource.text.as_deref() {
+                    if let Some(summary) = failed_tool_text_summary(tc.status, text) {
+                        return truncate_summary_line(&summary, DEFAULT_TEXT_SUMMARY_LIMIT);
+                    }
                     let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
                     return truncate_summary_line(first, DEFAULT_TEXT_SUMMARY_LIMIT);
                 }
@@ -184,12 +187,8 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
-                    if matches!(
-                        tc.status,
-                        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
-                    ) && let Some(msg) = extract_tool_use_error_message(&stripped)
-                    {
-                        return msg;
+                    if let Some(summary) = failed_tool_text_summary(tc.status, &stripped) {
+                        return truncate_summary_line(&summary, text_summary_limit(tc));
                     }
                     let first = stripped.lines().next().unwrap_or("");
                     return truncate_summary_line(first, text_summary_limit(tc));
@@ -314,16 +313,8 @@ fn render_plan_content(text: &str) -> Vec<Line<'static>> {
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
     let stripped = strip_outer_code_fence(text);
-    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-        && let Some(msg) = extract_tool_use_error_message(&stripped)
-    {
-        lines.extend(render_tool_use_error_content(&msg));
-        return;
-    }
-    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-        && looks_like_internal_error(&stripped)
-    {
-        lines.extend(render_internal_failure_content(&stripped));
+    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+        lines.extend(failed_lines);
         return;
     }
     let md_source = if is_markdown_file(&tc.title) {

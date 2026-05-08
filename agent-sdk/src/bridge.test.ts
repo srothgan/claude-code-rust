@@ -895,6 +895,121 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
   assert.equal(session.taskToolUseIds.has("task-1"), false);
 });
 
+test("handleTaskSystemMessage ignores lifecycle content for concrete output tools", () => {
+  const session = makeSessionState();
+  const protectedTools = [
+    createToolCall("tool-bash", "Bash", { command: "git status" }),
+    createToolCall("tool-read", "Read", { file_path: "src/main.rs" }),
+    createToolCall("tool-write", "Write", {
+      file_path: "src/main.rs",
+      content: "updated file contents",
+    }),
+  ];
+
+  for (const toolCall of protectedTools) {
+    toolCall.status = "in_progress";
+    toolCall.raw_output = `actual output for ${toolCall.tool_call_id}`;
+    session.toolCalls.set(toolCall.tool_call_id, toolCall);
+  }
+
+  const events = captureBridgeEvents(() => {
+    for (const toolCall of protectedTools) {
+      const taskId = `task-${toolCall.tool_call_id}`;
+      handleTaskSystemMessage(session, "task_started", {
+        task_id: taskId,
+        tool_use_id: toolCall.tool_call_id,
+        description: "Show working tree status",
+      });
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: taskId,
+        tool_use_id: toolCall.tool_call_id,
+        status: "completed",
+        summary: "Show diff summary for unstaged changes",
+      });
+    }
+  });
+
+  assert.deepEqual(events, []);
+  for (const toolCall of protectedTools) {
+    const stored = session.toolCalls.get(toolCall.tool_call_id);
+    assert.equal(stored?.status, "in_progress");
+    assert.equal(stored?.raw_output, `actual output for ${toolCall.tool_call_id}`);
+  }
+});
+
+test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", () => {
+  const session = makeSessionState();
+  const protectedTools = [
+    createToolCall("tool-bash", "Bash", { command: "git diff" }),
+    createToolCall("tool-read", "Read", { file_path: "src/main.rs" }),
+    createToolCall("tool-write", "Write", {
+      file_path: "src/main.rs",
+      content: "updated file contents",
+    }),
+  ];
+
+  for (const toolCall of protectedTools) {
+    toolCall.status = "completed";
+    toolCall.raw_output = `actual output for ${toolCall.tool_call_id}`;
+    session.toolCalls.set(toolCall.tool_call_id, toolCall);
+  }
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_use_summary",
+      summary: "Show commits on this branch since diverging from main",
+      preceding_tool_use_ids: protectedTools.map((toolCall) => toolCall.tool_call_id),
+      uuid: "message-summary",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+  for (const toolCall of protectedTools) {
+    assert.equal(
+      session.toolCalls.get(toolCall.tool_call_id)?.raw_output,
+      `actual output for ${toolCall.tool_call_id}`,
+    );
+  }
+});
+
+test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-agent", "Agent", { prompt: "Inspect auth flow" });
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_use_summary",
+      summary: "Inspected auth flow and found the failing check",
+      preceding_tool_use_ids: [toolCall.tool_call_id],
+      uuid: "message-summary",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-agent",
+      fields: {
+        status: "completed",
+        raw_output: "Inspected auth flow and found the failing check",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Inspected auth flow and found the failing check" },
+          },
+        ],
+      },
+    },
+  });
+  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.raw_output, "Inspected auth flow and found the failing check");
+});
+
 test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
   const session = makeSessionState();
 

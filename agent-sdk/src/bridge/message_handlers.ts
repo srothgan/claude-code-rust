@@ -25,6 +25,7 @@ import {
   emitToolSummaryUpdate,
   ensureToolCallVisible,
   resolveTaskToolUseId,
+  toolAcceptsTaskLifecycle,
   taskProgressText,
   taskUpdatedFields,
 } from "./tool_calls.js";
@@ -204,6 +205,12 @@ export function handleTaskSystemMessage(
   }
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
+  if (!toolAcceptsTaskLifecycle(toolCall)) {
+    if (taskId) {
+      session.taskToolUseIds.delete(taskId);
+    }
+    return;
+  }
   if (toolCall.status === "pending") {
     emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
   }

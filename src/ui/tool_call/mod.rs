@@ -28,8 +28,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 // Re-export submodule items used by tests.
 #[cfg(test)]
 use errors::{
-    extract_tool_use_error_message, looks_like_internal_error, render_tool_use_error_content,
-    summarize_internal_error,
+    extract_tool_use_error_message, failed_tool_text_summary, looks_like_internal_error,
+    render_tool_use_error_content, summarize_internal_error,
 };
 
 #[cfg(test)]
@@ -869,6 +869,44 @@ mod tests {
     }
 
     #[test]
+    fn failed_tool_text_summary_reads_common_xml_error_wrappers() {
+        let failed = model::ToolCallStatus::Failed;
+        assert_eq!(
+            failed_tool_text_summary(
+                failed,
+                "<tool_use_error>Sibling tool call errored</tool_use_error>"
+            )
+            .as_deref(),
+            Some("Sibling tool call errored")
+        );
+        assert_eq!(
+            failed_tool_text_summary(
+                failed,
+                "<error><code>-32603</code><message>Adapter process crashed</message></error>"
+            )
+            .as_deref(),
+            Some("Adapter process crashed")
+        );
+        assert_eq!(
+            failed_tool_text_summary(failed, "<fault>Remote call failed</fault>").as_deref(),
+            Some("Remote call failed")
+        );
+        assert_eq!(
+            failed_tool_text_summary(failed, "<custom_error>Wrapped failure</custom_error>")
+                .as_deref(),
+            Some("Wrapped failure")
+        );
+        assert_eq!(
+            failed_tool_text_summary(
+                model::ToolCallStatus::Completed,
+                "<message>Successful XML output</message>",
+            ),
+            None
+        );
+        assert_eq!(failed_tool_text_summary(failed, "<message>missing close"), None);
+    }
+
+    #[test]
     fn render_tool_use_error_content_shows_only_inner_text_lines() {
         let lines = render_tool_use_error_content("Line A\nLine B");
         let rendered: Vec<String> = lines
@@ -942,6 +980,16 @@ mod tests {
             pending_question: None,
         };
         assert_eq!(content_summary(&tc), "bad");
+    }
+
+    #[test]
+    fn content_summary_extracts_xml_message_for_failed_text_tool() {
+        let mut tc = test_tool_call("tc-web", "WebFetch", model::ToolCallStatus::Failed);
+        tc.content = vec![model::ToolCallContent::from(
+            "<error><message>Fetch failed</message></error>".to_owned(),
+        )];
+
+        assert_eq!(content_summary(&tc), "Fetch failed");
     }
 
     #[test]
@@ -1041,6 +1089,101 @@ mod tests {
         assert!(!rendered.iter().any(|line| line == "line 0"));
         assert!(rendered.iter().any(|line| line == "line 23"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 29"));
+    }
+
+    #[test]
+    fn render_execute_content_extracts_tool_use_error() {
+        let mut tc = test_tool_call("tc-xml", "Bash", model::ToolCallStatus::Failed);
+        tc.terminal_id = Some("term-xml".into());
+        tc.terminal_command = Some("cd path with spaces".into());
+        tc.terminal_output = Some(
+            "<tool_use_error>Cancelled: parallel tool call Bash(cd path) errored</tool_use_error>\nraw fallback"
+                .into(),
+        );
+
+        let lines = execute::render_execute_content(&tc);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered[0].contains("$ cd path with spaces"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "Cancelled: parallel tool call Bash(cd path) errored")
+        );
+        assert!(!rendered.iter().any(|line| line.contains("<tool_use_error>")));
+        assert!(!rendered.iter().any(|line| line.contains("</tool_use_error>")));
+        assert!(!rendered.iter().any(|line| line.contains("raw fallback")));
+    }
+
+    #[test]
+    fn render_execute_content_extracts_xml_message_error() {
+        let mut tc = test_tool_call("tc-xml-message", "Bash", model::ToolCallStatus::Failed);
+        tc.terminal_id = Some("term-xml".into());
+        tc.terminal_output =
+            Some("<error><message>Adapter process crashed</message></error>".into());
+
+        let lines = execute::render_execute_content(&tc);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line == "Adapter process crashed"));
+        assert!(!rendered.iter().any(|line| line.contains("<message>")));
+        assert!(!rendered.iter().any(|line| line.contains("<error>")));
+    }
+
+    #[test]
+    fn failed_text_tool_body_extracts_xml_error_message() {
+        let mut tc = test_tool_call("tc-read-error", "Read", model::ToolCallStatus::Failed);
+        tc.content = vec![model::ToolCallContent::from(
+            "<error><message>Read failed</message></error>".to_owned(),
+        )];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("Read failed")));
+        assert!(!rendered.iter().any(|line| line.contains("<message>")));
+        assert!(!rendered.iter().any(|line| line.contains("<error>")));
+    }
+
+    #[test]
+    fn successful_text_tool_body_preserves_xml_like_output() {
+        let mut tc = test_tool_call("tc-read-xml", "Read", model::ToolCallStatus::Completed);
+        tc.content =
+            vec![model::ToolCallContent::from("<message>not an error</message>".to_owned())];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("<message>not an error</message>")));
+    }
+
+    #[test]
+    fn diff_tool_body_preserves_xml_like_source() {
+        let mut tc = test_tool_call("tc-diff-xml", "Write", model::ToolCallStatus::Failed);
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+            "src/main.xml",
+            "<message>source text</message>".to_owned(),
+        ))];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered: Vec<String> = body
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert!(rendered.iter().any(|line| line.contains("<message>source text</message>")));
     }
 
     #[test]

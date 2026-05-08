@@ -10,7 +10,7 @@ use crate::ui::theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::TOOL_BODY_MAX_LINES;
+use super::{TOOL_BODY_MAX_LINES, errors::render_failed_tool_text_content};
 
 /// Render Execute/Bash content lines WITHOUT any border decoration.
 /// This is width-independent and safe to cache across resizes.
@@ -29,7 +29,12 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 
     if let Some(ref output) = tc.terminal_output {
-        body_lines = highlight::render_terminal_output(output).into_iter().map(dim_line).collect();
+        if let Some(failed_lines) = render_failed_tool_text_content(tc.status, output) {
+            body_lines = failed_lines;
+        } else {
+            body_lines =
+                highlight::render_terminal_output(output).into_iter().map(dim_line).collect();
+        }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
         body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
     }

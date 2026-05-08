@@ -17,6 +17,9 @@ type ToolUpdateKind =
   | "task_updated"
   | "task_notification";
 
+const TOOL_SUMMARY_TOOL_NAMES = new Set(["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"]);
+const TASK_LIFECYCLE_TOOL_NAMES = new Set(["Agent", "Task"]);
+
 function jsonSize(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -48,6 +51,16 @@ function toolName(base: ToolCall | undefined, fields?: ToolCallUpdateFields): st
     }
   }
   return toolNameFromMeta(base?.meta);
+}
+
+export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
+  const baseToolName = toolName(base);
+  return Boolean(baseToolName && TOOL_SUMMARY_TOOL_NAMES.has(baseToolName));
+}
+
+export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
+  const baseToolName = toolName(base);
+  return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
 }
 
 function classifyFailureKind(rawOutput: string | undefined): "refused" | "timeout" | "failed" {
@@ -363,6 +376,9 @@ export function emitToolProgressUpdate(session: SessionState, toolUseId: string,
 export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, summary: string): void {
   const base = session.toolCalls.get(toolUseId);
   if (!base) {
+    return;
+  }
+  if (!toolUsesSummaryOutput(base)) {
     return;
   }
   const fields: ToolCallUpdateFields = {
