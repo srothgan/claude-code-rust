@@ -5,7 +5,7 @@ use crate::app::slash::{SlashContext, SlashState};
 use crate::app::subagent::SubagentState;
 use crate::app::{
     FocusTarget, FullscreenView, PasteSessionState, ReleaseReason, SelectionPoint, SurfaceMode,
-    TerminalLifecycleState, TodoItem, TodoStatus,
+    TerminalLifecycleState,
 };
 
 fn busy_view_test_app() -> App {
@@ -39,13 +39,6 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.show_todo_panel = true;
-    app.todos = vec![TodoItem {
-        content: "todo".to_owned(),
-        status: TodoStatus::Pending,
-        active_form: "todo".to_owned(),
-    }];
-    app.claim_focus_target(FocusTarget::TodoList);
     app.pending_interaction_ids.push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
     app
@@ -107,7 +100,7 @@ fn set_surface_mode_keeps_permission_unfocused_when_returning_to_chat_with_draft
     set_surface_mode(&mut app, SurfaceMode::Chat);
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.focus_owner(), crate::app::FocusOwner::TodoList);
+    assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
 }
 
 #[test]

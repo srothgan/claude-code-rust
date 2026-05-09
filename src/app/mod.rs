@@ -32,7 +32,7 @@ pub(crate) mod subagent;
 mod tab_title;
 mod terminal;
 pub(crate) mod terminal_runtime;
-mod todos;
+pub(crate) mod todos;
 mod trust;
 mod update_check;
 pub(crate) mod usage;

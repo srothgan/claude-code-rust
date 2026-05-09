@@ -202,13 +202,6 @@ pub struct App {
     pub tool_call_index: HashMap<String, (usize, usize)>,
     /// Current todo list from Claude's `TodoWrite` tool calls.
     pub todos: Vec<TodoItem>,
-    /// Whether the todo panel is expanded (true) or shows compact status line (false).
-    /// Toggled by Ctrl+T.
-    pub show_todo_panel: bool,
-    /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
-    pub todo_scroll: usize,
-    /// Selected todo index used for keyboard navigation in the open todo panel.
-    pub todo_selected: usize,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
@@ -257,8 +250,6 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Cached todo compact line (invalidated on `set_todos()`).
-    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
     /// Update availability state for the current app lifetime.
@@ -871,9 +862,6 @@ impl App {
             terminals: std::rc::Rc::default(),
             tool_call_index: HashMap::default(),
             todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            todo_selected: 0,
             focus: FocusManager::default(),
             available_commands: Vec::new(),
             plugins: PluginsState::default(),
@@ -893,7 +881,6 @@ impl App {
             active_paste_session: None,
             next_paste_session_id: 1,
             pending_images: Vec::new(),
-            cached_todo_compact: None,
             git_context: GitContextState::default(),
             update_notice: None,
             session_usage: SessionUsageState::default(),
@@ -1162,7 +1149,6 @@ impl App {
     #[must_use]
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
-            self.show_todo_panel && !self.todos.is_empty(),
             self.autocomplete_focus_available(),
             !self.pending_interaction_ids.is_empty(),
         )
@@ -2516,12 +2502,6 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
         app.pending_interaction_ids.push("perm-1".into());
         app.slash = Some(SlashState {
             trigger_row: 0,
@@ -2544,9 +2524,6 @@ mod tests {
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
-        app.claim_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-
         app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
 
@@ -2557,16 +2534,13 @@ mod tests {
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
 
         app.release_focus_target(FocusTarget::Permission);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-
-        app.release_focus_target(FocusTarget::TodoList);
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
     #[test]
     fn focus_owner_falls_back_to_input_when_claimed_target_is_unavailable() {
         let mut app = make_test_app();
-        app.claim_focus_target(FocusTarget::TodoList);
+        app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 

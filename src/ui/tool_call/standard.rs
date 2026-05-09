@@ -4,12 +4,13 @@
 //! Rendering for tool-call titles, standard bodies, and compact content summaries.
 
 use crate::agent::model;
-use crate::app::ToolCallInfo;
+use crate::app::todos::parse_todos_if_present;
+use crate::app::{TodoItem, TodoStatus, ToolCallInfo};
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::errors::{
@@ -32,6 +33,7 @@ const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
+const TODO_OMISSION_MARKER: &str = "...";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
@@ -75,11 +77,18 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
 
 #[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
+    is_todo_write_tool(tc)
+        || tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
 }
 
 #[must_use]
 pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
+    if is_todo_write_tool(tc) {
+        return todo_write_todos(tc).is_some_and(|todos| !todos.is_empty())
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+
     !tc.content.is_empty()
         || tc.pending_permission.is_some()
         || tc.pending_question.is_some()
@@ -223,6 +232,12 @@ fn truncate_summary_line(line: &str, max_chars: usize) -> String {
 fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
+    if is_todo_write_tool(tc) {
+        return todo_write_todos(tc)
+            .map(|todos| render_todo_write_content(&todos))
+            .unwrap_or_default();
+    }
+
     if tc.is_execute_tool() {
         lines.extend(execute::render_execute_content(tc));
         debug_failed_tool_render(tc);
@@ -266,6 +281,112 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         return cap_read_content_lines(lines);
     }
     lines
+}
+
+fn is_todo_write_tool(tc: &ToolCallInfo) -> bool {
+    tc.sdk_tool_name == "TodoWrite"
+}
+
+fn todo_write_todos(tc: &ToolCallInfo) -> Option<Vec<TodoItem>> {
+    if !is_todo_write_tool(tc) {
+        return None;
+    }
+    tc.raw_input.as_ref().and_then(parse_todos_if_present)
+}
+
+fn render_todo_write_content(todos: &[TodoItem]) -> Vec<Line<'static>> {
+    if todos.is_empty() {
+        return Vec::new();
+    }
+
+    let window = todo_visible_window(todos);
+    let mut lines = Vec::with_capacity(TOOL_BODY_MAX_LINES.min(todos.len()));
+    if window.hidden_above {
+        lines.push(todo_omission_line());
+    }
+    lines.extend(todos[window.start..window.end].iter().map(render_todo_line));
+    if window.hidden_below {
+        lines.push(todo_omission_line());
+    }
+    lines
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TodoWindow {
+    start: usize,
+    end: usize,
+    hidden_above: bool,
+    hidden_below: bool,
+}
+
+fn todo_visible_window(todos: &[TodoItem]) -> TodoWindow {
+    let total = todos.len();
+    if total <= TOOL_BODY_MAX_LINES {
+        return TodoWindow { start: 0, end: total, hidden_above: false, hidden_below: false };
+    }
+
+    let anchor = todos
+        .iter()
+        .position(|todo| todo.status != TodoStatus::Completed)
+        .unwrap_or(total.saturating_sub(1));
+    let mut hidden_above = anchor > 0;
+    let mut hidden_below = anchor + 1 < total;
+
+    loop {
+        let marker_rows = usize::from(hidden_above) + usize::from(hidden_below);
+        let item_budget = TOOL_BODY_MAX_LINES.saturating_sub(marker_rows).max(1).min(total);
+        let mut start = anchor.saturating_sub(item_budget / 2);
+        start = start.min(total.saturating_sub(item_budget));
+        let end = start.saturating_add(item_budget).min(total);
+        let next_hidden_above = start > 0;
+        let next_hidden_below = end < total;
+
+        if next_hidden_above == hidden_above && next_hidden_below == hidden_below {
+            return TodoWindow { start, end, hidden_above, hidden_below };
+        }
+        hidden_above = next_hidden_above;
+        hidden_below = next_hidden_below;
+    }
+}
+
+fn render_todo_line(todo: &TodoItem) -> Line<'static> {
+    let (marker, marker_style, text, text_style) = match todo.status {
+        TodoStatus::Completed => (
+            "\u{25a0}",
+            Style::default().fg(theme::DIM),
+            todo.content.as_str(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
+        ),
+        TodoStatus::InProgress => (
+            "\u{25a3}",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            if todo.active_form.is_empty() {
+                todo.content.as_str()
+            } else {
+                todo.active_form.as_str()
+            },
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        TodoStatus::Pending => (
+            "\u{25a1}",
+            Style::default().fg(theme::DIM),
+            todo.content.as_str(),
+            Style::default().fg(Color::Gray),
+        ),
+    };
+
+    Line::from(vec![
+        Span::styled(marker.to_owned(), marker_style),
+        Span::raw(" "),
+        Span::styled(text.to_owned(), text_style),
+    ])
+}
+
+fn todo_omission_line() -> Line<'static> {
+    Line::from(Span::styled(
+        TODO_OMISSION_MARKER,
+        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+    ))
 }
 
 fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {

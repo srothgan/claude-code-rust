@@ -112,8 +112,6 @@ async fn todowrite_tool_call_updates_todo_list() {
     assert_eq!(app.todos.len(), 2);
     assert_eq!(app.todos[0].content, "Fix bug");
     assert_eq!(app.todos[1].content, "Write tests");
-    // show_todo_panel is user-toggled (Ctrl+T), not auto-shown on TodoWrite
-    assert!(!app.show_todo_panel);
 }
 
 #[tokio::test]
@@ -167,7 +165,6 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
     );
 
     assert!(app.todos.is_empty(), "all-completed clears the list");
-    assert!(!app.show_todo_panel, "panel hidden when all done");
 }
 
 // --- Error recovery ---

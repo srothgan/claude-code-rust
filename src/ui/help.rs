@@ -46,7 +46,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+q".to_owned(), "Quit".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
-        ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
@@ -54,10 +53,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
     let focus_owner = app.focus_owner();
-
-    if app.show_todo_panel && !app.todos.is_empty() && app.pending_interaction_ids.is_empty() {
-        items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
-    }
 
     if !app.pending_interaction_ids.is_empty() {
         match focus_owner {
@@ -67,14 +62,11 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
             FocusOwner::Permission => {
                 items.push(("Tab".to_owned(), "Return to draft".to_owned()));
             }
-            _ => {}
+            FocusOwner::Mention => {}
         }
     }
 
-    if focus_owner != FocusOwner::TodoList
-        && focus_owner != FocusOwner::Mention
-        && focus_owner != FocusOwner::Permission
-    {
+    if focus_owner != FocusOwner::Mention && focus_owner != FocusOwner::Permission {
         items.push(("Enter".to_owned(), "Send message".to_owned()));
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
         items.push(("Up/Down".to_owned(), "Move cursor / scroll chat".to_owned()));
@@ -90,8 +82,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         items.push(("Esc".to_owned(), "Cancel current turn".to_owned()));
-    } else if focus_owner == FocusOwner::TodoList {
-        items.push(("Esc".to_owned(), "Exit todo focus".to_owned()));
     } else {
         items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
@@ -111,9 +101,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
             items.push(("Ctrl+y/a/n".to_owned(), "Quick select".to_owned()));
             items.push(("Esc".to_owned(), "Reject".to_owned()));
         }
-    }
-    if focus_owner == FocusOwner::TodoList {
-        items.push(("Up/Down".to_owned(), "Select todo (todo focus)".to_owned()));
     }
 
     items

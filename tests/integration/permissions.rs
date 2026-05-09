@@ -200,12 +200,10 @@ async fn turn_complete_does_not_clear_todos() {
         status: claude_code_rust::app::TodoStatus::InProgress,
         active_form: "Testing".into(),
     }];
-    app.show_todo_panel = true;
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
     assert_eq!(app.todos.len(), 1, "todos should persist across turns");
-    assert!(app.show_todo_panel, "todo panel state should persist");
 }
 
 #[tokio::test]

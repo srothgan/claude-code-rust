@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::paste_burst::CharAction;
-use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, InvalidationLevel, ModeInfo, ModeState,
-};
+use super::{App, AppStatus, CancelOrigin, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
 use crate::app::inline_interactions::{
@@ -98,7 +96,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
                 handle_normal_key(app, key)
             }
         }
-        FocusOwner::Input | FocusOwner::TodoList => handle_normal_key(app, key),
+        FocusOwner::Input => handle_normal_key(app, key),
     }
 }
 
@@ -120,10 +118,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('t'), m) if m == KeyModifiers::CONTROL => {
-            toggle_todo_panel_focus(app);
-            true
-        }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.request_chat_visible_rebuild();
             true
@@ -221,10 +215,6 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         app.pending_images.clear();
         app.request_chat_repaint();
     }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
-        return true;
-    }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
     {
@@ -240,7 +230,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
-    if !matches!(key.code, KeyCode::Enter) || app.focus_owner() == FocusOwner::TodoList {
+    if !matches!(key.code, KeyCode::Enter) {
         return false;
     }
 
@@ -281,9 +271,6 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
     if is_undo_shortcut(key.code, key.modifiers) {
         app.input.textarea_undo();
         return true;
@@ -317,34 +304,14 @@ fn is_redo_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
 
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        (KeyCode::Left, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input.textarea_move_word_left()
         }
-        (KeyCode::Right, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input.textarea_move_word_right()
         }
-        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_left()
-        }
-        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_right()
-        }
-        (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
-            move_todo_selection_up(app);
-            true
-        }
-        (KeyCode::Down, _) if app.focus_owner() == FocusOwner::TodoList => {
-            move_todo_selection_down(app);
-            true
-        }
+        (KeyCode::Left, _) => app.input.textarea_move_left(),
+        (KeyCode::Right, _) => app.input.textarea_move_right(),
         (KeyCode::Up, _) => {
             let _ = try_move_input_cursor_up(app);
             true
@@ -353,12 +320,8 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             let _ = try_move_input_cursor_down(app);
             true
         }
-        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_home()
-        }
-        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_end()
-        }
+        (KeyCode::Home, _) => app.input.textarea_move_home(),
+        (KeyCode::End, _) => app.input.textarea_move_end(),
         _ => false,
     }
 }
@@ -370,7 +333,9 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            if !app.pending_interaction_ids.is_empty() {
+            if app.pending_interaction_ids.is_empty() {
+                false
+            } else {
                 match app.focus_owner() {
                     FocusOwner::Permission => {
                         clear_inline_interaction_focus(app);
@@ -380,17 +345,8 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                         focus_next_inline_interaction(app);
                         true
                     }
-                    _ => false,
+                    FocusOwner::Mention => false,
                 }
-            } else if app.show_todo_panel && !app.todos.is_empty() {
-                if app.focus_owner() == FocusOwner::TodoList {
-                    app.release_focus_target(FocusTarget::TodoList);
-                } else {
-                    app.claim_focus_target(FocusTarget::TodoList);
-                }
-                true
-            } else {
-                false
             }
         }
         _ => false,
@@ -467,7 +423,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_shortcut(key) || app.focus_owner() == FocusOwner::TodoList {
+    if !is_clipboard_paste_shortcut(key) {
         return false;
     }
     if key.kind != KeyEventKind::Release {
@@ -477,6 +433,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     // Skip system clipboard access in tests to avoid flaky failures / segfaults.
     #[cfg(test)]
     {
+        let _ = app;
         false
     }
     #[cfg(not(test))]
@@ -539,9 +496,7 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Backspace, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
@@ -550,9 +505,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             app.input.textarea_delete_word_before()
         }
         (KeyCode::Delete, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
@@ -560,14 +513,14 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             }
             app.input.textarea_delete_word_after()
         }
-        (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
+        (KeyCode::Backspace, _) => {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
                 return true;
             }
             app.input.textarea_delete_char_before()
         }
-        (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
+        (KeyCode::Delete, _) => {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
                 return true;
@@ -602,9 +555,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     };
     if !is_printable_text_modifiers(m) {
         return false;
-    }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
     }
     reclaim_input_from_inline_prompt_if_needed(app);
 
@@ -656,11 +606,7 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     (app.input.cursor_row(), app.input.cursor_col()) != before
 }
 
-fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
-
+fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (
             KeyCode::Up
@@ -681,45 +627,6 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
-    }
-}
-
-pub(super) fn toggle_todo_panel_focus(app: &mut App) {
-    if app.todos.is_empty() {
-        app.show_todo_panel = false;
-        app.release_focus_target(FocusTarget::TodoList);
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
-        return;
-    }
-
-    app.show_todo_panel = !app.show_todo_panel;
-    if app.show_todo_panel {
-        // Start at in-progress todo when available; fallback to first item.
-        app.todo_selected =
-            app.todos.iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
-        app.claim_focus_target(FocusTarget::TodoList);
-    } else {
-        app.release_focus_target(FocusTarget::TodoList);
-    }
-}
-
-pub(super) fn move_todo_selection_up(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
-        app.release_focus_target(FocusTarget::TodoList);
-        return;
-    }
-    app.todo_selected = app.todo_selected.saturating_sub(1);
-}
-
-pub(super) fn move_todo_selection_down(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
-        app.release_focus_target(FocusTarget::TodoList);
-        return;
-    }
-    let max = app.todos.len().saturating_sub(1);
-    if app.todo_selected < max {
-        app.todo_selected += 1;
     }
 }
 
@@ -862,6 +769,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::FocusTarget;
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::time::{Duration, Instant};
 

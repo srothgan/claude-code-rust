@@ -820,12 +820,6 @@ mod tests {
     #[test]
     fn docs_shortcuts_use_live_help_state() {
         let mut app = App::test_default();
-        app.show_todo_panel = true;
-        app.todos.push(crate::app::TodoItem {
-            content: "Task".into(),
-            status: crate::app::TodoStatus::Pending,
-            active_form: String::new(),
-        });
 
         let consumed = try_handle_submit(&mut app, "/docs shortcuts");
 
@@ -835,7 +829,8 @@ mod tests {
             panic!("expected text block");
         };
         assert!(block.text.contains("| Shortcut | Action |"));
-        assert!(block.text.contains("Toggle todo focus"));
+        assert!(block.text.contains("Send message"));
+        assert!(!block.text.contains("Toggle todo"));
     }
 
     #[test]

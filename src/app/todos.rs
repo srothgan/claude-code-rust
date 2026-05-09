@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{App, FocusTarget, TodoItem, TodoStatus};
+use super::{App, TodoItem, TodoStatus};
 use crate::agent::model;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
@@ -13,7 +13,7 @@ pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
 
 /// Parse todos only when a concrete `todos` array is present in `raw_input`.
 /// Returns `None` for transient/incomplete payloads (missing or non-array `todos`).
-pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Vec<TodoItem>> {
+pub(crate) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Vec<TodoItem>> {
     let arr = raw_input.get("todos")?.as_array()?;
     Some(
         arr.iter()
@@ -34,37 +34,21 @@ pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Ve
 }
 
 pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
-    app.cached_todo_compact = None;
     if todos.is_empty() {
         app.todos.clear();
-        app.show_todo_panel = false;
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
-        app.release_focus_target(FocusTarget::TodoList);
         return;
     }
 
     let all_done = todos.iter().all(|t| t.status == TodoStatus::Completed);
     if all_done {
         app.todos.clear();
-        app.show_todo_panel = false;
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
-        app.release_focus_target(FocusTarget::TodoList);
     } else {
         app.todos = todos;
-        if app.todo_selected >= app.todos.len() {
-            app.todo_selected = app.todos.len().saturating_sub(1);
-        }
-        if !app.show_todo_panel {
-            app.release_focus_target(FocusTarget::TodoList);
-        }
     }
 }
 
 /// Convert bridge plan entries into the local todo list.
 pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
-    app.cached_todo_compact = None;
     let mut todos = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
         let status_str = format!("{:?}", entry.status);
@@ -184,33 +168,23 @@ mod tests {
     }
 
     #[test]
-    fn set_todos_clears_panel_state_for_empty_or_completed_inputs() {
+    fn set_todos_clears_items_for_empty_or_completed_inputs() {
         for todos in [
             Vec::new(),
             vec![todo("done", TodoStatus::Completed), todo("done too", TodoStatus::Completed)],
         ] {
             let mut app = App::test_default();
-            app.show_todo_panel = true;
-            app.todo_scroll = 4;
-            app.todo_selected = 3;
-            app.claim_focus_target(FocusTarget::TodoList);
 
             set_todos(&mut app, todos);
 
             assert!(app.todos.is_empty());
-            assert!(!app.show_todo_panel);
-            assert_eq!(app.todo_scroll, 0);
-            assert_eq!(app.todo_selected, 0);
-            assert_eq!(app.focus_owner(), crate::app::focus::FocusOwner::Input);
         }
     }
 
     #[test]
-    fn set_todos_retains_visible_items_and_clamps_selection() {
+    fn set_todos_retains_visible_items() {
         let mut app = App::test_default();
         app.todos = vec![todo("old", TodoStatus::Pending), todo("old-2", TodoStatus::Pending)];
-        app.show_todo_panel = true;
-        app.todo_selected = 5;
 
         set_todos(
             &mut app,
@@ -218,8 +192,6 @@ mod tests {
         );
 
         assert_eq!(app.todos.len(), 2);
-        assert!(app.show_todo_panel);
-        assert_eq!(app.todo_selected, 1);
         assert_eq!(app.todos[0].content, "new-a");
         assert_eq!(app.todos[1].status, TodoStatus::InProgress);
     }
@@ -255,6 +227,5 @@ mod tests {
         apply_plan_todos(&mut app, &completed_plan);
 
         assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
     }
 }

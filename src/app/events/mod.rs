@@ -1061,7 +1061,6 @@ mod tests {
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
 
         let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
             .kind(model::ToolKind::Other)
@@ -1075,7 +1074,6 @@ mod tests {
         assert_eq!(app.todos.len(), 1);
         assert_eq!(app.todos[0].content, "Existing todo");
         assert_eq!(app.todos[0].status, TodoStatus::InProgress);
-        assert!(app.show_todo_panel);
     }
 
     #[test]
@@ -1299,7 +1297,6 @@ mod tests {
         assert!(app.pending_interaction_ids.is_empty());
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
         assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
         assert!(!app.cancelled_turn_pending_hint);
         assert!(matches!(app.status, AppStatus::Ready));
@@ -1741,8 +1738,6 @@ mod tests {
         app.status = AppStatus::Running;
         app.files_accessed = 9;
         app.pending_interaction_ids.push("perm-1".into());
-        app.todo_selected = 2;
-        app.show_todo_panel = true;
         app.todos.push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::InProgress,
@@ -1785,7 +1780,6 @@ mod tests {
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
         assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
         assert!(app.mcp.servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
@@ -3493,68 +3487,8 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_todo_focus_target_for_open_todos() {
+    fn permission_owner_handles_up_down_for_pending_interactions() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    #[test]
-    fn up_down_in_todo_focus_changes_todo_selection() {
-        let mut app = make_test_app();
-        app.todos = vec![
-            TodoItem {
-                content: "Task 1".into(),
-                status: TodoStatus::Pending,
-                active_form: String::new(),
-            },
-            TodoItem {
-                content: "Task 2".into(),
-                status: TodoStatus::InProgress,
-                active_form: String::new(),
-            },
-            TodoItem {
-                content: "Task 3".into(),
-                status: TodoStatus::Pending,
-                active_form: String::new(),
-            },
-        ];
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        app.todo_selected = 1;
-
-        let before_cursor_row = app.input.cursor_row();
-        let before_cursor_col = app.input.cursor_col();
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.todo_selected, 2);
-        assert_eq!(app.input.cursor_row(), before_cursor_row);
-        assert_eq!(app.input.cursor_col(), before_cursor_col);
-
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.todo_selected, 1);
-    }
-
-    #[test]
-    fn permission_owner_overrides_todo_focus_for_up_down() {
-        let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        app.todo_selected = 0;
         let _rx_a = attach_pending_permission(
             &mut app,
             "perm-a",
@@ -3597,7 +3531,6 @@ mod tests {
         );
 
         assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
-        assert_eq!(app.todo_selected, 0);
     }
 
     #[test]
@@ -3875,7 +3808,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_focus_allows_ctrl_t_toggle_todos() {
+    fn permission_focus_ignores_ctrl_t_as_todo_shortcut() {
         let mut app = make_test_app();
         app.pending_interaction_ids.push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
@@ -3885,47 +3818,14 @@ mod tests {
             active_form: String::new(),
         });
 
-        assert!(!app.show_todo_panel);
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-        );
-        assert!(app.show_todo_panel);
-    }
-
-    #[test]
-    fn permission_focus_ctrl_t_moves_focus_to_todo_list() {
-        let mut app = make_test_app();
-        let _response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
         );
 
-        assert!(app.show_todo_panel);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert!(app.input.is_empty());
+        assert_eq!(app.todos.len(), 1);
     }
 
     #[test]
@@ -3961,7 +3861,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_focus_tab_returns_focus_to_input_before_todos() {
+    fn permission_focus_tab_returns_focus_to_input() {
         let mut app = make_test_app();
         let _response_rx = attach_pending_permission(
             &mut app,
@@ -3980,12 +3880,6 @@ mod tests {
             ],
             true,
         );
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
 
         handle_terminal_event(
             &mut app,
@@ -4177,19 +4071,8 @@ mod tests {
         tc.pending_question.as_ref().map(|question| question.focused)
     }
 
-    fn push_todo_and_focus(app: &mut App) {
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-    }
-
     #[test]
-    fn permission_ctrl_y_works_even_when_todo_focus_owns_navigation() {
+    fn permission_ctrl_y_resolves_pending_permission() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
             &mut app,
@@ -4209,9 +4092,6 @@ mod tests {
             true,
         );
 
-        // Override focus owner to todo to prove the quick shortcut is global.
-        push_todo_and_focus(&mut app);
-
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
@@ -4226,7 +4106,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_ctrl_a_works_even_when_todo_focus_owns_navigation() {
+    fn permission_ctrl_a_resolves_pending_permission() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
             &mut app,
@@ -4250,7 +4130,6 @@ mod tests {
             ],
             true,
         );
-        push_todo_and_focus(&mut app);
 
         handle_terminal_event(
             &mut app,
@@ -4519,15 +4398,8 @@ mod tests {
     }
 
     #[test]
-    fn mention_owner_overrides_todo_focus_then_releases_back() {
+    fn mention_owner_releases_back_to_input() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.show_todo_panel = true;
-        app.claim_focus_target(FocusTarget::TodoList);
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
@@ -4548,7 +4420,7 @@ mod tests {
         );
 
         assert!(app.mention.is_none());
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
     #[test]
@@ -4739,7 +4611,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_suggestion_tab_accepts_empty_input_only_after_todo_focus() {
+    fn prompt_suggestion_tab_accepts_empty_input() {
         let mut app = make_test_app();
         app.prompt_suggestion = Some("Write focused tests".to_owned());
 
@@ -4750,10 +4622,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_suggestion_tab_does_not_steal_todo_focus_toggle() {
+    fn prompt_suggestion_tab_accepts_even_with_todos_present() {
         let mut app = make_test_app();
         app.prompt_suggestion = Some("Write focused tests".to_owned());
-        app.show_todo_panel = true;
         app.todos.push(TodoItem {
             content: "todo".to_owned(),
             status: TodoStatus::Pending,
@@ -4762,9 +4633,9 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-        assert!(app.input.is_empty());
-        assert_eq!(app.prompt_suggestion.as_deref(), Some("Write focused tests"));
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        assert_eq!(app.input.text(), "Write focused tests");
+        assert!(app.prompt_suggestion.is_none());
     }
 
     #[test]

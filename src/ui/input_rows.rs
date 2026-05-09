@@ -140,13 +140,8 @@ mod tests {
     fn prompt_suggestion_hint_requires_input_focus() {
         let mut app = App::test_default();
         app.prompt_suggestion = Some("Write tests".to_owned());
-        app.show_todo_panel = true;
-        app.todos.push(crate::app::TodoItem {
-            content: "todo".to_owned(),
-            status: crate::app::TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.claim_focus_target(FocusTarget::TodoList);
+        app.pending_interaction_ids.push("perm-1".to_owned());
+        app.claim_focus_target(FocusTarget::Permission);
 
         let rows = build_composer_hint_rows(&app);
         assert!(rows.is_empty());
