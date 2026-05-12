@@ -1,7 +1,10 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::App;
+use crate::app::{App, AppStatus};
+use std::time::{Duration, Instant};
+
+const CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(45);
 
 pub(crate) enum RuntimeReloadRequestOutcome {
     Requested,
@@ -43,7 +46,12 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
 }
 
 pub(crate) fn request_context_usage_refresh(app: &mut App) {
+    request_context_usage_refresh_at(app, Instant::now());
+}
+
+fn request_context_usage_refresh_at(app: &mut App, now: Instant) {
     if app.session_usage.context_usage_in_flight {
+        app.session_usage.context_usage_last_requested_at = Some(now);
         app.session_usage.context_usage_refresh_pending = true;
         return;
     }
@@ -58,6 +66,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
     };
 
     let session_id = sid.to_string();
+    app.session_usage.context_usage_last_requested_at = Some(now);
     app.session_usage.context_usage_in_flight = true;
     app.session_usage.context_usage_refresh_pending = false;
     match conn.get_context_usage(session_id.clone()) {
@@ -80,6 +89,31 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
             );
         }
     }
+}
+
+pub(crate) fn tick_context_usage_refresh(app: &mut App, now: Instant) {
+    if !context_usage_refresh_is_active(app) {
+        return;
+    }
+    if app.conn.is_none() || app.session_id.is_none() {
+        clear_context_usage_refresh_state(app);
+        return;
+    }
+    if app.session_usage.context_usage_in_flight {
+        return;
+    }
+
+    let refresh_due =
+        app.session_usage.context_usage_last_requested_at.is_none_or(|last_requested| {
+            now.saturating_duration_since(last_requested) >= CONTEXT_USAGE_REFRESH_INTERVAL
+        });
+    if refresh_due {
+        request_context_usage_refresh_at(app, now);
+    }
+}
+
+fn context_usage_refresh_is_active(app: &App) -> bool {
+    matches!(app.status, AppStatus::Thinking | AppStatus::Running) || app.is_compacting
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
@@ -122,17 +156,21 @@ pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>
 fn clear_context_usage_refresh_state(app: &mut App) {
     app.session_usage.context_usage_in_flight = false;
     app.session_usage.context_usage_refresh_pending = false;
+    app.session_usage.context_usage_last_requested_at = None;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeReloadRequestOutcome, apply_context_usage_snapshot, request_context_usage_refresh,
-        request_runtime_reload, request_status_snapshot_refresh,
+        CONTEXT_USAGE_REFRESH_INTERVAL, RuntimeReloadRequestOutcome, apply_context_usage_snapshot,
+        request_context_usage_refresh, request_context_usage_refresh_at, request_runtime_reload,
+        request_status_snapshot_refresh, tick_context_usage_refresh,
     };
     use crate::agent::model;
-    use crate::agent::wire::BridgeCommand;
-    use crate::app::App;
+    use crate::agent::wire::{BridgeCommand, CommandEnvelope};
+    use crate::app::{App, AppStatus};
+    use std::time::{Duration, Instant};
+    use tokio::sync::mpsc::UnboundedReceiver;
 
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
@@ -141,6 +179,20 @@ mod tests {
         app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
+    }
+
+    fn expect_context_usage_command(rx: &mut UnboundedReceiver<CommandEnvelope>) {
+        let envelope = rx.try_recv().expect("context usage command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::GetContextUsage { session_id } if session_id == "session-1"
+        ));
+    }
+
+    fn just_before_refresh_interval() -> Duration {
+        CONTEXT_USAGE_REFRESH_INTERVAL
+            .checked_sub(Duration::from_secs(1))
+            .expect("context usage refresh interval must exceed one second")
     }
 
     #[test]
@@ -175,11 +227,7 @@ mod tests {
 
         assert!(app.session_usage.context_usage_in_flight);
         assert!(app.session_usage.context_usage_refresh_pending);
-        let envelope = rx.try_recv().expect("context usage command");
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::GetContextUsage { session_id } if session_id == "session-1"
-        ));
+        expect_context_usage_command(&mut rx);
         assert!(rx.try_recv().is_err(), "coalesced refresh should not send twice");
     }
 
@@ -195,11 +243,99 @@ mod tests {
         assert_eq!(app.session_usage.context_usage_percent, Some(62));
         assert!(app.session_usage.context_usage_in_flight);
         assert!(!app.session_usage.context_usage_refresh_pending);
-        let envelope = rx.try_recv().expect("replayed context usage command");
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::GetContextUsage { session_id } if session_id == "session-1"
-        ));
+        expect_context_usage_command(&mut rx);
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_waits_for_interval() {
+        let (mut app, mut rx) = app_with_connection();
+        let started = Instant::now();
+        app.status = AppStatus::Thinking;
+        app.session_usage.context_usage_last_requested_at = Some(started);
+
+        tick_context_usage_refresh(&mut app, started + just_before_refresh_interval());
+
+        assert!(rx.try_recv().is_err(), "refresh before interval should not send");
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_requests_when_timestamp_is_missing() {
+        let (mut app, mut rx) = app_with_connection();
+        let now = Instant::now();
+        app.status = AppStatus::Thinking;
+
+        tick_context_usage_refresh(&mut app, now);
+
+        assert_eq!(app.session_usage.context_usage_last_requested_at, Some(now));
+        expect_context_usage_command(&mut rx);
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_requests_after_interval_during_thinking() {
+        let (mut app, mut rx) = app_with_connection();
+        let started = Instant::now();
+        let due = started + CONTEXT_USAGE_REFRESH_INTERVAL;
+        app.status = AppStatus::Thinking;
+        app.session_usage.context_usage_last_requested_at = Some(started);
+
+        tick_context_usage_refresh(&mut app, due);
+
+        assert_eq!(app.session_usage.context_usage_last_requested_at, Some(due));
+        expect_context_usage_command(&mut rx);
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_requests_after_interval_during_running() {
+        let (mut app, mut rx) = app_with_connection();
+        let started = Instant::now();
+        let due = started + CONTEXT_USAGE_REFRESH_INTERVAL;
+        app.status = AppStatus::Running;
+        app.session_usage.context_usage_last_requested_at = Some(started);
+
+        tick_context_usage_refresh(&mut app, due);
+
+        expect_context_usage_command(&mut rx);
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_skips_ready_state() {
+        let (mut app, mut rx) = app_with_connection();
+        let started = Instant::now();
+        app.status = AppStatus::Ready;
+        app.session_usage.context_usage_last_requested_at = Some(started);
+
+        tick_context_usage_refresh(&mut app, started + CONTEXT_USAGE_REFRESH_INTERVAL);
+
+        assert!(rx.try_recv().is_err(), "ready state should not refresh context usage");
+    }
+
+    #[test]
+    fn tick_context_usage_refresh_skips_in_flight_request() {
+        let (mut app, mut rx) = app_with_connection();
+        let started = Instant::now();
+        app.status = AppStatus::Running;
+        app.session_usage.context_usage_in_flight = true;
+        app.session_usage.context_usage_last_requested_at = Some(started);
+
+        tick_context_usage_refresh(&mut app, started + CONTEXT_USAGE_REFRESH_INTERVAL);
+
+        assert!(rx.try_recv().is_err(), "in-flight refresh should not send another command");
+        assert!(!app.session_usage.context_usage_refresh_pending);
+    }
+
+    #[test]
+    fn manual_context_usage_refresh_resets_timer() {
+        let (mut app, mut rx) = app_with_connection();
+        let requested_at = Instant::now();
+        app.status = AppStatus::Running;
+
+        request_context_usage_refresh_at(&mut app, requested_at);
+        expect_context_usage_command(&mut rx);
+        apply_context_usage_snapshot(&mut app, Some(12));
+
+        tick_context_usage_refresh(&mut app, requested_at + just_before_refresh_interval());
+
+        assert!(rx.try_recv().is_err(), "manual request should restart the interval");
     }
 
     #[test]

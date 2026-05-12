@@ -1347,6 +1347,7 @@ mod tests {
         app.session_usage.context_usage_percent = Some(62);
         app.session_usage.context_usage_in_flight = true;
         app.session_usage.context_usage_refresh_pending = true;
+        app.session_usage.context_usage_last_requested_at = Some(Instant::now());
         app.session_usage.last_compaction_pre_tokens = Some(123_456);
 
         app.clear_session_runtime_identity();

@@ -3,6 +3,7 @@
 
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
     pub id: String,
@@ -147,6 +148,7 @@ pub struct SessionUsageState {
     pub context_usage_percent: Option<u8>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
+    pub context_usage_last_requested_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

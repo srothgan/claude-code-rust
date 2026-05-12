@@ -151,11 +151,12 @@ async fn run_tui_loop(
 
         file_index::drain_events(app);
 
+        let now = Instant::now();
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
         if app.surface_mode == SurfaceMode::Chat
-            && let Some(action) = app.paste_burst.tick(Instant::now())
+            && let Some(action) = app.paste_burst.tick(now)
         {
             match action {
                 paste_burst::FlushAction::EmitChar(ch) => {
@@ -172,7 +173,8 @@ async fn run_tui_loop(
             finalize_pending_paste_event(app);
         }
 
-        app.tick_git_context(Instant::now());
+        app.tick_git_context(now);
+        session_runtime::tick_context_usage_refresh(app, now);
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
         // submit that unchanged draft.
