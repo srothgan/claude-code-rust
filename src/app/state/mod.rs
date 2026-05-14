@@ -707,7 +707,7 @@ impl App {
                         model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
                     ) {
                         tc.status = new_status;
-                        tc.mark_tool_call_layout_dirty();
+                        tc.invalidate_render_cache();
                         changed_slots.push((msg_idx, block_idx));
                         if tc.pending_permission.take().is_some() {
                             cleared_interaction = true;
@@ -771,7 +771,7 @@ impl App {
                 if !block_changed {
                     continue;
                 }
-                tc.mark_tool_call_layout_dirty();
+                tc.invalidate_render_cache();
                 changed_slots.push((msg_idx, block_idx));
                 if changed_message_indices.last().copied() != Some(msg_idx) {
                     changed_message_indices.push(msg_idx);
@@ -1311,9 +1311,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_store_with_height_then_height_at() {
+    fn cache_set_height_then_height_at() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         assert_eq!(cache.height_at(80), Some(1));
         assert!(cache.get().is_some());
     }
@@ -1321,14 +1322,16 @@ mod tests {
     #[test]
     fn cache_height_at_wrong_width_returns_none() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         assert!(cache.height_at(120).is_none());
     }
 
     #[test]
     fn cache_height_invalidated_returns_none() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("hello")], 1, 80);
+        cache.store(vec![Line::from("hello")]);
+        cache.set_height(1, 80);
         cache.invalidate();
         assert!(cache.height_at(80).is_none());
     }
@@ -1376,11 +1379,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_store_with_height_overwrite() {
+    fn cache_store_and_set_height_overwrite() {
         let mut cache = BlockCache::default();
-        cache.store_with_height(vec![Line::from("old")], 1, 80);
+        cache.store(vec![Line::from("old")]);
+        cache.set_height(1, 80);
         cache.invalidate();
-        cache.store_with_height(vec![Line::from("new long line")], 3, 120);
+        cache.store(vec![Line::from("new long line")]);
+        cache.set_height(3, 120);
         assert_eq!(cache.height_at(120), Some(3));
         assert!(cache.height_at(80).is_none());
     }
@@ -1426,36 +1431,6 @@ mod tests {
         cache.set_height(5, 80);
         // height_at returns None because cache is stale (version != 0)
         assert!(cache.height_at(80).is_none());
-    }
-
-    #[test]
-    fn cache_store_then_set_height_matches_store_with_height() {
-        let mut cache_a = BlockCache::default();
-        cache_a.store(vec![Line::from("test")]);
-        cache_a.set_height(2, 100);
-
-        let mut cache_b = BlockCache::default();
-        cache_b.store_with_height(vec![Line::from("test")], 2, 100);
-
-        assert_eq!(cache_a.height_at(100), cache_b.height_at(100));
-        assert_eq!(cache_a.get().unwrap().len(), cache_b.get().unwrap().len());
-    }
-
-    #[test]
-    fn cache_measure_and_set_height_from_segments() {
-        let mut cache = BlockCache::default();
-        let lines = vec![
-            Line::from("alpha beta gamma delta epsilon"),
-            Line::from("zeta eta theta iota kappa lambda"),
-            Line::from("mu nu xi omicron pi rho sigma"),
-        ];
-        cache.store(lines.clone());
-        let measured = cache.measure_and_set_height(16).expect("expected measured height");
-        let expected = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines))
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .line_count(16);
-        assert_eq!(measured, expected);
-        assert_eq!(cache.height_at(16), Some(expected));
     }
 
     #[test]
@@ -1730,12 +1705,6 @@ mod tests {
                 terminal_output_len: 1024,
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
@@ -1768,12 +1737,6 @@ mod tests {
                 terminal_output_len: 1024,
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
@@ -1803,12 +1766,6 @@ mod tests {
                 terminal_output_len: 1024,
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![model::PermissionOption::new(

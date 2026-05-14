@@ -40,7 +40,7 @@ fn move_question_option_left(app: &mut App) {
         let next = question.focused_option_index.saturating_sub(1);
         if next != question.focused_option_index {
             question.focused_option_index = next;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             changed = true;
         }
     }
@@ -55,7 +55,7 @@ fn move_question_option_right(app: &mut App) {
         && question.focused_option_index + 1 < question.prompt.options.len()
     {
         question.focused_option_index += 1;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -69,7 +69,7 @@ fn move_question_option_to_start(app: &mut App) {
         && question.focused_option_index != 0
     {
         question.focused_option_index = 0;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -84,7 +84,7 @@ fn move_question_option_to_end(app: &mut App) {
         && question.focused_option_index != last_idx
     {
         question.focused_option_index = last_idx;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -103,7 +103,7 @@ fn insert_question_note_char(app: &mut App, ch: char) {
         let idx = question_notes_byte_index(&question.notes, question.notes_cursor);
         question.notes.insert(idx, ch);
         question.notes_cursor += 1;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -120,7 +120,7 @@ fn delete_question_note_char_before(app: &mut App) {
         let end = question_notes_byte_index(&question.notes, question.notes_cursor);
         question.notes.replace_range(start..end, "");
         question.notes_cursor -= 1;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -136,7 +136,7 @@ fn delete_question_note_char_after(app: &mut App) {
         let start = question_notes_byte_index(&question.notes, question.notes_cursor);
         let end = question_notes_byte_index(&question.notes, question.notes_cursor + 1);
         question.notes.replace_range(start..end, "");
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -156,7 +156,7 @@ fn move_question_notes_cursor(app: &mut App, direction: i32) {
         };
         if next != question.notes_cursor {
             question.notes_cursor = next;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             changed = true;
         }
     }
@@ -171,7 +171,7 @@ fn move_question_notes_cursor_to_start(app: &mut App) {
         && question.notes_cursor != 0
     {
         question.notes_cursor = 0;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -186,7 +186,7 @@ fn move_question_notes_cursor_to_end(app: &mut App) {
         let next = question.notes.chars().count();
         if question.notes_cursor != next {
             question.notes_cursor = next;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             changed = true;
         }
     }
@@ -201,7 +201,7 @@ fn set_question_notes_editing(app: &mut App, editing_notes: bool) {
         && question.editing_notes != editing_notes
     {
         question.editing_notes = editing_notes;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -222,7 +222,7 @@ fn toggle_question_selection(app: &mut App) {
             question.selected_option_indices.clear();
             question.selected_option_indices.insert(idx);
         }
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -314,7 +314,7 @@ fn respond_question(app: &mut App) {
                 ),
             ));
         }
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         invalidated = true;
     }
     if invalidated {
@@ -346,7 +346,7 @@ fn respond_question_cancel(app: &mut App) {
         let _ = pending
             .response_tx
             .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -481,12 +481,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

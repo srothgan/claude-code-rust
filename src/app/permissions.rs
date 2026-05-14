@@ -93,7 +93,7 @@ fn move_permission_option_left(app: &mut App) {
         let next = permission.selected_index.saturating_sub(1);
         if next != permission.selected_index {
             permission.selected_index = next;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             changed = true;
         }
     }
@@ -108,7 +108,7 @@ fn move_permission_option_right(app: &mut App, option_count: usize) {
         && permission.selected_index + 1 < option_count
     {
         permission.selected_index += 1;
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
@@ -287,7 +287,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                 option_count = pending.options.len(),
             );
         }
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         invalidated = true;
     }
     if invalidated {
@@ -320,7 +320,7 @@ fn respond_permission_cancel(app: &mut App) {
         let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
             model::RequestPermissionOutcome::Cancelled,
         ));
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -360,12 +360,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

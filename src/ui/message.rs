@@ -1,121 +1,48 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::{BlockCache, IncrementalMarkdown, MarkdownRenderKey, TextBlock};
 #[cfg(test)]
-use crate::app::{ChatMessage, MessageRole};
+use crate::app::ChatMessage;
+use crate::app::{BlockCache, IncrementalMarkdown, MarkdownRenderKey, TextBlock};
 use crate::ui::tool_call;
 use ratatui::style::Color;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
 #[cfg(test)]
-use super::message_rows::build_message_rows;
+use super::message_rows::build_user_system_message_rows;
 
-/// Snapshot of the app state needed by the spinner -- extracted before
-/// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
+/// Frame counter for animated status and tool indicators.
 #[derive(Clone, Copy)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct SpinnerState {
     pub frame: usize,
-    /// True when this message owns the currently active assistant turn.
-    pub is_active_turn_assistant: bool,
-    /// True when this message should show the initial empty-turn thinking indicator.
-    pub show_empty_thinking: bool,
-    /// True when this message should show the thinking indicator.
-    pub show_thinking: bool,
-    /// True when this message should show the compaction indicator.
-    pub show_compacting: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct MessageRenderContext<'a> {
     pub(crate) tool_render_context: tool_call::ToolCallRenderContext<'a>,
     pub(crate) width: u16,
-    pub(crate) layout_generation: u64,
-    pub(crate) options: MessageRenderOptions,
 }
 
 impl<'a> MessageRenderContext<'a> {
-    pub(crate) fn new(
-        current_mode_id: Option<&'a str>,
-        width: u16,
-        layout_generation: u64,
-        options: MessageRenderOptions,
-    ) -> Self {
-        Self {
-            tool_render_context: tool_call::ToolCallRenderContext { current_mode_id },
-            width,
-            layout_generation,
-            options,
-        }
+    pub(crate) fn new(current_mode_id: Option<&'a str>, width: u16) -> Self {
+        Self { tool_render_context: tool_call::ToolCallRenderContext { current_mode_id }, width }
     }
 }
 
 #[cfg(test)]
-pub(crate) fn render_message(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    out: &mut Vec<Line<'static>>,
-) {
-    let render_context = MessageRenderContext::new(
-        None,
-        width,
-        0,
-        MessageRenderOptions { include_trailing_separator: true },
-    );
-    render_message_rows(msg, spinner, render_context, out);
-}
-
-#[cfg(test)]
-pub(crate) fn render_message_with_separator(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    include_trailing_separator: bool,
-    out: &mut Vec<Line<'static>>,
-) {
-    let render_context = MessageRenderContext::new(
-        None,
-        width,
-        0,
-        MessageRenderOptions { include_trailing_separator },
-    );
-    render_message_rows(msg, spinner, render_context, out);
-}
-
-#[cfg(test)]
-pub(crate) fn render_message_with_separator_and_layout_generation(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    width: u16,
-    layout_generation: u64,
-    include_trailing_separator: bool,
-    out: &mut Vec<Line<'static>>,
-) {
-    let render_context = MessageRenderContext::new(
-        None,
-        width,
-        layout_generation,
-        MessageRenderOptions { include_trailing_separator },
-    );
-    render_message_rows(msg, spinner, render_context, out);
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct MessageRenderOptions {
-    pub include_trailing_separator: bool,
+pub(crate) fn render_message(msg: &mut ChatMessage, width: u16, out: &mut Vec<Line<'static>>) {
+    let render_context = MessageRenderContext::new(None, width);
+    render_message_rows(msg, render_context, out);
 }
 
 #[cfg(test)]
 fn render_message_rows(
     msg: &mut ChatMessage,
-    spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
     out: &mut Vec<Line<'static>>,
 ) {
-    let rows = build_message_rows(msg, spinner, render_context);
+    let rows = build_user_system_message_rows(msg, render_context);
     for segment in rows.segments {
         match segment {
             super::message_rows::MessageRowSegment::Blank => out.push(Line::default()),
@@ -257,13 +184,8 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        ChatMessage, InlinePermission, MessageBlock, NoticeBlock, SystemSeverity, TextBlock,
-        TextBlockSpacing,
-    };
-    use crate::ui::theme;
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
     use pretty_assertions::assert_eq;
-    use ratatui::widgets::{Paragraph, Wrap};
 
     // preprocess_markdown
 
@@ -502,96 +424,6 @@ mod tests {
         ChatMessage::new(role, vec![MessageBlock::Text(TextBlock::from_complete(text))], None)
     }
 
-    fn make_assistant_split_message(first: &str, second: &str) -> ChatMessage {
-        ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::Text(
-                    TextBlock::from_complete(first)
-                        .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-                ),
-                MessageBlock::Text(TextBlock::from_complete(second)),
-            ],
-            None,
-        )
-    }
-
-    fn make_assistant_notice_message() -> ChatMessage {
-        ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::Text(TextBlock::from_complete("Before notice")),
-                MessageBlock::Notice(NoticeBlock::from_complete(
-                    SystemSeverity::Warning,
-                    "Warning inline",
-                )),
-                MessageBlock::Text(TextBlock::from_complete("After notice")),
-            ],
-            None,
-        )
-    }
-
-    fn make_tool_call_info(
-        id: &str,
-        sdk_tool_name: &str,
-        status: crate::agent::model::ToolCallStatus,
-        text: &str,
-    ) -> crate::app::ToolCallInfo {
-        crate::app::ToolCallInfo {
-            id: id.to_owned(),
-            title: id.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![crate::agent::model::ToolCallContent::from(text.to_owned())]
-            },
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        }
-    }
-
-    fn pending_permission(focused: bool) -> InlinePermission {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-        InlinePermission {
-            options: vec![
-                crate::agent::model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    crate::agent::model::PermissionOptionKind::AllowOnce,
-                ),
-                crate::agent::model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    crate::agent::model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            display: None,
-            response_tx,
-            selected_index: 0,
-            focused,
-        }
-    }
-
     fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
         lines
             .iter()
@@ -599,320 +431,31 @@ mod tests {
             .collect()
     }
 
-    fn line_index_containing(lines: &[String], needle: &str) -> usize {
-        lines
-            .iter()
-            .position(|line| line.contains(needle))
-            .unwrap_or_else(|| panic!("expected line containing {needle:?}"))
-    }
-
-    fn idle_spinner() -> SpinnerState {
-        SpinnerState {
-            frame: 0,
-            is_active_turn_assistant: false,
-            show_empty_thinking: false,
-            show_thinking: false,
-            show_compacting: false,
-        }
-    }
-
-    fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
-        let mut lines = Vec::new();
-        render_message(msg, spinner, width, &mut lines);
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(width)
-    }
-
-    fn measure_message_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
-        measure_message_height_with_separator(msg, spinner, width, true)
-    }
-
-    fn measure_message_height_with_separator(
-        msg: &mut ChatMessage,
-        spinner: &SpinnerState,
-        width: u16,
-        include_trailing_separator: bool,
-    ) -> usize {
-        build_message_rows(
-            msg,
-            spinner,
-            MessageRenderContext::new(
-                None,
-                width,
-                0,
-                MessageRenderOptions { include_trailing_separator },
-            ),
-        )
-        .height
-    }
-
-    #[test]
-    fn measure_height_matches_ground_truth_for_long_soft_wrap() {
-        let text = "A".repeat(500);
-        let spinner = idle_spinner();
-
-        let mut measured_msg = make_text_message(MessageRole::User, &text);
-        let mut truth_msg = make_text_message(MessageRole::User, &text);
-
-        let h = measure_message_height(&mut measured_msg, &spinner, 32);
-        let truth = ground_truth_height(&mut truth_msg, &spinner, 32);
-
-        assert_eq!(h, truth);
-    }
-
-    #[test]
-    fn user_role_label_wrap_height_matches_ground_truth() {
-        let spinner = idle_spinner();
-        let mut measured_msg = make_text_message(MessageRole::User, "ok");
-        let mut truth_msg = make_text_message(MessageRole::User, "ok");
-
-        let h = measure_message_height(&mut measured_msg, &spinner, 2);
-        let truth = ground_truth_height(&mut truth_msg, &spinner, 2);
-
-        assert_eq!(h, truth);
-        assert!(h >= 3);
-    }
-
-    #[test]
-    fn system_role_label_wrap_height_matches_ground_truth() {
-        let spinner = idle_spinner();
-        let mut measured_msg =
-            make_text_message(MessageRole::System(Some(SystemSeverity::Warning)), "rate limit");
-        let mut truth_msg =
-            make_text_message(MessageRole::System(Some(SystemSeverity::Warning)), "rate limit");
-
-        let h = measure_message_height(&mut measured_msg, &spinner, 4);
-        let truth = ground_truth_height(&mut truth_msg, &spinner, 4);
-
-        assert_eq!(h, truth);
-        assert!(h >= 4);
-    }
-
-    #[test]
-    fn assistant_split_paragraph_inserts_a_structural_blank_line_between_blocks() {
-        let spinner = idle_spinner();
-        let mut msg = make_assistant_split_message("First paragraph", "Second paragraph");
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 80, &mut lines);
-
-        let rendered = render_lines_to_strings(&lines);
-        let first_idx =
-            rendered.iter().position(|line| line.contains("First paragraph")).expect("first block");
-        let second_idx = rendered
-            .iter()
-            .position(|line| line.contains("Second paragraph"))
-            .expect("second block");
-
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        assert!(second_idx > first_idx + 1);
-        assert!(rendered[first_idx + 1].is_empty());
-    }
-
-    #[test]
-    fn assistant_notice_block_renders_inline_between_neighboring_text_blocks() {
-        let spinner = idle_spinner();
-        let mut msg = make_assistant_notice_message();
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 80, &mut lines);
-
-        let rendered = render_lines_to_strings(&lines);
-        let before_idx =
-            rendered.iter().position(|line| line.contains("Before notice")).expect("before text");
-        let notice_idx =
-            rendered.iter().position(|line| line.contains("Warning inline")).expect("notice");
-        let after_idx =
-            rendered.iter().position(|line| line.contains("After notice")).expect("after text");
-
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        assert!(before_idx < notice_idx && notice_idx < after_idx);
-    }
-
-    #[test]
-    fn assistant_notice_block_is_tinted_by_severity() {
-        let spinner = idle_spinner();
-        let mut msg = make_assistant_notice_message();
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 80, &mut lines);
-
-        let notice_line = lines
-            .iter()
-            .find(|line| line.spans.iter().any(|span| span.content == "Warning inline"))
-            .expect("expected notice line");
-        assert!(
-            notice_line
-                .spans
-                .iter()
-                .filter(|span| !span.content.is_empty())
-                .all(|span| span.style.fg == Some(theme::STATUS_WARNING))
-        );
-    }
-
-    #[test]
-    fn assistant_notice_height_matches_ground_truth() {
-        let spinner = idle_spinner();
-        let mut measured_msg = make_assistant_notice_message();
-        let mut truth_msg = make_assistant_notice_message();
-
-        let h = measure_message_height(&mut measured_msg, &spinner, 16);
-        let truth = ground_truth_height(&mut truth_msg, &spinner, 16);
-
-        assert_eq!(h, truth);
-    }
-
-    #[test]
-    fn assistant_split_paragraph_height_matches_rendered_gap() {
-        let spinner = idle_spinner();
-        let mut measured = make_assistant_split_message("First paragraph", "Second paragraph");
-        let mut truth = make_assistant_split_message("First paragraph", "Second paragraph");
-
-        let h = measure_message_height(&mut measured, &spinner, 80);
-        let truth_h = ground_truth_height(&mut truth, &spinner, 80);
-        assert_eq!(h, truth_h);
-        assert_eq!(h, 5);
-    }
-
-    #[test]
-    fn assistant_message_can_render_without_trailing_separator() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::Assistant, "hello");
-        let mut lines = Vec::new();
-
-        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
-
-        assert_eq!(render_lines_to_strings(&lines), vec!["Claude".to_owned(), "hello".to_owned()]);
-
-        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
-        assert_eq!(h, 2);
-    }
-
-    #[test]
-    fn empty_last_assistant_thinking_omits_trailing_separator() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_empty_thinking: true,
-            ..idle_spinner()
-        };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut lines = Vec::new();
-
-        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
-
-        let rendered = render_lines_to_strings(&lines);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
-        assert!(rendered[1].contains("Thinking..."));
-
-        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
-        assert_eq!(h, 2);
-    }
-
-    #[test]
-    fn empty_last_assistant_thinking_wrap_height_matches_ground_truth() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_empty_thinking: true,
-            ..idle_spinner()
-        };
-        let mut measured_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut truth_msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-
-        let h = measure_message_height_with_separator(&mut measured_msg, &spinner, 6, false);
-        let mut truth_lines = Vec::new();
-        render_message_with_separator(&mut truth_msg, &spinner, 6, false, &mut truth_lines);
-        let truth =
-            Paragraph::new(Text::from(truth_lines)).wrap(Wrap { trim: false }).line_count(6);
-
-        assert_eq!(h, truth);
-        assert!(h > 2);
-    }
-
-    #[test]
-    fn empty_last_assistant_compacting_omits_trailing_separator() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_compacting: true,
-            ..idle_spinner()
-        };
-        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
-        let mut lines = Vec::new();
-
-        render_message_with_separator(&mut msg, &spinner, 80, false, &mut lines);
-
-        let rendered = render_lines_to_strings(&lines);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
-        assert!(rendered[1].contains("Compacting context..."));
-
-        let h = measure_message_height_with_separator(&mut msg, &spinner, 80, false);
-        assert_eq!(h, 2);
-    }
-
-    #[test]
-    fn measure_height_matches_ground_truth_after_resize() {
-        let text =
-            "This is a single very long line without explicit line breaks to stress soft wrapping."
-                .repeat(20);
-        let spinner = idle_spinner();
-
-        let mut measured_msg = make_text_message(MessageRole::Assistant, &text);
-        let mut truth_wide = make_text_message(MessageRole::Assistant, &text);
-        let mut truth_narrow = make_text_message(MessageRole::Assistant, &text);
-
-        let h_wide = measure_message_height(&mut measured_msg, &spinner, 100);
-        let wide_truth = ground_truth_height(&mut truth_wide, &spinner, 100);
-        assert_eq!(h_wide, wide_truth);
-
-        let h_narrow = measure_message_height(&mut measured_msg, &spinner, 28);
-        let narrow_truth = ground_truth_height(&mut truth_narrow, &spinner, 28);
-        assert_eq!(h_narrow, narrow_truth);
-    }
-
     #[test]
     fn markdown_table_rerenders_when_width_changes_in_both_directions() {
-        let spinner = idle_spinner();
         let table = concat!(
             "| Name | Description |\n",
             "| --- | --- |\n",
             "| foo | long wrapped value |\n",
         );
-        let mut msg = make_text_message(MessageRole::Assistant, table);
+        let mut msg = make_text_message(MessageRole::User, table);
 
         let mut wide_lines = Vec::new();
-        render_message_with_separator_and_layout_generation(
-            &mut msg,
-            &spinner,
-            40,
-            1,
-            true,
-            &mut wide_lines,
-        );
+        render_message(&mut msg, 40, &mut wide_lines);
         let wide_rendered = render_lines_to_strings(&wide_lines);
         assert!(wide_rendered.iter().any(|line| line.contains("Name")));
         assert!(wide_rendered.iter().any(|line| line.contains('─')));
         assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
 
         let mut narrow_lines = Vec::new();
-        render_message_with_separator_and_layout_generation(
-            &mut msg,
-            &spinner,
-            12,
-            2,
-            true,
-            &mut narrow_lines,
-        );
+        render_message(&mut msg, 12, &mut narrow_lines);
         let narrow_rendered = render_lines_to_strings(&narrow_lines);
         assert!(narrow_rendered.iter().any(|line| line.contains("Name:")));
         assert!(narrow_rendered.iter().any(|line| line.contains("Description")));
         assert!(!narrow_rendered.iter().any(|line| line.contains('─')));
 
         let mut wide_again_lines = Vec::new();
-        render_message_with_separator_and_layout_generation(
-            &mut msg,
-            &spinner,
-            40,
-            3,
-            true,
-            &mut wide_again_lines,
-        );
+        render_message(&mut msg, 40, &mut wide_again_lines);
         let wide_again_rendered = render_lines_to_strings(&wide_again_lines);
         assert!(wide_again_rendered.iter().any(|line| line.contains("Name")));
         assert!(wide_again_rendered.iter().any(|line| line.contains('─')));
@@ -921,280 +464,15 @@ mod tests {
 
     #[test]
     fn system_warning_severity_renders_warning_label() {
-        let spinner = idle_spinner();
         let mut msg = make_text_message(
             MessageRole::System(Some(SystemSeverity::Warning)),
             "Rate limit warning",
         );
         let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
+        render_message(&mut msg, 120, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
         assert!(rendered.iter().any(|line| line.contains("Warning")));
         assert!(rendered.iter().any(|line| line.contains("Rate limit warning")));
-    }
-
-    #[test]
-    fn assistant_message_suppresses_hidden_subagent_child_tools() {
-        let spinner = idle_spinner();
-
-        let mut hidden_tool = make_tool_call_info(
-            "hidden-child",
-            "Bash",
-            crate::agent::model::ToolCallStatus::Completed,
-            "child output",
-        );
-        hidden_tool.hidden = true;
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(!rendered.iter().any(|line| line.contains("hidden-child")));
-        assert!(!rendered.iter().any(|line| line.contains("child output")));
-    }
-
-    #[test]
-    fn assistant_message_renders_hidden_subagent_child_permission_prompt() {
-        let spinner = idle_spinner();
-        let mut hidden_tool = make_tool_call_info(
-            "hidden-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        hidden_tool.hidden = true;
-        hidden_tool.pending_permission = Some(pending_permission(true));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("hidden-permission")));
-        assert!(rendered.iter().any(|line| line.contains("Allow")));
-        assert!(rendered.iter().any(|line| line.contains("Deny")));
-    }
-
-    #[test]
-    fn assistant_message_renders_only_focused_hidden_subagent_child_permission_prompt() {
-        let spinner = idle_spinner();
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let mut waiting_tool = make_tool_call_info(
-            "waiting-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        waiting_tool.hidden = true;
-        waiting_tool.pending_permission = Some(pending_permission(false));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(waiting_tool)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("focused-permission")));
-        assert!(!rendered.iter().any(|line| line.contains("waiting-permission")));
-        assert!(!rendered.iter().any(|line| line.contains("Waiting for input")));
-    }
-
-    #[test]
-    fn assistant_message_keeps_unfocused_main_agent_permission_prompt_visible() {
-        let spinner = idle_spinner();
-        let mut main_tool = make_tool_call_info(
-            "main-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        main_tool.pending_permission = Some(pending_permission(false));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(main_tool))],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("main-permission")));
-        assert!(rendered.iter().any(|line| line.contains("Waiting for input")));
-    }
-
-    #[test]
-    fn assistant_message_defers_focused_hidden_child_permission_after_later_subagent_roots() {
-        let spinner = idle_spinner();
-        let root_a = make_tool_call_info(
-            "root-a",
-            "Task",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "first subagent",
-        );
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let root_b = make_tool_call_info(
-            "root-b",
-            "Agent",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "second subagent",
-        );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(root_a)),
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(root_b)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        let first_root_line = line_index_containing(&rendered, "root-a");
-        let second_root_line = line_index_containing(&rendered, "root-b");
-        let focused_idx = line_index_containing(&rendered, "focused-permission");
-
-        assert!(first_root_line < second_root_line);
-        assert!(second_root_line < focused_idx);
-    }
-
-    #[test]
-    fn assistant_message_keeps_focused_hidden_child_permission_before_later_main_tool() {
-        let spinner = idle_spinner();
-        let root = make_tool_call_info(
-            "root",
-            "Task",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "subagent",
-        );
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let main_tool = make_tool_call_info(
-            "main-tool",
-            "Read",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "main agent tool",
-        );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(root)),
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(main_tool)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        let root_idx = line_index_containing(&rendered, "root");
-        let focused_idx = line_index_containing(&rendered, "focused-permission");
-        let main_idx = line_index_containing(&rendered, "main-tool");
-
-        assert!(root_idx < focused_idx);
-        assert!(focused_idx < main_idx);
-    }
-
-    #[test]
-    fn assistant_heading_at_start_does_not_render_blank_line_after_label() {
-        let spinner = idle_spinner();
-        let mut msg = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 80, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
-        let heading_idx =
-            rendered.iter().position(|line| line.contains("Heading")).expect("heading");
-        assert_eq!(heading_idx, 1);
-        assert!(!rendered[heading_idx].is_empty());
-    }
-
-    #[test]
-    fn assistant_heading_at_start_height_matches_rendered_output() {
-        let spinner = idle_spinner();
-        let mut measured = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
-        let mut truth = make_text_message(MessageRole::Assistant, "\n# Heading\nBody");
-
-        let h = measure_message_height(&mut measured, &spinner, 80);
-        let truth_h = ground_truth_height(&mut truth, &spinner, 80);
-
-        assert_eq!(h, truth_h);
-    }
-
-    #[test]
-    fn assistant_message_does_not_show_empty_turn_thinking_after_content_exists() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_empty_thinking: true,
-            ..idle_spinner()
-        };
-        let mut msg = make_text_message(MessageRole::Assistant, "done");
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
-    }
-
-    #[test]
-    fn assistant_message_suppresses_thinking_line_while_compacting() {
-        let spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            show_thinking: true,
-            show_compacting: true,
-            ..idle_spinner()
-        };
-        let mut msg = make_text_message(MessageRole::Assistant, "done");
-
-        let mut lines = Vec::new();
-        render_message(&mut msg, &spinner, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("Compacting context...")));
-        assert!(!rendered.iter().any(|line| line.contains("Thinking...")));
     }
 }

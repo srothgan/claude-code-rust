@@ -562,12 +562,6 @@ mod tests {
                 terminal_output_len: 0,
                 terminal_bytes_seen: 0,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![],

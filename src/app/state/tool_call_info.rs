@@ -31,18 +31,6 @@ pub struct ToolCallInfo {
     pub terminal_bytes_seen: usize,
     /// Current terminal snapshot ingestion mode.
     pub terminal_snapshot_mode: TerminalSnapshotMode,
-    /// Monotonic generation for render-affecting changes.
-    pub render_epoch: u64,
-    /// Monotonic generation for layout-affecting changes.
-    pub layout_epoch: u64,
-    /// Last measured width used by tool-call height cache.
-    pub last_measured_width: u16,
-    /// Last measured visual height in wrapped rows.
-    pub last_measured_height: usize,
-    /// Layout epoch used for the last measured height.
-    pub last_measured_layout_epoch: u64,
-    /// Global layout generation used for the last measured height.
-    pub last_measured_layout_generation: u64,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
     /// Inline permission prompt - rendered inside this tool call block.
@@ -119,36 +107,11 @@ impl ToolCallInfo {
         !self.hidden && matches!(self.sdk_tool_name.as_str(), "Task" | "Agent")
     }
 
-    /// Mark render cache for this tool call as stale.
-    pub fn mark_tool_call_render_dirty(&mut self) {
+    /// Invalidate cached rendered lines for this tool call.
+    pub fn invalidate_render_cache(&mut self) {
         crate::perf::mark("tc_invalidations_requested");
-        self.render_epoch = self.render_epoch.wrapping_add(1);
         self.cache.invalidate();
         crate::perf::mark("tc_invalidations_applied");
-    }
-
-    /// Mark layout cache for this tool call as stale.
-    pub fn mark_tool_call_layout_dirty(&mut self) {
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
-        self.last_measured_width = 0;
-        self.last_measured_height = 0;
-        self.last_measured_layout_epoch = 0;
-        self.last_measured_layout_generation = 0;
-        self.mark_tool_call_render_dirty();
-    }
-
-    #[must_use]
-    pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
-        self.last_measured_width == width
-            && self.last_measured_layout_epoch == self.layout_epoch
-            && self.last_measured_layout_generation == layout_generation
-    }
-
-    pub fn record_measured_height(&mut self, width: u16, height: usize, layout_generation: u64) {
-        self.last_measured_width = width;
-        self.last_measured_height = height;
-        self.last_measured_layout_epoch = self.layout_epoch;
-        self.last_measured_layout_generation = layout_generation;
     }
 
     pub fn set_raw_input(&mut self, raw_input: Option<serde_json::Value>) -> bool {

@@ -79,7 +79,7 @@ pub(super) fn handle_permission_request_event(
             selected_index: 0,
             focused: auto_focus,
         });
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         layout_dirty = true;
         app.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
@@ -180,7 +180,7 @@ pub(super) fn handle_question_request_event(
             question_index: request.question_index,
             total_questions: request.total_questions,
         });
-        tc.mark_tool_call_layout_dirty();
+        tc.invalidate_render_cache();
         layout_dirty = true;
         app.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
@@ -628,12 +628,6 @@ mod tests {
                 terminal_output_len: 0,
                 terminal_bytes_seen: 0,
                 terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: crate::app::BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,

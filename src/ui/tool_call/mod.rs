@@ -21,8 +21,7 @@ use crate::app::ToolCallInfo;
 use crate::ui::markdown;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Re-export submodule items used by tests.
@@ -108,69 +107,6 @@ pub fn render_tool_call_cached(
             out.extend_from_slice(stored);
         }
     }
-}
-
-/// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.
-/// Returns `(height, lines_wrapped_for_measurement)`.
-pub fn measure_tool_call_height_cached(
-    tc: &mut ToolCallInfo,
-    render_context: ToolCallRenderContext<'_>,
-    width: u16,
-    spinner_frame: usize,
-    layout_generation: u64,
-) -> (usize, usize) {
-    if tc.cache_measurement_key_matches(width, layout_generation) {
-        crate::perf::mark("tc_measure_fast_path_hits");
-        return (tc.last_measured_height, 0);
-    }
-    crate::perf::mark("tc_measure_recompute_count");
-
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
-    let title_h =
-        Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
-    if !standard::tool_call_has_body(tc) {
-        tc.record_measured_height(width, title_h, layout_generation);
-        return (title_h, 1);
-    }
-
-    let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-    if cached_body.is_some() {
-        if let Some(body_h) = tc.cache.height_at(width) {
-            let total = title_h + body_h;
-            tc.record_measured_height(width, total, layout_generation);
-            return (total, 1);
-        }
-        if let Some(body_h) = tc.cache.measure_and_set_height(width) {
-            let total = title_h + body_h;
-            tc.record_measured_height(width, total, layout_generation);
-            let cached_len = if body_depends_on_width {
-                tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
-            } else {
-                tc.cache.get().map_or(1, |body| body.len() + 1)
-            };
-            return (total, cached_len);
-        }
-    }
-
-    let body = standard::render_tool_call_body(tc, width);
-    let body_h =
-        Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
-    if body_depends_on_width {
-        tc.cache.store_for_width(body, width);
-    } else {
-        tc.cache.store(body);
-    }
-    tc.cache.set_height(body_h, width);
-    let total = title_h + body_h;
-    tc.record_measured_height(width, total, layout_generation);
-    let cached_len = if body_depends_on_width {
-        tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
-    } else {
-        tc.cache.get().map_or(1, |body| body.len() + 1)
-    };
-    (total, cached_len)
 }
 
 // ---------------------------------------------------------------------------
@@ -296,12 +232,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
@@ -471,12 +401,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
@@ -542,57 +466,6 @@ mod tests {
         assert!(text.contains("echo hi"));
         assert!(!text.contains("Create Plan"));
         assert!(!text.contains("Update Plan"));
-    }
-
-    #[test]
-    fn execute_measure_fast_path_keeps_height_stable_across_repeated_measurement() {
-        let mut tc = test_tool_call("tc-fast", "Bash", model::ToolCallStatus::InProgress);
-        tc.terminal_command = Some("echo hi".to_owned());
-        tc.terminal_output = Some("hello\nworld".to_owned());
-
-        let (h1, lines1) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
-        assert!(h1 > 0);
-        assert!(lines1 > 0);
-
-        let (h2, lines2) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 4, 1);
-        assert_eq!(h2, h1);
-        assert!(lines2 <= lines1);
-    }
-
-    #[test]
-    fn execute_measure_recomputes_on_layout_generation_change() {
-        let mut tc = test_tool_call("tc-layout-gen", "Bash", model::ToolCallStatus::InProgress);
-        tc.terminal_command = Some("echo hi".to_owned());
-        tc.terminal_output = Some("hello".to_owned());
-
-        let (_, first_lines) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
-        assert!(first_lines > 0);
-        let (_, second_lines) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 2);
-        assert!(second_lines > 0);
-    }
-
-    #[test]
-    fn layout_dirty_invalidates_measure_fast_path() {
-        let mut tc = test_tool_call("tc-dirty", "Read", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::from("one line")];
-
-        let (first_height, first_lines) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
-        assert!(first_lines > 0);
-        let (cached_height, fast_lines) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
-        assert_eq!(cached_height, first_height);
-        assert!(fast_lines <= first_lines);
-
-        tc.mark_tool_call_layout_dirty();
-        let (recomputed_height, recompute_lines) =
-            measure_tool_call_height_cached(&mut tc, ToolCallRenderContext::default(), 80, 0, 1);
-        assert_eq!(recomputed_height, first_height);
-        assert!(recompute_lines > 0);
     }
 
     #[test]
@@ -1077,12 +950,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
@@ -1109,12 +976,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
@@ -1153,12 +1014,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
@@ -1207,12 +1062,6 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

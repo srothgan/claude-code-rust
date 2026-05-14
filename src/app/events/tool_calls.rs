@@ -183,12 +183,6 @@ fn build_tool_info_from_tool_call(
         terminal_output_len: 0,
         terminal_bytes_seen: 0,
         terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-        render_epoch: 0,
-        layout_epoch: 0,
-        last_measured_width: 0,
-        last_measured_height: 0,
-        last_measured_layout_epoch: 0,
-        last_measured_layout_generation: 0,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -286,7 +280,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
             );
         }
         if changed {
-            existing.mark_tool_call_layout_dirty();
+            existing.invalidate_render_cache();
             layout_dirty = true;
         } else {
             crate::perf::mark("tool_update_noop_skips");

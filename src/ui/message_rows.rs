@@ -3,46 +3,29 @@
 
 use crate::app::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
 use crate::ui::theme;
-use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::{Line, Span};
 
-use super::SpinnerState;
 use super::message::{MessageRenderContext, render_text_block_cached};
 
 pub(crate) struct MessageRows {
     pub segments: Vec<MessageRowSegment>,
-    pub height: usize,
-    pub wrapped_lines: usize,
 }
 
 impl MessageRows {
     fn new() -> Self {
-        Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
+        Self { segments: Vec::new() }
     }
 
     fn push_blank(&mut self) {
         self.segments.push(MessageRowSegment::Blank);
-        self.height += 1;
     }
 
-    fn push_wrapped_line(&mut self, line: Line<'static>, width: u16) {
-        self.push_wrapped_lines(vec![line], width);
-    }
-
-    fn push_wrapped_lines(&mut self, lines: Vec<Line<'static>>, width: u16) {
-        let height = rendered_lines_height(&lines, width);
-        self.push_lines(lines, height, height);
-    }
-
-    fn push_lines(&mut self, lines: Vec<Line<'static>>, height: usize, wrapped_lines: usize) {
-        if height == 0 {
+    fn push_lines(&mut self, lines: Vec<Line<'static>>) {
+        if lines.is_empty() {
             return;
         }
         self.segments.push(MessageRowSegment::Lines { lines });
-        self.height += height;
-        self.wrapped_lines += wrapped_lines;
     }
 }
 
@@ -52,41 +35,21 @@ pub(crate) enum MessageRowSegment {
     Lines { lines: Vec<Line<'static>> },
 }
 
-pub(crate) struct RenderedBlockLayout {
-    pub lines: Vec<Line<'static>>,
-    pub height: usize,
-    pub wrapped_lines: usize,
-}
-
-#[derive(Default)]
-struct AssistantLayoutState {
-    prev_was_tool: bool,
-    has_body_content: bool,
-    has_visible_content: bool,
-}
-
-pub(crate) fn build_message_rows(
+pub(crate) fn build_user_system_message_rows(
     msg: &mut ChatMessage,
-    spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
 ) -> MessageRows {
     let mut rows = MessageRows::new();
-    if matches!(msg.role, MessageRole::Welcome) {
-        // Welcome overview rendering belongs to inline_chat_rows.
+    if !matches!(msg.role, MessageRole::User | MessageRole::System(_)) {
         return rows;
     }
 
-    rows.push_wrapped_line(role_label_line(&msg.role), render_context.width);
+    rows.push_lines(vec![role_label_line(&msg.role)]);
 
     match msg.role {
-        MessageRole::Welcome => {}
         MessageRole::User => append_user_blocks(msg, render_context.width, &mut rows),
-        MessageRole::Assistant => append_assistant_blocks(msg, spinner, render_context, &mut rows),
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut rows),
-    }
-
-    if render_context.options.include_trailing_separator {
-        rows.push_blank();
+        MessageRole::Assistant | MessageRole::Welcome => {}
     }
 
     rows
@@ -97,8 +60,7 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
-                rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                rows.push_lines(text_block_lines(block, width, Some(theme::USER_MSG_BG), true));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
@@ -109,203 +71,14 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
                 } else {
                     format!(" [img] {} images attached ", img.count)
                 };
-                rows.push_wrapped_line(
-                    Line::from(Span::styled(
-                        label,
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
-                    )),
-                    width,
-                );
+                rows.push_lines(vec![Line::from(Span::styled(
+                    label,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                ))]);
             }
             _ => {}
         }
     }
-}
-
-fn append_assistant_blocks(
-    msg: &mut ChatMessage,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    rows: &mut MessageRows,
-) {
-    if msg.blocks.is_empty() && spinner.show_compacting {
-        rows.push_wrapped_line(compacting_line(spinner.frame), render_context.width);
-        return;
-    }
-    if msg.blocks.is_empty() && spinner.show_empty_thinking {
-        rows.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
-        return;
-    }
-
-    let show_compacting = spinner.show_compacting;
-    let deferred_interaction = deferred_hidden_interaction_render_after(&msg.blocks);
-    let mut state = AssistantLayoutState::default();
-    for idx in 0..msg.blocks.len() {
-        if deferred_interaction.is_some_and(|(deferred_idx, _)| deferred_idx == idx) {
-            continue;
-        }
-
-        append_assistant_block(&mut msg.blocks[idx], spinner, render_context, rows, &mut state);
-
-        if let Some((deferred_idx, render_after_idx)) = deferred_interaction
-            && render_after_idx == idx
-        {
-            append_assistant_block(
-                &mut msg.blocks[deferred_idx],
-                spinner,
-                render_context,
-                rows,
-                &mut state,
-            );
-        }
-    }
-
-    if show_compacting {
-        if state.has_body_content {
-            rows.push_blank();
-        }
-        rows.push_wrapped_line(compacting_line(spinner.frame), render_context.width);
-    }
-    if spinner.show_thinking && !show_compacting {
-        if state.has_body_content {
-            rows.push_blank();
-        }
-        rows.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
-    }
-}
-
-fn deferred_hidden_interaction_render_after(blocks: &[MessageBlock]) -> Option<(usize, usize)> {
-    let deferred_idx = blocks.iter().position(
-        |block| matches!(block, MessageBlock::ToolCall(tc) if tc.is_hidden_focused_interaction()),
-    )?;
-    let render_after_idx = blocks
-        .iter()
-        .enumerate()
-        .skip(deferred_idx.saturating_add(1))
-        .filter_map(|(idx, block)| match block {
-            MessageBlock::ToolCall(tc) if tc.is_subagent_root_tool() => Some(idx),
-            _ => None,
-        })
-        .last()?;
-    Some((deferred_idx, render_after_idx))
-}
-
-fn append_assistant_block(
-    block: &mut MessageBlock,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    rows: &mut MessageRows,
-    state: &mut AssistantLayoutState,
-) {
-    match block {
-        MessageBlock::Text(block) => {
-            append_assistant_text_block(block, render_context.width, rows, state);
-        }
-        MessageBlock::Notice(notice) => {
-            append_assistant_notice_block(notice, render_context.width, rows, state);
-        }
-        MessageBlock::ToolCall(tc) => {
-            append_assistant_tool_block(tc.as_mut(), spinner, render_context, rows, state);
-        }
-        MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => {}
-    }
-}
-
-fn append_assistant_text_block(
-    block: &mut TextBlock,
-    width: u16,
-    rows: &mut MessageRows,
-    state: &mut AssistantLayoutState,
-) {
-    if state.prev_was_tool {
-        rows.push_blank();
-    }
-    let rendered = assistant_text_block_layout(block, width, !state.has_visible_content);
-    let trailing_gap = trailing_gap_for_text_like_block(
-        state.has_visible_content,
-        rendered.height,
-        block.trailing_blank_lines(),
-    );
-    rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-    for _ in 0..trailing_gap {
-        rows.push_blank();
-    }
-    if rendered.height > 0 {
-        state.has_body_content = true;
-        state.has_visible_content = true;
-    }
-    state.prev_was_tool = false;
-}
-
-fn append_assistant_notice_block(
-    notice: &mut crate::app::NoticeBlock,
-    width: u16,
-    rows: &mut MessageRows,
-    state: &mut AssistantLayoutState,
-) {
-    if state.prev_was_tool {
-        rows.push_blank();
-    }
-    let rendered = notice_block_layout(notice, width, !state.has_visible_content, notice.severity);
-    let trailing_gap = trailing_gap_for_text_like_block(
-        state.has_visible_content,
-        rendered.height,
-        notice.trailing_blank_lines(),
-    );
-    rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
-    for _ in 0..trailing_gap {
-        rows.push_blank();
-    }
-    if rendered.height > 0 {
-        state.has_body_content = true;
-        state.has_visible_content = true;
-    }
-    state.prev_was_tool = false;
-}
-
-fn append_assistant_tool_block(
-    tc: &mut crate::app::ToolCallInfo,
-    spinner: &SpinnerState,
-    render_context: MessageRenderContext<'_>,
-    rows: &mut MessageRows,
-    state: &mut AssistantLayoutState,
-) {
-    if tc.hidden_unless_focused_interaction() {
-        return;
-    }
-    if !state.prev_was_tool && state.has_body_content {
-        rows.push_blank();
-    }
-
-    let mut lines = Vec::new();
-    tool_call::render_tool_call_cached(
-        tc,
-        render_context.tool_render_context,
-        render_context.width,
-        spinner.frame,
-        &mut lines,
-    );
-    let (height, wrapped_lines) = tool_call::measure_tool_call_height_cached(
-        tc,
-        render_context.tool_render_context,
-        render_context.width,
-        spinner.frame,
-        render_context.layout_generation,
-    );
-    rows.push_lines(lines, height, wrapped_lines);
-    if height > 0 {
-        state.has_body_content = true;
-    }
-    state.has_visible_content = true;
-    state.prev_was_tool = true;
-}
-
-fn trailing_gap_for_text_like_block(
-    has_visible_content: bool,
-    rendered_height: usize,
-    trailing_blank_lines: usize,
-) -> usize {
-    if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
 }
 
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
@@ -314,17 +87,16 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut rendered = text_block_layout(block, width, None, false);
-                tint_lines(&mut rendered.lines, color);
-                rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                let mut lines = text_block_lines(block, width, None, false);
+                tint_lines(&mut lines, color);
+                rows.push_lines(lines);
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
             }
             MessageBlock::Notice(notice) => {
                 let trailing_gap = notice.trailing_blank_lines();
-                let rendered = notice_block_layout(notice, width, false, notice.severity);
-                rows.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
+                rows.push_lines(notice_block_lines(notice, width, notice.severity));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
@@ -336,90 +108,36 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
     }
 }
 
-fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
-    if lines.is_empty() {
-        return 0;
-    }
-    Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
-}
-
-fn text_block_layout(
+fn text_block_lines(
     block: &mut TextBlock,
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
-) -> RenderedBlockLayout {
-    let had_height = block.cache.height_at(width).is_some();
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
-    let height = block.cache.height_at(width).unwrap_or_else(|| {
-        let height = rendered_lines_height(&lines, width);
-        block.cache.set_height(height, width);
-        height
-    });
-    let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    lines
 }
 
-fn assistant_text_block_layout(
-    block: &mut TextBlock,
-    width: u16,
-    trim_leading_blank_lines: bool,
-) -> RenderedBlockLayout {
-    let mut rendered = text_block_layout(block, width, None, false);
-
-    if trim_leading_blank_lines {
-        let leading_blank_lines = count_leading_blank_lines(&rendered.lines);
-        if leading_blank_lines > 0 {
-            rendered.lines.drain(..leading_blank_lines);
-            rendered.height = rendered.height.saturating_sub(leading_blank_lines);
-            rendered.wrapped_lines = rendered.wrapped_lines.saturating_sub(leading_blank_lines);
-        }
-    }
-
-    rendered
-}
-
-fn notice_block_layout(
+fn notice_block_lines(
     block: &mut crate::app::NoticeBlock,
     width: u16,
-    trim_leading_blank_lines: bool,
     severity: SystemSeverity,
-) -> RenderedBlockLayout {
-    let mut rendered =
-        assistant_text_block_layout(&mut block.text, width, trim_leading_blank_lines);
-    tint_lines(&mut rendered.lines, system_severity_color(severity));
-    rendered
-}
-
-fn count_leading_blank_lines(lines: &[Line<'static>]) -> usize {
-    lines.iter().take_while(|line| line_is_blank(line)).count()
-}
-
-fn line_is_blank(line: &Line<'_>) -> bool {
-    line.spans.iter().all(|span| span.content.as_ref().chars().all(char::is_whitespace))
+) -> Vec<Line<'static>> {
+    let mut lines = text_block_lines(&mut block.text, width, None, false);
+    tint_lines(&mut lines, system_severity_color(severity));
+    lines
 }
 
 fn role_label_line(role: &MessageRole) -> Line<'static> {
     match role {
-        MessageRole::Welcome => Line::from(Span::styled(
-            "Overview",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        )),
         MessageRole::User => Line::from(Span::styled(
             "User",
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )),
-        MessageRole::Assistant => assistant_role_label_line(),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(role)),
+        MessageRole::Assistant | MessageRole::Welcome => Line::default(),
     }
-}
-
-fn assistant_role_label_line() -> Line<'static> {
-    Line::from(vec![Span::styled(
-        "Claude",
-        Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
-    )])
 }
 
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
@@ -446,27 +164,6 @@ fn system_severity_from_role(role: &MessageRole) -> SystemSeverity {
     }
 }
 
-fn thinking_line(frame: usize) -> Line<'static> {
-    const SPINNER_FRAMES: &[char] = &[
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-        '\u{2827}', '\u{2807}', '\u{280F}',
-    ];
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
-}
-
-fn compacting_line(frame: usize) -> Line<'static> {
-    const SPINNER_FRAMES: &[char] = &[
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-        '\u{2827}', '\u{2807}', '\u{280F}',
-    ];
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(Span::styled(
-        format!("{ch} Compacting context..."),
-        Style::default().fg(theme::RUST_ORANGE),
-    ))
-}
-
 fn tint_lines(lines: &mut [Line<'static>], color: Color) {
     for line in lines {
         for span in &mut line.spans {
@@ -477,33 +174,24 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::build_message_rows;
-    use crate::agent::model;
+    use super::build_user_system_message_rows;
     use crate::app::{
-        BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, NoticeBlock,
-        SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
+        ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock, SystemSeverity,
+        TextBlock, TextBlockSpacing,
     };
-    use crate::ui::SpinnerState;
-    use crate::ui::message::{MessageRenderContext, MessageRenderOptions};
+    use crate::ui::message::MessageRenderContext;
     use ratatui::text::Line;
-    use tokio::sync::oneshot;
 
-    fn idle_spinner() -> SpinnerState {
-        SpinnerState {
-            frame: 0,
-            is_active_turn_assistant: false,
-            show_empty_thinking: false,
-            show_thinking: false,
-            show_compacting: false,
-        }
+    fn render_context() -> MessageRenderContext<'static> {
+        MessageRenderContext::new(None, 80)
     }
 
-    fn render_context(include_trailing_separator: bool) -> MessageRenderContext<'static> {
-        MessageRenderContext::new(None, 80, 1, MessageRenderOptions { include_trailing_separator })
+    fn user_message(blocks: Vec<MessageBlock>) -> ChatMessage {
+        ChatMessage::new(MessageRole::User, blocks, None)
     }
 
-    fn assistant_message(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, blocks, None)
+    fn system_message(blocks: Vec<MessageBlock>, severity: SystemSeverity) -> ChatMessage {
+        ChatMessage::new(MessageRole::System(Some(severity)), blocks, None)
     }
 
     fn line_text(line: &Line<'_>) -> String {
@@ -523,44 +211,9 @@ mod tests {
         out
     }
 
-    fn make_tool(
-        id: &str,
-        sdk_tool_name: &str,
-        hidden: bool,
-        pending_permission: Option<InlinePermission>,
-    ) -> MessageBlock {
-        MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            title: "Tool".to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: vec![],
-            hidden,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            cache: BlockCache::default(),
-            pending_permission,
-            pending_question: None,
-        }))
-    }
-
     #[test]
-    fn assistant_text_blocks_preserve_header_and_spacing_behavior() {
-        let mut msg = assistant_message(vec![
+    fn user_text_blocks_preserve_header_and_spacing_behavior() {
+        let mut msg = user_message(vec![
             MessageBlock::Text(TextBlock::from_complete("First paragraph")),
             MessageBlock::Text(
                 TextBlock::from_complete("Second paragraph")
@@ -568,23 +221,41 @@ mod tests {
             ),
         ]);
 
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
+        let rows = build_user_system_message_rows(&mut msg, render_context());
         let texts = segment_texts(&rows);
 
-        assert_eq!(texts.first().expect("header"), "Claude");
+        assert_eq!(texts.first().expect("header"), "User");
         assert!(texts.iter().any(|line| line.contains("First paragraph")));
         assert!(texts.iter().any(|line| line.contains("Second paragraph")));
         assert!(texts.iter().any(String::is_empty));
     }
 
     #[test]
-    fn assistant_notice_blocks_serialize_as_text_like_with_tint() {
-        let mut msg = assistant_message(vec![MessageBlock::Notice(NoticeBlock::new(
-            SystemSeverity::Warning,
-            "Warning inline".to_owned(),
-        ))]);
+    fn user_image_attachment_renders_attachment_row() {
+        let mut msg =
+            user_message(vec![MessageBlock::ImageAttachment(ImageAttachmentBlock::new(2))]);
 
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
+        let rows = build_user_system_message_rows(&mut msg, render_context());
+        let texts = segment_texts(&rows);
+
+        assert_eq!(texts.first().expect("header"), "User");
+        assert!(texts.iter().any(|line| line.contains("2 images attached")));
+    }
+
+    #[test]
+    fn system_notice_blocks_serialize_as_text_like_with_tint() {
+        let mut msg = system_message(
+            vec![MessageBlock::Notice(NoticeBlock::new(
+                SystemSeverity::Warning,
+                "Warning inline".to_owned(),
+            ))],
+            SystemSeverity::Warning,
+        );
+
+        let rows = build_user_system_message_rows(&mut msg, render_context());
+        let texts = segment_texts(&rows);
+        assert_eq!(texts.first().expect("header"), "Warning");
+
         let warning_line = rows
             .segments
             .iter()
@@ -606,125 +277,18 @@ mod tests {
     }
 
     #[test]
-    fn tool_after_text_inserts_exactly_one_structural_blank_row() {
-        let mut msg = assistant_message(vec![
-            MessageBlock::Text(TextBlock::from_complete("alpha")),
-            make_tool("tool-1", "Read", false, None),
-        ]);
+    fn assistant_and_welcome_messages_render_no_rows_here() {
+        let mut assistant = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("body"))],
+            None,
+        );
+        let mut welcome = ChatMessage::welcome("1.2.3", "Pro", "/cwd", "session");
 
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
-        let texts = segment_texts(&rows);
-        let text_idx = texts.iter().position(|line| line.contains("alpha")).expect("text");
-        let tool_idx = texts.iter().position(|line| line.contains("Tool")).expect("tool");
+        let assistant_rows = build_user_system_message_rows(&mut assistant, render_context());
+        let welcome_rows = build_user_system_message_rows(&mut welcome, render_context());
 
-        assert_eq!(tool_idx, text_idx + 2);
-        assert!(texts[text_idx + 1].is_empty());
-    }
-
-    #[test]
-    fn text_after_tool_inserts_exactly_one_structural_blank_row() {
-        let mut msg = assistant_message(vec![
-            make_tool("tool-1", "Read", false, None),
-            MessageBlock::Text(TextBlock::from_complete("omega")),
-        ]);
-
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
-        let texts = segment_texts(&rows);
-        let tool_idx = texts.iter().position(|line| line.contains("Tool")).expect("tool");
-        let text_idx = texts.iter().position(|line| line.contains("omega")).expect("text");
-
-        assert_eq!(text_idx, tool_idx + 2);
-        assert!(texts[tool_idx + 1].is_empty());
-    }
-
-    #[test]
-    fn tool_to_tool_stays_compact() {
-        let mut msg = assistant_message(vec![
-            make_tool("tool-1", "Read", false, None),
-            make_tool("tool-2", "Write", false, None),
-        ]);
-
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
-        let texts = segment_texts(&rows);
-        let first_tool_idx = texts.iter().position(|line| line.contains("Tool")).expect("tool");
-        let second_tool_idx = texts
-            .iter()
-            .enumerate()
-            .skip(first_tool_idx + 1)
-            .find(|(_, line)| line.contains("Tool"))
-            .map(|(idx, _)| idx)
-            .expect("second tool");
-
-        assert_eq!(second_tool_idx, first_tool_idx + 1);
-    }
-
-    #[test]
-    fn empty_assistant_thinking_row_appears_when_requested() {
-        let mut msg = assistant_message(Vec::new());
-        let spinner = SpinnerState { show_empty_thinking: true, frame: 1, ..idle_spinner() };
-
-        let rows = build_message_rows(&mut msg, &spinner, render_context(true));
-        let texts = segment_texts(&rows);
-        assert!(texts.iter().any(|line| line.contains("Thinking...")));
-    }
-
-    #[test]
-    fn compacting_suppresses_trailing_thinking_row() {
-        let mut msg = assistant_message(vec![MessageBlock::Text(TextBlock::from_complete("body"))]);
-        let spinner =
-            SpinnerState { show_thinking: true, show_compacting: true, frame: 1, ..idle_spinner() };
-
-        let rows = build_message_rows(&mut msg, &spinner, render_context(true));
-        let texts = segment_texts(&rows);
-        assert!(texts.iter().any(|line| line.contains("Compacting context")));
-        assert!(!texts.iter().any(|line| line.contains("Thinking...")));
-    }
-
-    #[test]
-    fn trailing_separator_respects_render_options() {
-        let mut with_separator =
-            assistant_message(vec![MessageBlock::Text(TextBlock::from_complete("body"))]);
-        let rows_with =
-            build_message_rows(&mut with_separator, &idle_spinner(), render_context(true));
-        assert!(matches!(rows_with.segments.last(), Some(super::MessageRowSegment::Blank)));
-
-        let mut without_separator =
-            assistant_message(vec![MessageBlock::Text(TextBlock::from_complete("body"))]);
-        let rows_without =
-            build_message_rows(&mut without_separator, &idle_spinner(), render_context(false));
-        assert!(!matches!(rows_without.segments.last(), Some(super::MessageRowSegment::Blank)));
-    }
-
-    #[test]
-    fn hidden_focused_child_interaction_is_rendered_after_later_subagent_root() {
-        let (response_tx, _response_rx) = oneshot::channel();
-        let mut msg = assistant_message(vec![
-            make_tool(
-                "hidden-child",
-                "Read",
-                true,
-                Some(InlinePermission {
-                    options: vec![],
-                    display: None,
-                    response_tx,
-                    selected_index: 0,
-                    focused: true,
-                }),
-            ),
-            make_tool("root", "Task", false, None),
-        ]);
-
-        let rows = build_message_rows(&mut msg, &idle_spinner(), render_context(true));
-        let texts = segment_texts(&rows);
-        let task_idx = texts.iter().position(|line| line.contains("Tool")).expect("task");
-        let child_idx = texts
-            .iter()
-            .enumerate()
-            .skip(task_idx + 1)
-            .find(|(_, line)| line.contains("Tool"))
-            .map(|(idx, _)| idx)
-            .expect("child");
-
-        assert!(child_idx > task_idx);
+        assert!(assistant_rows.segments.is_empty());
+        assert!(welcome_rows.segments.is_empty());
     }
 }

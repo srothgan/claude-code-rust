@@ -75,14 +75,14 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
             && perm.focused != focused
         {
             perm.focused = focused;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             invalidated = true;
         }
         if let Some(ref mut question) = tc.pending_question
             && question.focused != focused
         {
             question.focused = focused;
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             invalidated = true;
         }
     }
@@ -129,7 +129,7 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                 interaction_changed = true;
             }
             if interaction_changed {
-                tc.mark_tool_call_layout_dirty();
+                tc.invalidate_render_cache();
                 app.sync_render_cache_slot(mi, bi);
                 app.recompute_message_retained_bytes(mi);
                 app.invalidate_layout(InvalidationLevel::MessageChanged(mi));

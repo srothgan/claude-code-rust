@@ -7,17 +7,15 @@ use crate::app::handoff::projection::{
 };
 use crate::app::handoff::types::{
     AssistantCommittedUnit, AssistantTranscriptEntry, CommittedAssistantKind,
-    LiveAssistantIndicator, LiveAssistantTurn, LiveAssistantUnit, TerminalMutationState,
-    ToolTranscriptSnapshot, TranscriptEntry, UserTranscriptBlock, WelcomeTranscriptEntry,
+    LiveAssistantIndicator, LiveAssistantUnit, TerminalMutationState, ToolTranscriptSnapshot,
+    TranscriptEntry, UserTranscriptBlock, WelcomeTranscriptEntry,
 };
 use crate::app::{
     App, BlockCache, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock,
     SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
 };
-use crate::ui::message::{
-    MessageRenderContext, MessageRenderOptions, SpinnerState, render_text_block_cached,
-};
-use crate::ui::message_rows::{MessageRowSegment, build_message_rows};
+use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
+use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
@@ -272,7 +270,7 @@ fn serialize_assistant_live_slot(
     let units = turn.live.units.clone();
     let turn_id = turn.live.turn_id.0;
     let indicator = turn.live.live_indicator;
-    let spinner = spinner_state_for_live(&turn.live, app.spinner_frame);
+    let spinner = spinner_state_for_live(app.spinner_frame);
     let render_items = assistant_render_items_from_live(&units, formatting.previous_committed_kind);
     let show_label = !formatting.header_printed;
     let rows = render_assistant_rows(AssistantRowsRequest {
@@ -338,9 +336,8 @@ fn serialize_single_transcript_entry(
         }
     };
 
-    let rendered = build_message_rows(
+    let rendered = build_user_system_message_rows(
         &mut message,
-        &idle_spinner(),
         message_render_context(current_mode_id, width),
     );
     segments_to_physical_rows(&rendered.segments, width, false)
@@ -888,48 +885,22 @@ fn tool_call_info_from_snapshot(
                 TerminalSnapshotMode::AppendOnly
             }
         },
-        render_epoch: 0,
-        layout_epoch: 0,
-        last_measured_width: 0,
-        last_measured_height: 0,
-        last_measured_layout_epoch: 0,
-        last_measured_layout_generation: 0,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
     }
 }
 
-fn spinner_state_for_live(turn: &LiveAssistantTurn, frame: usize) -> SpinnerState {
-    let has_body = !turn.units.is_empty();
-    SpinnerState {
-        frame,
-        is_active_turn_assistant: true,
-        show_empty_thinking: !has_body
-            && matches!(turn.live_indicator, Some(LiveAssistantIndicator::Thinking)),
-        show_thinking: has_body
-            && matches!(turn.live_indicator, Some(LiveAssistantIndicator::Thinking)),
-        show_compacting: matches!(turn.live_indicator, Some(LiveAssistantIndicator::Compacting)),
-    }
+fn spinner_state_for_live(frame: usize) -> SpinnerState {
+    SpinnerState { frame }
 }
 
 fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageRenderContext<'_> {
-    MessageRenderContext::new(
-        current_mode_id,
-        width,
-        0,
-        MessageRenderOptions { include_trailing_separator: false },
-    )
+    MessageRenderContext::new(current_mode_id, width)
 }
 
 fn idle_spinner() -> SpinnerState {
-    SpinnerState {
-        frame: 0,
-        is_active_turn_assistant: false,
-        show_empty_thinking: false,
-        show_thinking: false,
-        show_compacting: false,
-    }
+    SpinnerState { frame: 0 }
 }
 
 fn render_assistant_text_block(

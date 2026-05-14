@@ -37,15 +37,12 @@ pub struct BlockCache {
 struct CacheLineSegment {
     start: usize,
     end: usize,
-    wrapped_height: usize,
-    wrapped_width: u16,
-    wrapped_height_valid: bool,
 }
 
 impl CacheLineSegment {
     #[must_use]
     fn new(start: usize, end: usize) -> Self {
-        Self { start, end, wrapped_height: 0, wrapped_width: 0, wrapped_height_valid: false }
+        Self { start, end }
     }
 }
 
@@ -135,18 +132,6 @@ impl BlockCache {
         self.touch();
     }
 
-    /// Store lines and set height in one call.
-    /// Deprecated: prefer `store()` + `set_height()` to keep concerns separate.
-    pub fn store_with_height(
-        &mut self,
-        lines: Vec<ratatui::text::Line<'static>>,
-        height: usize,
-        width: u16,
-    ) {
-        self.store(lines);
-        self.set_height(height, width);
-    }
-
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
     #[must_use]
     pub fn height_at(&self, width: u16) -> Option<usize> {
@@ -156,43 +141,6 @@ impl BlockCache {
         } else {
             None
         }
-    }
-
-    /// Recompute wrapped height from cached segments and memoize it at `width`.
-    /// Returns `None` when the render cache is stale.
-    pub fn measure_and_set_height(&mut self, width: u16) -> Option<usize> {
-        if self.version != 0 {
-            return None;
-        }
-        if let Some(h) = self.height_at(width) {
-            return Some(h);
-        }
-
-        let lines = self.lines.as_ref()?;
-
-        if self.segments.is_empty() {
-            self.set_height(0, width);
-            return Some(0);
-        }
-
-        let mut total_height = 0usize;
-        for segment in &mut self.segments {
-            if segment.wrapped_height_valid && segment.wrapped_width == width {
-                total_height = total_height.saturating_add(segment.wrapped_height);
-                continue;
-            }
-            let segment_lines = lines[segment.start..segment.end].to_vec();
-            let h = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(segment_lines))
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .line_count(width);
-            segment.wrapped_height = h;
-            segment.wrapped_width = width;
-            segment.wrapped_height_valid = true;
-            total_height = total_height.saturating_add(h);
-        }
-
-        self.set_height(total_height, width);
-        Some(total_height)
     }
 
     #[must_use]

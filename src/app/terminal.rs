@@ -108,7 +108,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         };
         let (update_mode, delta_bytes, total_bytes) = payload.summary();
         if apply_terminal_payload(tc, payload) {
-            tc.mark_tool_call_layout_dirty();
+            tc.invalidate_render_cache();
             tracing::debug!(
                 target: crate::logging::targets::APP_COMMAND,
                 event_name = "terminal_output_summary",
@@ -183,12 +183,6 @@ mod tests {
                 terminal_output_len: 0,
                 terminal_bytes_seen: 0,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-                render_epoch: 0,
-                layout_epoch: 0,
-                last_measured_width: 0,
-                last_measured_height: 0,
-                last_measured_layout_epoch: 0,
-                last_measured_layout_generation: 0,
                 cache: BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
