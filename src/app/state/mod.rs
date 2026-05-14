@@ -517,8 +517,6 @@ impl App {
         if !matches!(first.role, MessageRole::Welcome) {
             return;
         }
-        let previously_committable =
-            !crate::app::handoff::shadow::transcript_entries_from_message(first).is_empty();
         let mut changed = false;
         {
             let Some(first) = self.messages.first_mut() else {
@@ -543,19 +541,23 @@ impl App {
         if changed {
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
-            let now_committable = self.messages.first().is_some_and(|first| {
-                !crate::app::handoff::shadow::transcript_entries_from_message(first).is_empty()
-            });
-            if !previously_committable
-                && self.show_session_overview
-                && now_committable
-                && let Some(first) = self.messages.first()
-            {
-                self.handoff_shadow.inline_output.record_message_transcript_entries(
-                    0,
-                    crate::app::handoff::shadow::transcript_entries_from_message(first),
-                );
-                self.mark_committed_output_changed();
+        }
+
+        let entries = self
+            .messages
+            .first()
+            .map(crate::app::handoff::shadow::transcript_entries_from_message)
+            .unwrap_or_default();
+        if self.show_session_overview && !entries.is_empty() {
+            let result =
+                self.handoff_shadow.inline_output.replace_message_transcript_entries(0, entries);
+            if result.changed {
+                if result.touched_inserted {
+                    self.reset_committed_output_tracking();
+                    self.request_chat_visible_rebuild();
+                } else {
+                    self.mark_committed_output_changed();
+                }
             }
         }
     }
@@ -1499,6 +1501,26 @@ mod tests {
         )
     }
 
+    fn set_account_subscription(app: &mut App, subscription: &str) {
+        app.account_info = Some(crate::agent::types::AccountInfo {
+            subscription_type: Some(subscription.to_owned()),
+            ..Default::default()
+        });
+    }
+
+    fn inline_welcome_subscription(app: &App) -> Option<&str> {
+        app.handoff_shadow.inline_output.items().iter().find_map(|item| {
+            let crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+                entry: crate::app::handoff::types::TranscriptEntry::Welcome(welcome),
+                ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            Some(welcome.subscription.as_str())
+        })
+    }
+
     fn assert_pending_message_anchor(
         item: &crate::app::handoff::projection::InlineOutputItem,
         msg_idx: usize,
@@ -1587,10 +1609,7 @@ mod tests {
         assert!(app.handoff_shadow.inline_output.items().is_empty());
 
         app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.account_info = Some(crate::agent::types::AccountInfo {
-            subscription_type: Some("Pro".to_owned()),
-            ..Default::default()
-        });
+        set_account_subscription(&mut app, "Pro");
 
         app.sync_welcome_snapshot();
         app.sync_welcome_snapshot();
@@ -1605,6 +1624,65 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn sync_welcome_snapshot_updates_pending_welcome_entry_in_place() {
+        let mut app = make_test_app();
+        app.ensure_welcome_message();
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        set_account_subscription(&mut app, "Pro");
+        app.sync_welcome_snapshot();
+        let first_id = app.handoff_shadow.inline_output.items()[0].id;
+
+        set_account_subscription(&mut app, "Claude Max");
+        app.sync_welcome_snapshot();
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, first_id);
+        assert_eq!(inline_welcome_subscription(&app), Some("Claude Max"));
+        assert!(matches!(
+            items[0].kind,
+            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+                status: crate::app::handoff::projection::InlineOutputStatus::PendingInsert,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn sync_welcome_snapshot_rebuilds_visible_history_when_inserted_welcome_changes() {
+        let mut app = make_test_app();
+        app.ensure_welcome_message();
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        set_account_subscription(&mut app, "Pro");
+        app.sync_welcome_snapshot();
+        let first_id = app.handoff_shadow.inline_output.items()[0].id;
+        crate::app::handoff::projection::confirm_static_inserted(
+            &mut app.handoff_shadow,
+            &[first_id],
+        );
+        app.chat_render.mark_terminal_history_synced();
+        let _ = app.surface_dirty.chat.take_rebuild();
+        let _ = app.surface_dirty.chat.take_repaint();
+
+        set_account_subscription(&mut app, "Claude Max");
+        app.sync_welcome_snapshot();
+
+        let items = app.handoff_shadow.inline_output.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, first_id);
+        assert_eq!(inline_welcome_subscription(&app), Some("Claude Max"));
+        assert!(matches!(
+            items[0].kind,
+            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
+                status: crate::app::handoff::projection::InlineOutputStatus::Inserted,
+                ..
+            }
+        ));
+        assert!(!app.chat_render.terminal_history_is_synced());
+        assert_eq!(app.surface_dirty.chat.rebuild, crate::app::ChatRebuildKind::VisibleScreen);
     }
 
     #[test]

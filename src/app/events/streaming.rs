@@ -133,7 +133,7 @@ mod tests {
     use crate::app::{App, ChatMessage, MessageRole};
 
     #[test]
-    fn streaming_chunk_updates_shadow_turn_and_commits_prefix() {
+    fn streaming_text_chunk_keeps_pure_text_run_live_until_turn_completion() {
         let mut app = App::test_default();
         app.status = crate::app::AppStatus::Thinking;
         app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
@@ -149,7 +149,7 @@ mod tests {
 
         crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
         let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
-        assert_eq!(turn.committed_entries.len(), 1);
-        assert_eq!(turn.live.units.len(), 1);
+        assert_eq!(turn.committed_entries.len(), 0);
+        assert_eq!(turn.live.units.len(), 2);
     }
 }

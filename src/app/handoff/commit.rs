@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn final_text_before_a_live_tool_commits() {
+    fn pure_text_before_live_tail_does_not_commit_mid_stream() {
         let mut turn = empty_turn();
         append_text_chunk(&mut turn, "first\n\nsecond");
         if let Some(LiveAssistantUnit::MutableTextTail(tail)) = turn.units.last_mut() {
@@ -151,8 +151,8 @@ mod tests {
 
         let decision = plan_handoff(&turn);
 
-        assert_eq!(decision.committed_prefix_len, 1);
-        assert_eq!(decision.transcript_entries.len(), 1);
+        assert_eq!(decision.committed_prefix_len, 0);
+        assert!(decision.transcript_entries.is_empty());
     }
 
     #[test]
@@ -244,6 +244,10 @@ mod tests {
     fn apply_successful_commit_updates_formatting_without_touching_live_indicator() {
         let mut turn = empty_turn();
         append_text_chunk(&mut turn, "before\n\nafter");
+        insert_tool(
+            &mut turn,
+            stable_tool(model::ToolCallStatus::Completed, TerminalMutationState::Settled),
+        );
         turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
 
         let decision = plan_handoff(&turn);
@@ -253,7 +257,7 @@ mod tests {
         assert_eq!(turn.formatting.previous_committed_kind, Some(CommittedAssistantKind::TextLike));
         assert_eq!(turn.live_indicator, Some(LiveAssistantIndicator::Thinking));
         assert_eq!(turn.units.len(), 1);
-        assert!(matches!(turn.units[0], LiveAssistantUnit::MutableTextTail(_)));
+        assert!(matches!(turn.units[0], LiveAssistantUnit::Tool(_)));
     }
 
     #[test]
@@ -293,7 +297,7 @@ mod tests {
             LiveAssistantUnit::Tool(tool) if tool.snapshot.hidden
         )));
         assert_eq!(decision.committed_prefix_len, 2);
-        assert_eq!(decision.transcript_entries.len(), 2);
+        assert_eq!(decision.transcript_entries.len(), 1);
     }
 
     #[test]

@@ -19,14 +19,39 @@ pub(crate) fn unit_is_final(unit: &LiveAssistantUnit) -> bool {
 #[must_use]
 pub(crate) fn committed_prefix_len(turn: &LiveAssistantTurn) -> usize {
     let mut len = 0usize;
-    for (idx, unit) in turn.units.iter().enumerate() {
-        let has_following_unit = idx + 1 < turn.units.len();
-        if !unit_is_committable(unit, turn.sealed, has_following_unit) {
-            break;
+
+    while len < turn.units.len() {
+        match &turn.units[len] {
+            LiveAssistantUnit::StableText(_) => {
+                let run_end = stable_text_run_end(&turn.units, len);
+                if turn.sealed || stable_text_run_has_commit_boundary(turn.units.get(run_end)) {
+                    len = run_end;
+                    continue;
+                }
+                break;
+            }
+            unit => {
+                let has_following_unit = len + 1 < turn.units.len();
+                if !unit_is_committable(unit, turn.sealed, has_following_unit) {
+                    break;
+                }
+                len += 1;
+            }
         }
-        len += 1;
     }
+
     len
+}
+
+fn stable_text_run_end(units: &[LiveAssistantUnit], start: usize) -> usize {
+    units[start..]
+        .iter()
+        .position(|unit| !matches!(unit, LiveAssistantUnit::StableText(_)))
+        .map_or(units.len(), |offset| start + offset)
+}
+
+fn stable_text_run_has_commit_boundary(next_unit: Option<&LiveAssistantUnit>) -> bool {
+    matches!(next_unit, Some(LiveAssistantUnit::Tool(_) | LiveAssistantUnit::Notice(_)))
 }
 
 #[must_use]
@@ -222,6 +247,45 @@ mod tests {
         }));
 
         assert_eq!(committed_prefix_len(&turn), 1);
+    }
+
+    #[test]
+    fn unsealed_turn_keeps_pure_text_run_live_until_completion() {
+        let mut turn = LiveAssistantTurn::new(AssistantTurnId(1));
+        turn.units.push(LiveAssistantUnit::StableText(StableTextUnit {
+            id: LiveUnitId(1),
+            text: "line 1\n\n".to_owned(),
+            trailing_spacing: TextBlockSpacing::ParagraphBreak,
+        }));
+        turn.units.push(LiveAssistantUnit::MutableTextTail(MutableTextTailUnit {
+            id: LiveUnitId(2),
+            text: "line 2".to_owned(),
+        }));
+
+        assert_eq!(committed_prefix_len(&turn), 0);
+    }
+
+    #[test]
+    fn unsealed_turn_commits_stable_text_run_before_tool_boundary() {
+        let mut turn = LiveAssistantTurn::new(AssistantTurnId(1));
+        turn.units.push(LiveAssistantUnit::StableText(StableTextUnit {
+            id: LiveUnitId(1),
+            text: "before\n\n".to_owned(),
+            trailing_spacing: TextBlockSpacing::ParagraphBreak,
+        }));
+        turn.units.push(LiveAssistantUnit::StableText(StableTextUnit {
+            id: LiveUnitId(2),
+            text: "tool follows".to_owned(),
+            trailing_spacing: TextBlockSpacing::None,
+        }));
+        turn.units.push(tool_with(
+            model::ToolCallStatus::Pending,
+            TerminalMutationState::Streaming,
+            false,
+            false,
+        ));
+
+        assert_eq!(committed_prefix_len(&turn), 2);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::app::handoff::types::{
 };
 use crate::app::{
     App, BlockCache, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, ToolCallInfo,
+    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
 };
 use crate::ui::message::{
     MessageRenderContext, MessageRenderOptions, SpinnerState, render_text_block_cached,
@@ -497,6 +497,55 @@ struct AssistantRenderItemSpec {
     item: AssistantRenderItem,
 }
 
+struct PendingAssistantTextRun {
+    leading_blank_lines: usize,
+    text: String,
+    trailing_spacing: TextBlockSpacing,
+}
+
+impl PendingAssistantTextRun {
+    fn new(leading_blank_lines: usize, text: &str, trailing_spacing: TextBlockSpacing) -> Self {
+        Self { leading_blank_lines, text: text.to_owned(), trailing_spacing }
+    }
+
+    fn append(&mut self, text: &str, trailing_spacing: TextBlockSpacing) {
+        append_text_run(&mut self.text, self.trailing_spacing, text);
+        self.trailing_spacing = trailing_spacing;
+    }
+
+    fn into_render_item(self) -> AssistantRenderItemSpec {
+        AssistantRenderItemSpec {
+            leading_blank_lines: self.leading_blank_lines,
+            item: AssistantRenderItem::Text(
+                TextBlock::from_complete(&self.text).with_trailing_spacing(self.trailing_spacing),
+            ),
+        }
+    }
+}
+
+fn append_text_run(existing: &mut String, existing_spacing: TextBlockSpacing, text: &str) {
+    if existing.is_empty() || text.is_empty() {
+        existing.push_str(text);
+        return;
+    }
+
+    if !text.starts_with('\n') {
+        match existing_spacing {
+            TextBlockSpacing::None if !existing.ends_with('\n') => existing.push('\n'),
+            TextBlockSpacing::ParagraphBreak if !existing.ends_with("\n\n") => {
+                if existing.ends_with('\n') {
+                    existing.push('\n');
+                } else {
+                    existing.push_str("\n\n");
+                }
+            }
+            TextBlockSpacing::None | TextBlockSpacing::ParagraphBreak => {}
+        }
+    }
+
+    existing.push_str(text);
+}
+
 #[derive(Default)]
 struct AssistantInlineLayoutState {
     has_body_content: bool,
@@ -506,20 +555,43 @@ struct AssistantInlineLayoutState {
 fn assistant_render_items_from_committed(
     entries: &[&TranscriptEntry],
 ) -> Vec<AssistantRenderItemSpec> {
-    entries
-        .iter()
-        .filter_map(|entry| match entry {
-            TranscriptEntry::AssistantOpen(entry) | TranscriptEntry::AssistantContinue(entry) => {
-                Some(AssistantRenderItemSpec {
+    let mut items = Vec::with_capacity(entries.len());
+    let mut pending_text: Option<PendingAssistantTextRun> = None;
+
+    for entry in entries {
+        let (TranscriptEntry::AssistantOpen(entry) | TranscriptEntry::AssistantContinue(entry)) =
+            entry
+        else {
+            continue;
+        };
+
+        match &entry.unit {
+            AssistantCommittedUnit::Text(text) => {
+                if entry.leading_blank_lines == 0
+                    && let Some(pending) = pending_text.as_mut()
+                {
+                    pending.append(&text.text, text.trailing_spacing);
+                } else {
+                    flush_pending_text_run(&mut pending_text, &mut items);
+                    pending_text = Some(PendingAssistantTextRun::new(
+                        usize::from(entry.leading_blank_lines),
+                        &text.text,
+                        text.trailing_spacing,
+                    ));
+                }
+            }
+            AssistantCommittedUnit::Notice(_) | AssistantCommittedUnit::Tool(_) => {
+                flush_pending_text_run(&mut pending_text, &mut items);
+                items.push(AssistantRenderItemSpec {
                     leading_blank_lines: usize::from(entry.leading_blank_lines),
                     item: assistant_render_item_from_committed(entry),
-                })
+                });
             }
-            TranscriptEntry::Welcome(_) | TranscriptEntry::User(_) | TranscriptEntry::System(_) => {
-                None
-            }
-        })
-        .collect()
+        }
+    }
+
+    flush_pending_text_run(&mut pending_text, &mut items);
+    items
 }
 
 fn assistant_render_items_from_live(
@@ -527,23 +599,65 @@ fn assistant_render_items_from_live(
     initial_previous_kind: Option<CommittedAssistantKind>,
 ) -> Vec<AssistantRenderItemSpec> {
     let mut items = Vec::with_capacity(units.len());
+    let mut pending_text: Option<PendingAssistantTextRun> = None;
     let mut previous_kind = initial_previous_kind;
     for unit in ordered_live_units_for_render(units) {
+        if let Some((text, trailing_spacing)) = plain_text_unit(unit) {
+            if let Some(pending) = pending_text.as_mut() {
+                pending.append(text, trailing_spacing);
+            } else {
+                let current_kind = CommittedAssistantKind::TextLike;
+                let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
+                pending_text =
+                    Some(PendingAssistantTextRun::new(leading_blank_lines, text, trailing_spacing));
+                previous_kind = Some(current_kind);
+            }
+            continue;
+        }
+
+        flush_pending_text_run(&mut pending_text, &mut items);
         let current_kind = live_unit_kind(unit);
-        let leading_blank_lines = match (previous_kind, current_kind) {
-            (None, _)
-            | (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::TextLike)
-            | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::Tool) => 0,
-            (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::Tool)
-            | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::TextLike) => 1,
-        };
+        let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
         items.push(AssistantRenderItemSpec {
             leading_blank_lines,
             item: assistant_render_item_from_live(unit),
         });
         previous_kind = Some(current_kind);
     }
+    flush_pending_text_run(&mut pending_text, &mut items);
     items
+}
+
+fn flush_pending_text_run(
+    pending_text: &mut Option<PendingAssistantTextRun>,
+    items: &mut Vec<AssistantRenderItemSpec>,
+) {
+    if let Some(pending) = pending_text.take()
+        && !pending.text.is_empty()
+    {
+        items.push(pending.into_render_item());
+    }
+}
+
+fn plain_text_unit(unit: &LiveAssistantUnit) -> Option<(&str, TextBlockSpacing)> {
+    match unit {
+        LiveAssistantUnit::StableText(text) => Some((&text.text, text.trailing_spacing)),
+        LiveAssistantUnit::MutableTextTail(text) => Some((&text.text, TextBlockSpacing::None)),
+        LiveAssistantUnit::Notice(_) | LiveAssistantUnit::Tool(_) => None,
+    }
+}
+
+fn leading_blank_lines_between(
+    previous_kind: Option<CommittedAssistantKind>,
+    current_kind: CommittedAssistantKind,
+) -> usize {
+    match (previous_kind, current_kind) {
+        (None, _)
+        | (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::TextLike)
+        | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::Tool) => 0,
+        (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::Tool)
+        | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::TextLike) => 1,
+    }
 }
 
 fn ordered_live_units_for_render(units: &[LiveAssistantUnit]) -> Vec<&LiveAssistantUnit> {
@@ -824,7 +938,7 @@ fn render_assistant_text_block(
     trim_leading_blank_lines: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    render_text_block_cached(&mut block, width, None, false, &mut lines);
+    render_text_block_cached(&mut block, width, None, true, &mut lines);
     let lines = if trim_leading_blank_lines {
         let first_non_blank =
             lines.iter().position(|line| !line_is_blank(line)).unwrap_or(lines.len());
@@ -1053,10 +1167,13 @@ mod tests {
     use crate::app::handoff::types::{
         AssistantCommittedUnit, AssistantTranscriptEntry, AssistantTurnId, CommittedAssistantKind,
         CommittedTextUnit, CommittedToolUnit, LiveAssistantTurn, LiveAssistantUnit, LiveToolUnit,
-        LiveUnitId, MutableTextTailUnit, TerminalMutationState, ToolTranscriptSnapshot,
-        TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry, WelcomeTranscriptEntry,
+        LiveUnitId, MutableTextTailUnit, StableTextUnit, TerminalMutationState,
+        ToolTranscriptSnapshot, TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry,
+        WelcomeTranscriptEntry,
     };
-    use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
+    use crate::app::{
+        App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
+    };
     use ratatui::text::Line;
 
     fn line_text(line: &Line<'_>) -> String {
@@ -1099,6 +1216,26 @@ mod tests {
             id: unit_id,
             text: text.to_owned(),
         }));
+        live
+    }
+
+    fn live_turn_with_split_text(
+        turn_id: AssistantTurnId,
+        first: &str,
+        first_spacing: TextBlockSpacing,
+        tail: &str,
+    ) -> LiveAssistantTurn {
+        let mut live = LiveAssistantTurn::new(turn_id);
+        live.units.push(LiveAssistantUnit::StableText(StableTextUnit {
+            id: LiveUnitId(1),
+            text: first.to_owned(),
+            trailing_spacing: first_spacing,
+        }));
+        live.units.push(LiveAssistantUnit::MutableTextTail(MutableTextTailUnit {
+            id: LiveUnitId(2),
+            text: tail.to_owned(),
+        }));
+        live.current_text_tail = Some(LiveUnitId(2));
         live
     }
 
@@ -1221,6 +1358,56 @@ mod tests {
     }
 
     #[test]
+    fn committed_adjacent_text_entries_render_as_one_text_run() {
+        let app = App::test_default();
+        let rows = serialize_transcript_rows(
+            &app,
+            &[
+                TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
+                    leading_blank_lines: 0,
+                    unit: AssistantCommittedUnit::Text(CommittedTextUnit {
+                        text: "line 1\n\n".to_owned(),
+                        trailing_spacing: TextBlockSpacing::ParagraphBreak,
+                    }),
+                }),
+                TranscriptEntry::AssistantContinue(AssistantTranscriptEntry {
+                    leading_blank_lines: 0,
+                    unit: AssistantCommittedUnit::Text(CommittedTextUnit {
+                        text: "line 2".to_owned(),
+                        trailing_spacing: TextBlockSpacing::None,
+                    }),
+                }),
+            ],
+            false,
+            120,
+        );
+
+        assert_eq!(line_texts(&rows), vec!["Claude", "line 1", "line 2"]);
+    }
+
+    #[test]
+    fn committed_assistant_text_preserves_single_newline_rows() {
+        let app = App::test_default();
+        let rows = serialize_transcript_rows(
+            &app,
+            &[TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
+                leading_blank_lines: 0,
+                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
+                    text: "line 1: ready\nline 2: ready\nline 3: ready".to_owned(),
+                    trailing_spacing: TextBlockSpacing::None,
+                }),
+            })],
+            false,
+            120,
+        );
+
+        assert_eq!(
+            line_texts(&rows),
+            vec!["Claude", "line 1: ready", "line 2: ready", "line 3: ready"]
+        );
+    }
+
+    #[test]
     fn transcript_row_batches_preserve_flattened_transcript_rendering() {
         let app = App::test_default();
         let entries = vec![
@@ -1329,6 +1516,48 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text, vec!["Claude", "prefix", "tail"]);
+    }
+
+    #[test]
+    fn live_adjacent_text_units_render_as_one_text_run() {
+        let mut app = App::test_default();
+        let turn_id = AssistantTurnId(6);
+        app.messages.push(assistant_message());
+        install_active_live_turn(
+            &mut app,
+            0,
+            turn_id,
+            live_turn_with_split_text(
+                turn_id,
+                "line 1: ready\n\n",
+                TextBlockSpacing::ParagraphBreak,
+                "line 2: ready",
+            ),
+        );
+
+        let rows = serialize_live_rows(&mut app, 120);
+
+        assert_eq!(line_texts(&rows), vec!["Claude", "line 1: ready", "line 2: ready"]);
+    }
+
+    #[test]
+    fn live_assistant_text_preserves_single_newline_rows() {
+        let mut app = App::test_default();
+        let turn_id = AssistantTurnId(7);
+        app.messages.push(assistant_message());
+        install_active_live_turn(
+            &mut app,
+            0,
+            turn_id,
+            live_turn_with_tail(turn_id, "line 1: ready\nline 2: ready\nline 3: ready"),
+        );
+
+        let rows = serialize_live_rows(&mut app, 120);
+
+        assert_eq!(
+            line_texts(&rows),
+            vec!["Claude", "line 1: ready", "line 2: ready", "line 3: ready"]
+        );
     }
 
     #[test]

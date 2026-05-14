@@ -11,6 +11,7 @@ use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::collections::VecDeque;
@@ -475,24 +476,141 @@ impl ChatTerminal {
             );
         }
 
-        let row_count = u16::try_from(batch.rows.len()).unwrap_or(u16::MAX).max(1);
-        self.ensure_insert_within_owned_region(row_count, terminal_width, terminal_height)?;
+        let mut inserted_rows = 0usize;
+        while inserted_rows < batch.rows.len() {
+            let remaining_rows =
+                u16::try_from(batch.rows.len().saturating_sub(inserted_rows)).unwrap_or(u16::MAX);
+            let plan = self.prepare_history_insert_plan(remaining_rows, terminal_height)?;
+            let chunk_len = usize::from(plan.inserted_rows);
+            if chunk_len == 0 {
+                bail!(
+                    "refusing inline history insert without a safe chunk: rows_remaining={}, viewport={:?}, terminal_height={}",
+                    batch.rows.len().saturating_sub(inserted_rows),
+                    self.state.area,
+                    terminal_height
+                );
+            }
+            let rows =
+                batch.rows.iter().skip(inserted_rows).take(chunk_len).cloned().collect::<Vec<_>>();
+
+            self.insert_history_chunk(&rows, plan, terminal_width, terminal_height, batch.kind)?;
+            inserted_rows = inserted_rows.saturating_add(chunk_len);
+        }
+
+        Ok(inserted_rows)
+    }
+
+    fn prepare_history_insert_plan(
+        &self,
+        row_count: u16,
+        terminal_height: u16,
+    ) -> anyhow::Result<HistoryInsertPlan> {
+        let area = self
+            .state
+            .area
+            .ok_or_else(|| anyhow!("inline chat viewport missing before insert guard"))?;
+        let plan = plan_owned_insert(area, self.state.owned_top, row_count, terminal_height.max(1));
+
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_insert_ownership_plan",
+            message = "history insert checked against owned terminal region",
+            outcome = ?plan.action,
+            rows = row_count,
+            planned_rows = plan.inserted_rows,
+            viewport_top = area.top(),
+            viewport_bottom = area.bottom(),
+            viewport_after_scroll_top = plan.viewport_after_scroll.top(),
+            viewport_after_insert_top = plan.viewport_after_insert.top(),
+            owned_top = self.state.owned_top,
+            owned_bottom = self.state.owned_bottom,
+            terminal_height,
+            available_below = plan.available_below,
+            max_insert_rows_for_viewport = plan.max_insert_rows_for_viewport,
+            scroll_rows_before_insert = plan.scroll_rows_before_insert,
+        );
+
+        if matches!(plan.action, HistoryInsertAction::RebuildVisibleHistory) {
+            bail!(
+                "refusing unsafe inline history insert: rows={}, viewport={:?}, owned={}..{}, terminal_height={}, max_insert_rows={}",
+                row_count,
+                area,
+                self.state.owned_top,
+                self.state.owned_bottom,
+                terminal_height,
+                plan.max_insert_rows_for_viewport
+            );
+        }
+
+        Ok(plan)
+    }
+
+    fn insert_history_chunk(
+        &mut self,
+        rows: &[Line<'static>],
+        plan: HistoryInsertPlan,
+        terminal_width: u16,
+        terminal_height: u16,
+        batch_kind: HistoryBatchKind,
+    ) -> anyhow::Result<()> {
+        if plan.scroll_rows_before_insert > 0 {
+            self.append_blank_lines_for_owned_region(
+                plan.scroll_rows_before_insert,
+                terminal_height,
+            )?;
+            self.state.area = Some(plan.viewport_after_scroll);
+            self.terminal = None;
+            self.ensure_inline_terminal_height(
+                plan.viewport_after_scroll.height,
+                Some(plan.viewport_after_scroll),
+                terminal_width,
+                terminal_height,
+            )?;
+        }
+
         let before_area = self
             .state
             .area
             .ok_or_else(|| anyhow!("inline chat viewport missing before history insert"))?;
-        let rows = batch.rows.iter().cloned().collect::<Vec<_>>();
+        if before_area != plan.viewport_after_scroll {
+            bail!(
+                "inline history insert pre-scroll mismatch: expected={:?}, actual={:?}, rows={}",
+                plan.viewport_after_scroll,
+                before_area,
+                plan.inserted_rows
+            );
+        }
+
+        let rendered_rows = rows.to_vec();
         let terminal = self
             .terminal
             .as_mut()
             .ok_or_else(|| anyhow!("inline chat terminal missing before history insert"))?;
         terminal
-            .insert_before(row_count, |buffer| {
-                Paragraph::new(rows).render(buffer.area, buffer);
+            .insert_before(plan.inserted_rows, |buffer| {
+                Paragraph::new(rendered_rows).render(buffer.area, buffer);
             })
             .context("failed to insert committed transcript above inline viewport")?;
 
-        let after_area = viewport_area_after_insert(before_area, row_count, terminal_height);
+        let after_area =
+            viewport_area_after_insert_exact(before_area, plan.inserted_rows, terminal_height)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "inline history insert could not move viewport exactly: viewport={:?}, rows={}, terminal_height={}",
+                        before_area,
+                        plan.inserted_rows,
+                        terminal_height
+                    )
+                })?;
+        if after_area != plan.viewport_after_insert {
+            bail!(
+                "inline history insert postcondition mismatch: expected={:?}, actual={:?}, rows={}",
+                plan.viewport_after_insert,
+                after_area,
+                plan.inserted_rows
+            );
+        }
+
         self.state.area = Some(after_area);
         self.mark_area_owned(
             Rect::new(
@@ -504,22 +622,26 @@ impl ChatTerminal {
             terminal_height,
             "history_insert",
         );
-        self.state.visible_history_rows = self.state.visible_history_rows.saturating_add(row_count);
+        self.state.visible_history_rows =
+            self.state.visible_history_rows.saturating_add(plan.inserted_rows);
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_history_insert_applied",
             message = "history rows inserted before ratatui inline viewport",
             outcome = "success",
-            inserted_rows = row_count,
-            viewport_top_before = before_area.top(),
+            inserted_rows = plan.inserted_rows,
+            scroll_rows_before_insert = plan.scroll_rows_before_insert,
+            viewport_top_before = plan.viewport_before.top(),
+            viewport_top_after_scroll = before_area.top(),
             viewport_top_after = after_area.top(),
             owned_top = self.state.owned_top,
             owned_bottom = self.state.owned_bottom,
             visible_history_rows = self.state.visible_history_rows,
-            batch_kind = ?batch.kind,
+            batch_kind = ?batch_kind,
+            insert_action = ?plan.action,
         );
 
-        Ok(usize::from(row_count))
+        Ok(())
     }
 
     fn draw_mutable_viewport<F>(&mut self, render_mutable: F) -> anyhow::Result<Rect>
@@ -540,60 +662,6 @@ impl ChatTerminal {
             .context("failed to draw ratatui inline chat viewport")?;
 
         Ok(viewport_area)
-    }
-
-    fn ensure_insert_within_owned_region(
-        &mut self,
-        row_count: u16,
-        terminal_width: u16,
-        terminal_height: u16,
-    ) -> anyhow::Result<()> {
-        let area = self
-            .state
-            .area
-            .ok_or_else(|| anyhow!("inline chat viewport missing before insert guard"))?;
-        let plan = plan_owned_insert(area, self.state.owned_top, row_count, terminal_height.max(1));
-
-        tracing::debug!(
-            target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_insert_ownership_plan",
-            message = "history insert checked against owned terminal region",
-            outcome = if plan.allowed { "allowed" } else { "blocked" },
-            rows = row_count,
-            viewport_top = area.top(),
-            viewport_bottom = area.bottom(),
-            owned_top = self.state.owned_top,
-            owned_bottom = self.state.owned_bottom,
-            terminal_height,
-            available_below = plan.available_below,
-            scroll_down_rows = plan.scroll_down_rows,
-        );
-
-        if !plan.allowed {
-            bail!(
-                "refusing inline history insert outside owned region: rows={}, viewport={:?}, owned={}..{}, terminal_height={}",
-                row_count,
-                area,
-                self.state.owned_top,
-                self.state.owned_bottom,
-                terminal_height
-            );
-        }
-
-        if plan.scroll_down_rows > 0 {
-            self.append_blank_lines_for_owned_region(plan.scroll_down_rows, terminal_height)?;
-            let area_after_scroll = shift_area_up(area, plan.scroll_down_rows);
-            self.state.area = Some(area_after_scroll);
-            self.terminal = None;
-            self.ensure_inline_terminal_height(
-                area_after_scroll.height,
-                Some(area_after_scroll),
-                terminal_width,
-                terminal_height,
-            )?;
-        }
-
-        Ok(())
     }
 
     fn append_blank_lines_for_owned_region(
@@ -804,10 +872,22 @@ fn inline_viewport_scroll_rows_after_create(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OwnedInsertPlan {
-    allowed: bool,
+struct HistoryInsertPlan {
+    inserted_rows: u16,
+    scroll_rows_before_insert: u16,
+    viewport_before: Rect,
+    viewport_after_scroll: Rect,
+    viewport_after_insert: Rect,
     available_below: u16,
-    scroll_down_rows: u16,
+    max_insert_rows_for_viewport: u16,
+    action: HistoryInsertAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryInsertAction {
+    Insert,
+    SplitBatch,
+    RebuildVisibleHistory,
 }
 
 fn plan_owned_insert(
@@ -815,36 +895,107 @@ fn plan_owned_insert(
     owned_top: u16,
     inserted_rows: u16,
     terminal_height: u16,
-) -> OwnedInsertPlan {
+) -> HistoryInsertPlan {
     let screen_height = terminal_height.max(1);
+    let empty_area = Rect::new(viewport_area.x, viewport_area.y, viewport_area.width, 0);
     if viewport_area.is_empty()
         || viewport_area.top() < owned_top
         || viewport_area.bottom() > screen_height
     {
-        return OwnedInsertPlan { allowed: false, available_below: 0, scroll_down_rows: 0 };
+        return HistoryInsertPlan {
+            inserted_rows: 0,
+            scroll_rows_before_insert: 0,
+            viewport_before: viewport_area,
+            viewport_after_scroll: viewport_area,
+            viewport_after_insert: empty_area,
+            available_below: 0,
+            max_insert_rows_for_viewport: 0,
+            action: HistoryInsertAction::RebuildVisibleHistory,
+        };
     }
 
     let available_below = screen_height.saturating_sub(viewport_area.bottom());
-    if inserted_rows <= available_below {
-        return OwnedInsertPlan { allowed: true, available_below, scroll_down_rows: 0 };
+    let max_insert_rows_for_viewport = screen_height.saturating_sub(viewport_area.height);
+    let planned_rows = inserted_rows.min(max_insert_rows_for_viewport);
+    if planned_rows == 0 {
+        return HistoryInsertPlan {
+            inserted_rows: 0,
+            scroll_rows_before_insert: 0,
+            viewport_before: viewport_area,
+            viewport_after_scroll: viewport_area,
+            viewport_after_insert: empty_area,
+            available_below,
+            max_insert_rows_for_viewport,
+            action: HistoryInsertAction::RebuildVisibleHistory,
+        };
     }
 
-    let overflow = inserted_rows.saturating_sub(available_below);
-    let scroll_down_rows = overflow.min(owned_top);
-    let owned_top_after_scroll = owned_top.saturating_sub(scroll_down_rows);
-    let available_after_scroll = available_below.saturating_add(scroll_down_rows);
-    let allowed = inserted_rows <= available_after_scroll || owned_top_after_scroll == 0;
+    let scroll_rows_before_insert = planned_rows.saturating_sub(available_below);
+    if scroll_rows_before_insert > viewport_area.top() {
+        return HistoryInsertPlan {
+            inserted_rows: 0,
+            scroll_rows_before_insert: 0,
+            viewport_before: viewport_area,
+            viewport_after_scroll: viewport_area,
+            viewport_after_insert: empty_area,
+            available_below,
+            max_insert_rows_for_viewport,
+            action: HistoryInsertAction::RebuildVisibleHistory,
+        };
+    }
 
-    OwnedInsertPlan { allowed, available_below, scroll_down_rows }
+    let viewport_after_scroll = shift_area_up(viewport_area, scroll_rows_before_insert);
+    let Some(viewport_after_insert) =
+        viewport_area_after_insert_exact(viewport_after_scroll, planned_rows, screen_height)
+    else {
+        return HistoryInsertPlan {
+            inserted_rows: 0,
+            scroll_rows_before_insert: 0,
+            viewport_before: viewport_area,
+            viewport_after_scroll,
+            viewport_after_insert: empty_area,
+            available_below,
+            max_insert_rows_for_viewport,
+            action: HistoryInsertAction::RebuildVisibleHistory,
+        };
+    };
+
+    let action = if inserted_rows > planned_rows {
+        HistoryInsertAction::SplitBatch
+    } else {
+        HistoryInsertAction::Insert
+    };
+
+    HistoryInsertPlan {
+        inserted_rows: planned_rows,
+        scroll_rows_before_insert,
+        viewport_before: viewport_area,
+        viewport_after_scroll,
+        viewport_after_insert,
+        available_below,
+        max_insert_rows_for_viewport,
+        action,
+    }
 }
 
 fn shift_area_up(area: Rect, rows: u16) -> Rect {
     Rect::new(area.x, area.y.saturating_sub(rows), area.width, area.height)
 }
 
-fn viewport_area_after_insert(area: Rect, inserted_rows: u16, terminal_height: u16) -> Rect {
-    let max_top = terminal_height.max(1).saturating_sub(area.height);
-    Rect::new(area.x, area.y.saturating_add(inserted_rows).min(max_top), area.width, area.height)
+fn viewport_area_after_insert_exact(
+    area: Rect,
+    inserted_rows: u16,
+    terminal_height: u16,
+) -> Option<Rect> {
+    let screen_height = terminal_height.max(1);
+    if area.is_empty() || area.bottom() > screen_height {
+        return None;
+    }
+    if inserted_rows > screen_height.saturating_sub(area.bottom()) {
+        return None;
+    }
+
+    Some(Rect::new(area.x, area.y.saturating_add(inserted_rows), area.width, area.height))
 }
 
 fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
@@ -867,10 +1018,10 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch, ReplayState,
-        inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
-        plan_inline_geometry, plan_owned_insert, replay_batch_row_budget, shift_area_up,
-        viewport_area_after_insert,
+        ChatTerminal, HistoryBatchKind, HistoryInsertAction, InlineViewportState,
+        PendingHistoryBatch, ReplayState, inline_viewport_scroll_rows_after_create,
+        inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert,
+        replay_batch_row_budget, shift_area_up, viewport_area_after_insert_exact,
     };
     use crate::app::terminal_runtime::history_insert::RenderedHistoryRows;
     use ratatui::layout::Rect;
@@ -957,45 +1108,90 @@ mod tests {
     fn owned_insert_plan_allows_insert_when_viewport_has_room_below() {
         let plan = plan_owned_insert(Rect::new(0, 22, 120, 5), 22, 9, 37);
 
-        assert!(plan.allowed);
+        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.inserted_rows, 9);
         assert_eq!(plan.available_below, 10);
-        assert_eq!(plan.scroll_down_rows, 0);
+        assert_eq!(plan.scroll_rows_before_insert, 0);
+        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 22, 120, 5));
+        assert_eq!(plan.viewport_after_insert, Rect::new(0, 31, 120, 5));
     }
 
     #[test]
     fn owned_insert_plan_expands_downward_before_insert_scrolls_above_owned_top() {
         let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 20, 9, 37);
 
-        assert!(plan.allowed);
+        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.inserted_rows, 9);
         assert_eq!(plan.available_below, 4);
-        assert_eq!(plan.scroll_down_rows, 5);
+        assert_eq!(plan.scroll_rows_before_insert, 5);
+        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 23, 120, 5));
+        assert_eq!(plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
     }
 
     #[test]
-    fn owned_insert_plan_allows_screen_scroll_after_entire_visible_screen_is_owned() {
+    fn owned_insert_plan_scrolls_even_after_entire_visible_screen_is_owned() {
+        let plan = plan_owned_insert(Rect::new(0, 28, 120, 6), 0, 6, 37);
+
+        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.inserted_rows, 6);
+        assert_eq!(plan.available_below, 3);
+        assert_eq!(plan.scroll_rows_before_insert, 3);
+        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 25, 120, 6));
+        assert_eq!(plan.viewport_after_insert, Rect::new(0, 31, 120, 6));
+        assert_eq!(
+            plan.viewport_after_scroll.top().saturating_add(plan.inserted_rows),
+            plan.viewport_after_insert.top()
+        );
+    }
+
+    #[test]
+    fn owned_insert_plan_splits_batches_larger_than_viewport_capacity() {
         let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 20, 37);
 
-        assert!(plan.allowed);
+        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.inserted_rows, 20);
         assert_eq!(plan.available_below, 4);
-        assert_eq!(plan.scroll_down_rows, 3);
+        assert_eq!(plan.scroll_rows_before_insert, 16);
+        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 12, 120, 5));
+        assert_eq!(plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
+
+        let split_plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 40, 37);
+
+        assert_eq!(split_plan.action, HistoryInsertAction::SplitBatch);
+        assert_eq!(split_plan.inserted_rows, 32);
+        assert_eq!(split_plan.max_insert_rows_for_viewport, 32);
+        assert_eq!(split_plan.scroll_rows_before_insert, 28);
+        assert_eq!(split_plan.viewport_after_scroll, Rect::new(0, 0, 120, 5));
+        assert_eq!(split_plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
+    }
+
+    #[test]
+    fn owned_insert_plan_rebuilds_when_viewport_consumes_screen() {
+        let plan = plan_owned_insert(Rect::new(0, 0, 120, 37), 0, 1, 37);
+
+        assert_eq!(plan.action, HistoryInsertAction::RebuildVisibleHistory);
+        assert_eq!(plan.inserted_rows, 0);
+        assert_eq!(plan.max_insert_rows_for_viewport, 0);
     }
 
     #[test]
     fn owned_insert_plan_blocks_viewport_above_owned_region() {
         let plan = plan_owned_insert(Rect::new(0, 18, 120, 5), 20, 1, 37);
 
-        assert!(!plan.allowed);
+        assert_eq!(plan.action, HistoryInsertAction::RebuildVisibleHistory);
+        assert_eq!(plan.inserted_rows, 0);
     }
 
     #[test]
-    fn area_helpers_track_viewport_after_owned_scroll_and_insert() {
+    fn area_helpers_require_exact_viewport_movement_after_insert() {
         let area = Rect::new(0, 28, 120, 5);
 
         assert_eq!(shift_area_up(area, 5), Rect::new(0, 23, 120, 5));
         assert_eq!(
-            viewport_area_after_insert(Rect::new(0, 23, 120, 5), 9, 37),
-            Rect::new(0, 32, 120, 5)
+            viewport_area_after_insert_exact(Rect::new(0, 23, 120, 5), 9, 37),
+            Some(Rect::new(0, 32, 120, 5))
         );
+        assert_eq!(viewport_area_after_insert_exact(Rect::new(0, 28, 120, 6), 6, 37), None);
     }
 
     #[test]

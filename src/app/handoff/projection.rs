@@ -52,6 +52,13 @@ pub(crate) struct InlineHistoryReplayPlan {
     pub pending_ids: Vec<InlineOutputId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct InlineReplaceResult {
+    pub ids: Vec<InlineOutputId>,
+    pub changed: bool,
+    pub touched_inserted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InlineHistoryReplayItem {
     pub id: InlineOutputId,
@@ -192,6 +199,60 @@ impl InlineOutputState {
             .collect()
     }
 
+    pub(crate) fn replace_message_transcript_entries(
+        &mut self,
+        msg_idx: usize,
+        entries: Vec<TranscriptEntry>,
+    ) -> InlineReplaceResult {
+        let entry_count = entries.len();
+        let mut result = InlineReplaceResult::default();
+
+        for (entry_idx, entry) in entries.into_iter().enumerate() {
+            let anchor = InlineOutputAnchor::Message { msg_idx, entry_idx };
+            if let Some(position) = self.position_for_anchor(&anchor) {
+                let item = &mut self.items[position];
+                result.ids.push(item.id);
+                let InlineOutputItemKind::Transcript { entry: existing, status } = &mut item.kind
+                else {
+                    continue;
+                };
+                if *existing != entry {
+                    *existing = entry;
+                    result.changed = true;
+                    result.touched_inserted |= *status == InlineOutputStatus::Inserted;
+                }
+                continue;
+            }
+
+            let (id, inserted) = self.record_transcript_entry(anchor, entry, None);
+            result.ids.push(id);
+            result.changed |= inserted;
+        }
+
+        self.items.retain(|item| {
+            let remove = matches!(
+                item.anchor,
+                InlineOutputAnchor::Message {
+                    msg_idx: anchor_msg_idx,
+                    entry_idx,
+                } if anchor_msg_idx == msg_idx && entry_idx >= entry_count
+            );
+            if remove {
+                result.changed = true;
+                if let InlineOutputItemKind::Transcript {
+                    status: InlineOutputStatus::Inserted,
+                    ..
+                } = &item.kind
+                {
+                    result.touched_inserted = true;
+                }
+            }
+            !remove
+        });
+
+        result
+    }
+
     pub(crate) fn record_assistant_committed_entries(
         &mut self,
         msg_idx: usize,
@@ -289,7 +350,11 @@ impl InlineOutputState {
     }
 
     fn id_for_anchor(&self, anchor: &InlineOutputAnchor) -> Option<InlineOutputId> {
-        self.items.iter().find(|item| item.anchor == *anchor).map(|item| item.id)
+        self.position_for_anchor(anchor).map(|position| self.items[position].id)
+    }
+
+    fn position_for_anchor(&self, anchor: &InlineOutputAnchor) -> Option<usize> {
+        self.items.iter().position(|item| item.anchor == *anchor)
     }
 
     fn assistant_live_position(&self, msg_idx: usize, turn_id: AssistantTurnId) -> Option<usize> {
@@ -336,14 +401,18 @@ mod tests {
         })
     }
 
-    fn welcome_entry() -> TranscriptEntry {
+    fn welcome_entry_with_subscription(subscription: &str) -> TranscriptEntry {
         TranscriptEntry::Welcome(WelcomeTranscriptEntry {
             version: "1.2.3".to_owned(),
-            subscription: "Pro".to_owned(),
+            subscription: subscription.to_owned(),
             cwd: "/workspace".to_owned(),
             session_id: "session-1".to_owned(),
             tip_seed: 7,
         })
+    }
+
+    fn welcome_entry() -> TranscriptEntry {
+        welcome_entry_with_subscription("Pro")
     }
 
     #[test]
@@ -393,6 +462,65 @@ mod tests {
             state.items()[1].kind,
             InlineOutputItemKind::Transcript { status: InlineOutputStatus::PendingInsert, .. }
         ));
+    }
+
+    #[test]
+    fn replace_message_entries_updates_pending_entry_in_place() {
+        let mut state = InlineOutputState::default();
+        let first = state.record_message_transcript_entries(0, vec![welcome_entry()]);
+        let updated = welcome_entry_with_subscription("Claude Max");
+
+        let result = state.replace_message_transcript_entries(0, vec![updated.clone()]);
+
+        assert_eq!(result.ids, first);
+        assert!(result.changed);
+        assert!(!result.touched_inserted);
+        assert_eq!(state.items().len(), 1);
+        assert_eq!(state.items()[0].id, first[0]);
+        assert_eq!(
+            state.items()[0].kind,
+            InlineOutputItemKind::Transcript {
+                entry: updated,
+                status: InlineOutputStatus::PendingInsert,
+            }
+        );
+    }
+
+    #[test]
+    fn replace_message_entries_reports_inserted_entry_update() {
+        let mut state = InlineOutputState::default();
+        let first = state.record_message_transcript_entries(0, vec![welcome_entry()]);
+        state.confirm_static_inserted(&first);
+        let updated = welcome_entry_with_subscription("Claude Max");
+
+        let result = state.replace_message_transcript_entries(0, vec![updated.clone()]);
+
+        assert_eq!(result.ids, first);
+        assert!(result.changed);
+        assert!(result.touched_inserted);
+        assert_eq!(
+            state.items()[0].kind,
+            InlineOutputItemKind::Transcript {
+                entry: updated,
+                status: InlineOutputStatus::Inserted,
+            }
+        );
+    }
+
+    #[test]
+    fn replace_message_entries_removes_stale_message_anchors() {
+        let mut state = InlineOutputState::default();
+        let ids = state
+            .record_message_transcript_entries(0, vec![user_entry("one"), system_entry("two")]);
+        state.confirm_static_inserted(&[ids[1]]);
+
+        let result = state.replace_message_transcript_entries(0, vec![user_entry("one")]);
+
+        assert_eq!(result.ids, vec![ids[0]]);
+        assert!(result.changed);
+        assert!(result.touched_inserted);
+        assert_eq!(state.items().len(), 1);
+        assert_eq!(state.items()[0].id, ids[0]);
     }
 
     #[test]

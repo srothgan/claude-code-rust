@@ -6,17 +6,18 @@ use super::types::{
     CommittedAssistantKind, CommittedNoticeUnit, CommittedTextUnit, CommittedToolUnit,
     LiveAssistantUnit, TranscriptEntry,
 };
+use crate::app::TextBlockSpacing;
 
 pub(crate) fn serialize_assistant_prefix(
     units: &[LiveAssistantUnit],
     formatting: &AssistantFormattingState,
 ) -> Vec<TranscriptEntry> {
-    let mut entries = Vec::with_capacity(units.len());
+    let committed_units = committed_units_from_live(units);
+    let mut entries = Vec::with_capacity(committed_units.len());
     let mut previous_kind = formatting.previous_committed_kind;
     let mut header_printed = formatting.header_printed;
 
-    for unit in units {
-        let committed = committed_unit_from_live(unit);
+    for committed in committed_units {
         let committed_kind = committed.kind();
         let leading_blank_lines = match (previous_kind, committed_kind) {
             (None, _)
@@ -40,6 +41,58 @@ pub(crate) fn serialize_assistant_prefix(
     entries
 }
 
+fn committed_units_from_live(units: &[LiveAssistantUnit]) -> Vec<AssistantCommittedUnit> {
+    let mut committed_units = Vec::with_capacity(units.len());
+    for unit in units {
+        match unit {
+            LiveAssistantUnit::StableText(text) => {
+                if let Some(AssistantCommittedUnit::Text(previous)) = committed_units.last_mut() {
+                    append_text_run(
+                        &mut previous.text,
+                        previous.trailing_spacing,
+                        text.text.as_str(),
+                    );
+                    previous.trailing_spacing = text.trailing_spacing;
+                } else {
+                    committed_units.push(AssistantCommittedUnit::Text(CommittedTextUnit {
+                        text: text.text.clone(),
+                        trailing_spacing: text.trailing_spacing,
+                    }));
+                }
+            }
+            LiveAssistantUnit::Notice(_)
+            | LiveAssistantUnit::Tool(_)
+            | LiveAssistantUnit::MutableTextTail(_) => {
+                committed_units.push(committed_unit_from_live(unit));
+            }
+        }
+    }
+    committed_units
+}
+
+fn append_text_run(existing: &mut String, existing_spacing: TextBlockSpacing, text: &str) {
+    if existing.is_empty() || text.is_empty() {
+        existing.push_str(text);
+        return;
+    }
+
+    if !text.starts_with('\n') {
+        match existing_spacing {
+            TextBlockSpacing::None if !existing.ends_with('\n') => existing.push('\n'),
+            TextBlockSpacing::ParagraphBreak if !existing.ends_with("\n\n") => {
+                if existing.ends_with('\n') {
+                    existing.push('\n');
+                } else {
+                    existing.push_str("\n\n");
+                }
+            }
+            TextBlockSpacing::None | TextBlockSpacing::ParagraphBreak => {}
+        }
+    }
+
+    existing.push_str(text);
+}
+
 fn committed_unit_from_live(unit: &LiveAssistantUnit) -> AssistantCommittedUnit {
     match unit {
         LiveAssistantUnit::StableText(text) => AssistantCommittedUnit::Text(CommittedTextUnit {
@@ -60,7 +113,7 @@ fn committed_unit_from_live(unit: &LiveAssistantUnit) -> AssistantCommittedUnit 
             debug_assert!(false, "mutable text tails must not be serialized");
             AssistantCommittedUnit::Text(CommittedTextUnit {
                 text: String::new(),
-                trailing_spacing: crate::app::TextBlockSpacing::None,
+                trailing_spacing: TextBlockSpacing::None,
             })
         }
     }
@@ -155,6 +208,47 @@ mod tests {
         );
 
         assert!(entries.iter().all(|entry| matches!(entry, TranscriptEntry::AssistantContinue(_))));
+    }
+
+    #[test]
+    fn adjacent_stable_text_units_serialize_as_one_text_run() {
+        let entries = serialize_assistant_prefix(
+            &[
+                stable_text("line 1\n\n", TextBlockSpacing::ParagraphBreak),
+                stable_text("line 2", TextBlockSpacing::None),
+            ],
+            &AssistantFormattingState::default(),
+        );
+
+        assert_eq!(entries.len(), 1);
+        let TranscriptEntry::AssistantOpen(entry) = &entries[0] else {
+            panic!("expected assistant open");
+        };
+        let AssistantCommittedUnit::Text(text) = &entry.unit else {
+            panic!("expected text unit");
+        };
+        assert_eq!(text.text, "line 1\n\nline 2");
+        assert_eq!(text.trailing_spacing, TextBlockSpacing::None);
+    }
+
+    #[test]
+    fn adjacent_text_units_without_source_newline_keep_visual_boundary() {
+        let entries = serialize_assistant_prefix(
+            &[
+                stable_text("before", TextBlockSpacing::None),
+                stable_text("after", TextBlockSpacing::None),
+            ],
+            &AssistantFormattingState::default(),
+        );
+
+        assert_eq!(entries.len(), 1);
+        let TranscriptEntry::AssistantOpen(entry) = &entries[0] else {
+            panic!("expected assistant open");
+        };
+        let AssistantCommittedUnit::Text(text) = &entry.unit else {
+            panic!("expected text unit");
+        };
+        assert_eq!(text.text, "before\nafter");
     }
 
     #[test]
