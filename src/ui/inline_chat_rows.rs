@@ -836,12 +836,12 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
                 request.width,
             ));
         }
-        Some(LiveAssistantIndicator::Thinking) => {
+        Some(LiveAssistantIndicator::Thinking { verb }) => {
             if state.has_body_content {
                 rows.push(Line::default());
             }
             rows.extend(wrap_lines_to_physical_rows(
-                &[thinking_line(request.spinner.frame)],
+                &[thinking_line(request.spinner.frame, verb)],
                 request.width,
             ));
         }
@@ -1007,14 +1007,14 @@ fn assistant_role_label_line() -> Line<'static> {
     )])
 }
 
-fn thinking_line(frame: usize) -> Line<'static> {
+fn thinking_line(frame: usize, verb: &str) -> Line<'static> {
     const SPINNER_FRAMES: &[char] = &[
         '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
         '\u{2827}', '\u{2807}', '\u{280F}',
     ];
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
     Line::from(ratatui::text::Span::styled(
-        format!("{ch} Thinking..."),
+        format!("{ch} {verb}..."),
         Style::default().fg(theme::DIM),
     ))
 }
@@ -1132,7 +1132,10 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{serialize_live_rows, serialize_transcript_row_batches, serialize_transcript_rows};
+    use super::{
+        serialize_live_rows, serialize_transcript_row_batches, serialize_transcript_rows,
+        thinking_line,
+    };
     use crate::agent::model;
     use crate::app::handoff::shadow::ActiveAssistantShadowTurn;
     use crate::app::handoff::types::{
@@ -1158,6 +1161,14 @@ mod tests {
 
     fn line_texts(rows: &[Line<'_>]) -> Vec<String> {
         rows.iter().map(line_text).collect()
+    }
+
+    #[test]
+    fn thinking_line_uses_selected_verb() {
+        let text = line_text(&thinking_line(0, "Pondering"));
+
+        assert!(text.contains("Pondering..."));
+        assert!(!text.contains("Thinking..."));
     }
 
     fn user_text_message(text: &str) -> ChatMessage {

@@ -422,10 +422,10 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages.len(), 2);
         assert!(app.handoff_shadow.active_turn.is_some());
-        assert_eq!(
+        assert!(matches!(
             app.handoff_shadow.active_turn.as_ref().and_then(|turn| turn.live.live_indicator),
-            Some(crate::app::handoff::types::LiveAssistantIndicator::Thinking)
-        );
+            Some(crate::app::handoff::types::LiveAssistantIndicator::Thinking { .. })
+        ));
         let items = app.handoff_shadow.inline_output.items();
         assert!(matches!(
             &items[1].kind,

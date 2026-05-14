@@ -221,7 +221,7 @@ mod tests {
             stable_tool(model::ToolCallStatus::InProgress, TerminalMutationState::Streaming),
         );
         append_text_chunk(&mut turn, "after");
-        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Thinking" }));
 
         prepare_for_turn_exit(&mut turn, model::ToolCallStatus::Completed);
         let decision = plan_handoff(&turn);
@@ -248,14 +248,17 @@ mod tests {
             &mut turn,
             stable_tool(model::ToolCallStatus::Completed, TerminalMutationState::Settled),
         );
-        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Thinking" }));
 
         let decision = plan_handoff(&turn);
         apply_successful_commit(&mut turn, &decision);
 
         assert!(turn.formatting.header_printed);
         assert_eq!(turn.formatting.previous_committed_kind, Some(CommittedAssistantKind::TextLike));
-        assert_eq!(turn.live_indicator, Some(LiveAssistantIndicator::Thinking));
+        assert_eq!(
+            turn.live_indicator,
+            Some(LiveAssistantIndicator::Thinking { verb: "Thinking" })
+        );
         assert_eq!(turn.units.len(), 1);
         assert!(matches!(turn.units[0], LiveAssistantUnit::Tool(_)));
     }
@@ -304,7 +307,7 @@ mod tests {
     fn error_or_cancel_exit_preserves_assistant_content_while_clearing_live_indicator() {
         let mut turn = empty_turn();
         append_text_chunk(&mut turn, "hello");
-        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Thinking" }));
 
         prepare_for_turn_exit(&mut turn, model::ToolCallStatus::Failed);
 
@@ -319,7 +322,7 @@ mod tests {
     #[test]
     fn empty_assistant_placeholder_remains_empty_and_non_committing_on_exit() {
         let mut turn = empty_turn();
-        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Thinking" }));
 
         prepare_for_turn_exit(&mut turn, model::ToolCallStatus::Completed);
         let decision = plan_handoff(&turn);

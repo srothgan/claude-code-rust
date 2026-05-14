@@ -6,7 +6,7 @@ use super::projection::InlineOutputState;
 use super::serialize::serialize_assistant_prefix;
 use super::stabilizer::{append_text_chunk, insert_notice, insert_tool};
 use super::types::{
-    AssistantCommittedUnit, AssistantFormattingState, AssistantTurnId, LiveAssistantIndicator,
+    AssistantCommittedUnit, AssistantFormattingState, AssistantTurnId, LiveAssistantIndicatorKind,
     LiveAssistantTurn, LiveAssistantUnit, LiveNoticeUnit, LiveToolUnit, LiveUnitId,
     SystemTranscriptEntry, TerminalMutationState, ToolTranscriptSnapshot, TranscriptEntry,
     UserTranscriptBlock, UserTranscriptEntry, WelcomeTranscriptEntry,
@@ -102,21 +102,21 @@ pub(crate) fn rebuild_inline_output_from_messages(app: &mut App) {
 
 pub(crate) fn sync_live_indicator(
     shadow: &mut HandoffShadowState,
-    indicator: Option<LiveAssistantIndicator>,
+    indicator: Option<LiveAssistantIndicatorKind>,
 ) {
     if let Some(turn) = shadow.active_turn.as_mut() {
-        turn.live.set_live_indicator(indicator);
+        turn.live.sync_live_indicator_kind(indicator);
     }
 }
 
 #[must_use]
-pub(crate) fn current_shadow_live_indicator(app: &App) -> Option<LiveAssistantIndicator> {
+pub(crate) fn current_shadow_live_indicator(app: &App) -> Option<LiveAssistantIndicatorKind> {
     app.handoff_shadow.active_turn.as_ref()?;
     if app.is_compacting {
-        return Some(LiveAssistantIndicator::Compacting);
+        return Some(LiveAssistantIndicatorKind::Compacting);
     }
     if matches!(app.status, AppStatus::Thinking) {
-        return Some(LiveAssistantIndicator::Thinking);
+        return Some(LiveAssistantIndicatorKind::Thinking);
     }
     if matches!(app.status, AppStatus::Running)
         && app
@@ -124,7 +124,7 @@ pub(crate) fn current_shadow_live_indicator(app: &App) -> Option<LiveAssistantIn
             .and_then(|idx| app.messages.get(idx))
             .is_some_and(|msg| msg.blocks.is_empty())
     {
-        return Some(LiveAssistantIndicator::Thinking);
+        return Some(LiveAssistantIndicatorKind::Thinking);
     }
     None
 }
@@ -707,8 +707,12 @@ pub(crate) fn assert_shadow_matches_visible_active_turn(app: &App) {
     assert_eq!(shadow_units, visible_units, "shadow units diverged from visible assistant state");
 
     let expected_indicator = current_shadow_live_indicator(app);
-    let actual_indicator =
-        app.handoff_shadow.active_turn.as_ref().and_then(|turn| turn.live.live_indicator);
+    let actual_indicator = app
+        .handoff_shadow
+        .active_turn
+        .as_ref()
+        .and_then(|turn| turn.live.live_indicator)
+        .map(super::types::LiveAssistantIndicator::kind);
     assert_eq!(actual_indicator, expected_indicator, "shadow indicator drifted from app state");
 
     if let Some(turn) = app.handoff_shadow.active_turn.as_ref() {
@@ -739,7 +743,7 @@ mod tests {
     use crate::app::handoff::projection::{
         InlineOutputAnchor, InlineOutputItemKind, InlineOutputStatus,
     };
-    use crate::app::handoff::types::NoticeMutability;
+    use crate::app::handoff::types::{LiveAssistantIndicator, NoticeMutability};
     use crate::app::{App, MessageBlock, MessageRole, NoticeBlock, TextBlock, TextBlockSpacing};
 
     fn app_with_active_assistant_turn() -> (App, AssistantTurnId) {
@@ -1111,7 +1115,7 @@ mod tests {
             trailing_spacing: TextBlockSpacing::None,
             mutability: NoticeMutability::Upgradeable,
         }));
-        turn.live.set_live_indicator(Some(LiveAssistantIndicator::Thinking));
+        turn.live.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Thinking" }));
 
         assert_shadow_matches_visible_active_turn(&app);
     }

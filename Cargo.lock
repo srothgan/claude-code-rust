@@ -499,6 +499,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "fastrand",
  "futures",
  "ignore",
  "image",

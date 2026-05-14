@@ -82,8 +82,17 @@ impl LiveAssistantTurn {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn set_live_indicator(&mut self, indicator: Option<LiveAssistantIndicator>) {
         self.live_indicator = indicator;
+    }
+
+    pub(crate) fn sync_live_indicator_kind(&mut self, kind: Option<LiveAssistantIndicatorKind>) {
+        if self.live_indicator.map(LiveAssistantIndicator::kind) == kind {
+            return;
+        }
+
+        self.live_indicator = kind.map(LiveAssistantIndicator::from_kind);
     }
 
     pub(crate) fn allocate_unit_id(&mut self) -> LiveUnitId {
@@ -114,6 +123,35 @@ pub(crate) enum LiveAssistantUnit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LiveAssistantIndicator {
+    Thinking { verb: &'static str },
+    Compacting,
+}
+
+impl LiveAssistantIndicator {
+    #[must_use]
+    pub(crate) fn thinking() -> Self {
+        Self::Thinking { verb: crate::app::handoff::spinner_verbs::random_spinner_verb() }
+    }
+
+    #[must_use]
+    pub(crate) const fn kind(self) -> LiveAssistantIndicatorKind {
+        match self {
+            Self::Thinking { .. } => LiveAssistantIndicatorKind::Thinking,
+            Self::Compacting => LiveAssistantIndicatorKind::Compacting,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_kind(kind: LiveAssistantIndicatorKind) -> Self {
+        match kind {
+            LiveAssistantIndicatorKind::Thinking => Self::thinking(),
+            LiveAssistantIndicatorKind::Compacting => Self::Compacting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveAssistantIndicatorKind {
     Thinking,
     Compacting,
 }
@@ -301,5 +339,40 @@ pub(crate) fn inline_notice_to_live(notice: &NoticeBlock, id: LiveUnitId) -> Liv
         text: notice.text.text.clone(),
         trailing_spacing: notice.text.trailing_spacing,
         mutability: NoticeMutability::Upgradeable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AssistantTurnId, LiveAssistantIndicator, LiveAssistantIndicatorKind, LiveAssistantTurn,
+    };
+
+    #[test]
+    fn sync_live_indicator_kind_preserves_existing_thinking_verb() {
+        let mut turn = LiveAssistantTurn::new(AssistantTurnId(1));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Pondering" }));
+
+        turn.sync_live_indicator_kind(Some(LiveAssistantIndicatorKind::Thinking));
+
+        assert_eq!(
+            turn.live_indicator,
+            Some(LiveAssistantIndicator::Thinking { verb: "Pondering" })
+        );
+    }
+
+    #[test]
+    fn sync_live_indicator_kind_switches_and_clears_indicator() {
+        let mut turn = LiveAssistantTurn::new(AssistantTurnId(1));
+        turn.set_live_indicator(Some(LiveAssistantIndicator::Thinking { verb: "Pondering" }));
+
+        turn.sync_live_indicator_kind(Some(LiveAssistantIndicatorKind::Compacting));
+        assert_eq!(turn.live_indicator, Some(LiveAssistantIndicator::Compacting));
+
+        turn.sync_live_indicator_kind(None);
+        assert!(turn.live_indicator.is_none());
+
+        turn.sync_live_indicator_kind(Some(LiveAssistantIndicatorKind::Thinking));
+        assert!(matches!(turn.live_indicator, Some(LiveAssistantIndicator::Thinking { .. })));
     }
 }
