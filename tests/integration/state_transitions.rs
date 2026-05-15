@@ -1,5 +1,5 @@
 // =====
-// TESTS: 19
+// TESTS: 20
 // =====
 //
 // State transition integration tests.
@@ -13,6 +13,32 @@ use pretty_assertions::assert_eq;
 use crate::helpers::{send_client_event, test_app};
 
 // --- Full turn lifecycle ---
+
+#[tokio::test]
+async fn agent_thought_chunk_sets_thinking_without_writing_transcript() {
+    let mut app = test_app();
+    let original_message_count = app.messages.len();
+    let thought_text = "Planning...";
+    let thought =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(thought_text)));
+
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentThoughtChunk(thought)),
+    );
+
+    assert!(matches!(app.status, AppStatus::Thinking));
+    assert_eq!(app.messages.len(), original_message_count);
+    assert!(
+        !app.messages.iter().any(|message| {
+            message.blocks.iter().any(|block| match block {
+                MessageBlock::Text(text) => text.text.contains(thought_text),
+                _ => false,
+            })
+        }),
+        "thought chunks should not be persisted as transcript message text"
+    );
+}
 
 #[tokio::test]
 async fn full_turn_lifecycle_text_only() {

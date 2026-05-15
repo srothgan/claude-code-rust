@@ -14,7 +14,6 @@ mod session_start;
 mod type_converters;
 
 use super::config::ConfigState;
-use super::handoff::shadow::HandoffShadowState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
@@ -126,7 +125,6 @@ pub fn create_app(cli: &Cli) -> App {
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
         surface_dirty: SurfaceDirtyState::initial_chat(),
-        handoff_shadow: HandoffShadowState::default(),
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
@@ -255,7 +253,6 @@ pub fn create_app(cli: &Cli) -> App {
 
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
-    app.reset_committed_output_tracking();
     trust::initialize(&mut app);
     app.sync_git_context();
     super::file_index::restart(&mut app);

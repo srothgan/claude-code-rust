@@ -1,8 +1,6 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::history_insert::RenderedHistoryRows;
-use crate::app::handoff::projection::InlineOutputId;
 use anyhow::{Context, anyhow, bail};
 use crossterm::SynchronizedUpdate;
 use crossterm::cursor::MoveTo;
@@ -14,27 +12,10 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
-use std::collections::VecDeque;
 use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
-
-const MIN_REPLAY_BATCH_ROWS: usize = 32;
-const MAX_REPLAY_BATCH_ROWS: usize = 160;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HistoryBatchKind {
-    Normal,
-    Replay,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct PendingHistoryBatch {
-    pub kind: HistoryBatchKind,
-    pub rows: RenderedHistoryRows,
-    pub confirm_ids: Vec<InlineOutputId>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatDrawRequest {
@@ -43,24 +24,15 @@ pub(super) struct ChatDrawRequest {
     pub terminal_height: u16,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct FlushedHistory {
-    pub confirmed_ids: Vec<InlineOutputId>,
-    pub flushed_rows: usize,
-    pub replay_complete: bool,
-    pub replay_incomplete: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ChatDrawOutcome {
     pub viewport_area: Rect,
-    pub flushed_history: FlushedHistory,
+    pub inserted_scrollback_rows: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct InlineViewportState {
     pub(super) area: Option<Rect>,
-    pub(super) visible_history_rows: u16,
     pub(super) owned_top: u16,
     pub(super) owned_bottom: u16,
 }
@@ -75,72 +47,14 @@ impl InlineViewportState {
     }
 }
 
-#[derive(Debug)]
-struct ReplayState {
-    render_width: u16,
-    pending_batches: VecDeque<PendingHistoryBatch>,
-    confirm_ids: Vec<InlineOutputId>,
-}
-
-impl ReplayState {
-    fn new(
-        render_width: u16,
-        batches: Vec<PendingHistoryBatch>,
-        confirm_ids: Vec<InlineOutputId>,
-    ) -> Self {
-        Self {
-            render_width: render_width.max(1),
-            pending_batches: VecDeque::from(batches),
-            confirm_ids,
-        }
-    }
-
-    fn matches_width(&self, width: u16) -> bool {
-        self.render_width == width.max(1)
-    }
-
-    fn pending_ids(&self) -> &[InlineOutputId] {
-        &self.confirm_ids
-    }
-
-    #[cfg(test)]
-    fn drain_next_batches(&mut self, terminal_height: u16) -> Vec<PendingHistoryBatch> {
-        let budget = replay_batch_row_budget(terminal_height);
-        let mut drained = Vec::new();
-        let mut drained_rows = 0usize;
-
-        while let Some(batch) = self.pending_batches.pop_front() {
-            drained_rows = drained_rows.saturating_add(batch.rows.len());
-            drained.push(batch);
-
-            if drained_rows >= budget {
-                break;
-            }
-        }
-
-        drained
-    }
-
-    fn is_complete(&self) -> bool {
-        self.pending_batches.is_empty()
-    }
-}
-
 pub(super) struct ChatTerminal {
     terminal: Option<StdoutTerminal>,
     state: InlineViewportState,
-    pending_history: VecDeque<PendingHistoryBatch>,
-    replay: Option<ReplayState>,
 }
 
 impl ChatTerminal {
     pub(super) fn new(owned_top: u16) -> Self {
-        Self {
-            terminal: None,
-            state: InlineViewportState::new(owned_top),
-            pending_history: VecDeque::new(),
-            replay: None,
-        }
+        Self { terminal: None, state: InlineViewportState::new(owned_top) }
     }
 
     pub(super) fn reset_visible(&mut self) -> anyhow::Result<()> {
@@ -166,9 +80,6 @@ impl ChatTerminal {
 
     fn reset_visible_state(&mut self) {
         self.terminal = None;
-        self.state.visible_history_rows = 0;
-        self.pending_history.clear();
-        self.replay = None;
     }
 
     pub(super) fn reset_mutable_viewport(&mut self) -> anyhow::Result<()> {
@@ -189,58 +100,10 @@ impl ChatTerminal {
         Ok(())
     }
 
-    pub(super) fn queue_static_history(&mut self, batch: PendingHistoryBatch) {
-        if self.replay.is_some() {
-            tracing::debug!(
-                target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_static_insert_deferred",
-                message = "static transcript insert left pending while replay is active",
-                outcome = "deferred",
-                queued_rows = batch.rows.len(),
-                queued_ids = batch.confirm_ids.len(),
-            );
-            return;
-        }
-
-        self.pending_history.push_back(batch);
-    }
-
-    pub(super) fn start_replay(
-        &mut self,
-        render_width: u16,
-        batches: Vec<PendingHistoryBatch>,
-        confirm_ids: Vec<InlineOutputId>,
-    ) {
-        self.pending_history.clear();
-        self.replay = Some(ReplayState::new(render_width, batches, confirm_ids));
-    }
-
-    pub(super) fn replay_pending_ids(&self) -> &[InlineOutputId] {
-        self.replay.as_ref().map_or(&[], ReplayState::pending_ids)
-    }
-
-    pub(super) fn is_replay_active(&self) -> bool {
-        self.replay.is_some()
-    }
-
-    pub(super) fn active_replay_matches_width(&self, width: u16) -> bool {
-        self.replay.as_ref().is_some_and(|replay| replay.matches_width(width))
-    }
-
-    pub(super) fn cancel_replay(&mut self) {
-        if self.replay.take().is_some() {
-            tracing::debug!(
-                target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_replay_cancelled",
-                message = "active transcript replay cancelled before confirmation",
-                outcome = "cancelled",
-            );
-        }
-    }
-
     pub(super) fn draw_chat_frame<F>(
         &mut self,
         chat_frame: ChatDrawRequest,
+        scrollback_rows: &[Line<'static>],
         render_mutable: F,
     ) -> anyhow::Result<ChatDrawOutcome>
     where
@@ -263,8 +126,11 @@ impl ChatTerminal {
                     chat_frame.terminal_width,
                     chat_frame.terminal_height,
                 )?;
-                let flushed_history = self
-                    .flush_queued_history(chat_frame.terminal_width, chat_frame.terminal_height)?;
+                let inserted_scrollback_rows = self.insert_scrollback_rows(
+                    scrollback_rows,
+                    chat_frame.terminal_width,
+                    chat_frame.terminal_height,
+                )?;
                 let viewport_area = self.draw_mutable_viewport(render_mutable)?;
 
                 self.state.area = Some(viewport_area);
@@ -279,13 +145,10 @@ impl ChatTerminal {
                     viewport_top = viewport_area.top(),
                     owned_top = self.state.owned_top,
                     owned_bottom = self.state.owned_bottom,
-                    queued_rows = flushed_history.flushed_rows,
-                    confirmed_ids = flushed_history.confirmed_ids.len(),
-                    replay_complete = flushed_history.replay_complete,
-                    replay_incomplete = flushed_history.replay_incomplete,
+                    inserted_scrollback_rows,
                 );
 
-                Ok(ChatDrawOutcome { viewport_area, flushed_history })
+                Ok(ChatDrawOutcome { viewport_area, inserted_scrollback_rows })
             })
             .context("failed synchronized inline chat terminal update")?
     }
@@ -376,145 +239,85 @@ impl ChatTerminal {
         Ok(Some(area))
     }
 
-    fn flush_queued_history(
-        &mut self,
-        terminal_width: u16,
-        terminal_height: u16,
-    ) -> anyhow::Result<FlushedHistory> {
-        if self.replay.is_some() {
-            return self.flush_replay_history(terminal_width, terminal_height);
-        }
+    fn draw_mutable_viewport<F>(&mut self, render_mutable: F) -> anyhow::Result<Rect>
+    where
+        F: FnOnce(&mut ratatui::Frame<'_>, Rect),
+    {
+        let terminal = self
+            .terminal
+            .as_mut()
+            .ok_or_else(|| anyhow!("inline chat terminal missing before draw"))?;
+        let mut viewport_area = Rect::new(0, 0, 0, 0);
+        terminal
+            .draw(|frame| {
+                viewport_area = frame.area();
+                frame.render_widget(RatatuiClear, viewport_area);
+                render_mutable(frame, viewport_area);
+            })
+            .context("failed to draw ratatui inline chat viewport")?;
 
-        let mut flushed = FlushedHistory::default();
-        while let Some(batch) = self.pending_history.front().cloned() {
-            flushed.flushed_rows = flushed.flushed_rows.saturating_add(self.insert_history_batch(
-                &batch,
-                terminal_width,
-                terminal_height,
-            )?);
-            self.pending_history.pop_front();
-            flushed.confirmed_ids.extend(batch.confirm_ids);
-        }
-        Ok(flushed)
+        Ok(viewport_area)
     }
 
-    fn flush_replay_history(
+    fn insert_scrollback_rows(
         &mut self,
-        terminal_width: u16,
-        terminal_height: u16,
-    ) -> anyhow::Result<FlushedHistory> {
-        if self.replay.is_none() {
-            return Ok(FlushedHistory::default());
-        }
-
-        let budget = replay_batch_row_budget(terminal_height);
-        let mut flushed_rows = 0usize;
-        let mut drained_rows = 0usize;
-        while let Some(batch) =
-            self.replay.as_ref().and_then(|replay| replay.pending_batches.front().cloned())
-        {
-            drained_rows = drained_rows.saturating_add(batch.rows.len());
-            flushed_rows = flushed_rows.saturating_add(self.insert_history_batch(
-                &batch,
-                terminal_width,
-                terminal_height,
-            )?);
-            let Some(replay) = self.replay.as_mut() else {
-                break;
-            };
-            replay.pending_batches.pop_front();
-
-            if drained_rows >= budget {
-                break;
-            }
-        }
-
-        let replay_complete = self.replay.as_ref().is_some_and(ReplayState::is_complete);
-        let confirmed_ids = if replay_complete {
-            self.replay.as_ref().map_or_else(Vec::new, |replay| replay.confirm_ids.clone())
-        } else {
-            Vec::new()
-        };
-        if replay_complete {
-            self.replay = None;
-        }
-
-        Ok(FlushedHistory {
-            confirmed_ids,
-            flushed_rows,
-            replay_complete,
-            replay_incomplete: !replay_complete,
-        })
-    }
-
-    fn insert_history_batch(
-        &mut self,
-        batch: &PendingHistoryBatch,
+        rows: &[Line<'static>],
         terminal_width: u16,
         terminal_height: u16,
     ) -> anyhow::Result<usize> {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_history_insert_request",
-            message = "history rows scheduled for ratatui inline insertion",
+            event_name = "inline_chat_scrollback_insert_request",
+            message = "stable chat rows scheduled for ratatui inline scrollback insertion",
             outcome = "prepared",
-            rows = batch.rows.len(),
-            confirm_ids = batch.confirm_ids.len(),
-            batch_kind = ?batch.kind,
+            rows = rows.len(),
         );
 
-        if batch.rows.is_empty() {
+        if rows.is_empty() {
             return Ok(0);
-        }
-        let terminal_width = terminal_width.max(1);
-        if batch.rows.width != terminal_width {
-            bail!(
-                "refusing inline history insert rendered at stale width: rendered_width={}, terminal_width={}, rows={}",
-                batch.rows.width,
-                terminal_width,
-                batch.rows.len()
-            );
         }
 
         let mut inserted_rows = 0usize;
-        while inserted_rows < batch.rows.len() {
+        while inserted_rows < rows.len() {
             let remaining_rows =
-                u16::try_from(batch.rows.len().saturating_sub(inserted_rows)).unwrap_or(u16::MAX);
-            let plan = self.prepare_history_insert_plan(remaining_rows, terminal_height)?;
+                u16::try_from(rows.len().saturating_sub(inserted_rows)).unwrap_or(u16::MAX);
+            let plan = self.prepare_scrollback_insert_plan(remaining_rows, terminal_height)?;
             let chunk_len = usize::from(plan.inserted_rows);
             if chunk_len == 0 {
                 bail!(
-                    "refusing inline history insert without a safe chunk: rows_remaining={}, viewport={:?}, terminal_height={}",
-                    batch.rows.len().saturating_sub(inserted_rows),
+                    "refusing inline scrollback insert without a safe chunk: rows_remaining={}, viewport={:?}, terminal_height={}",
+                    rows.len().saturating_sub(inserted_rows),
                     self.state.area,
                     terminal_height
                 );
             }
-            let rows =
-                batch.rows.iter().skip(inserted_rows).take(chunk_len).cloned().collect::<Vec<_>>();
 
-            self.insert_history_chunk(&rows, plan, terminal_width, terminal_height, batch.kind)?;
+            self.insert_scrollback_chunk(
+                &rows[inserted_rows..inserted_rows + chunk_len],
+                plan,
+                terminal_width,
+                terminal_height,
+            )?;
             inserted_rows = inserted_rows.saturating_add(chunk_len);
         }
 
         Ok(inserted_rows)
     }
 
-    fn prepare_history_insert_plan(
+    fn prepare_scrollback_insert_plan(
         &self,
         row_count: u16,
         terminal_height: u16,
-    ) -> anyhow::Result<HistoryInsertPlan> {
-        let area = self
-            .state
-            .area
-            .ok_or_else(|| anyhow!("inline chat viewport missing before insert guard"))?;
+    ) -> anyhow::Result<ScrollbackInsertPlan> {
+        let area = self.state.area.ok_or_else(|| {
+            anyhow!("inline chat viewport missing before scrollback insert guard")
+        })?;
         let plan = plan_owned_insert(area, self.state.owned_top, row_count, terminal_height.max(1));
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_insert_ownership_plan",
-            message = "history insert checked against owned terminal region",
+            event_name = "inline_chat_scrollback_insert_ownership_plan",
+            message = "scrollback insert checked against owned terminal region",
             outcome = ?plan.action,
             rows = row_count,
             planned_rows = plan.inserted_rows,
@@ -530,9 +333,9 @@ impl ChatTerminal {
             scroll_rows_before_insert = plan.scroll_rows_before_insert,
         );
 
-        if matches!(plan.action, HistoryInsertAction::RebuildVisibleHistory) {
+        if matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows) {
             bail!(
-                "refusing unsafe inline history insert: rows={}, viewport={:?}, owned={}..{}, terminal_height={}, max_insert_rows={}",
+                "refusing unsafe inline scrollback insert: rows={}, viewport={:?}, owned={}..{}, terminal_height={}, max_insert_rows={}",
                 row_count,
                 area,
                 self.state.owned_top,
@@ -545,13 +348,12 @@ impl ChatTerminal {
         Ok(plan)
     }
 
-    fn insert_history_chunk(
+    fn insert_scrollback_chunk(
         &mut self,
         rows: &[Line<'static>],
-        plan: HistoryInsertPlan,
+        plan: ScrollbackInsertPlan,
         terminal_width: u16,
         terminal_height: u16,
-        batch_kind: HistoryBatchKind,
     ) -> anyhow::Result<()> {
         if plan.scroll_rows_before_insert > 0 {
             self.append_blank_lines_for_owned_region(
@@ -571,10 +373,10 @@ impl ChatTerminal {
         let before_area = self
             .state
             .area
-            .ok_or_else(|| anyhow!("inline chat viewport missing before history insert"))?;
+            .ok_or_else(|| anyhow!("inline chat viewport missing before scrollback insert"))?;
         if before_area != plan.viewport_after_scroll {
             bail!(
-                "inline history insert pre-scroll mismatch: expected={:?}, actual={:?}, rows={}",
+                "inline scrollback insert pre-scroll mismatch: expected={:?}, actual={:?}, rows={}",
                 plan.viewport_after_scroll,
                 before_area,
                 plan.inserted_rows
@@ -585,18 +387,18 @@ impl ChatTerminal {
         let terminal = self
             .terminal
             .as_mut()
-            .ok_or_else(|| anyhow!("inline chat terminal missing before history insert"))?;
+            .ok_or_else(|| anyhow!("inline chat terminal missing before scrollback insert"))?;
         terminal
             .insert_before(plan.inserted_rows, |buffer| {
                 Paragraph::new(rendered_rows).render(buffer.area, buffer);
             })
-            .context("failed to insert committed transcript above inline viewport")?;
+            .context("failed to insert committed chat rows above inline viewport")?;
 
         let after_area =
             viewport_area_after_insert_exact(before_area, plan.inserted_rows, terminal_height)
                 .ok_or_else(|| {
                     anyhow!(
-                        "inline history insert could not move viewport exactly: viewport={:?}, rows={}, terminal_height={}",
+                        "inline scrollback insert could not move viewport exactly: viewport={:?}, rows={}, terminal_height={}",
                         before_area,
                         plan.inserted_rows,
                         terminal_height
@@ -604,7 +406,7 @@ impl ChatTerminal {
                 })?;
         if after_area != plan.viewport_after_insert {
             bail!(
-                "inline history insert postcondition mismatch: expected={:?}, actual={:?}, rows={}",
+                "inline scrollback insert postcondition mismatch: expected={:?}, actual={:?}, rows={}",
                 plan.viewport_after_insert,
                 after_area,
                 plan.inserted_rows
@@ -620,14 +422,12 @@ impl ChatTerminal {
                 after_area.bottom().saturating_sub(before_area.top().min(after_area.top())),
             ),
             terminal_height,
-            "history_insert",
+            "scrollback_insert",
         );
-        self.state.visible_history_rows =
-            self.state.visible_history_rows.saturating_add(plan.inserted_rows);
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_history_insert_applied",
-            message = "history rows inserted before ratatui inline viewport",
+            event_name = "inline_chat_scrollback_insert_applied",
+            message = "stable chat rows inserted before ratatui inline viewport",
             outcome = "success",
             inserted_rows = plan.inserted_rows,
             scroll_rows_before_insert = plan.scroll_rows_before_insert,
@@ -636,32 +436,10 @@ impl ChatTerminal {
             viewport_top_after = after_area.top(),
             owned_top = self.state.owned_top,
             owned_bottom = self.state.owned_bottom,
-            visible_history_rows = self.state.visible_history_rows,
-            batch_kind = ?batch_kind,
             insert_action = ?plan.action,
         );
 
         Ok(())
-    }
-
-    fn draw_mutable_viewport<F>(&mut self, render_mutable: F) -> anyhow::Result<Rect>
-    where
-        F: FnOnce(&mut ratatui::Frame<'_>, Rect),
-    {
-        let terminal = self
-            .terminal
-            .as_mut()
-            .ok_or_else(|| anyhow!("inline chat terminal missing before draw"))?;
-        let mut viewport_area = Rect::new(0, 0, 0, 0);
-        terminal
-            .draw(|frame| {
-                viewport_area = frame.area();
-                frame.render_widget(RatatuiClear, viewport_area);
-                render_mutable(frame, viewport_area);
-            })
-            .context("failed to draw ratatui inline chat viewport")?;
-
-        Ok(viewport_area)
     }
 
     fn append_blank_lines_for_owned_region(
@@ -810,12 +588,6 @@ impl ChatTerminal {
     }
 }
 
-fn replay_batch_row_budget(terminal_height: u16) -> usize {
-    usize::from(terminal_height)
-        .saturating_mul(2)
-        .clamp(MIN_REPLAY_BATCH_ROWS, MAX_REPLAY_BATCH_ROWS)
-}
-
 fn create_inline_terminal(height: u16) -> anyhow::Result<StdoutTerminal> {
     Terminal::with_options(
         CrosstermBackend::new(std::io::stdout()),
@@ -871,8 +643,12 @@ fn inline_viewport_scroll_rows_after_create(
         .saturating_sub(inline_viewport_top_after_create(cursor_y, height, terminal_height))
 }
 
+fn shift_area_up(area: Rect, rows: u16) -> Rect {
+    Rect::new(area.x, area.y.saturating_sub(rows), area.width, area.height)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HistoryInsertPlan {
+struct ScrollbackInsertPlan {
     inserted_rows: u16,
     scroll_rows_before_insert: u16,
     viewport_before: Rect,
@@ -880,14 +656,14 @@ struct HistoryInsertPlan {
     viewport_after_insert: Rect,
     available_below: u16,
     max_insert_rows_for_viewport: u16,
-    action: HistoryInsertAction,
+    action: ScrollbackInsertAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HistoryInsertAction {
+enum ScrollbackInsertAction {
     Insert,
     SplitBatch,
-    RebuildVisibleHistory,
+    RebuildVisibleRows,
 }
 
 fn plan_owned_insert(
@@ -895,14 +671,14 @@ fn plan_owned_insert(
     owned_top: u16,
     inserted_rows: u16,
     terminal_height: u16,
-) -> HistoryInsertPlan {
+) -> ScrollbackInsertPlan {
     let screen_height = terminal_height.max(1);
     let empty_area = Rect::new(viewport_area.x, viewport_area.y, viewport_area.width, 0);
     if viewport_area.is_empty()
         || viewport_area.top() < owned_top
         || viewport_area.bottom() > screen_height
     {
-        return HistoryInsertPlan {
+        return ScrollbackInsertPlan {
             inserted_rows: 0,
             scroll_rows_before_insert: 0,
             viewport_before: viewport_area,
@@ -910,7 +686,7 @@ fn plan_owned_insert(
             viewport_after_insert: empty_area,
             available_below: 0,
             max_insert_rows_for_viewport: 0,
-            action: HistoryInsertAction::RebuildVisibleHistory,
+            action: ScrollbackInsertAction::RebuildVisibleRows,
         };
     }
 
@@ -918,7 +694,7 @@ fn plan_owned_insert(
     let max_insert_rows_for_viewport = screen_height.saturating_sub(viewport_area.height);
     let planned_rows = inserted_rows.min(max_insert_rows_for_viewport);
     if planned_rows == 0 {
-        return HistoryInsertPlan {
+        return ScrollbackInsertPlan {
             inserted_rows: 0,
             scroll_rows_before_insert: 0,
             viewport_before: viewport_area,
@@ -926,13 +702,13 @@ fn plan_owned_insert(
             viewport_after_insert: empty_area,
             available_below,
             max_insert_rows_for_viewport,
-            action: HistoryInsertAction::RebuildVisibleHistory,
+            action: ScrollbackInsertAction::RebuildVisibleRows,
         };
     }
 
     let scroll_rows_before_insert = planned_rows.saturating_sub(available_below);
     if scroll_rows_before_insert > viewport_area.top() {
-        return HistoryInsertPlan {
+        return ScrollbackInsertPlan {
             inserted_rows: 0,
             scroll_rows_before_insert: 0,
             viewport_before: viewport_area,
@@ -940,7 +716,7 @@ fn plan_owned_insert(
             viewport_after_insert: empty_area,
             available_below,
             max_insert_rows_for_viewport,
-            action: HistoryInsertAction::RebuildVisibleHistory,
+            action: ScrollbackInsertAction::RebuildVisibleRows,
         };
     }
 
@@ -948,7 +724,7 @@ fn plan_owned_insert(
     let Some(viewport_after_insert) =
         viewport_area_after_insert_exact(viewport_after_scroll, planned_rows, screen_height)
     else {
-        return HistoryInsertPlan {
+        return ScrollbackInsertPlan {
             inserted_rows: 0,
             scroll_rows_before_insert: 0,
             viewport_before: viewport_area,
@@ -956,17 +732,17 @@ fn plan_owned_insert(
             viewport_after_insert: empty_area,
             available_below,
             max_insert_rows_for_viewport,
-            action: HistoryInsertAction::RebuildVisibleHistory,
+            action: ScrollbackInsertAction::RebuildVisibleRows,
         };
     };
 
     let action = if inserted_rows > planned_rows {
-        HistoryInsertAction::SplitBatch
+        ScrollbackInsertAction::SplitBatch
     } else {
-        HistoryInsertAction::Insert
+        ScrollbackInsertAction::Insert
     };
 
-    HistoryInsertPlan {
+    ScrollbackInsertPlan {
         inserted_rows: planned_rows,
         scroll_rows_before_insert,
         viewport_before: viewport_area,
@@ -976,10 +752,6 @@ fn plan_owned_insert(
         max_insert_rows_for_viewport,
         action,
     }
-}
-
-fn shift_area_up(area: Rect, rows: u16) -> Rect {
-    Rect::new(area.x, area.y.saturating_sub(rows), area.width, area.height)
 }
 
 fn viewport_area_after_insert_exact(
@@ -1018,81 +790,11 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminal, HistoryBatchKind, HistoryInsertAction, InlineViewportState,
-        PendingHistoryBatch, ReplayState, inline_viewport_scroll_rows_after_create,
-        inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert,
-        replay_batch_row_budget, shift_area_up, viewport_area_after_insert_exact,
+        ChatTerminal, InlineViewportState, ScrollbackInsertAction,
+        inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
+        plan_inline_geometry, plan_owned_insert, shift_area_up, viewport_area_after_insert_exact,
     };
-    use crate::app::terminal_runtime::history_insert::RenderedHistoryRows;
     use ratatui::layout::Rect;
-    use ratatui::text::Line;
-
-    fn batch(row_count: usize) -> PendingHistoryBatch {
-        PendingHistoryBatch {
-            kind: HistoryBatchKind::Replay,
-            rows: RenderedHistoryRows::new(
-                80,
-                (0..row_count).map(|idx| Line::from(format!("row {idx}"))).collect(),
-            ),
-            confirm_ids: Vec::new(),
-        }
-    }
-
-    fn batch_with_kind(
-        kind: HistoryBatchKind,
-        width: u16,
-        row_count: usize,
-    ) -> PendingHistoryBatch {
-        PendingHistoryBatch {
-            kind,
-            rows: RenderedHistoryRows::new(
-                width,
-                (0..row_count).map(|idx| Line::from(format!("row {idx}"))).collect(),
-            ),
-            confirm_ids: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn replay_budget_is_bounded_by_terminal_height() {
-        assert_eq!(replay_batch_row_budget(10), 32);
-        assert_eq!(replay_batch_row_budget(40), 80);
-        assert_eq!(replay_batch_row_budget(120), 160);
-    }
-
-    #[test]
-    fn replay_drains_batches_oldest_first_with_budget() {
-        let mut replay =
-            ReplayState::new(80, vec![batch(10), batch(15), batch(20), batch(10)], vec![]);
-
-        let drained = replay.drain_next_batches(16);
-
-        assert_eq!(drained.len(), 3);
-        assert_eq!(drained.iter().map(|batch| batch.rows.len()).sum::<usize>(), 45);
-        assert!(!replay.is_complete());
-    }
-
-    #[test]
-    fn replay_state_tracks_render_width() {
-        let replay = ReplayState::new(80, vec![batch(10)], vec![]);
-
-        assert!(replay.matches_width(80));
-        assert!(!replay.matches_width(120));
-    }
-
-    #[test]
-    fn history_insert_rejects_rows_rendered_for_stale_width_for_all_batch_kinds() {
-        for kind in [HistoryBatchKind::Normal, HistoryBatchKind::Replay] {
-            let mut terminal = ChatTerminal::new(0);
-            let batch = batch_with_kind(kind, 80, 1);
-
-            let err = terminal
-                .insert_history_batch(&batch, 120, 40)
-                .expect_err("stale width must be rejected before terminal mutation");
-
-            assert!(err.to_string().contains("stale width"));
-        }
-    }
 
     #[test]
     fn inline_viewport_state_height_derives_from_area() {
@@ -1105,10 +807,17 @@ mod tests {
     }
 
     #[test]
+    fn area_helper_shifts_viewport_up_after_terminal_scroll() {
+        let area = Rect::new(0, 28, 120, 5);
+
+        assert_eq!(shift_area_up(area, 5), Rect::new(0, 23, 120, 5));
+    }
+
+    #[test]
     fn owned_insert_plan_allows_insert_when_viewport_has_room_below() {
         let plan = plan_owned_insert(Rect::new(0, 22, 120, 5), 22, 9, 37);
 
-        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.action, ScrollbackInsertAction::Insert);
         assert_eq!(plan.inserted_rows, 9);
         assert_eq!(plan.available_below, 10);
         assert_eq!(plan.scroll_rows_before_insert, 0);
@@ -1120,7 +829,7 @@ mod tests {
     fn owned_insert_plan_expands_downward_before_insert_scrolls_above_owned_top() {
         let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 20, 9, 37);
 
-        assert_eq!(plan.action, HistoryInsertAction::Insert);
+        assert_eq!(plan.action, ScrollbackInsertAction::Insert);
         assert_eq!(plan.inserted_rows, 9);
         assert_eq!(plan.available_below, 4);
         assert_eq!(plan.scroll_rows_before_insert, 5);
@@ -1129,64 +838,28 @@ mod tests {
     }
 
     #[test]
-    fn owned_insert_plan_scrolls_even_after_entire_visible_screen_is_owned() {
-        let plan = plan_owned_insert(Rect::new(0, 28, 120, 6), 0, 6, 37);
-
-        assert_eq!(plan.action, HistoryInsertAction::Insert);
-        assert_eq!(plan.inserted_rows, 6);
-        assert_eq!(plan.available_below, 3);
-        assert_eq!(plan.scroll_rows_before_insert, 3);
-        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 25, 120, 6));
-        assert_eq!(plan.viewport_after_insert, Rect::new(0, 31, 120, 6));
-        assert_eq!(
-            plan.viewport_after_scroll.top().saturating_add(plan.inserted_rows),
-            plan.viewport_after_insert.top()
-        );
-    }
-
-    #[test]
     fn owned_insert_plan_splits_batches_larger_than_viewport_capacity() {
-        let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 20, 37);
+        let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 40, 37);
 
-        assert_eq!(plan.action, HistoryInsertAction::Insert);
-        assert_eq!(plan.inserted_rows, 20);
-        assert_eq!(plan.available_below, 4);
-        assert_eq!(plan.scroll_rows_before_insert, 16);
-        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 12, 120, 5));
+        assert_eq!(plan.action, ScrollbackInsertAction::SplitBatch);
+        assert_eq!(plan.inserted_rows, 32);
+        assert_eq!(plan.max_insert_rows_for_viewport, 32);
+        assert_eq!(plan.scroll_rows_before_insert, 28);
+        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 0, 120, 5));
         assert_eq!(plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
-
-        let split_plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 40, 37);
-
-        assert_eq!(split_plan.action, HistoryInsertAction::SplitBatch);
-        assert_eq!(split_plan.inserted_rows, 32);
-        assert_eq!(split_plan.max_insert_rows_for_viewport, 32);
-        assert_eq!(split_plan.scroll_rows_before_insert, 28);
-        assert_eq!(split_plan.viewport_after_scroll, Rect::new(0, 0, 120, 5));
-        assert_eq!(split_plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
     }
 
     #[test]
     fn owned_insert_plan_rebuilds_when_viewport_consumes_screen() {
         let plan = plan_owned_insert(Rect::new(0, 0, 120, 37), 0, 1, 37);
 
-        assert_eq!(plan.action, HistoryInsertAction::RebuildVisibleHistory);
+        assert_eq!(plan.action, ScrollbackInsertAction::RebuildVisibleRows);
         assert_eq!(plan.inserted_rows, 0);
         assert_eq!(plan.max_insert_rows_for_viewport, 0);
     }
 
     #[test]
-    fn owned_insert_plan_blocks_viewport_above_owned_region() {
-        let plan = plan_owned_insert(Rect::new(0, 18, 120, 5), 20, 1, 37);
-
-        assert_eq!(plan.action, HistoryInsertAction::RebuildVisibleHistory);
-        assert_eq!(plan.inserted_rows, 0);
-    }
-
-    #[test]
     fn area_helpers_require_exact_viewport_movement_after_insert() {
-        let area = Rect::new(0, 28, 120, 5);
-
-        assert_eq!(shift_area_up(area, 5), Rect::new(0, 23, 120, 5));
         assert_eq!(
             viewport_area_after_insert_exact(Rect::new(0, 23, 120, 5), 9, 37),
             Some(Rect::new(0, 32, 120, 5))

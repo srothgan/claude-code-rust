@@ -97,19 +97,6 @@ fn insert_inline_notice(
         stage,
         location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
     });
-    if let Some(MessageBlock::Notice(notice)) =
-        app.messages.get(owner_idx).and_then(|message| message.blocks.get(block_idx))
-    {
-        let live_notice = crate::app::handoff::types::inline_notice_to_live(
-            notice,
-            crate::app::handoff::types::LiveUnitId(0),
-        );
-        crate::app::handoff::shadow::mirror_inline_notice_insert(
-            &mut app.handoff_shadow,
-            live_notice,
-        );
-        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
-    }
 }
 
 fn insert_standalone_notice(
@@ -156,13 +143,6 @@ fn update_inline_notice(
     app.sync_render_cache_slot(msg_idx, block_idx);
     app.recompute_message_retained_bytes(msg_idx);
     app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
-    crate::app::handoff::shadow::mirror_inline_notice_update(
-        &mut app.handoff_shadow,
-        dedup_key,
-        severity,
-        message,
-    );
-    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
     true
 }
 
@@ -231,14 +211,13 @@ fn prune_invalid_turn_notice_refs(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{update_inline_notice, upsert_turn_notice};
-    use crate::app::{App, ChatMessage, MessageRole, NoticeStage, SystemSeverity};
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, NoticeStage, SystemSeverity};
 
     #[test]
-    fn inline_notice_insert_is_mirrored_into_shadow() {
+    fn inline_notice_insert_updates_canonical_assistant_message() {
         let mut app = App::test_default();
         app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
 
         upsert_turn_notice(
             &mut app,
@@ -248,18 +227,19 @@ mod tests {
             "retrying",
         );
 
-        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
-        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
-        assert_eq!(turn.committed_entries.len(), 0);
-        assert_eq!(turn.live.units.len(), 1);
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let Some(MessageBlock::Notice(notice)) = app.messages[0].blocks.first() else {
+            panic!("expected notice block");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert_eq!(notice.text.text, "retrying");
     }
 
     #[test]
-    fn inline_notice_update_mutates_shadow_notice() {
+    fn inline_notice_update_mutates_canonical_notice() {
         let mut app = App::test_default();
         app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
 
         upsert_turn_notice(
             &mut app,
@@ -277,6 +257,10 @@ mod tests {
             "failed",
         ));
 
-        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
+        let Some(MessageBlock::Notice(notice)) = app.messages[0].blocks.first() else {
+            panic!("expected notice block");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Error);
+        assert_eq!(notice.text.text, "failed");
     }
 }

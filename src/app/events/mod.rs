@@ -71,7 +71,6 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     match app.terminal_lifecycle {
         super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
             app.request_chat_visible_rebuild();
-            app.reset_committed_output_tracking();
         }
         super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
             app.request_fullscreen_repaint();
@@ -328,7 +327,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
     }
-    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
 }
 
 fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
@@ -394,7 +392,6 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
             "Session successfully compacted.",
         );
     }
-    crate::app::handoff::shadow::sync_shadow_live_indicator(app);
 }
 
 fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
@@ -447,8 +444,6 @@ mod tests {
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::agent::events::TerminalProcess;
-    use crate::app::handoff::projection::InlineOutputItemKind;
-    use crate::app::handoff::types::{AssistantCommittedUnit, TranscriptEntry};
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         BlockCache, CancelOrigin, ChatRebuildKind, FocusOwner, FocusTarget, FullscreenView,
@@ -851,39 +846,28 @@ mod tests {
         model::CurrentModel::new(model_name, model_name, model_name).authoritative(true)
     }
 
-    fn inline_transcript_entries(app: &App) -> Vec<&TranscriptEntry> {
-        app.handoff_shadow
-            .inline_output
-            .items()
-            .iter()
-            .filter_map(|item| match &item.kind {
-                InlineOutputItemKind::Transcript { entry, .. } => Some(entry),
-                InlineOutputItemKind::AssistantLive { .. } => None,
+    fn canonical_messages_contain_text(app: &App, expected: &str) -> bool {
+        app.messages.iter().any(|message| {
+            message.blocks.iter().any(|block| match block {
+                MessageBlock::Text(text) => text.text == expected,
+                MessageBlock::Notice(notice) => notice.text.text == expected,
+                MessageBlock::ToolCall(_)
+                | MessageBlock::Welcome(_)
+                | MessageBlock::ImageAttachment(_) => false,
             })
-            .collect()
-    }
-
-    fn inline_transcript_contains_text(app: &App, expected: &str) -> bool {
-        inline_transcript_entries(app).iter().any(|entry| match entry {
-            TranscriptEntry::User(user) => user.blocks.iter().any(|block| match block {
-                crate::app::handoff::types::UserTranscriptBlock::Text(text) => text == expected,
-                crate::app::handoff::types::UserTranscriptBlock::ImageAttachment { .. } => false,
-            }),
-            TranscriptEntry::AssistantOpen(assistant)
-            | TranscriptEntry::AssistantContinue(assistant) => match &assistant.unit {
-                AssistantCommittedUnit::Text(text) => text.text == expected,
-                AssistantCommittedUnit::Notice(notice) => notice.text == expected,
-                AssistantCommittedUnit::Tool(_) => false,
-            },
-            TranscriptEntry::System(system) => system.text == expected,
-            TranscriptEntry::Welcome(_) => false,
         })
     }
 
-    fn inline_transcript_has_welcome(app: &App) -> bool {
-        inline_transcript_entries(app)
+    fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
+        crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries(app, 120)
+            .rows()
             .iter()
-            .any(|entry| matches!(entry, TranscriptEntry::Welcome(_)))
+            .any(|row| row.spans.iter().any(|span| span.content.as_ref().contains(expected)))
+    }
+
+    fn session_overview_has_welcome(app: &App) -> bool {
+        app.show_session_overview
+            && app.messages.iter().any(|message| matches!(message.role, MessageRole::Welcome))
     }
 
     fn connected_event(model_name: &str) -> ClientEvent {
@@ -1307,7 +1291,6 @@ mod tests {
         app.chat_render.composer.last_rendered_rows = 4;
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.last_rendered_rows = 7;
-        app.chat_render.mark_terminal_history_synced();
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
@@ -1319,7 +1302,6 @@ mod tests {
         assert_eq!(app.chat_render.composer.last_rendered_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-        assert!(!app.chat_render.terminal_history_is_synced());
     }
 
     #[test]
@@ -1913,7 +1895,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.subscription, "Claude Max");
-        assert!(inline_transcript_has_welcome(&app));
+        assert!(session_overview_has_welcome(&app));
     }
 
     #[test]
@@ -1947,7 +1929,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.subscription, "Claude Max");
-        assert!(!inline_transcript_has_welcome(&app));
+        assert!(!session_overview_has_welcome(&app));
     }
 
     #[test]
@@ -2446,9 +2428,9 @@ mod tests {
             panic!("expected user text block");
         };
         assert_eq!(user_text.text, "first user line");
-        assert!(inline_transcript_contains_text(&app, "first user line"));
-        assert!(inline_transcript_contains_text(&app, "assistant reply"));
-        assert!(!inline_transcript_has_welcome(&app));
+        assert!(canonical_messages_contain_text(&app, "first user line"));
+        assert!(canonical_messages_contain_text(&app, "assistant reply"));
+        assert!(!session_overview_has_welcome(&app));
 
         handle_client_event(
             &mut app,
@@ -2465,11 +2447,11 @@ mod tests {
             },
         );
 
-        assert!(!inline_transcript_has_welcome(&app));
+        assert!(!session_overview_has_welcome(&app));
     }
 
     #[test]
-    fn startup_resume_history_rebuilds_inline_transcript_projection() {
+    fn startup_resume_history_renders_from_canonical_messages() {
         let mut app = make_test_app();
         let history_updates = vec![
             model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
@@ -2492,16 +2474,11 @@ mod tests {
             },
         );
 
-        assert!(inline_transcript_contains_text(&app, "startup user line"));
-        assert!(inline_transcript_contains_text(&app, "startup assistant reply"));
-        assert!(!inline_transcript_has_welcome(&app));
-        assert!(
-            !app.handoff_shadow
-                .inline_output
-                .items()
-                .iter()
-                .any(|item| matches!(item.kind, InlineOutputItemKind::AssistantLive { .. }))
-        );
+        assert!(canonical_messages_contain_text(&app, "startup user line"));
+        assert!(canonical_messages_contain_text(&app, "startup assistant reply"));
+        assert!(live_rows_contain_text(&mut app, "startup user line"));
+        assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
+        assert!(!session_overview_has_welcome(&app));
 
         handle_client_event(
             &mut app,
@@ -2518,7 +2495,7 @@ mod tests {
             },
         );
 
-        assert!(!inline_transcript_has_welcome(&app));
+        assert!(!session_overview_has_welcome(&app));
     }
 
     #[test]
@@ -2604,7 +2581,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_history_clears_active_turn_owner_after_replay() {
+    fn resume_history_clears_active_turn_owner_after_loading() {
         let mut app = make_test_app();
 
         handle_client_event(
@@ -2627,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_history_clears_tool_scope_tracking_after_replay() {
+    fn resume_history_clears_tool_scope_tracking_after_loading() {
         let mut app = make_test_app();
         let task_tool = model::ToolCall::new("resume-task", "Run subagent")
             .kind(model::ToolKind::Think)

@@ -11,7 +11,6 @@ mod events;
 pub(crate) mod file_index;
 mod focus;
 mod git_context;
-pub(crate) mod handoff;
 mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;

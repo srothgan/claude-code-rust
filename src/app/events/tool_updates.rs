@@ -65,8 +65,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
     }
-    crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &id_str);
-    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 fn apply_tool_scope_status_update(
@@ -980,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_tool_update_stays_live_in_shadow_until_turn_exit() {
+    fn completed_tool_update_mutates_canonical_tool_block() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
         app.messages.push(ChatMessage::new(
@@ -994,8 +992,6 @@ mod tests {
         ));
         app.bind_active_turn_assistant(0);
         app.index_tool_call(tool_id.to_owned(), 0, 0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
-        crate::app::handoff::shadow::mirror_visible_tool_snapshot(&mut app, tool_id);
 
         let update = model::ToolCallUpdate::new(
             tool_id,
@@ -1006,9 +1002,11 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
-        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
-        assert!(turn.committed_entries.is_empty());
-        assert_eq!(turn.live.units.len(), 1);
+        assert_eq!(app.active_turn_assistant_idx(), Some(0));
+        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Completed);
+        assert!(tc.terminal_output.as_deref().is_some_and(|output| output.contains("done")));
     }
 }

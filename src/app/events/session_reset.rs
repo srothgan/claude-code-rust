@@ -66,7 +66,6 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    crate::app::handoff::shadow::clear_shadow_state(&mut app.handoff_shadow);
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
@@ -173,7 +172,6 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
-    crate::app::handoff::shadow::rebuild_inline_output_from_messages(app);
 }
 
 #[cfg(test)]
@@ -181,40 +179,6 @@ mod tests {
     use super::reset_for_new_session;
     use crate::agent::model;
     use crate::app::{App, ChatMessage};
-
-    #[test]
-    fn session_reset_clears_handoff_shadow_state() {
-        let mut app = App::test_default();
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
-        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, "hello");
-        crate::app::handoff::shadow::mirror_turn_exit(
-            &mut app.handoff_shadow,
-            model::ToolCallStatus::Completed,
-        );
-        app.handoff_shadow.inline_output.record_message_transcript_entries(
-            0,
-            crate::app::handoff::shadow::transcript_entries_from_message(&ChatMessage::new(
-                crate::app::MessageRole::User,
-                vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
-                    "queued",
-                ))],
-                None,
-            )),
-        );
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            false,
-        );
-
-        assert!(app.handoff_shadow.active_turn.is_none());
-        assert!(app.handoff_shadow.last_finished_turn.is_none());
-        assert_eq!(app.handoff_shadow.next_turn_id, 1);
-        assert!(app.handoff_shadow.inline_output.items().is_empty());
-    }
 
     #[test]
     fn session_reset_clears_chat_render_measurement_state() {
@@ -225,17 +189,6 @@ mod tests {
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.last_rendered_rows = 9;
         app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
-        app.chat_render.mark_terminal_history_synced();
-        app.handoff_shadow.inline_output.record_message_transcript_entries(
-            1,
-            crate::app::handoff::shadow::transcript_entries_from_message(&ChatMessage::new(
-                crate::app::MessageRole::User,
-                vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
-                    "queued",
-                ))],
-                None,
-            )),
-        );
 
         reset_for_new_session(
             &mut app,
@@ -250,6 +203,5 @@ mod tests {
         assert_eq!(app.chat_render.composer.total_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-        assert!(!app.chat_render.transcript.history_in_sync);
     }
 }

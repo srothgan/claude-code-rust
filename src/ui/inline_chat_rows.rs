@@ -1,21 +1,13 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::handoff::projection::{
-    InlineOutputId, InlineOutputItem, InlineOutputItemKind, InlineOutputStatus,
-    inline_live_projection, inline_live_projection_after_static_insert,
-};
-use crate::app::handoff::types::{
-    AssistantCommittedUnit, AssistantTranscriptEntry, CommittedAssistantKind,
-    LiveAssistantIndicator, LiveAssistantUnit, TerminalMutationState, ToolTranscriptSnapshot,
-    TranscriptEntry, UserTranscriptBlock, WelcomeTranscriptEntry,
-};
 use crate::app::{
-    App, BlockCache, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
+    App, ChatMessage, MessageBlock, MessageRole, NoticeBlock, SystemSeverity, TextBlock,
+    TextBlockSpacing, WelcomeBlock,
 };
 use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
 use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
+use crate::ui::spinner_verbs::random_spinner_verb;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
@@ -27,390 +19,219 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopLevelInlineBlockKind {
-    ExistingHistory,
     Welcome,
     User,
     System,
     Assistant,
 }
 
-pub(crate) fn serialize_transcript_rows(
-    app: &App,
-    entries: &[TranscriptEntry],
-    has_prior_committed_history: bool,
-    width: u16,
-) -> Vec<Line<'static>> {
-    serialize_transcript_row_batches(app, entries, has_prior_committed_history, width)
-        .into_iter()
-        .flatten()
-        .collect()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantInlineItemKind {
+    TextLike,
+    Tool,
 }
 
-pub(crate) fn serialize_transcript_row_batches(
-    app: &App,
-    entries: &[TranscriptEntry],
-    has_prior_committed_history: bool,
-    width: u16,
-) -> Vec<Vec<Line<'static>>> {
-    let mut batches = Vec::new();
-    let mut previous_block_kind =
-        has_prior_committed_history.then_some(TopLevelInlineBlockKind::ExistingHistory);
-    extend_serialized_transcript_row_batches(
-        app,
-        entries,
-        &mut previous_block_kind,
-        width,
-        &mut batches,
-    );
-    batches
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantRuntimeIndicator {
+    Thinking { verb: &'static str },
+    Compacting,
 }
 
-fn extend_serialized_transcript_row_batches(
-    app: &App,
-    entries: &[TranscriptEntry],
-    previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
-    width: u16,
-    batches: &mut Vec<Vec<Line<'static>>>,
-) {
-    let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.as_str());
-    let mut idx = 0usize;
-    while idx < entries.len() {
-        match &entries[idx] {
-            TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_) => {
-                let start_idx = idx;
-                while idx < entries.len()
-                    && matches!(
-                        entries[idx],
-                        TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_)
-                    )
-                {
-                    idx += 1;
-                }
-                let batch_kind = TopLevelInlineBlockKind::Assistant;
-                let batch_rows = serialize_assistant_transcript_batch(
-                    entries[start_idx..idx].iter(),
-                    current_mode_id,
-                    width,
-                );
-                let mut rows = Vec::new();
-                if !batch_rows.is_empty() {
-                    rows.extend(
-                        std::iter::repeat_with(Line::default)
-                            .take(top_level_leading_blank_lines(*previous_block_kind, batch_kind)),
-                    );
-                    rows.extend(batch_rows);
-                    *previous_block_kind = Some(batch_kind);
-                }
-                batches.push(rows);
-            }
-            entry => {
-                let block_kind = transcript_entry_block_kind(entry);
-                let mut rows = Vec::new();
-                if let TranscriptEntry::Welcome(welcome) = entry {
-                    let welcome_rows = serialize_compact_welcome_entry(app, welcome, width);
-                    if !welcome_rows.is_empty() {
-                        rows.extend(
-                            std::iter::repeat_with(Line::default).take(
-                                top_level_leading_blank_lines(*previous_block_kind, block_kind),
-                            ),
-                        );
-                        rows.extend(welcome_rows);
-                        *previous_block_kind = Some(block_kind);
-                    }
-                } else {
-                    let entry_rows =
-                        serialize_single_transcript_entry(entry, current_mode_id, width);
-                    if !entry_rows.is_empty() {
-                        rows.extend(
-                            std::iter::repeat_with(Line::default).take(
-                                top_level_leading_blank_lines(*previous_block_kind, block_kind),
-                            ),
-                        );
-                        rows.extend(entry_rows);
-                        *previous_block_kind = Some(block_kind);
-                    }
-                }
-                batches.push(rows);
-                idx += 1;
-            }
-        }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SerializedLiveRows {
+    rows: Vec<Line<'static>>,
+    message_boundaries: Vec<LiveMessageBoundary>,
+}
+
+impl SerializedLiveRows {
+    pub(crate) fn rows(&self) -> &[Line<'static>] {
+        &self.rows
+    }
+
+    pub(crate) fn stable_row_count_before_message(&self, mutable_msg_idx: Option<usize>) -> usize {
+        self.message_boundaries
+            .iter()
+            .find(|boundary| {
+                !boundary.commit_ready
+                    || mutable_msg_idx.is_some_and(|msg_idx| boundary.msg_idx >= msg_idx)
+            })
+            .map_or(self.rows.len(), |boundary| boundary.start_row)
     }
 }
 
-fn extend_serialized_transcript_rows(
-    app: &App,
-    entries: &[TranscriptEntry],
-    previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
-    width: u16,
-    rows: &mut Vec<Line<'static>>,
-) {
-    let mut batches = Vec::new();
-    extend_serialized_transcript_row_batches(
-        app,
-        entries,
-        previous_block_kind,
-        width,
-        &mut batches,
-    );
-    rows.extend(batches.into_iter().flatten());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveMessageBoundary {
+    msg_idx: usize,
+    start_row: usize,
+    commit_ready: bool,
 }
 
-pub(crate) fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
-    let projection = inline_live_projection(app);
-    serialize_live_projection_rows(app, projection, width)
-}
-
-pub(crate) fn serialize_live_rows_after_static_insert(
-    app: &mut App,
-    width: u16,
-    inserted_ids: &[InlineOutputId],
-) -> Vec<Line<'static>> {
-    let projection = inline_live_projection_after_static_insert(app, inserted_ids);
-    serialize_live_projection_rows(app, projection, width)
-}
-
-fn serialize_live_projection_rows(
-    app: &mut App,
-    projection: Vec<InlineOutputItem>,
-    width: u16,
-) -> Vec<Line<'static>> {
+pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
+    let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+    let active_msg_idx = app.active_turn_assistant_idx();
+    let runtime_indicator = sync_runtime_indicator(app);
     let mut rows = Vec::new();
+    let mut message_boundaries = Vec::new();
     let mut previous_block_kind = None;
 
-    if let Some(welcome) = uncommitted_live_welcome_entry(app) {
-        let welcome_rows = serialize_compact_welcome_entry(app, &welcome, width);
-        if !welcome_rows.is_empty() {
-            rows.extend(welcome_rows);
-            previous_block_kind = Some(TopLevelInlineBlockKind::Welcome);
-        }
-    }
+    for msg_idx in 0..app.messages.len() {
+        let role = app.messages[msg_idx].role.clone();
+        let block_kind = message_block_kind(&role);
+        let commit_ready = message_commit_ready(&app.messages[msg_idx]);
 
-    if projection.is_empty() {
-        return rows;
-    }
-
-    let mut transcript_batch = Vec::new();
-
-    for item in projection {
-        match item.kind {
-            InlineOutputItemKind::Transcript {
-                entry,
-                status: InlineOutputStatus::PendingInsert,
-            } => transcript_batch.push(entry),
-            InlineOutputItemKind::Transcript { status: InlineOutputStatus::Inserted, .. } => {}
-            InlineOutputItemKind::AssistantLive { msg_idx, turn_id } => {
-                flush_live_transcript_batch(
-                    app,
-                    &mut transcript_batch,
-                    &mut previous_block_kind,
-                    width,
-                    &mut rows,
+        let message_rows = match role {
+            MessageRole::Welcome => serialize_welcome_message(app, msg_idx, width),
+            MessageRole::User | MessageRole::System(_) => {
+                let rendered = build_user_system_message_rows(
+                    &mut app.messages[msg_idx],
+                    message_render_context(current_mode_id.as_deref(), width),
                 );
-                let live_rows = serialize_assistant_live_slot(
-                    app,
-                    msg_idx,
-                    turn_id,
-                    previous_block_kind,
-                    width,
-                );
-                if !live_rows.is_empty() {
-                    rows.extend(live_rows);
-                    previous_block_kind = Some(TopLevelInlineBlockKind::Assistant);
-                }
+                segments_to_physical_rows(&rendered.segments, width, false)
             }
+            MessageRole::Assistant => {
+                let items = assistant_render_items_from_message(&app.messages[msg_idx], msg_idx);
+                let indicator =
+                    assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
+                let spinner = spinner_state_for_live(app.spinner_frame);
+                let rows = render_assistant_rows(AssistantRowsRequest {
+                    app: Some(app),
+                    items,
+                    indicator,
+                    current_mode_id: current_mode_id.as_deref(),
+                    width,
+                    spinner,
+                    show_label: true,
+                    leading_blank_lines: 0,
+                    has_prior_assistant_content: false,
+                });
+                tracing::debug!(
+                    target: crate::logging::targets::APP_RENDER,
+                    event_name = "inline_chat_assistant_block_built",
+                    message = "assistant message block rendered from canonical app.messages",
+                    outcome = "success",
+                    assistant_turn_id = tracing::field::Empty,
+                    show_label = true,
+                    leading_blank_lines = 0,
+                    committed_rendered_rows = rows.len(),
+                    live_rendered_rows = 0,
+                    indicator = ?indicator,
+                    preview = %preview_rows(&rows, 4),
+                );
+                rows
+            }
+        };
+
+        if message_rows.is_empty() {
+            continue;
         }
+
+        let start_row = rows.len();
+        rows.extend(
+            std::iter::repeat_with(Line::default)
+                .take(top_level_leading_blank_lines(previous_block_kind, block_kind)),
+        );
+        message_boundaries.push(LiveMessageBoundary { msg_idx, start_row, commit_ready });
+        rows.extend(message_rows);
+        previous_block_kind = Some(block_kind);
     }
 
-    flush_live_transcript_batch(
-        app,
-        &mut transcript_batch,
-        &mut previous_block_kind,
-        width,
-        &mut rows,
-    );
-    rows
+    SerializedLiveRows { rows, message_boundaries }
 }
 
-fn flush_live_transcript_batch(
-    app: &App,
-    transcript_batch: &mut Vec<TranscriptEntry>,
-    previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
-    width: u16,
-    rows: &mut Vec<Line<'static>>,
-) {
-    if transcript_batch.is_empty() {
-        return;
+fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<'static>> {
+    if !app.show_session_overview {
+        return Vec::new();
+    }
+    let Some(message) = app.messages.get(msg_idx) else {
+        return Vec::new();
+    };
+    let Some(MessageBlock::Welcome(welcome)) =
+        message.blocks.iter().find(|block| matches!(*block, MessageBlock::Welcome(_)))
+    else {
+        return Vec::new();
+    };
+
+    serialize_compact_welcome_entry(app, welcome, width)
+}
+
+const fn message_block_kind(role: &MessageRole) -> TopLevelInlineBlockKind {
+    match role {
+        MessageRole::Welcome => TopLevelInlineBlockKind::Welcome,
+        MessageRole::User => TopLevelInlineBlockKind::User,
+        MessageRole::System(_) => TopLevelInlineBlockKind::System,
+        MessageRole::Assistant => TopLevelInlineBlockKind::Assistant,
+    }
+}
+
+fn message_commit_ready(message: &ChatMessage) -> bool {
+    match &message.role {
+        MessageRole::Welcome => welcome_message_commit_ready(message),
+        MessageRole::User | MessageRole::System(_) | MessageRole::Assistant => true,
+    }
+}
+
+fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
+    message
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            MessageBlock::Welcome(welcome) => Some(welcome),
+            MessageBlock::Text(_)
+            | MessageBlock::Notice(_)
+            | MessageBlock::ToolCall(_)
+            | MessageBlock::ImageAttachment(_) => None,
+        })
+        .is_some_and(|welcome| {
+            welcome_value_ready(&welcome.subscription) && welcome_value_ready(&welcome.session_id)
+        })
+}
+
+fn welcome_value_ready(value: &str) -> bool {
+    !value.trim().is_empty() && value != "-"
+}
+
+fn sync_runtime_indicator(app: &mut App) -> Option<AssistantRuntimeIndicator> {
+    if app.is_compacting {
+        app.chat_render.thinking_verb = None;
+        return Some(AssistantRuntimeIndicator::Compacting);
     }
 
-    extend_serialized_transcript_rows(app, transcript_batch, previous_block_kind, width, rows);
-    transcript_batch.clear();
+    let thinking = matches!(app.status, crate::app::AppStatus::Thinking)
+        || (matches!(app.status, crate::app::AppStatus::Running)
+            && app
+                .active_turn_assistant_idx()
+                .and_then(|idx| app.messages.get(idx))
+                .is_some_and(|msg| msg.blocks.is_empty()));
+
+    if thinking {
+        let verb = app.chat_render.thinking_verb.get_or_insert_with(random_spinner_verb);
+        return Some(AssistantRuntimeIndicator::Thinking { verb });
+    }
+
+    app.chat_render.thinking_verb = None;
+    None
 }
 
-fn serialize_assistant_live_slot(
-    app: &mut App,
+fn assistant_runtime_indicator(
     msg_idx: usize,
-    turn_id: crate::app::handoff::types::AssistantTurnId,
-    previous_block_kind: Option<TopLevelInlineBlockKind>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    if app.active_turn_assistant_idx() != Some(msg_idx) {
-        return Vec::new();
-    }
-    let Some(turn) = app.handoff_shadow.active_turn.as_ref() else {
-        return Vec::new();
-    };
-    if turn.live.turn_id != turn_id {
-        return Vec::new();
-    }
-    if turn.live.units.is_empty() && turn.live.live_indicator.is_none() {
-        return Vec::new();
-    }
-    let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
-    let formatting = turn.live.formatting.clone();
-    let units = turn.live.units.clone();
-    let turn_id = turn.live.turn_id.0;
-    let indicator = turn.live.live_indicator;
-    let spinner = spinner_state_for_live(app.spinner_frame);
-    let render_items = assistant_render_items_from_live(&units, formatting.previous_committed_kind);
-    let show_label = !formatting.header_printed;
-    let rows = render_assistant_rows(AssistantRowsRequest {
-        app: Some(app),
-        items: render_items,
-        indicator,
-        current_mode_id: current_mode_id.as_deref(),
-        width,
-        spinner,
-        show_label,
-        leading_blank_lines: top_level_leading_blank_lines(
-            previous_block_kind,
-            TopLevelInlineBlockKind::Assistant,
-        ),
-        has_prior_assistant_content: formatting.header_printed,
-    });
-    tracing::debug!(
-        target: crate::logging::targets::APP_RENDER,
-        event_name = "inline_chat_assistant_block_built",
-        message = "assistant live block rendered from shared inline assistant layout",
-        outcome = "success",
-        assistant_turn_id = turn_id,
-        show_label,
-        leading_blank_lines = 0,
-        committed_rendered_rows = 0,
-        live_rendered_rows = rows.len(),
-        indicator = ?indicator,
-        preview = %preview_rows(&rows, 4),
-    );
-    rows
-}
-
-fn serialize_single_transcript_entry(
-    entry: &TranscriptEntry,
-    current_mode_id: Option<&str>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let mut message = match entry {
-        TranscriptEntry::Welcome(_) => return Vec::new(),
-        TranscriptEntry::User(entry) => ChatMessage::new(
-            MessageRole::User,
-            entry
-                .blocks
-                .iter()
-                .map(|block| match block {
-                    UserTranscriptBlock::Text(text) => {
-                        MessageBlock::Text(TextBlock::from_complete(text))
-                    }
-                    UserTranscriptBlock::ImageAttachment { count } => {
-                        MessageBlock::ImageAttachment(ImageAttachmentBlock::new(*count))
-                    }
-                })
-                .collect(),
-            None,
-        ),
-        TranscriptEntry::System(entry) => ChatMessage::new(
-            MessageRole::System(entry.severity),
-            vec![MessageBlock::Text(TextBlock::from_complete(&entry.text))],
-            None,
-        ),
-        TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_) => {
-            return Vec::new();
-        }
-    };
-
-    let rendered = build_user_system_message_rows(
-        &mut message,
-        message_render_context(current_mode_id, width),
-    );
-    segments_to_physical_rows(&rendered.segments, width, false)
+    active_msg_idx: Option<usize>,
+    runtime_indicator: Option<AssistantRuntimeIndicator>,
+) -> Option<AssistantRuntimeIndicator> {
+    (active_msg_idx == Some(msg_idx)).then_some(runtime_indicator).flatten()
 }
 
 fn serialize_compact_welcome_entry(
     app: &App,
-    entry: &WelcomeTranscriptEntry,
+    entry: &WelcomeBlock,
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ))];
-    lines.extend(welcome::overview_lines(
-        &crate::app::WelcomeBlock {
-            version: entry.version.clone(),
-            subscription: entry.subscription.clone(),
-            cwd: entry.cwd.clone(),
-            session_id: entry.session_id.clone(),
-            tip_seed: entry.tip_seed,
-            cache: BlockCache::default(),
-        },
-        Some(status_label(app)),
-    ));
+    lines.extend(welcome::overview_lines(entry, Some(status_label(app))));
 
     wrap_lines_to_physical_rows(&lines, width)
-}
-
-fn uncommitted_live_welcome_entry(app: &App) -> Option<WelcomeTranscriptEntry> {
-    if !app.show_session_overview {
-        return None;
-    }
-    if inline_output_contains_welcome(&app.handoff_shadow.inline_output) {
-        return None;
-    }
-
-    let first = app.messages.first()?;
-    if !matches!(first.role, MessageRole::Welcome) {
-        return None;
-    }
-    let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
-        return None;
-    };
-    if welcome_metadata_ready(welcome) {
-        return None;
-    }
-
-    Some(WelcomeTranscriptEntry {
-        version: welcome.version.clone(),
-        subscription: welcome.subscription.clone(),
-        cwd: welcome.cwd.clone(),
-        session_id: welcome.session_id.clone(),
-        tip_seed: welcome.tip_seed,
-    })
-}
-
-fn inline_output_contains_welcome(
-    inline_output: &crate::app::handoff::projection::InlineOutputState,
-) -> bool {
-    inline_output.items().iter().any(|item| {
-        matches!(
-            &item.kind,
-            InlineOutputItemKind::Transcript { entry: TranscriptEntry::Welcome(_), .. }
-        )
-    })
-}
-
-fn welcome_metadata_ready(welcome: &crate::app::WelcomeBlock) -> bool {
-    !welcome.session_id.trim().is_empty()
-        && welcome.session_id != "-"
-        && !welcome.subscription.trim().is_empty()
-        && welcome.subscription != "-"
 }
 
 fn status_label(app: &App) -> &'static str {
@@ -421,54 +242,6 @@ fn status_label(app: &App) -> &'static str {
         crate::app::AppStatus::Thinking => "Thinking",
         crate::app::AppStatus::Running => "Running",
         crate::app::AppStatus::Error => "Error",
-    }
-}
-
-fn serialize_assistant_transcript_batch<'a>(
-    entries: impl Iterator<Item = &'a TranscriptEntry>,
-    current_mode_id: Option<&str>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let entries = entries.collect::<Vec<_>>();
-    if entries.is_empty() {
-        return Vec::new();
-    }
-    let show_label = matches!(entries.first(), Some(TranscriptEntry::AssistantOpen(_)));
-    let rows = render_assistant_rows(AssistantRowsRequest {
-        app: None,
-        items: assistant_render_items_from_committed(&entries),
-        indicator: None,
-        current_mode_id,
-        width,
-        spinner: idle_spinner(),
-        show_label,
-        leading_blank_lines: 0,
-        has_prior_assistant_content: !show_label,
-    });
-    tracing::debug!(
-        target: crate::logging::targets::APP_RENDER,
-        event_name = "inline_chat_assistant_block_built",
-        message = "assistant transcript block rendered from shared inline assistant layout",
-        outcome = "success",
-        assistant_turn_id = tracing::field::Empty,
-        show_label,
-        leading_blank_lines = 0,
-        committed_rendered_rows = rows.len(),
-        live_rendered_rows = 0,
-        indicator = "none",
-        preview = %preview_rows(&rows, 4),
-    );
-    rows
-}
-
-const fn transcript_entry_block_kind(entry: &TranscriptEntry) -> TopLevelInlineBlockKind {
-    match entry {
-        TranscriptEntry::Welcome(_) => TopLevelInlineBlockKind::Welcome,
-        TranscriptEntry::User(_) => TopLevelInlineBlockKind::User,
-        TranscriptEntry::System(_) => TopLevelInlineBlockKind::System,
-        TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_) => {
-            TopLevelInlineBlockKind::Assistant
-        }
     }
 }
 
@@ -485,8 +258,7 @@ const fn top_level_leading_blank_lines(
 enum AssistantRenderItem {
     Text(TextBlock),
     Notice(NoticeBlock),
-    LiveTool(crate::app::handoff::types::LiveToolUnit),
-    CommittedTool(ToolTranscriptSnapshot),
+    CanonicalTool { msg_idx: usize, block_idx: usize },
 }
 
 struct AssistantRenderItemSpec {
@@ -549,78 +321,66 @@ struct AssistantInlineLayoutState {
     has_visible_content: bool,
 }
 
-fn assistant_render_items_from_committed(
-    entries: &[&TranscriptEntry],
+fn assistant_render_items_from_message(
+    message: &ChatMessage,
+    msg_idx: usize,
 ) -> Vec<AssistantRenderItemSpec> {
-    let mut items = Vec::with_capacity(entries.len());
+    let mut items = Vec::with_capacity(message.blocks.len());
     let mut pending_text: Option<PendingAssistantTextRun> = None;
+    let mut previous_kind = None;
 
-    for entry in entries {
-        let (TranscriptEntry::AssistantOpen(entry) | TranscriptEntry::AssistantContinue(entry)) =
-            entry
-        else {
-            continue;
-        };
-
-        match &entry.unit {
-            AssistantCommittedUnit::Text(text) => {
-                if entry.leading_blank_lines == 0
-                    && let Some(pending) = pending_text.as_mut()
-                {
+    for (block_idx, block) in message.blocks.iter().enumerate() {
+        match block {
+            MessageBlock::Text(text) => {
+                if text.text.is_empty() {
+                    continue;
+                }
+                if let Some(pending) = pending_text.as_mut() {
                     pending.append(&text.text, text.trailing_spacing);
                 } else {
-                    flush_pending_text_run(&mut pending_text, &mut items);
+                    let current_kind = AssistantInlineItemKind::TextLike;
+                    let leading_blank_lines =
+                        leading_blank_lines_between(previous_kind, current_kind);
                     pending_text = Some(PendingAssistantTextRun::new(
-                        usize::from(entry.leading_blank_lines),
+                        leading_blank_lines,
                         &text.text,
                         text.trailing_spacing,
                     ));
+                    previous_kind = Some(current_kind);
                 }
             }
-            AssistantCommittedUnit::Notice(_) | AssistantCommittedUnit::Tool(_) => {
+            MessageBlock::Notice(notice) => {
                 flush_pending_text_run(&mut pending_text, &mut items);
-                items.push(AssistantRenderItemSpec {
-                    leading_blank_lines: usize::from(entry.leading_blank_lines),
-                    item: assistant_render_item_from_committed(entry),
-                });
-            }
-        }
-    }
-
-    flush_pending_text_run(&mut pending_text, &mut items);
-    items
-}
-
-fn assistant_render_items_from_live(
-    units: &[LiveAssistantUnit],
-    initial_previous_kind: Option<CommittedAssistantKind>,
-) -> Vec<AssistantRenderItemSpec> {
-    let mut items = Vec::with_capacity(units.len());
-    let mut pending_text: Option<PendingAssistantTextRun> = None;
-    let mut previous_kind = initial_previous_kind;
-    for unit in ordered_live_units_for_render(units) {
-        if let Some((text, trailing_spacing)) = plain_text_unit(unit) {
-            if let Some(pending) = pending_text.as_mut() {
-                pending.append(text, trailing_spacing);
-            } else {
-                let current_kind = CommittedAssistantKind::TextLike;
+                let current_kind = AssistantInlineItemKind::TextLike;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
-                pending_text =
-                    Some(PendingAssistantTextRun::new(leading_blank_lines, text, trailing_spacing));
+                items.push(AssistantRenderItemSpec {
+                    leading_blank_lines,
+                    item: AssistantRenderItem::Notice(NoticeBlock {
+                        severity: notice.severity,
+                        text: TextBlock::from_complete(&notice.text.text)
+                            .with_trailing_spacing(notice.text.trailing_spacing),
+                        dedup_key: notice.dedup_key.clone(),
+                    }),
+                });
                 previous_kind = Some(current_kind);
             }
-            continue;
+            MessageBlock::ToolCall(tool) => {
+                if tool.hidden_unless_focused_interaction() {
+                    continue;
+                }
+                flush_pending_text_run(&mut pending_text, &mut items);
+                let current_kind = AssistantInlineItemKind::Tool;
+                let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
+                items.push(AssistantRenderItemSpec {
+                    leading_blank_lines,
+                    item: AssistantRenderItem::CanonicalTool { msg_idx, block_idx },
+                });
+                previous_kind = Some(current_kind);
+            }
+            MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => {}
         }
-
-        flush_pending_text_run(&mut pending_text, &mut items);
-        let current_kind = live_unit_kind(unit);
-        let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
-        items.push(AssistantRenderItemSpec {
-            leading_blank_lines,
-            item: assistant_render_item_from_live(unit),
-        });
-        previous_kind = Some(current_kind);
     }
+
     flush_pending_text_run(&mut pending_text, &mut items);
     items
 }
@@ -636,116 +396,23 @@ fn flush_pending_text_run(
     }
 }
 
-fn plain_text_unit(unit: &LiveAssistantUnit) -> Option<(&str, TextBlockSpacing)> {
-    match unit {
-        LiveAssistantUnit::StableText(text) => Some((&text.text, text.trailing_spacing)),
-        LiveAssistantUnit::MutableTextTail(text) => Some((&text.text, TextBlockSpacing::None)),
-        LiveAssistantUnit::Notice(_) | LiveAssistantUnit::Tool(_) => None,
-    }
-}
-
 fn leading_blank_lines_between(
-    previous_kind: Option<CommittedAssistantKind>,
-    current_kind: CommittedAssistantKind,
+    previous_kind: Option<AssistantInlineItemKind>,
+    current_kind: AssistantInlineItemKind,
 ) -> usize {
     match (previous_kind, current_kind) {
         (None, _)
-        | (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::TextLike)
-        | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::Tool) => 0,
-        (Some(CommittedAssistantKind::TextLike), CommittedAssistantKind::Tool)
-        | (Some(CommittedAssistantKind::Tool), CommittedAssistantKind::TextLike) => 1,
-    }
-}
-
-fn ordered_live_units_for_render(units: &[LiveAssistantUnit]) -> Vec<&LiveAssistantUnit> {
-    let Some(hidden_idx) = units.iter().position(is_hidden_tool_unit) else {
-        return units.iter().collect();
-    };
-    let Some(last_later_root_idx) = units
-        .iter()
-        .enumerate()
-        .skip(hidden_idx + 1)
-        .filter_map(|(idx, unit)| is_visible_subagent_root_unit(unit).then_some(idx))
-        .next_back()
-    else {
-        return units.iter().collect();
-    };
-
-    let hidden_unit = &units[hidden_idx];
-    let mut ordered = Vec::with_capacity(units.len());
-    for (idx, unit) in units.iter().enumerate() {
-        if idx == hidden_idx {
-            continue;
-        }
-        ordered.push(unit);
-        if idx == last_later_root_idx {
-            ordered.push(hidden_unit);
-        }
-    }
-    ordered
-}
-
-fn is_hidden_tool_unit(unit: &LiveAssistantUnit) -> bool {
-    matches!(unit, LiveAssistantUnit::Tool(tool) if tool.snapshot.hidden)
-}
-
-fn is_visible_subagent_root_unit(unit: &LiveAssistantUnit) -> bool {
-    matches!(
-        unit,
-        LiveAssistantUnit::Tool(tool)
-            if !tool.snapshot.hidden
-                && matches!(tool.snapshot.sdk_tool_name.as_str(), "Task" | "Agent")
-    )
-}
-
-fn assistant_render_item_from_committed(entry: &AssistantTranscriptEntry) -> AssistantRenderItem {
-    match &entry.unit {
-        AssistantCommittedUnit::Text(text) => AssistantRenderItem::Text(
-            TextBlock::from_complete(&text.text).with_trailing_spacing(text.trailing_spacing),
-        ),
-        AssistantCommittedUnit::Notice(notice) => AssistantRenderItem::Notice(NoticeBlock {
-            severity: notice.severity,
-            text: TextBlock::from_complete(&notice.text)
-                .with_trailing_spacing(notice.trailing_spacing),
-            dedup_key: None,
-        }),
-        AssistantCommittedUnit::Tool(tool) => {
-            AssistantRenderItem::CommittedTool(tool.snapshot.clone())
-        }
-    }
-}
-
-fn assistant_render_item_from_live(unit: &LiveAssistantUnit) -> AssistantRenderItem {
-    match unit {
-        LiveAssistantUnit::StableText(text) => AssistantRenderItem::Text(
-            TextBlock::from_complete(&text.text).with_trailing_spacing(text.trailing_spacing),
-        ),
-        LiveAssistantUnit::MutableTextTail(text) => {
-            AssistantRenderItem::Text(TextBlock::from_complete(&text.text))
-        }
-        LiveAssistantUnit::Notice(notice) => AssistantRenderItem::Notice(NoticeBlock {
-            severity: notice.severity,
-            text: TextBlock::from_complete(&notice.text)
-                .with_trailing_spacing(notice.trailing_spacing),
-            dedup_key: notice.dedup_key.clone(),
-        }),
-        LiveAssistantUnit::Tool(tool) => AssistantRenderItem::LiveTool(tool.clone()),
-    }
-}
-
-fn live_unit_kind(unit: &LiveAssistantUnit) -> CommittedAssistantKind {
-    match unit {
-        LiveAssistantUnit::StableText(_)
-        | LiveAssistantUnit::MutableTextTail(_)
-        | LiveAssistantUnit::Notice(_) => CommittedAssistantKind::TextLike,
-        LiveAssistantUnit::Tool(_) => CommittedAssistantKind::Tool,
+        | (Some(AssistantInlineItemKind::TextLike), AssistantInlineItemKind::TextLike)
+        | (Some(AssistantInlineItemKind::Tool), AssistantInlineItemKind::Tool) => 0,
+        (Some(AssistantInlineItemKind::TextLike), AssistantInlineItemKind::Tool)
+        | (Some(AssistantInlineItemKind::Tool), AssistantInlineItemKind::TextLike) => 1,
     }
 }
 
 struct AssistantRowsRequest<'a> {
     app: Option<&'a mut App>,
     items: Vec<AssistantRenderItemSpec>,
-    indicator: Option<LiveAssistantIndicator>,
+    indicator: Option<AssistantRuntimeIndicator>,
     current_mode_id: Option<&'a str>,
     width: u16,
     spinner: SpinnerState,
@@ -797,56 +464,33 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
                     rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
                 }
             }
-            AssistantRenderItem::LiveTool(tool) => {
+            AssistantRenderItem::CanonicalTool { msg_idx, block_idx } => {
                 let Some(app) = request.app.as_deref_mut() else {
                     continue;
                 };
-                let rendered = render_live_tool_rows(app, &tool, render_context, request.spinner);
-                if !rendered.is_empty() {
-                    rows.extend(
-                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
-                    );
-                    state.has_body_content = true;
-                    state.has_visible_content = true;
-                    rows.extend(rendered);
-                }
-            }
-            AssistantRenderItem::CommittedTool(snapshot) => {
-                let rendered =
-                    render_committed_tool_rows(&snapshot, render_context, request.spinner);
-                if !rendered.is_empty() {
-                    rows.extend(
-                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
-                    );
-                    state.has_body_content = true;
-                    state.has_visible_content = true;
-                    rows.extend(rendered);
-                }
+                append_rendered_assistant_item(
+                    &mut rows,
+                    &mut state,
+                    item.leading_blank_lines,
+                    render_canonical_tool_rows(
+                        app,
+                        msg_idx,
+                        block_idx,
+                        render_context,
+                        request.spinner,
+                    ),
+                );
             }
         }
     }
 
-    match request.indicator {
-        Some(LiveAssistantIndicator::Compacting) => {
-            if state.has_body_content {
-                rows.push(Line::default());
-            }
-            rows.extend(wrap_lines_to_physical_rows(
-                &[compacting_line(request.spinner.frame)],
-                request.width,
-            ));
-        }
-        Some(LiveAssistantIndicator::Thinking { verb }) => {
-            if state.has_body_content {
-                rows.push(Line::default());
-            }
-            rows.extend(wrap_lines_to_physical_rows(
-                &[thinking_line(request.spinner.frame, verb)],
-                request.width,
-            ));
-        }
-        None => {}
-    }
+    append_assistant_indicator_rows(
+        &mut rows,
+        &state,
+        request.indicator,
+        request.spinner,
+        request.width,
+    );
 
     if !state.has_visible_content && request.indicator.is_none() {
         return Vec::new();
@@ -855,40 +499,37 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
     trim_trailing_blank_rows(rows)
 }
 
-fn tool_call_info_from_snapshot(
-    snapshot: &ToolTranscriptSnapshot,
-    terminal_mutation: TerminalMutationState,
-) -> ToolCallInfo {
-    ToolCallInfo {
-        id: snapshot.tool_call_id.clone(),
-        title: snapshot.title.clone(),
-        sdk_tool_name: snapshot.sdk_tool_name.clone(),
-        raw_input: snapshot.raw_input.clone(),
-        raw_input_bytes: snapshot
-            .raw_input
-            .as_ref()
-            .map_or(0, ToolCallInfo::estimate_json_value_bytes),
-        output_metadata: snapshot.output_metadata.clone(),
-        task_metadata: snapshot.task_metadata.clone(),
-        status: snapshot.status,
-        content: snapshot.content.clone(),
-        hidden: snapshot.hidden,
-        terminal_id: None,
-        terminal_command: snapshot.terminal_command.clone(),
-        terminal_output: snapshot.terminal_output.clone(),
-        terminal_output_len: snapshot.terminal_output.as_ref().map_or(0, String::len),
-        terminal_bytes_seen: snapshot.terminal_output.as_ref().map_or(0, String::len),
-        terminal_snapshot_mode: match terminal_mutation {
-            TerminalMutationState::Streaming => TerminalSnapshotMode::AppendOnly,
-            TerminalMutationState::AwaitingFinalSnapshot => TerminalSnapshotMode::ReplaceSnapshot,
-            TerminalMutationState::None | TerminalMutationState::Settled => {
-                TerminalSnapshotMode::AppendOnly
-            }
-        },
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
+fn append_rendered_assistant_item(
+    rows: &mut Vec<Line<'static>>,
+    state: &mut AssistantInlineLayoutState,
+    leading_blank_lines: usize,
+    rendered: Vec<Line<'static>>,
+) {
+    if rendered.is_empty() {
+        return;
     }
+    rows.extend(std::iter::repeat_with(Line::default).take(leading_blank_lines));
+    state.has_body_content = true;
+    state.has_visible_content = true;
+    rows.extend(rendered);
+}
+
+fn append_assistant_indicator_rows(
+    rows: &mut Vec<Line<'static>>,
+    state: &AssistantInlineLayoutState,
+    indicator: Option<AssistantRuntimeIndicator>,
+    spinner: SpinnerState,
+    width: u16,
+) {
+    let line = match indicator {
+        Some(AssistantRuntimeIndicator::Compacting) => compacting_line(spinner.frame),
+        Some(AssistantRuntimeIndicator::Thinking { verb }) => thinking_line(spinner.frame, verb),
+        None => return,
+    };
+    if state.has_body_content {
+        rows.push(Line::default());
+    }
+    rows.extend(wrap_lines_to_physical_rows(&[line], width));
 }
 
 fn spinner_state_for_live(frame: usize) -> SpinnerState {
@@ -897,10 +538,6 @@ fn spinner_state_for_live(frame: usize) -> SpinnerState {
 
 fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageRenderContext<'_> {
     MessageRenderContext::new(current_mode_id, width)
-}
-
-fn idle_spinner() -> SpinnerState {
-    SpinnerState { frame: 0 }
 }
 
 fn render_assistant_text_block(
@@ -941,57 +578,25 @@ fn render_assistant_notice_block(
     lines
 }
 
-fn render_live_tool_rows(
+fn render_canonical_tool_rows(
     app: &mut App,
-    tool: &crate::app::handoff::types::LiveToolUnit,
+    msg_idx: usize,
+    block_idx: usize,
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
 ) -> Vec<Line<'static>> {
-    if let Some((msg_idx, block_idx)) = app.lookup_tool_call(&tool.snapshot.tool_call_id)
-        && let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(msg_idx).and_then(|message| message.blocks.get_mut(block_idx))
-    {
-        if tc.hidden_unless_focused_interaction() {
-            return Vec::new();
-        }
-        let mut rows = Vec::new();
-        tool_call::render_tool_call_cached(
-            tc.as_mut(),
-            render_context.tool_render_context,
-            render_context.width,
-            spinner.frame,
-            &mut rows,
-        );
-        return wrap_lines_to_physical_rows(&rows, render_context.width);
-    }
-
-    if tool.snapshot.hidden {
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(msg_idx).and_then(|message| message.blocks.get_mut(block_idx))
+    else {
+        return Vec::new();
+    };
+    if tc.hidden_unless_focused_interaction() {
         return Vec::new();
     }
-    let mut fallback = tool_call_info_from_snapshot(&tool.snapshot, tool.terminal_mutation);
-    let mut rows = Vec::new();
-    tool_call::render_tool_call_cached(
-        &mut fallback,
-        render_context.tool_render_context,
-        render_context.width,
-        spinner.frame,
-        &mut rows,
-    );
-    wrap_lines_to_physical_rows(&rows, render_context.width)
-}
 
-fn render_committed_tool_rows(
-    snapshot: &ToolTranscriptSnapshot,
-    render_context: MessageRenderContext<'_>,
-    spinner: SpinnerState,
-) -> Vec<Line<'static>> {
-    if snapshot.hidden {
-        return Vec::new();
-    }
-    let mut fallback = tool_call_info_from_snapshot(snapshot, TerminalMutationState::Settled);
     let mut rows = Vec::new();
     tool_call::render_tool_call_cached(
-        &mut fallback,
+        tc.as_mut(),
         render_context.tool_render_context,
         render_context.width,
         spinner.frame,
@@ -1132,21 +737,11 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        serialize_live_rows, serialize_transcript_row_batches, serialize_transcript_rows,
-        thinking_line,
-    };
+    use super::{serialize_live_rows_with_boundaries, thinking_line};
     use crate::agent::model;
-    use crate::app::handoff::shadow::ActiveAssistantShadowTurn;
-    use crate::app::handoff::types::{
-        AssistantCommittedUnit, AssistantTranscriptEntry, AssistantTurnId, CommittedAssistantKind,
-        CommittedTextUnit, CommittedToolUnit, LiveAssistantTurn, LiveAssistantUnit, LiveToolUnit,
-        LiveUnitId, MutableTextTailUnit, StableTextUnit, TerminalMutationState,
-        ToolTranscriptSnapshot, TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry,
-        WelcomeTranscriptEntry,
-    };
     use crate::app::{
-        App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
+        App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, NoticeBlock,
+        TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
 
@@ -1161,6 +756,10 @@ mod tests {
 
     fn line_texts(rows: &[Line<'_>]) -> Vec<String> {
         rows.iter().map(line_text).collect()
+    }
+
+    fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
+        serialize_live_rows_with_boundaries(app, width).rows().to_vec()
     }
 
     #[test]
@@ -1183,6 +782,14 @@ mod tests {
         ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
     }
 
+    fn assistant_text_message(text: &str) -> ChatMessage {
+        assistant_blocks_message(vec![MessageBlock::Text(TextBlock::from_complete(text))])
+    }
+
+    fn assistant_blocks_message(blocks: Vec<MessageBlock>) -> ChatMessage {
+        ChatMessage::new(MessageRole::Assistant, blocks, None)
+    }
+
     fn system_text_message(text: &str) -> ChatMessage {
         ChatMessage::new(
             MessageRole::System(Some(crate::app::SystemSeverity::Info)),
@@ -1191,262 +798,77 @@ mod tests {
         )
     }
 
-    fn live_turn_with_tail(turn_id: AssistantTurnId, text: &str) -> LiveAssistantTurn {
-        let mut live = LiveAssistantTurn::new(turn_id);
-        let unit_id = live.allocate_unit_id();
-        live.units.push(LiveAssistantUnit::MutableTextTail(MutableTextTailUnit {
-            id: unit_id,
-            text: text.to_owned(),
-        }));
-        live
+    fn tool_call_block(id: &str, hidden: bool) -> MessageBlock {
+        tool_call_block_with_interaction(id, hidden, false, false)
     }
 
-    fn live_turn_with_split_text(
-        turn_id: AssistantTurnId,
-        first: &str,
-        first_spacing: TextBlockSpacing,
-        tail: &str,
-    ) -> LiveAssistantTurn {
-        let mut live = LiveAssistantTurn::new(turn_id);
-        live.units.push(LiveAssistantUnit::StableText(StableTextUnit {
-            id: LiveUnitId(1),
-            text: first.to_owned(),
-            trailing_spacing: first_spacing,
-        }));
-        live.units.push(LiveAssistantUnit::MutableTextTail(MutableTextTailUnit {
-            id: LiveUnitId(2),
-            text: tail.to_owned(),
-        }));
-        live.current_text_tail = Some(LiveUnitId(2));
-        live
-    }
-
-    fn tool_snapshot(id: &str, hidden: bool) -> ToolTranscriptSnapshot {
-        ToolTranscriptSnapshot {
-            tool_call_id: id.to_owned(),
+    fn tool_call_block_with_interaction(
+        id: &str,
+        hidden: bool,
+        focused_permission: bool,
+        focused_question: bool,
+    ) -> MessageBlock {
+        let mut tool = ToolCallInfo {
+            id: id.to_owned(),
             title: "Child Tool".to_owned(),
             sdk_tool_name: "Bash".to_owned(),
-            status: model::ToolCallStatus::Completed,
-            hidden,
             raw_input: None,
+            raw_input_bytes: 0,
             output_metadata: None,
             task_metadata: None,
+            status: model::ToolCallStatus::Completed,
             content: Vec::new(),
+            hidden,
+            terminal_id: None,
             terminal_command: None,
             terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            cache: BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+        };
+
+        if focused_permission {
+            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+            tool.pending_permission = Some(crate::app::InlinePermission {
+                options: Vec::new(),
+                display: None,
+                response_tx,
+                selected_index: 0,
+                focused: true,
+            });
         }
-    }
 
-    fn hidden_live_tool(id: &str) -> LiveAssistantUnit {
-        LiveAssistantUnit::Tool(LiveToolUnit {
-            id: LiveUnitId(10),
-            snapshot: tool_snapshot(id, true),
-            pending_permission: false,
-            pending_question: false,
-            terminal_mutation: TerminalMutationState::Settled,
-        })
-    }
+        if focused_question {
+            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+            tool.pending_question = Some(crate::app::InlineQuestion {
+                prompt: model::QuestionPrompt::new(
+                    "Choose an option",
+                    "Question",
+                    false,
+                    vec![model::QuestionOption::new("yes", "Yes")],
+                ),
+                response_tx,
+                focused_option_index: 0,
+                selected_option_indices: std::collections::BTreeSet::new(),
+                notes: String::new(),
+                notes_cursor: 0,
+                editing_notes: false,
+                focused: true,
+                question_index: 0,
+                total_questions: 1,
+            });
+        }
 
-    fn install_active_live_turn(
-        app: &mut App,
-        msg_idx: usize,
-        turn_id: AssistantTurnId,
-        live: LiveAssistantTurn,
-    ) {
-        app.bind_active_turn_assistant(msg_idx);
-        app.handoff_shadow.active_turn =
-            Some(ActiveAssistantShadowTurn { committed_entries: Vec::new(), live });
-        app.handoff_shadow.inline_output.record_assistant_live_slot(msg_idx, turn_id);
-    }
-
-    #[test]
-    fn welcome_transcript_uses_compact_inline_variant() {
-        let mut app = App::test_default();
-        app.mode = Some(crate::app::ModeState {
-            current_mode_id: "plan".to_owned(),
-            current_mode_name: "Plan".to_owned(),
-            available_modes: Vec::new(),
-        });
-        let rows = serialize_transcript_rows(
-            &app,
-            &[TranscriptEntry::Welcome(WelcomeTranscriptEntry {
-                version: "1.2.3".to_owned(),
-                subscription: "Pro".to_owned(),
-                cwd: "/workspace/demo".to_owned(),
-                session_id: "session-123".to_owned(),
-                tip_seed: 7,
-            })],
-            false,
-            120,
-        );
-        let text: Vec<String> = rows.iter().map(line_text).collect();
-
-        assert!(text.iter().any(|line| line.contains("Overview")));
-        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
-        assert!(text.iter().any(|line| line.contains("Version: 1.2.3")));
-        assert!(text.iter().any(|line| line.contains("Cwd: /workspace/demo")));
-        assert!(text.iter().any(|line| line.contains("Session ID: session-123")));
-        assert!(text.iter().any(|line| line.contains("Subscription: Pro")));
-        assert!(text.iter().any(|line| line.contains("Tips: ")));
-        assert!(!text.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
-    }
-
-    #[test]
-    fn compact_welcome_uses_side_by_side_crab_layout() {
-        let compact_rows = serialize_transcript_rows(
-            &App::test_default(),
-            &[TranscriptEntry::Welcome(WelcomeTranscriptEntry {
-                version: "1.2.3".to_owned(),
-                subscription: "Pro".to_owned(),
-                cwd: "/workspace/demo".to_owned(),
-                session_id: "session-123".to_owned(),
-                tip_seed: 7,
-            })],
-            false,
-            80,
-        );
-        let text = line_texts(&compact_rows);
-
-        assert_eq!(text.first().map(String::as_str), Some("Overview"));
-        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
-        assert!(text.iter().any(|line| line.contains("Version: 1.2.3")));
-        assert!(text.iter().any(|line| line.contains("Subscription: Pro")));
-        assert!(!text.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
-    }
-
-    #[test]
-    fn transcript_rows_do_not_insert_synthetic_blank_between_user_and_assistant() {
-        let app = App::test_default();
-        let rows = serialize_transcript_rows(
-            &app,
-            &[
-                TranscriptEntry::User(UserTranscriptEntry {
-                    blocks: vec![UserTranscriptBlock::Text("hello".to_owned())],
-                }),
-                TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                    leading_blank_lines: 0,
-                    unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                        text: "hi".to_owned(),
-                        trailing_spacing: crate::app::TextBlockSpacing::None,
-                    }),
-                }),
-            ],
-            false,
-            120,
-        );
-        let text = rows.iter().map(line_text).collect::<Vec<_>>();
-
-        assert_eq!(text, vec!["User", "hello", "Claude", "hi"]);
-    }
-
-    #[test]
-    fn committed_adjacent_text_entries_render_as_one_text_run() {
-        let app = App::test_default();
-        let rows = serialize_transcript_rows(
-            &app,
-            &[
-                TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                    leading_blank_lines: 0,
-                    unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                        text: "line 1\n\n".to_owned(),
-                        trailing_spacing: TextBlockSpacing::ParagraphBreak,
-                    }),
-                }),
-                TranscriptEntry::AssistantContinue(AssistantTranscriptEntry {
-                    leading_blank_lines: 0,
-                    unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                        text: "line 2".to_owned(),
-                        trailing_spacing: TextBlockSpacing::None,
-                    }),
-                }),
-            ],
-            false,
-            120,
-        );
-
-        assert_eq!(line_texts(&rows), vec!["Claude", "line 1", "line 2"]);
-    }
-
-    #[test]
-    fn committed_assistant_text_preserves_single_newline_rows() {
-        let app = App::test_default();
-        let rows = serialize_transcript_rows(
-            &app,
-            &[TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                    text: "line 1: ready\nline 2: ready\nline 3: ready".to_owned(),
-                    trailing_spacing: TextBlockSpacing::None,
-                }),
-            })],
-            false,
-            120,
-        );
-
-        assert_eq!(
-            line_texts(&rows),
-            vec!["Claude", "line 1: ready", "line 2: ready", "line 3: ready"]
-        );
-    }
-
-    #[test]
-    fn transcript_row_batches_preserve_flattened_transcript_rendering() {
-        let app = App::test_default();
-        let entries = vec![
-            TranscriptEntry::User(UserTranscriptEntry {
-                blocks: vec![UserTranscriptBlock::Text("hello".to_owned())],
-            }),
-            TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                    text: "hi".to_owned(),
-                    trailing_spacing: crate::app::TextBlockSpacing::None,
-                }),
-            }),
-            TranscriptEntry::AssistantContinue(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                    text: "again".to_owned(),
-                    trailing_spacing: crate::app::TextBlockSpacing::None,
-                }),
-            }),
-        ];
-
-        let flat_rows = serialize_transcript_rows(&app, &entries, false, 120);
-        let batched_rows = serialize_transcript_row_batches(&app, &entries, false, 120)
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-        assert_eq!(line_texts(&batched_rows), line_texts(&flat_rows));
-    }
-
-    #[test]
-    fn committed_assistant_after_prior_history_starts_without_blank_row() {
-        let app = App::test_default();
-        let rows = serialize_transcript_rows(
-            &app,
-            &[TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                    text: "hi".to_owned(),
-                    trailing_spacing: crate::app::TextBlockSpacing::None,
-                }),
-            })],
-            true,
-            120,
-        );
-
-        assert!(rows.first().is_some_and(|line| !line_text(line).trim().is_empty()));
-        assert_eq!(line_text(&rows[0]), "Claude");
+        MessageBlock::ToolCall(Box::new(tool))
     }
 
     #[test]
     fn live_rows_do_not_start_with_synthetic_blank_row() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(1);
-        app.messages.push(assistant_message());
-        install_active_live_turn(&mut app, 0, turn_id, live_turn_with_tail(turn_id, "hi"));
+        app.messages.push(assistant_text_message("hi"));
 
         let rows = serialize_live_rows(&mut app, 120);
 
@@ -1455,17 +877,10 @@ mod tests {
     }
 
     #[test]
-    fn live_projection_renders_user_row_while_assistant_streams() {
+    fn live_rows_render_user_row_while_assistant_streams() {
         let mut app = App::test_default();
         app.push_message_tracked(user_text_message("hello"));
-        let turn_id = AssistantTurnId(2);
-        app.messages.push(assistant_message());
-        install_active_live_turn(
-            &mut app,
-            1,
-            turn_id,
-            live_turn_with_tail(turn_id, "still streaming"),
-        );
+        app.messages.push(assistant_text_message("still streaming"));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -1474,25 +889,26 @@ mod tests {
     }
 
     #[test]
-    fn live_projection_renders_committed_assistant_prefix_before_live_tail() {
+    fn live_row_boundaries_stop_stable_prefix_before_active_assistant() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(3);
-        app.messages.push(assistant_message());
-        let mut live = live_turn_with_tail(turn_id, "tail");
-        live.formatting.header_printed = true;
-        live.formatting.previous_committed_kind = Some(CommittedAssistantKind::TextLike);
-        install_active_live_turn(&mut app, 0, turn_id, live);
-        app.handoff_shadow.inline_output.record_assistant_committed_entries(
-            0,
-            turn_id,
-            vec![TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Text(CommittedTextUnit {
-                    text: "prefix".to_owned(),
-                    trailing_spacing: crate::app::TextBlockSpacing::None,
-                }),
-            })],
-        );
+        app.push_message_tracked(user_text_message("hello"));
+        app.messages.push(assistant_text_message("still streaming"));
+        app.bind_active_turn_assistant(1);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(serialized.stable_row_count_before_message(Some(1)), 2);
+        assert_eq!(serialized.stable_row_count_before_message(None), serialized.rows().len());
+    }
+
+    #[test]
+    fn live_rows_render_committed_assistant_prefix_before_live_tail() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(TextBlock::from_complete("prefix")),
+            MessageBlock::Text(TextBlock::from_complete("tail")),
+        ]));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -1501,21 +917,15 @@ mod tests {
     }
 
     #[test]
-    fn live_adjacent_text_units_render_as_one_text_run() {
+    fn live_adjacent_text_blocks_render_as_one_text_run() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(6);
-        app.messages.push(assistant_message());
-        install_active_live_turn(
-            &mut app,
-            0,
-            turn_id,
-            live_turn_with_split_text(
-                turn_id,
-                "line 1: ready\n\n",
-                TextBlockSpacing::ParagraphBreak,
-                "line 2: ready",
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(
+                TextBlock::from_complete("line 1: ready\n\n")
+                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
             ),
-        );
+            MessageBlock::Text(TextBlock::from_complete("line 2: ready")),
+        ]));
 
         let rows = serialize_live_rows(&mut app, 120);
 
@@ -1525,14 +935,7 @@ mod tests {
     #[test]
     fn live_assistant_text_preserves_single_newline_rows() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(7);
-        app.messages.push(assistant_message());
-        install_active_live_turn(
-            &mut app,
-            0,
-            turn_id,
-            live_turn_with_tail(turn_id, "line 1: ready\nline 2: ready\nline 3: ready"),
-        );
+        app.messages.push(assistant_text_message("line 1: ready\nline 2: ready\nline 3: ready"));
 
         let rows = serialize_live_rows(&mut app, 120);
 
@@ -1543,11 +946,49 @@ mod tests {
     }
 
     #[test]
-    fn live_projection_keeps_system_row_during_active_assistant_turn() {
+    fn live_rows_render_assistant_notice_from_messages() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(4);
+        app.messages.push(assistant_blocks_message(vec![MessageBlock::Notice(
+            NoticeBlock::from_complete(crate::app::SystemSeverity::Warning, "watch this"),
+        )]));
+
+        let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
+
+        assert_eq!(text, vec!["Claude", "watch this"]);
+    }
+
+    #[test]
+    fn live_rows_render_visible_tool_from_canonical_message_block() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block("tool-1", false)]));
+
+        let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
+
+        assert!(text.iter().any(|line| line == "Claude"));
+        assert!(text.iter().any(|line| line.contains("Child Tool")));
+    }
+
+    #[test]
+    fn empty_active_assistant_renders_thinking_from_runtime_state() {
+        let mut app = App::test_default();
         app.messages.push(assistant_message());
-        install_active_live_turn(&mut app, 0, turn_id, live_turn_with_tail(turn_id, "streaming"));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Thinking;
+        app.chat_render.thinking_verb = Some("Pondering");
+
+        let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
+
+        assert_eq!(text.first().map(String::as_str), Some("Claude"));
+        assert!(text.iter().any(|line| line.contains("Pondering...")));
+    }
+
+    #[test]
+    fn live_rows_keep_system_row_after_active_assistant_turn() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_text_message("streaming"));
         app.push_message_tracked(system_text_message("during turn"));
 
         let rows = serialize_live_rows(&mut app, 120);
@@ -1559,18 +1000,9 @@ mod tests {
     }
 
     #[test]
-    fn live_projection_renders_welcome_once() {
+    fn live_rows_render_welcome_once() {
         let mut app = App::test_default();
-        app.handoff_shadow.inline_output.record_message_transcript_entries(
-            0,
-            vec![TranscriptEntry::Welcome(WelcomeTranscriptEntry {
-                version: "1.2.3".to_owned(),
-                subscription: "Pro".to_owned(),
-                cwd: "/workspace/demo".to_owned(),
-                session_id: "session-123".to_owned(),
-                tip_seed: 7,
-            })],
-        );
+        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -1579,7 +1011,18 @@ mod tests {
     }
 
     #[test]
-    fn live_projection_renders_uncommitted_loading_welcome() {
+    fn finalized_welcome_rows_are_commit_ready() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert!(!serialized.rows().is_empty());
+        assert_eq!(serialized.stable_row_count_before_message(None), serialized.rows().len());
+    }
+
+    #[test]
+    fn live_rows_render_uncommitted_loading_welcome() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
         app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
@@ -1594,34 +1037,65 @@ mod tests {
     }
 
     #[test]
-    fn committed_hidden_tool_transcript_renders_no_rows() {
-        let app = App::test_default();
-        let rows = serialize_transcript_rows(
-            &app,
-            &[TranscriptEntry::AssistantOpen(AssistantTranscriptEntry {
-                leading_blank_lines: 0,
-                unit: AssistantCommittedUnit::Tool(Box::new(CommittedToolUnit {
-                    snapshot: tool_snapshot("child-1", true),
-                })),
-            })],
-            false,
-            120,
-        );
+    fn loading_welcome_rows_are_not_commit_ready() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert!(!serialized.rows().is_empty());
+        assert_eq!(serialized.stable_row_count_before_message(None), 0);
+    }
+
+    #[test]
+    fn loading_welcome_blocks_later_stable_rows_from_scrollback() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.push_message_tracked(user_text_message("queued while connecting"));
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert!(line_texts(serialized.rows()).iter().any(|line| line == "queued while connecting"));
+        assert_eq!(serialized.stable_row_count_before_message(None), 0);
+    }
+
+    #[test]
+    fn hidden_canonical_tool_renders_no_rows_or_label() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
+
+        let rows = serialize_live_rows(&mut app, 120);
 
         assert!(rows.is_empty());
     }
 
     #[test]
-    fn stale_hidden_live_tool_renders_no_rows_or_label() {
+    fn hidden_canonical_tool_with_focused_permission_renders_interaction_rows() {
         let mut app = App::test_default();
-        let turn_id = AssistantTurnId(5);
-        let mut live = LiveAssistantTurn::new(turn_id);
-        live.units.push(hidden_live_tool("child-1"));
-        app.messages.push(assistant_message());
-        install_active_live_turn(&mut app, 0, turn_id, live);
+        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_interaction(
+            "child-1", true, true, false,
+        )]));
 
         let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
 
-        assert!(rows.is_empty());
+        assert!(text.iter().any(|line| line == "Claude"));
+        assert!(text.iter().any(|line| line.contains("Child Tool")));
+    }
+
+    #[test]
+    fn hidden_canonical_tool_with_focused_question_renders_interaction_rows() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_interaction(
+            "child-1", true, false, true,
+        )]));
+
+        let rows = serialize_live_rows(&mut app, 120);
+        let text = line_texts(&rows);
+
+        assert!(text.iter().any(|line| line == "Claude"));
+        assert!(text.iter().any(|line| line.contains("Child Tool")));
     }
 }

@@ -14,7 +14,6 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
 
     app.status = AppStatus::Running;
     if text.text.is_empty() {
-        crate::app::handoff::shadow::sync_shadow_live_indicator(app);
         return;
     }
     if let Some(owner_idx) = app.active_turn_assistant_idx()
@@ -22,8 +21,6 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     {
         append_agent_stream_text(&mut owner.blocks, &text.text);
         app.sync_after_message_blocks_changed(owner_idx);
-        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
-        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
         return;
     }
 
@@ -34,8 +31,6 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         let last_idx = app.messages.len().saturating_sub(1);
         app.bind_active_turn_assistant(last_idx);
         app.sync_after_message_blocks_changed(last_idx);
-        crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
-        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
         return;
     }
 
@@ -43,8 +38,6 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     append_agent_stream_text(&mut blocks, &text.text);
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
     app.bind_active_turn_assistant_to_tail();
-    crate::app::handoff::shadow::mirror_text_chunk(&mut app.handoff_shadow, &text.text);
-    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 }
 
 pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {
@@ -130,15 +123,14 @@ pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
 mod tests {
     use super::handle_agent_message_chunk;
     use crate::agent::model;
-    use crate::app::{App, ChatMessage, MessageRole};
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlockSpacing};
 
     #[test]
-    fn streaming_text_chunk_keeps_pure_text_run_live_until_turn_completion() {
+    fn streaming_text_chunk_appends_to_canonical_active_assistant_message() {
         let mut app = App::test_default();
         app.status = crate::app::AppStatus::Thinking;
         app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
 
         handle_agent_message_chunk(
             &mut app,
@@ -147,9 +139,17 @@ mod tests {
             ))),
         );
 
-        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
-        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
-        assert_eq!(turn.committed_entries.len(), 0);
-        assert_eq!(turn.live.units.len(), 2);
+        assert_eq!(app.active_turn_assistant_idx(), Some(0));
+        assert_eq!(app.messages[0].blocks.len(), 2);
+        let Some(MessageBlock::Text(first)) = app.messages[0].blocks.first() else {
+            panic!("expected first text block");
+        };
+        let Some(MessageBlock::Text(second)) = app.messages[0].blocks.get(1) else {
+            panic!("expected second text block");
+        };
+        assert_eq!(first.text, "first\n\n");
+        assert_eq!(first.trailing_spacing, TextBlockSpacing::ParagraphBreak);
+        assert_eq!(second.text, "second");
+        assert_eq!(second.trailing_spacing, TextBlockSpacing::None);
     }
 }

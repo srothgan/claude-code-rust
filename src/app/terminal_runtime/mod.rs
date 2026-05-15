@@ -4,7 +4,6 @@
 mod chat_session;
 mod chat_terminal;
 mod fullscreen_session;
-mod history_insert;
 mod modes;
 mod panic_hook;
 mod release_guard;
@@ -65,10 +64,7 @@ impl TerminalRuntime {
         }
 
         let session = match target_surface {
-            SurfaceMode::Chat => {
-                app.reset_committed_output_tracking();
-                ChatTerminalSession::new().map(SurfaceTerminalSession::Chat)
-            }
+            SurfaceMode::Chat => ChatTerminalSession::new().map(SurfaceTerminalSession::Chat),
             SurfaceMode::Fullscreen(_) => {
                 if let Err(err) = apply_enter_fullscreen_actions() {
                     restore_once(restored.as_ref(), || {
@@ -156,7 +152,6 @@ impl TerminalRuntime {
                 apply_exit_fullscreen_actions(&self.alternate_screen_active)
                     .context("failed to exit fullscreen terminal mode")?;
                 app.chat_render.line_wrap_disabled = false;
-                app.reset_committed_output_tracking();
                 self.session = Some(SurfaceTerminalSession::Chat(ChatTerminalSession::new()?));
                 self.active_surface = SurfaceMode::Chat;
                 app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);

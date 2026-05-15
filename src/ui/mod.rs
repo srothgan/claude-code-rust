@@ -15,6 +15,7 @@ mod markdown;
 mod message;
 mod message_rows;
 mod session_picker;
+mod spinner_verbs;
 pub mod theme;
 mod tool_call;
 mod trusted;

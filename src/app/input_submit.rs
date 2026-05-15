@@ -154,10 +154,8 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // Create empty assistant message immediately -- message.rs shows thinking indicator
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();
-    let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
-    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 
     let tx = app.event_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
@@ -421,16 +419,10 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages.len(), 2);
-        assert!(app.handoff_shadow.active_turn.is_some());
-        assert!(matches!(
-            app.handoff_shadow.active_turn.as_ref().and_then(|turn| turn.live.live_indicator),
-            Some(crate::app::handoff::types::LiveAssistantIndicator::Thinking { .. })
-        ));
-        let items = app.handoff_shadow.inline_output.items();
-        assert!(matches!(
-            &items[1].kind,
-            crate::app::handoff::projection::InlineOutputItemKind::AssistantLive { .. }
-        ));
+        assert_eq!(app.active_turn_assistant_idx(), Some(1));
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+        assert!(app.messages[1].blocks.is_empty());
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt.command,

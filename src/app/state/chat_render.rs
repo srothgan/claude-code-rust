@@ -6,9 +6,9 @@ pub struct ChatRenderState {
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub line_wrap_disabled: bool,
+    pub thinking_verb: Option<&'static str>,
     pub composer: ComposerRenderState,
     pub live_region: LiveRegionRenderState,
-    pub transcript: TranscriptRenderState,
 }
 
 impl ChatRenderState {
@@ -36,18 +36,6 @@ impl ChatRenderState {
         self.live_region.viewport_height = 0;
         self.live_region.last_rendered_rows = 0;
     }
-
-    pub fn reset_committed_output(&mut self) {
-        self.transcript.history_in_sync = false;
-    }
-
-    pub(crate) fn mark_terminal_history_synced(&mut self) {
-        self.transcript.history_in_sync = true;
-    }
-
-    pub(crate) fn terminal_history_is_synced(&self) -> bool {
-        self.transcript.history_in_sync
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -71,14 +59,9 @@ pub struct LiveRegionRenderState {
     pub last_rendered_rows: u16,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct TranscriptRenderState {
-    pub history_in_sync: bool,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ChatRenderState, ComposerRenderState, TranscriptRenderState};
+    use super::{ChatRenderState, ComposerRenderState};
 
     #[test]
     fn clear_measurements_preserves_terminal_size_and_invalidates_live_rows() {
@@ -86,6 +69,7 @@ mod tests {
             terminal_width: 120,
             terminal_height: 40,
             line_wrap_disabled: true,
+            thinking_verb: Some("Pondering"),
             composer: ComposerRenderState {
                 width: 120,
                 hint_rows: 1,
@@ -103,7 +87,6 @@ mod tests {
                 viewport_height: 7,
                 last_rendered_rows: 7,
             },
-            transcript: super::TranscriptRenderState { history_in_sync: true },
         };
 
         state.clear_measurements();
@@ -111,13 +94,13 @@ mod tests {
         assert_eq!(state.terminal_width, 120);
         assert_eq!(state.terminal_height, 40);
         assert!(state.line_wrap_disabled);
+        assert_eq!(state.thinking_verb, Some("Pondering"));
         assert_eq!(state.composer, ComposerRenderState::default());
         assert_eq!(state.live_region.total_rows, 0);
         assert_eq!(state.live_region.hidden_rows_above, 0);
         assert_eq!(state.live_region.viewport_height, 0);
         assert_eq!(state.live_region.last_rendered_rows, 0);
         assert!(state.live_region.anchor_valid);
-        assert_eq!(state.transcript, TranscriptRenderState { history_in_sync: true });
     }
 
     #[test]
@@ -136,15 +119,5 @@ mod tests {
         assert_eq!(state.live_region.hidden_rows_above, 0);
         assert_eq!(state.live_region.viewport_height, 0);
         assert_eq!(state.live_region.last_rendered_rows, 0);
-    }
-
-    #[test]
-    fn reset_committed_output_unsyncs_history() {
-        let mut state = ChatRenderState::default();
-        state.mark_terminal_history_synced();
-
-        state.reset_committed_output();
-
-        assert!(!state.transcript.history_in_sync);
     }
 }

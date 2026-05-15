@@ -229,18 +229,13 @@ impl super::App {
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
         let previous_tail = self.messages.len().checked_sub(1);
-        let msg_idx = self.messages.len();
-        let transcript_entries = crate::app::handoff::shadow::transcript_entries_from_message(&msg);
         let bytes = Self::measure_message_bytes(&msg);
         self.messages.push(msg);
         self.message_retained_bytes.push(bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
         self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
-        self.handoff_shadow
-            .inline_output
-            .record_message_transcript_entries(msg_idx, transcript_entries);
-        self.mark_committed_output_changed();
+        self.request_chat_repaint();
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
@@ -252,8 +247,6 @@ impl super::App {
             self.shift_turn_notice_refs_for_insert(insert_idx);
         }
         let bytes = Self::measure_message_bytes(&msg);
-        let transcript_entries = appended_at_tail
-            .then(|| crate::app::handoff::shadow::transcript_entries_from_message(&msg));
         self.messages.insert(insert_idx, msg);
         self.message_retained_bytes.insert(insert_idx, bytes);
         self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
@@ -267,12 +260,7 @@ impl super::App {
         } else {
             self.sync_after_message_topology_change(insert_idx);
         }
-        if let Some(transcript_entries) = transcript_entries {
-            self.handoff_shadow
-                .inline_output
-                .record_message_transcript_entries(insert_idx, transcript_entries);
-        }
-        self.mark_committed_output_changed();
+        self.request_chat_repaint();
     }
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
@@ -304,8 +292,6 @@ impl super::App {
         self.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
-        crate::app::handoff::shadow::clear_shadow_state(&mut self.handoff_shadow);
-        self.reset_committed_output_tracking();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.request_chat_repaint();

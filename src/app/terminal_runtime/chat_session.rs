@@ -1,21 +1,10 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::chat_terminal::{
-    ChatDrawOutcome, ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch,
-};
-use super::history_insert::RenderedHistoryRows;
-use crate::app::App;
-use crate::app::handoff::projection::{
-    InlineHistoryReplayItem, InlineOutputId, confirm_static_inserted, inline_history_replay_plan,
-    inline_static_insert_plan,
-};
-use crate::app::handoff::types::TranscriptEntry;
+use super::chat_terminal::{ChatDrawRequest, ChatTerminal};
+use crate::app::{App, AppStatus};
 use crate::ui::footer_rows::serialize_footer_rows;
-use crate::ui::inline_chat_rows::{
-    serialize_live_rows, serialize_live_rows_after_static_insert, serialize_transcript_row_batches,
-    serialize_transcript_rows,
-};
+use crate::ui::inline_chat_rows::{SerializedLiveRows, serialize_live_rows_with_boundaries};
 use crate::ui::input;
 use crate::ui::input_rows::{blocked_input_lines, build_composer_hint_rows};
 use crate::ui::theme;
@@ -27,7 +16,7 @@ use ratatui::widgets::Paragraph;
 
 pub(super) struct ChatTerminalSession {
     terminal: ChatTerminal,
-    has_committed_output: bool,
+    scrollback: ScrollbackCommitState,
 }
 
 impl ChatTerminalSession {
@@ -57,12 +46,15 @@ impl ChatTerminalSession {
             owned_top,
         );
 
-        Ok(Self { terminal: ChatTerminal::new(owned_top), has_committed_output: false })
+        Ok(Self {
+            terminal: ChatTerminal::new(owned_top),
+            scrollback: ScrollbackCommitState::default(),
+        })
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
         self.reset_inline_terminal(app);
-        app.reset_committed_output_tracking();
+        self.scrollback.reset();
     }
 
     pub(super) fn clear_session_boundary(&mut self, app: &mut App) {
@@ -75,9 +67,8 @@ impl ChatTerminalSession {
                 error_message = %err,
             );
         }
-        self.has_committed_output = false;
         app.chat_render.invalidate_live_anchor();
-        app.reset_committed_output_tracking();
+        self.scrollback.reset();
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
@@ -91,6 +82,7 @@ impl ChatTerminalSession {
             );
         }
         app.chat_render.invalidate_live_anchor();
+        self.scrollback.reset();
     }
 
     pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) {
@@ -106,16 +98,17 @@ impl ChatTerminalSession {
         let terminal_height = screen_size.1.max(1);
         app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
-        let transcript_plan = self.prepare_transcript_flush(app, width);
-        let live_rows = if transcript_plan.inserted_ids.is_empty() {
-            serialize_live_rows(app, width)
-        } else {
-            serialize_live_rows_after_static_insert(app, width, &transcript_plan.inserted_ids)
-        };
+        let serialized_rows = serialize_live_rows_with_boundaries(app, width);
+        let mutable_msg_idx = active_mutable_message_idx(app);
+        let stable_row_count = serialized_rows.stable_row_count_before_message(mutable_msg_idx);
+        let scrollback_plan =
+            self.scrollback.prepare(serialized_rows.rows(), stable_row_count, width);
+        let live_rows =
+            serialized_rows.rows().get(scrollback_plan.committed_after..).unwrap_or_default();
         let composer = Self::build_composer_surface(app, width);
-        let requested_layout_plan = MutableLayoutPlan::new(&live_rows, &composer, terminal_height);
+        let requested_layout_plan = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
         let layout_plan =
-            MutableLayoutPlan::new(&live_rows, &composer, requested_layout_plan.viewport_height);
+            MutableLayoutPlan::new(live_rows, &composer, requested_layout_plan.viewport_height);
         let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
         let visible_editor_rows = composer.editor_visible_rows(layout_plan.editor_height).to_vec();
         let visible_footer_rows = layout_plan.footer_visible_rows(&composer.footer_rows).to_vec();
@@ -123,42 +116,44 @@ impl ChatTerminalSession {
             composer.preview_rows(&visible_hint_rows, &visible_editor_rows, &visible_footer_rows);
         let visible_composer_row_count = layout_plan.visible_composer_len();
 
-        log_inline_chat_draw(&InlineChatDrawSummary {
+        log_prepared_draw(&PreparedDrawLog {
             app,
-            transcript_rows: &transcript_plan.rows,
-            live_rows_total: &live_rows,
-            live_rows_visible: layout_plan.live_visible_rows(&live_rows),
-            composer_rows_total: composer.total_len(),
-            composer_rows_visible: visible_composer_row_count,
-            composer_preview: preview_rows(&composer_preview_rows, 3),
-            live_rows_hidden_above: layout_plan.live_window.hidden_rows_above(),
-            full_rebuild: transcript_plan.full_rebuild,
+            serialized_rows: &serialized_rows,
+            live_rows,
+            layout_plan,
+            composer: &composer,
+            visible_composer_row_count,
+            composer_preview_rows: &composer_preview_rows,
+            scrollback_plan: &scrollback_plan,
         });
 
-        self.queue_transcript_plan(transcript_plan.action);
-
-        let visible_live_rows = layout_plan.live_visible_rows(&live_rows).to_vec();
+        let visible_live_rows = layout_plan.live_visible_rows(live_rows).to_vec();
         let visible_live_row_count = visible_live_rows.len();
         let chat_frame = ChatDrawRequest {
             requested_inline_height: requested_layout_plan.viewport_height,
             terminal_width: width,
             terminal_height,
         };
-        let outcome_result = self.terminal.draw_chat_frame(chat_frame, |frame, viewport_area| {
-            let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
-            if !live_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
-            }
-            if !hint_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
-            }
-            if !editor_area.is_empty() {
-                render_composer_editor(frame, app, &composer.editor, editor_area);
-            }
-            if !footer_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
-            }
-        });
+        let outcome_result = self.terminal.draw_chat_frame(
+            chat_frame,
+            &scrollback_plan.rows,
+            |frame, viewport_area| {
+                let (live_area, hint_area, editor_area, footer_area) =
+                    layout_plan.areas(viewport_area);
+                if !live_area.is_empty() {
+                    frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
+                }
+                if !hint_area.is_empty() {
+                    frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
+                }
+                if !editor_area.is_empty() {
+                    render_composer_editor(frame, app, &composer.editor, editor_area);
+                }
+                if !footer_area.is_empty() {
+                    frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
+                }
+            },
+        );
         let outcome = match outcome_result {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -166,43 +161,35 @@ impl ChatTerminalSession {
                 return Err(err);
             }
         };
-        complete_transcript_flush(app, &outcome);
-        self.has_committed_output = self.has_committed_output
-            || outcome.flushed_history.flushed_rows > 0
-            || outcome.flushed_history.replay_complete;
-
+        if outcome.inserted_scrollback_rows == scrollback_plan.rows.len() {
+            self.scrollback.complete(scrollback_plan.committed_after);
+        }
         let viewport_area = outcome.viewport_area;
         let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
-        app.chat_render.live_region.anchor_valid = true;
-        app.chat_render.live_region.total_rows = u16::try_from(live_rows.len()).unwrap_or(u16::MAX);
-        app.chat_render.live_region.hidden_rows_above =
-            u16::try_from(layout_plan.live_window.hidden_rows_above()).unwrap_or(u16::MAX);
-        app.chat_render.live_region.viewport_height = viewport_area.height;
-        app.chat_render.live_region.last_rendered_rows =
-            u16::try_from(visible_live_row_count).unwrap_or(u16::MAX);
-        app.chat_render.composer.last_rendered_rows =
-            u16::try_from(visible_composer_row_count).unwrap_or(u16::MAX);
-
-        log_inline_viewport_draw(&InlineViewportDrawMetrics {
-            viewport_area,
-            live_area,
-            hint_area,
-            editor_area,
-            footer_area,
-            requested_inline_height: requested_layout_plan.viewport_height,
-            terminal_width: screen_size.0,
-            terminal_height: screen_size.1,
-            live_rows_total: live_rows.len(),
-            live_rows_visible: visible_live_row_count,
-            live_rows_hidden_above: layout_plan.live_window.hidden_rows_above(),
-            composer_rows_total: composer.total_len(),
-            composer_rows_visible: visible_composer_row_count,
-        });
+        complete_draw(
+            app,
+            DrawCompletion {
+                viewport_area,
+                live_area,
+                hint_area,
+                editor_area,
+                footer_area,
+                requested_inline_height: requested_layout_plan.viewport_height,
+                terminal_width: screen_size.0,
+                terminal_height: screen_size.1,
+                live_rows_total: serialized_rows.rows().len(),
+                live_rows_mutable: live_rows.len(),
+                live_rows_visible: visible_live_row_count,
+                live_rows_hidden_above: scrollback_plan
+                    .committed_after
+                    .saturating_add(layout_plan.live_window.hidden_rows_above()),
+                composer_rows_total: composer.total_len(),
+                composer_rows_visible: visible_composer_row_count,
+                scrollback_inserted_rows: outcome.inserted_scrollback_rows,
+            },
+        );
 
         app.surface_dirty.chat.take_repaint();
-        if outcome.flushed_history.replay_incomplete || outcome.flushed_history.replay_complete {
-            app.request_chat_repaint();
-        }
         Ok(())
     }
 
@@ -216,7 +203,6 @@ impl ChatTerminalSession {
                 error_message = %err,
             );
         }
-        self.has_committed_output = false;
         app.chat_render.invalidate_live_anchor();
     }
 
@@ -252,158 +238,152 @@ impl ChatTerminalSession {
 
         ComposerSurface { hint_rows, editor, footer_rows }
     }
-
-    fn queue_transcript_plan(&mut self, action: TranscriptFlushAction) {
-        match action {
-            TranscriptFlushAction::None => {}
-            TranscriptFlushAction::QueueStatic(batch) => {
-                self.terminal.queue_static_history(batch);
-            }
-            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
-                self.terminal.start_replay(render_width, batches, confirm_ids);
-            }
-        }
-    }
-
-    fn prepare_transcript_flush(&mut self, app: &mut App, width: u16) -> TranscriptFlushPlan {
-        let width = width.max(1);
-        if !app.chat_render.terminal_history_is_synced() {
-            if self.terminal.is_replay_active() {
-                if self.terminal.active_replay_matches_width(width) {
-                    return TranscriptFlushPlan {
-                        inserted_ids: self.terminal.replay_pending_ids().to_vec(),
-                        full_rebuild: true,
-                        action: TranscriptFlushAction::None,
-                        ..TranscriptFlushPlan::default()
-                    };
-                }
-
-                self.terminal.cancel_replay();
-            }
-
-            let plan = inline_history_replay_plan(app);
-            let batches = build_replay_history_batches(app, &plan.items, width);
-            let rows =
-                batches.iter().flat_map(|batch| batch.rows.iter().cloned()).collect::<Vec<_>>();
-            return TranscriptFlushPlan {
-                rows,
-                full_rebuild: true,
-                inserted_ids: plan.pending_ids.clone(),
-                action: TranscriptFlushAction::StartReplay {
-                    render_width: width,
-                    batches,
-                    confirm_ids: plan.pending_ids,
-                },
-            };
-        }
-
-        let plan = inline_static_insert_plan(app);
-        if plan.items.is_empty() {
-            return TranscriptFlushPlan::default();
-        }
-        let inserted_ids = plan.items.iter().map(|item| item.id).collect::<Vec<_>>();
-        let entries = plan.items.into_iter().map(|item| item.entry).collect::<Vec<_>>();
-        let rows = serialize_transcript_rows(app, &entries, self.has_committed_output, width);
-
-        TranscriptFlushPlan {
-            rows: rows.clone(),
-            inserted_ids: inserted_ids.clone(),
-            full_rebuild: false,
-            action: TranscriptFlushAction::QueueStatic(PendingHistoryBatch {
-                kind: HistoryBatchKind::Normal,
-                rows: RenderedHistoryRows::new(width, rows),
-                confirm_ids: inserted_ids,
-            }),
-        }
-    }
-}
-
-#[derive(Default)]
-struct TranscriptFlushPlan {
-    rows: Vec<Line<'static>>,
-    inserted_ids: Vec<InlineOutputId>,
-    full_rebuild: bool,
-    action: TranscriptFlushAction,
-}
-
-#[derive(Default)]
-enum TranscriptFlushAction {
-    #[default]
-    None,
-    QueueStatic(PendingHistoryBatch),
-    StartReplay {
-        render_width: u16,
-        batches: Vec<PendingHistoryBatch>,
-        confirm_ids: Vec<InlineOutputId>,
-    },
-}
-
-fn complete_transcript_flush(app: &mut App, outcome: &ChatDrawOutcome) {
-    if !outcome.flushed_history.confirmed_ids.is_empty() {
-        confirm_static_inserted(&mut app.handoff_shadow, &outcome.flushed_history.confirmed_ids);
-    }
-    if outcome.flushed_history.replay_complete {
-        app.chat_render.mark_terminal_history_synced();
-    }
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
-    app.reset_committed_output_tracking();
     app.request_chat_visible_rebuild();
 }
 
-fn build_replay_history_batches(
-    app: &App,
-    items: &[InlineHistoryReplayItem],
-    width: u16,
-) -> Vec<PendingHistoryBatch> {
-    let entries = items.iter().map(|item| item.entry.clone()).collect::<Vec<_>>();
-    let row_batches = serialize_transcript_row_batches(app, &entries, false, width);
-    let id_batches = group_replay_items(items);
-    debug_assert_eq!(row_batches.len(), id_batches.len());
-
-    row_batches
-        .into_iter()
-        .zip(id_batches)
-        .map(|(rows, ids)| PendingHistoryBatch {
-            kind: HistoryBatchKind::Replay,
-            rows: RenderedHistoryRows::new(width, rows),
-            confirm_ids: ids,
-        })
-        .collect()
+fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {
+    log_inline_chat_draw(&InlineChatDrawSummary {
+        app: prepared.app,
+        live_rows_total: prepared.serialized_rows.rows(),
+        live_rows_visible: prepared.layout_plan.live_visible_rows(prepared.live_rows),
+        live_rows_mutable: prepared.live_rows.len(),
+        composer_rows_total: prepared.composer.total_len(),
+        composer_rows_visible: prepared.visible_composer_row_count,
+        composer_preview: preview_rows(prepared.composer_preview_rows, 3),
+        live_rows_hidden_above: prepared
+            .scrollback_plan
+            .committed_after
+            .saturating_add(prepared.layout_plan.live_window.hidden_rows_above()),
+        scrollback_commit_rows: prepared.scrollback_plan.rows.len(),
+        scrollback_committed_after: prepared.scrollback_plan.committed_after,
+    });
 }
 
-fn group_replay_items(items: &[InlineHistoryReplayItem]) -> Vec<Vec<InlineOutputId>> {
-    let mut groups = Vec::new();
-    let mut idx = 0usize;
+struct PreparedDrawLog<'a> {
+    app: &'a App,
+    serialized_rows: &'a SerializedLiveRows,
+    live_rows: &'a [Line<'static>],
+    layout_plan: MutableLayoutPlan,
+    composer: &'a ComposerSurface,
+    visible_composer_row_count: usize,
+    composer_preview_rows: &'a [Line<'static>],
+    scrollback_plan: &'a ScrollbackCommitPlan,
+}
 
-    while idx < items.len() {
-        let start_idx = idx;
-        if matches!(
-            &items[idx].entry,
-            TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_)
-        ) {
-            while idx < items.len()
-                && matches!(
-                    &items[idx].entry,
-                    TranscriptEntry::AssistantOpen(_) | TranscriptEntry::AssistantContinue(_)
-                )
-            {
-                idx += 1;
-            }
-        } else {
-            idx += 1;
-        }
+fn complete_draw(app: &mut App, completion: DrawCompletion) {
+    app.chat_render.live_region.anchor_valid = true;
+    app.chat_render.live_region.total_rows =
+        u16::try_from(completion.live_rows_total).unwrap_or(u16::MAX);
+    app.chat_render.live_region.hidden_rows_above =
+        u16::try_from(completion.live_rows_hidden_above).unwrap_or(u16::MAX);
+    app.chat_render.live_region.viewport_height = completion.viewport_area.height;
+    app.chat_render.live_region.last_rendered_rows =
+        u16::try_from(completion.live_rows_visible).unwrap_or(u16::MAX);
+    app.chat_render.composer.last_rendered_rows =
+        u16::try_from(completion.composer_rows_visible).unwrap_or(u16::MAX);
 
-        groups.push(
-            items[start_idx..idx]
-                .iter()
-                .filter_map(|item| item.pending.then_some(item.id))
-                .collect(),
-        );
+    log_inline_viewport_draw(&InlineViewportDrawMetrics {
+        viewport_area: completion.viewport_area,
+        live_area: completion.live_area,
+        hint_area: completion.hint_area,
+        editor_area: completion.editor_area,
+        footer_area: completion.footer_area,
+        requested_inline_height: completion.requested_inline_height,
+        terminal_width: completion.terminal_width,
+        terminal_height: completion.terminal_height,
+        live_rows_total: completion.live_rows_total,
+        live_rows_mutable: completion.live_rows_mutable,
+        live_rows_visible: completion.live_rows_visible,
+        live_rows_hidden_above: completion.live_rows_hidden_above,
+        composer_rows_total: completion.composer_rows_total,
+        composer_rows_visible: completion.composer_rows_visible,
+        scrollback_inserted_rows: completion.scrollback_inserted_rows,
+    });
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DrawCompletion {
+    viewport_area: Rect,
+    live_area: Rect,
+    hint_area: Rect,
+    editor_area: Rect,
+    footer_area: Rect,
+    requested_inline_height: u16,
+    terminal_width: u16,
+    terminal_height: u16,
+    live_rows_total: usize,
+    live_rows_mutable: usize,
+    live_rows_visible: usize,
+    live_rows_hidden_above: usize,
+    composer_rows_total: usize,
+    composer_rows_visible: usize,
+    scrollback_inserted_rows: usize,
+}
+
+fn active_mutable_message_idx(app: &App) -> Option<usize> {
+    (app.is_compacting || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
+        .then(|| app.active_turn_assistant_idx())
+        .flatten()
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ScrollbackCommitState {
+    width: u16,
+    committed_rows: usize,
+}
+
+impl ScrollbackCommitState {
+    fn reset(&mut self) {
+        *self = Self::default();
     }
 
-    groups
+    fn prepare(
+        &mut self,
+        rows: &[Line<'static>],
+        stable_row_count: usize,
+        width: u16,
+    ) -> ScrollbackCommitPlan {
+        let width = width.max(1);
+        let stable_row_count = stable_row_count.min(rows.len());
+
+        if self.width == 0 {
+            self.width = width;
+        } else if self.width != width {
+            self.width = width;
+            self.committed_rows = stable_row_count;
+            return ScrollbackCommitPlan::empty(stable_row_count);
+        }
+
+        if self.committed_rows > rows.len() {
+            self.committed_rows = stable_row_count;
+            return ScrollbackCommitPlan::empty(stable_row_count);
+        }
+
+        let start = self.committed_rows.min(stable_row_count);
+        ScrollbackCommitPlan {
+            rows: rows[start..stable_row_count].to_vec(),
+            committed_after: stable_row_count,
+        }
+    }
+
+    fn complete(&mut self, committed_after: usize) {
+        self.committed_rows = self.committed_rows.max(committed_after);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScrollbackCommitPlan {
+    rows: Vec<Line<'static>>,
+    committed_after: usize,
+}
+
+impl ScrollbackCommitPlan {
+    fn empty(committed_after: usize) -> Self {
+        Self { rows: Vec::new(), committed_after }
+    }
 }
 
 struct ComposerSurface {
@@ -642,10 +622,12 @@ struct InlineViewportDrawMetrics {
     terminal_width: u16,
     terminal_height: u16,
     live_rows_total: usize,
+    live_rows_mutable: usize,
     live_rows_visible: usize,
     live_rows_hidden_above: usize,
     composer_rows_total: usize,
     composer_rows_visible: usize,
+    scrollback_inserted_rows: usize,
 }
 
 fn log_inline_viewport_draw(metrics: &InlineViewportDrawMetrics) {
@@ -679,8 +661,10 @@ fn log_inline_viewport_draw(metrics: &InlineViewportDrawMetrics) {
         terminal_height = metrics.terminal_height,
         mutable_rows = metrics.live_rows_visible + metrics.composer_rows_visible,
         live_rows_total = metrics.live_rows_total,
+        live_rows_mutable = metrics.live_rows_mutable,
         live_rows_visible = metrics.live_rows_visible,
         live_rows_hidden_above = metrics.live_rows_hidden_above,
+        scrollback_inserted_rows = metrics.scrollback_inserted_rows,
         composer_rows_total = metrics.composer_rows_total,
         composer_rows_visible = metrics.composer_rows_visible,
     );
@@ -688,14 +672,15 @@ fn log_inline_viewport_draw(metrics: &InlineViewportDrawMetrics) {
 
 struct InlineChatDrawSummary<'a> {
     app: &'a App,
-    transcript_rows: &'a [Line<'static>],
     live_rows_total: &'a [Line<'static>],
     live_rows_visible: &'a [Line<'static>],
+    live_rows_mutable: usize,
     composer_rows_total: usize,
     composer_rows_visible: usize,
     composer_preview: String,
     live_rows_hidden_above: usize,
-    full_rebuild: bool,
+    scrollback_commit_rows: usize,
+    scrollback_committed_after: usize,
 }
 
 fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
@@ -709,14 +694,14 @@ fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
         terminal_width = summary.app.chat_render.terminal_width,
         terminal_height = summary.app.chat_render.terminal_height,
         anchor_valid = summary.app.chat_render.live_region.anchor_valid,
-        full_rebuild = summary.full_rebuild,
-        transcript_rows = summary.transcript_rows.len(),
         live_rows_total = summary.live_rows_total.len(),
+        live_rows_mutable = summary.live_rows_mutable,
         live_rows_visible = summary.live_rows_visible.len(),
         live_rows_hidden_above = summary.live_rows_hidden_above,
+        scrollback_commit_rows = summary.scrollback_commit_rows,
+        scrollback_committed_after = summary.scrollback_committed_after,
         composer_rows_total = summary.composer_rows_total,
         composer_rows_visible = summary.composer_rows_visible,
-        transcript_preview = %preview_rows(summary.transcript_rows, 3),
         live_preview = %preview_rows(summary.live_rows_visible, 3),
         composer_preview = %summary.composer_preview,
     );
@@ -736,15 +721,8 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChatTerminalSession, ComposerEditor, ComposerSurface, MutableLayoutPlan,
-        TranscriptFlushAction,
-    };
-    use crate::app::App;
-    use crate::app::handoff::projection::inline_history_replay_plan;
-    use crate::app::handoff::types::{TranscriptEntry, UserTranscriptBlock, UserTranscriptEntry};
-    use crate::app::terminal_runtime::chat_terminal::{ChatTerminal, plan_inline_geometry};
-    use crate::ui::inline_chat_rows::serialize_transcript_rows;
+    use super::{ComposerEditor, ComposerSurface, MutableLayoutPlan, ScrollbackCommitState};
+    use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
 
@@ -764,14 +742,40 @@ mod tests {
         }
     }
 
-    fn test_chat_session() -> ChatTerminalSession {
-        ChatTerminalSession { terminal: ChatTerminal::new(0), has_committed_output: false }
+    #[test]
+    fn scrollback_commit_state_commits_stable_prefix_once() {
+        let rows = rows(5);
+        let mut state = ScrollbackCommitState::default();
+
+        let first = state.prepare(&rows, 3, 80);
+        assert_eq!(first.rows, rows[0..3]);
+        assert_eq!(first.committed_after, 3);
+        state.complete(first.committed_after);
+
+        let repeated = state.prepare(&rows, 3, 80);
+        assert!(repeated.rows.is_empty());
+        assert_eq!(repeated.committed_after, 3);
+
+        let extended = state.prepare(&rows, 5, 80);
+        assert_eq!(extended.rows, rows[3..5]);
+        assert_eq!(extended.committed_after, 5);
     }
 
-    fn user_entry(text: &str) -> TranscriptEntry {
-        TranscriptEntry::User(UserTranscriptEntry {
-            blocks: vec![UserTranscriptBlock::Text(text.to_owned())],
-        })
+    #[test]
+    fn scrollback_commit_state_does_not_duplicate_rows_after_width_change() {
+        let rows = rows(6);
+        let mut state = ScrollbackCommitState::default();
+
+        let first = state.prepare(&rows, 3, 80);
+        state.complete(first.committed_after);
+
+        let width_change = state.prepare(&rows, 5, 100);
+        assert!(width_change.rows.is_empty());
+        assert_eq!(width_change.committed_after, 5);
+        state.complete(width_change.committed_after);
+
+        let next = state.prepare(&rows, 6, 100);
+        assert_eq!(next.rows, rows[5..6]);
     }
 
     #[test]
@@ -828,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_pending_static_insert_preserves_viewport_anchor() {
+    fn plan_for_existing_viewport_preserves_anchor() {
         let area = Rect::new(0, 20, 120, 8);
 
         let plan = plan_inline_geometry(Some(area), 8, 120, 40);
@@ -843,59 +847,6 @@ mod tests {
         let plan = plan_inline_geometry(Some(area), 8, 120, 40);
 
         assert_eq!(plan.target_area, Some(area));
-    }
-
-    #[test]
-    fn replay_restart_discards_active_replay_when_width_changes() {
-        let mut app = App::test_default();
-        let entry = user_entry(
-            "this transcript line is intentionally long enough to wrap differently at narrow and wide replay widths",
-        );
-        let pending_ids = app
-            .handoff_shadow
-            .inline_output
-            .record_message_transcript_entries(0, vec![entry.clone()]);
-        app.reset_committed_output_tracking();
-        let mut session = test_chat_session();
-
-        let narrow_width = 24;
-        let narrow_plan = session.prepare_transcript_flush(&mut app, narrow_width);
-        let narrow_rows = narrow_plan.rows.clone();
-        match &narrow_plan.action {
-            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
-                assert_eq!(*render_width, narrow_width);
-                assert_eq!(confirm_ids, &pending_ids);
-                assert!(batches.iter().all(|batch| batch.rows.width == narrow_width));
-            }
-            TranscriptFlushAction::None | TranscriptFlushAction::QueueStatic(_) => {
-                panic!("unsynced terminal history must start replay")
-            }
-        }
-        session.queue_transcript_plan(narrow_plan.action);
-        assert!(session.terminal.active_replay_matches_width(narrow_width));
-
-        let wide_width = 80;
-        let wide_plan = session.prepare_transcript_flush(&mut app, wide_width);
-        let expected_wide_rows = serialize_transcript_rows(&app, &[entry], false, wide_width);
-
-        assert!(!session.terminal.is_replay_active());
-        assert_eq!(wide_plan.inserted_ids, pending_ids);
-        assert_eq!(wide_plan.rows, expected_wide_rows);
-        assert_ne!(wide_plan.rows, narrow_rows);
-        assert_eq!(inline_history_replay_plan(&app).pending_ids, pending_ids);
-        match &wide_plan.action {
-            TranscriptFlushAction::StartReplay { render_width, batches, confirm_ids } => {
-                assert_eq!(*render_width, wide_width);
-                assert_eq!(confirm_ids, &pending_ids);
-                assert!(batches.iter().all(|batch| batch.rows.width == wide_width));
-            }
-            TranscriptFlushAction::None | TranscriptFlushAction::QueueStatic(_) => {
-                panic!("width mismatch must rebuild replay from source")
-            }
-        }
-        session.queue_transcript_plan(wide_plan.action);
-
-        assert!(session.terminal.active_replay_matches_width(wide_width));
     }
 
     #[test]

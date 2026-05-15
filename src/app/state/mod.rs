@@ -44,7 +44,6 @@ use super::config::ConfigState;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
-use super::handoff::shadow::HandoffShadowState;
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
@@ -130,7 +129,6 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub terminal_lifecycle: TerminalLifecycleState,
     pub surface_dirty: SurfaceDirtyState,
-    pub(crate) handoff_shadow: HandoffShadowState,
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
@@ -378,14 +376,6 @@ impl App {
         );
     }
 
-    pub(crate) fn mark_committed_output_changed(&mut self) {
-        self.request_chat_repaint();
-    }
-
-    pub(crate) fn reset_committed_output_tracking(&mut self) {
-        self.chat_render.reset_committed_output();
-    }
-
     pub(crate) fn request_chat_repaint(&mut self) {
         self.surface_dirty.chat.request_repaint();
     }
@@ -541,24 +531,6 @@ impl App {
         if changed {
             self.recompute_message_retained_bytes(0);
             self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
-        }
-
-        let entries = self
-            .messages
-            .first()
-            .map(crate::app::handoff::shadow::transcript_entries_from_message)
-            .unwrap_or_default();
-        if self.show_session_overview && !entries.is_empty() {
-            let result =
-                self.handoff_shadow.inline_output.replace_message_transcript_entries(0, entries);
-            if result.changed {
-                if result.touched_inserted {
-                    self.reset_committed_output_tracking();
-                    self.request_chat_visible_rebuild();
-                } else {
-                    self.mark_committed_output_changed();
-                }
-            }
         }
     }
 
@@ -819,7 +791,6 @@ impl App {
             surface_mode: SurfaceMode::Chat,
             terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),
             surface_dirty: SurfaceDirtyState::initial_chat(),
-            handoff_shadow: HandoffShadowState::default(),
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
@@ -1483,206 +1454,86 @@ mod tests {
         });
     }
 
-    fn inline_welcome_subscription(app: &App) -> Option<&str> {
-        app.handoff_shadow.inline_output.items().iter().find_map(|item| {
-            let crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-                entry: crate::app::handoff::types::TranscriptEntry::Welcome(welcome),
-                ..
-            } = &item.kind
-            else {
-                return None;
-            };
-            Some(welcome.subscription.as_str())
-        })
-    }
-
-    fn assert_pending_message_anchor(
-        item: &crate::app::handoff::projection::InlineOutputItem,
-        msg_idx: usize,
-        entry_idx: usize,
-    ) {
-        assert_eq!(
-            item.anchor,
-            crate::app::handoff::projection::InlineOutputAnchor::Message { msg_idx, entry_idx }
-        );
-        assert!(matches!(
-            &item.kind,
-            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-                status: crate::app::handoff::projection::InlineOutputStatus::PendingInsert,
-                ..
-            }
-        ));
-    }
-
     #[test]
-    fn reset_committed_output_tracking_preserves_projection_for_replay() {
+    fn push_message_tracked_appends_user_message_and_requests_repaint() {
         let mut app = make_test_app();
-        app.chat_render.mark_terminal_history_synced();
-        app.handoff_shadow.inline_output.record_message_transcript_entries(
-            0,
-            crate::app::handoff::shadow::transcript_entries_from_message(&user_text_message(
-                "queued",
-            )),
-        );
-
-        app.reset_committed_output_tracking();
-
-        assert_eq!(app.handoff_shadow.inline_output.items().len(), 1);
-        assert!(!app.chat_render.transcript.history_in_sync);
-    }
-
-    #[test]
-    fn push_message_tracked_records_user_row_in_inline_output() {
-        let mut app = make_test_app();
+        let _ = app.surface_dirty.chat.take_repaint();
 
         app.push_message_tracked(user_text_message("hello"));
 
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 1);
-        assert_pending_message_anchor(&items[0], 0, 0);
-        let crate::app::handoff::projection::InlineOutputItemKind::Transcript { entry, .. } =
-            &items[0].kind
-        else {
-            panic!("expected transcript item");
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+            panic!("expected text block");
         };
-        assert!(matches!(entry, crate::app::handoff::types::TranscriptEntry::User(_)));
+        assert_eq!(text.text, "hello");
+        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]
-    fn push_message_tracked_records_system_after_prior_pending_row() {
+    fn push_message_tracked_preserves_message_order() {
         let mut app = make_test_app();
 
         app.push_message_tracked(user_text_message("first"));
         app.push_message_tracked(system_text_message("second"));
 
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 2);
-        assert_pending_message_anchor(&items[0], 0, 0);
-        assert_pending_message_anchor(&items[1], 1, 0);
-        let crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-            entry: system_entry,
-            ..
-        } = &items[1].kind
-        else {
-            panic!("expected transcript item");
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+    }
+
+    #[test]
+    fn sync_welcome_snapshot_updates_canonical_welcome_message() {
+        let mut app = make_test_app();
+        app.ensure_welcome_message();
+
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        set_account_subscription(&mut app, "Pro");
+
+        app.sync_welcome_snapshot();
+        app.sync_welcome_snapshot();
+
+        let MessageBlock::Welcome(welcome) = &app.messages[0].blocks[0] else {
+            panic!("expected welcome block");
         };
-        assert_eq!(
-            system_entry,
-            &crate::app::handoff::types::TranscriptEntry::System(
-                crate::app::handoff::types::SystemTranscriptEntry {
-                    severity: Some(SystemSeverity::Info),
-                    text: "second".to_owned(),
-                }
-            )
-        );
+        assert_eq!(welcome.subscription, "Pro");
+        assert_eq!(welcome.session_id, "session-1");
     }
 
     #[test]
-    fn sync_welcome_snapshot_records_welcome_once_when_committable() {
-        let mut app = make_test_app();
-        app.ensure_welcome_message();
-        assert!(app.handoff_shadow.inline_output.items().is_empty());
-
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        set_account_subscription(&mut app, "Pro");
-
-        app.sync_welcome_snapshot();
-        app.sync_welcome_snapshot();
-
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 1);
-        assert_pending_message_anchor(&items[0], 0, 0);
-        assert!(matches!(
-            &items[0].kind,
-            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-                entry: crate::app::handoff::types::TranscriptEntry::Welcome(_),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn sync_welcome_snapshot_updates_pending_welcome_entry_in_place() {
+    fn sync_welcome_snapshot_updates_existing_canonical_welcome_in_place() {
         let mut app = make_test_app();
         app.ensure_welcome_message();
         app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
         set_account_subscription(&mut app, "Pro");
         app.sync_welcome_snapshot();
-        let first_id = app.handoff_shadow.inline_output.items()[0].id;
 
         set_account_subscription(&mut app, "Claude Max");
         app.sync_welcome_snapshot();
 
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, first_id);
-        assert_eq!(inline_welcome_subscription(&app), Some("Claude Max"));
-        assert!(matches!(
-            items[0].kind,
-            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-                status: crate::app::handoff::projection::InlineOutputStatus::PendingInsert,
-                ..
-            }
-        ));
+        let MessageBlock::Welcome(welcome) = &app.messages[0].blocks[0] else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(welcome.subscription, "Claude Max");
     }
 
     #[test]
-    fn sync_welcome_snapshot_rebuilds_visible_history_when_inserted_welcome_changes() {
-        let mut app = make_test_app();
-        app.ensure_welcome_message();
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        set_account_subscription(&mut app, "Pro");
-        app.sync_welcome_snapshot();
-        let first_id = app.handoff_shadow.inline_output.items()[0].id;
-        crate::app::handoff::projection::confirm_static_inserted(
-            &mut app.handoff_shadow,
-            &[first_id],
-        );
-        app.chat_render.mark_terminal_history_synced();
-        let _ = app.surface_dirty.chat.take_rebuild();
-        let _ = app.surface_dirty.chat.take_repaint();
-
-        set_account_subscription(&mut app, "Claude Max");
-        app.sync_welcome_snapshot();
-
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, first_id);
-        assert_eq!(inline_welcome_subscription(&app), Some("Claude Max"));
-        assert!(matches!(
-            items[0].kind,
-            crate::app::handoff::projection::InlineOutputItemKind::Transcript {
-                status: crate::app::handoff::projection::InlineOutputStatus::Inserted,
-                ..
-            }
-        ));
-        assert!(!app.chat_render.terminal_history_is_synced());
-        assert_eq!(app.surface_dirty.chat.rebuild, crate::app::ChatRebuildKind::VisibleScreen);
-    }
-
-    #[test]
-    fn push_message_tracked_preserves_user_image_attachment_entry() {
+    fn push_message_tracked_preserves_user_image_attachment_block() {
         let mut app = make_test_app();
 
         app.push_message_tracked(user_text_image_message("see attached", 2));
 
-        let items = app.handoff_shadow.inline_output.items();
-        assert_eq!(items.len(), 1);
-        let crate::app::handoff::projection::InlineOutputItemKind::Transcript { entry, .. } =
-            &items[0].kind
-        else {
-            panic!("expected transcript item");
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::User));
+        let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+            panic!("expected text block");
         };
-        let crate::app::handoff::types::TranscriptEntry::User(user_entry) = entry else {
-            panic!("expected user transcript entry");
+        assert_eq!(text.text, "see attached");
+        let MessageBlock::ImageAttachment(image) = &app.messages[0].blocks[1] else {
+            panic!("expected image attachment block");
         };
-        assert_eq!(
-            user_entry.blocks,
-            vec![
-                crate::app::handoff::types::UserTranscriptBlock::Text("see attached".to_owned()),
-                crate::app::handoff::types::UserTranscriptBlock::ImageAttachment { count: 2 },
-            ]
-        );
+        assert_eq!(image.count, 2);
     }
 
     fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {

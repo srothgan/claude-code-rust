@@ -62,7 +62,6 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     let mut changed = false;
     let mut dirty_messages = Vec::new();
     let mut dirty_slots = Vec::new();
-    let mut changed_tool_ids = Vec::new();
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
     for terminal_ref in &app.terminal_tool_calls {
@@ -125,7 +124,6 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
                 has_command = tc.terminal_command.is_some(),
             );
             dirty_slots.push((terminal_ref.msg_idx, terminal_ref.block_idx));
-            changed_tool_ids.push(tc.id.clone());
             if dirty_messages.last().copied() != Some(terminal_ref.msg_idx) {
                 dirty_messages.push(terminal_ref.msg_idx);
             }
@@ -142,13 +140,6 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         app.recompute_message_retained_bytes(mi);
     }
     app.invalidate_message_set(dirty_messages.iter().copied());
-
-    for tool_call_id in changed_tool_ids {
-        crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &tool_call_id);
-    }
-    if changed {
-        crate::app::handoff::shadow::sync_handoff_commit_queue(app);
-    }
 
     changed
 }
@@ -192,14 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn terminal_output_poll_resyncs_shadow_tool_output() {
+    fn terminal_output_poll_updates_canonical_tool_output() {
         let mut app = App::test_default();
         app.messages.push(bash_tool_message("bash-1", "term-1"));
         app.bind_active_turn_assistant(0);
-        let _ = crate::app::handoff::shadow::begin_local_assistant_turn(&mut app.handoff_shadow);
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        crate::app::handoff::shadow::mirror_visible_tool_snapshot(&mut app, "bash-1");
         app.terminals.borrow_mut().insert(
             "term-1".to_owned(),
             TerminalProcess {
@@ -211,15 +200,11 @@ mod tests {
 
         assert!(update_terminal_outputs(&mut app));
 
-        crate::app::handoff::shadow::assert_shadow_matches_visible_active_turn(&app);
-        let turn = app.handoff_shadow.active_turn.as_ref().expect("active turn");
-        let crate::app::handoff::types::LiveAssistantUnit::Tool(tool) = &turn.live.units[0] else {
-            panic!("expected live tool");
+        let Some(MessageBlock::ToolCall(tool)) = app.messages[0].blocks.first() else {
+            panic!("expected tool call block");
         };
-        assert_eq!(tool.snapshot.terminal_output.as_deref(), Some("alpha\n"));
-        assert_eq!(
-            tool.terminal_mutation,
-            crate::app::handoff::types::TerminalMutationState::Streaming
-        );
+        assert_eq!(tool.terminal_output.as_deref(), Some("alpha\n"));
+        assert_eq!(tool.terminal_output_len, "alpha\n".len());
+        assert_eq!(tool.terminal_bytes_seen, "alpha\n".len());
     }
 }

@@ -22,8 +22,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
     upsert_tool_call_into_assistant_message(app, tool_info);
-    crate::app::handoff::shadow::mirror_visible_tool_snapshot(app, &id_str);
-    crate::app::handoff::shadow::sync_handoff_commit_queue(app);
 
     app.status = AppStatus::Running;
     app.files_accessed += 1;

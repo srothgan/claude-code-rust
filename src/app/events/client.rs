@@ -77,7 +77,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.surface_dirty.terminal_mode = true;
             app.chat_render.clear_measurements();
             app.chat_render.invalidate_live_anchor();
-            app.reset_committed_output_tracking();
             app.request_chat_visible_rebuild();
         }
         ClientEvent::RuntimeReloadCompleted { session_id } => {
