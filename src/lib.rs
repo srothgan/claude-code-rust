@@ -43,7 +43,11 @@ impl DiagnosticsPreset {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "claude-rs", about = "Native Rust terminal for Claude Code")]
+#[command(
+    name = "claude-rs",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "Native Rust terminal for Claude Code"
+)]
 #[command(
     after_help = "Examples:\n  claude-rs --enable-logs --diagnostics-preset session\n  claude-rs --enable-logs --diagnostics-preset render\n  claude-rs --features perf --enable-logs --enable-perf --diagnostics-preset full"
 )]
@@ -116,7 +120,7 @@ pub enum Command {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Command};
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_without_subcommand_starts_new_session() {
@@ -139,5 +143,10 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_resume_flag() {
         assert!(Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).is_err());
+    }
+
+    #[test]
+    fn cli_exposes_package_version() {
+        assert_eq!(Cli::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
     }
 }
