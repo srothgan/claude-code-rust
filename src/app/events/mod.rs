@@ -14,7 +14,7 @@ mod turn;
 
 use super::{
     App, AppStatus, ChatMessage, FullscreenView, InvalidationLevel, MessageBlock, MessageRole,
-    PendingCommandAck, SurfaceMode, SystemSeverity, TextBlock,
+    PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSizeChange, TextBlock,
 };
 use crate::agent::model;
 use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
@@ -50,10 +50,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             app.notifications.on_focus_lost();
             true
         }
-        Event::Resize(width, height) => {
-            handle_resize(app, width, height);
-            true
-        }
+        Event::Resize(width, height) => handle_resize(app, width, height),
         // Non-press key events (Release, Repeat) -- ignored.
         Event::Key(_) => false,
     };
@@ -67,25 +64,82 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
         || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
 }
 
-fn handle_resize(app: &mut App, width: u16, height: u16) {
-    match app.terminal_lifecycle {
-        super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
-            app.request_chat_resize_purge_replay_rebuild();
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-                app.chat_render.mark_resize_purge_replay_during_turn();
+fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {
+    let size_change = app.chat_render.observe_terminal_size(width, height);
+    let mut active_surface_repaint = false;
+    let action = match size_change {
+        TerminalSizeChange::Unchanged { .. } => "ignored_same_size",
+        TerminalSizeChange::Initial { .. } => {
+            app.chat_render.clear_measurements();
+            app.chat_render.invalidate_live_anchor();
+            match app.terminal_lifecycle {
+                super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
+                    app.request_chat_visible_rebuild();
+                    active_surface_repaint = true;
+                    "record_initial_chat_size"
+                }
+                super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
+                    app.request_fullscreen_repaint();
+                    active_surface_repaint = true;
+                    "record_initial_fullscreen_size"
+                }
+                super::TerminalLifecycleState::Bootstrapping
+                | super::TerminalLifecycleState::ReleasedToChild(_)
+                | super::TerminalLifecycleState::Restoring
+                | super::TerminalLifecycleState::Exited => "record_initial_hidden_size",
             }
         }
-        super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
-            app.request_fullscreen_repaint();
+        TerminalSizeChange::Changed { .. } => {
+            app.chat_render.clear_measurements();
+            app.chat_render.invalidate_live_anchor();
+            match app.terminal_lifecycle {
+                super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
+                    app.request_chat_resize_purge_replay_rebuild();
+                    if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+                        app.chat_render.mark_resize_purge_replay_during_turn();
+                    }
+                    active_surface_repaint = true;
+                    "request_chat_resize_purge_replay"
+                }
+                super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
+                    app.request_fullscreen_repaint();
+                    app.chat_render.mark_resize_purge_replay_on_chat_return();
+                    active_surface_repaint = true;
+                    "defer_chat_resize_purge_until_return"
+                }
+                super::TerminalLifecycleState::Bootstrapping
+                | super::TerminalLifecycleState::ReleasedToChild(_)
+                | super::TerminalLifecycleState::Restoring
+                | super::TerminalLifecycleState::Exited => "record_hidden_size_change",
+            }
         }
-        super::TerminalLifecycleState::Bootstrapping
-        | super::TerminalLifecycleState::ReleasedToChild(_)
-        | super::TerminalLifecycleState::Restoring
-        | super::TerminalLifecycleState::Exited => {}
-    }
-    app.chat_render.set_terminal_size(width, height);
-    app.chat_render.clear_measurements();
-    app.chat_render.invalidate_live_anchor();
+    };
+    log_resize_classification(app, size_change, action);
+    active_surface_repaint
+}
+
+fn log_resize_classification(app: &App, size_change: TerminalSizeChange, action: &'static str) {
+    let previous = size_change.previous();
+    let current = size_change.current();
+    let event_name = if matches!(size_change, TerminalSizeChange::Unchanged { .. }) {
+        "terminal_resize_same_size_ignored"
+    } else {
+        "terminal_resize_classified"
+    };
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = event_name,
+        message = "terminal resize event classified before surface rebuild",
+        outcome = "success",
+        classification = size_change.label(),
+        action,
+        previous_width = ?previous.map(|size| size.width),
+        previous_height = ?previous.map(|size| size.height),
+        current_width = current.width,
+        current_height = current.height,
+        lifecycle = ?app.terminal_lifecycle,
+        surface_mode = ?app.surface_mode,
+    );
 }
 
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
@@ -612,6 +666,18 @@ mod tests {
         assert_eq!(app.chat_render.live_region.hidden_rows_above, 0);
         assert_eq!(app.chat_render.live_region.viewport_height, 0);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+    }
+
+    fn assert_seed_resize_measurements_preserved(app: &App) {
+        assert_eq!(app.chat_render.terminal_width, 90);
+        assert_eq!(app.chat_render.terminal_height, 30);
+        assert_eq!(app.chat_render.composer.width, 90);
+        assert_eq!(app.chat_render.composer.total_rows, 4);
+        assert!(app.chat_render.live_region.anchor_valid);
+        assert_eq!(app.chat_render.live_region.total_rows, 12);
+        assert_eq!(app.chat_render.live_region.hidden_rows_above, 3);
+        assert_eq!(app.chat_render.live_region.viewport_height, 9);
+        assert_eq!(app.chat_render.live_region.last_rendered_rows, 7);
     }
 
     fn first_block_text(msg: &ChatMessage) -> &str {
@@ -1404,6 +1470,21 @@ mod tests {
     }
 
     #[test]
+    fn same_size_resize_does_not_request_chat_purge() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+        seed_resize_measurements(&mut app);
+
+        handle_terminal_event(&mut app, Event::Resize(90, 30));
+
+        assert!(!app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(!app.surface_dirty.chat.repaint);
+        assert_seed_resize_measurements_preserved(&app);
+    }
+
+    #[test]
     fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
         let mut app = make_test_app();
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
@@ -1416,7 +1497,25 @@ mod tests {
         assert!(app.surface_dirty.fullscreen.redraw);
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
         assert!(!app.surface_dirty.chat.repaint);
+        assert!(app.chat_render.resize_purge_replay_on_chat_return);
         assert_resize_measurements_cleared(&app, 120, 40);
+    }
+
+    #[test]
+    fn same_size_resize_while_fullscreen_does_not_defer_chat_purge() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle =
+            TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
+        seed_resize_measurements(&mut app);
+
+        handle_terminal_event(&mut app, Event::Resize(90, 30));
+
+        assert!(!app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(!app.surface_dirty.chat.repaint);
+        assert!(!app.chat_render.resize_purge_replay_on_chat_return);
+        assert_seed_resize_measurements_preserved(&app);
     }
 
     #[test]
@@ -1474,6 +1573,7 @@ mod tests {
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
         app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
         app.status = AppStatus::Running;
+        seed_resize_measurements(&mut app);
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 

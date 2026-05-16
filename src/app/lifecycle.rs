@@ -29,6 +29,7 @@ pub enum ChatRebuildKind {
     #[default]
     None,
     MutableViewport,
+    FullscreenReturn,
     VisibleScreen,
     ResizePurgeReplay,
     SessionBoundary,
@@ -52,6 +53,11 @@ impl ChatSurfaceDirtyState {
 
     pub fn request_visible_screen_rebuild(&mut self) {
         self.rebuild = self.rebuild.max(ChatRebuildKind::VisibleScreen);
+        self.repaint = true;
+    }
+
+    pub fn request_fullscreen_return_rebuild(&mut self) {
+        self.rebuild = self.rebuild.max(ChatRebuildKind::FullscreenReturn);
         self.repaint = true;
     }
 
@@ -116,7 +122,7 @@ impl SurfaceDirtyState {
                 self.terminal_mode = true;
             }
             (SurfaceMode::Fullscreen(_), SurfaceMode::Chat) => {
-                self.chat.request_visible_screen_rebuild();
+                self.chat.request_fullscreen_return_rebuild();
                 self.terminal_mode = true;
             }
             (SurfaceMode::Fullscreen(from_view), SurfaceMode::Fullscreen(to_view))
@@ -158,7 +164,7 @@ mod tests {
 
         assert!(dirty.terminal_mode);
         assert!(!dirty.fullscreen.redraw);
-        assert_eq!(dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
+        assert_eq!(dirty.chat.rebuild, ChatRebuildKind::FullscreenReturn);
     }
 
     #[test]
@@ -188,8 +194,22 @@ mod tests {
         let mut dirty = ChatSurfaceDirtyState::default();
 
         dirty.request_mutable_rebuild();
+        dirty.request_fullscreen_return_rebuild();
         dirty.request_visible_screen_rebuild();
         dirty.request_mutable_rebuild();
+        dirty.request_fullscreen_return_rebuild();
+
+        assert_eq!(dirty.rebuild, ChatRebuildKind::VisibleScreen);
+        assert!(dirty.repaint);
+    }
+
+    #[test]
+    fn chat_visible_screen_rebuild_dominates_fullscreen_return() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+
+        dirty.request_fullscreen_return_rebuild();
+        dirty.request_visible_screen_rebuild();
+        dirty.request_fullscreen_return_rebuild();
 
         assert_eq!(dirty.rebuild, ChatRebuildKind::VisibleScreen);
         assert!(dirty.repaint);

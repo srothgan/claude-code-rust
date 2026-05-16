@@ -99,8 +99,26 @@ impl ChatTerminalSession {
         self.scrollback.reset();
     }
 
-    pub(super) fn prepare_for_fullscreen(&mut self, app: &mut App) {
-        self.reset_inline_terminal(app);
+    pub(super) fn suspend_for_fullscreen(&mut self, app: &mut App) {
+        app.chat_render.invalidate_live_anchor();
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_fullscreen_suspended",
+            message = "inline chat session suspended before fullscreen surface",
+            outcome = "success",
+            committed_rows = self.scrollback.committed_rows(),
+        );
+    }
+
+    pub(super) fn reattach_after_fullscreen(&mut self, app: &mut App) {
+        app.chat_render.invalidate_live_anchor();
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_fullscreen_reattached",
+            message = "inline chat session reattached after fullscreen surface",
+            outcome = "success",
+            committed_rows = self.scrollback.committed_rows(),
+        );
     }
 
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
@@ -823,7 +841,12 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposerEditor, ComposerSurface, MutableLayoutPlan, ScrollbackCommitState};
+    use super::{
+        ChatTerminalSession, ComposerEditor, ComposerSurface, MutableLayoutPlan,
+        ScrollbackCommitState,
+    };
+    use crate::app::App;
+    use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
@@ -842,6 +865,10 @@ mod tests {
             editor: ComposerEditor::TextArea { desired_height: editor_height },
             footer_rows: rows(footer_rows),
         }
+    }
+
+    fn session_with_scrollback(scrollback: ScrollbackCommitState) -> ChatTerminalSession {
+        ChatTerminalSession { terminal: ChatTerminal::new(0), scrollback }
     }
 
     #[test]
@@ -909,6 +936,25 @@ mod tests {
         assert!(repeated.rows.is_empty());
         assert_eq!(repeated.committed_after, rows.len());
         assert!(!state.cap_next_purge_replay);
+    }
+
+    #[test]
+    fn fullscreen_reattach_preserves_scrollback_commit_state() {
+        let rows = rows(6);
+        let mut state = ScrollbackCommitState::default();
+        let first = state.prepare(&rows, 4, 80);
+        state.complete(first.committed_after);
+        let mut session = session_with_scrollback(state.clone());
+        let mut app = App::test_default();
+        app.chat_render.live_region.anchor_valid = true;
+
+        session.reattach_after_fullscreen(&mut app);
+
+        assert_eq!(session.scrollback, state);
+        assert!(!app.chat_render.live_region.anchor_valid);
+        let repeated = session.scrollback.prepare(&rows, 4, 80);
+        assert!(repeated.rows.is_empty());
+        assert_eq!(repeated.committed_after, 4);
     }
 
     #[test]

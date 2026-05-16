@@ -44,6 +44,7 @@ enum SurfaceTransitionPlan {
 
 pub(crate) struct TerminalRuntime {
     session: Option<SurfaceTerminalSession>,
+    suspended_chat_session: Option<ChatTerminalSession>,
     active_surface: SurfaceMode,
     alternate_screen_active: Arc<AtomicBool>,
     panic_hook: Option<PanicRestoreHook>,
@@ -102,6 +103,7 @@ impl TerminalRuntime {
 
         Ok(Self {
             session: Some(session),
+            suspended_chat_session: None,
             active_surface: target_surface,
             alternate_screen_active,
             panic_hook: Some(panic_hook),
@@ -113,21 +115,30 @@ impl TerminalRuntime {
         match plan_surface_transition(self.active_surface, app.surface_mode) {
             SurfaceTransitionPlan::Noop => {}
             SurfaceTransitionPlan::EnterFullscreen { view } => {
-                match self.session.take() {
-                    Some(SurfaceTerminalSession::Chat(mut session)) => {
-                        session.prepare_for_fullscreen(app);
-                    }
+                let mut chat_session = match self.session.take() {
+                    Some(SurfaceTerminalSession::Chat(session)) => session,
                     Some(SurfaceTerminalSession::Fullscreen(_)) | None => {
                         return Err(anyhow!("chat session missing before fullscreen entry"));
                     }
-                }
+                };
+                chat_session.suspend_for_fullscreen(app);
 
-                apply_enter_fullscreen_actions()
-                    .context("failed to enter fullscreen terminal mode")?;
+                if let Err(err) = apply_enter_fullscreen_actions() {
+                    self.session = Some(SurfaceTerminalSession::Chat(chat_session));
+                    return Err(err).context("failed to enter fullscreen terminal mode");
+                }
                 self.alternate_screen_active.store(true, Ordering::SeqCst);
                 app.chat_render.line_wrap_disabled = false;
-                self.session =
-                    Some(SurfaceTerminalSession::Fullscreen(FullscreenTerminalSession::new()?));
+                let fullscreen_session = match FullscreenTerminalSession::new() {
+                    Ok(session) => session,
+                    Err(err) => {
+                        let _ = apply_exit_fullscreen_actions(&self.alternate_screen_active);
+                        self.session = Some(SurfaceTerminalSession::Chat(chat_session));
+                        return Err(err);
+                    }
+                };
+                self.suspended_chat_session = Some(chat_session);
+                self.session = Some(SurfaceTerminalSession::Fullscreen(fullscreen_session));
                 self.active_surface = SurfaceMode::Fullscreen(view);
                 app.terminal_lifecycle = TerminalLifecycleState::Running(self.active_surface);
                 app.surface_dirty.terminal_mode = true;
@@ -152,11 +163,16 @@ impl TerminalRuntime {
                 apply_exit_fullscreen_actions(&self.alternate_screen_active)
                     .context("failed to exit fullscreen terminal mode")?;
                 app.chat_render.line_wrap_disabled = false;
-                self.session = Some(SurfaceTerminalSession::Chat(ChatTerminalSession::new()?));
+                let reused_chat_session = self.suspended_chat_session.is_some();
+                let chat_session = match self.suspended_chat_session.take() {
+                    Some(session) => session,
+                    None => ChatTerminalSession::new()?,
+                };
+                self.session = Some(SurfaceTerminalSession::Chat(chat_session));
                 self.active_surface = SurfaceMode::Chat;
                 app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
                 app.surface_dirty.terminal_mode = true;
-                app.request_chat_visible_rebuild();
+                request_chat_rebuild_after_fullscreen_exit(app, reused_chat_session);
             }
         }
 
@@ -169,6 +185,10 @@ impl TerminalRuntime {
                 ChatRebuildKind::None => Ok(()),
                 ChatRebuildKind::MutableViewport => {
                     session.clear_mutable_viewport(app);
+                    Ok(())
+                }
+                ChatRebuildKind::FullscreenReturn => {
+                    session.reattach_after_fullscreen(app);
                     Ok(())
                 }
                 ChatRebuildKind::VisibleScreen => {
@@ -201,6 +221,7 @@ impl TerminalRuntime {
         }
 
         let _session = self.session.take();
+        let _suspended_chat_session = self.suspended_chat_session.take();
         restore_once(self.restored.as_ref(), || {
             if let Err(err) = restore_terminal_modes(self.alternate_screen_active.as_ref()) {
                 tracing::warn!(
@@ -287,6 +308,16 @@ fn plan_surface_transition(from: SurfaceMode, to: SurfaceMode) -> SurfaceTransit
     }
 }
 
+fn request_chat_rebuild_after_fullscreen_exit(app: &mut App, reused_chat_session: bool) {
+    if app.chat_render.take_resize_purge_replay_on_chat_return() {
+        app.request_chat_resize_purge_replay_rebuild();
+    } else if reused_chat_session {
+        app.request_chat_fullscreen_return_rebuild();
+    } else {
+        app.request_chat_visible_rebuild();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +389,42 @@ mod tests {
             ),
             SurfaceTransitionPlan::ExitFullscreen { from: FullscreenView::SessionPicker }
         );
+    }
+
+    #[test]
+    fn fullscreen_exit_rebuild_defaults_to_visible_screen_without_suspended_chat() {
+        let mut app = App::test_default();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+
+        request_chat_rebuild_after_fullscreen_exit(&mut app, false);
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
+        assert!(app.surface_dirty.chat.repaint);
+        assert!(!app.chat_render.resize_purge_replay_on_chat_return);
+    }
+
+    #[test]
+    fn fullscreen_exit_rebuild_reattaches_suspended_chat() {
+        let mut app = App::test_default();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+
+        request_chat_rebuild_after_fullscreen_exit(&mut app, true);
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::FullscreenReturn);
+        assert!(app.surface_dirty.chat.repaint);
+        assert!(!app.chat_render.resize_purge_replay_on_chat_return);
+    }
+
+    #[test]
+    fn fullscreen_exit_rebuild_uses_pending_resize_purge() {
+        let mut app = App::test_default();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.chat_render.mark_resize_purge_replay_on_chat_return();
+
+        request_chat_rebuild_after_fullscreen_exit(&mut app, true);
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert!(app.surface_dirty.chat.repaint);
+        assert!(!app.chat_render.resize_purge_replay_on_chat_return);
     }
 }

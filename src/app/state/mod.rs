@@ -13,7 +13,9 @@ pub mod types;
 // Re-export all public types so external `use crate::app::state::X` paths still work.
 pub use block_cache::BlockCache;
 pub use cache_metrics::CacheMetrics;
-pub use chat_render::{ChatRenderState, ComposerRenderState, LiveRegionRenderState};
+pub use chat_render::{
+    ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
+};
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     ChatMessage, ImageAttachmentBlock, IncrementalMarkdown, MessageBlock, MessageRole, NoticeBlock,
@@ -382,6 +384,10 @@ impl App {
 
     pub(crate) fn request_chat_visible_rebuild(&mut self) {
         self.surface_dirty.chat.request_visible_screen_rebuild();
+    }
+
+    pub(crate) fn request_chat_fullscreen_return_rebuild(&mut self) {
+        self.surface_dirty.chat.request_fullscreen_return_rebuild();
     }
 
     pub(crate) fn request_chat_resize_purge_replay_rebuild(&mut self) {
