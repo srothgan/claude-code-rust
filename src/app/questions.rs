@@ -321,6 +321,7 @@ fn respond_question(app: &mut App) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.request_chat_mutable_rebuild();
     }
 
     focus_next_inline_interaction(app);
@@ -348,6 +349,7 @@ fn respond_question_cancel(app: &mut App) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.request_chat_mutable_rebuild();
     }
 
     focus_next_inline_interaction(app);

@@ -116,6 +116,7 @@ pub(super) fn handle_permission_request_event(
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.request_chat_mutable_rebuild();
     }
 }
 
@@ -218,6 +219,7 @@ pub(super) fn handle_question_request_event(
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.request_chat_mutable_rebuild();
     }
 }
 

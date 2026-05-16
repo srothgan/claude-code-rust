@@ -1,9 +1,10 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::agent::model;
 use crate::app::{
-    App, ChatMessage, MessageBlock, MessageRole, NoticeBlock, SystemSeverity, TextBlock,
-    TextBlockSpacing, WelcomeBlock,
+    App, AppStatus, ChatMessage, MessageBlock, MessageRole, NoticeBlock, SystemSeverity, TextBlock,
+    TextBlockSpacing, ToolCallInfo, WelcomeBlock,
 };
 use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
 use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
@@ -40,7 +41,7 @@ enum AssistantRuntimeIndicator {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SerializedLiveRows {
     rows: Vec<Line<'static>>,
-    message_boundaries: Vec<LiveMessageBoundary>,
+    row_boundaries: Vec<LiveRowBoundary>,
 }
 
 impl SerializedLiveRows {
@@ -48,22 +49,66 @@ impl SerializedLiveRows {
         &self.rows
     }
 
-    pub(crate) fn stable_row_count_before_message(&self, mutable_msg_idx: Option<usize>) -> usize {
-        self.message_boundaries
+    pub(crate) fn stable_row_count(&self) -> usize {
+        self.row_boundaries
             .iter()
-            .find(|boundary| {
-                !boundary.commit_ready
-                    || mutable_msg_idx.is_some_and(|msg_idx| boundary.msg_idx >= msg_idx)
-            })
+            .find(|boundary| !boundary.commit_ready)
             .map_or(self.rows.len(), |boundary| boundary.start_row)
+    }
+
+    pub(crate) fn first_mutable_boundary_kind(&self) -> Option<LiveRowBoundaryKind> {
+        self.row_boundaries
+            .iter()
+            .find(|boundary| !boundary.commit_ready)
+            .map(|boundary| boundary.kind)
+    }
+
+    pub(crate) fn first_mutable_boundary_start(&self) -> Option<usize> {
+        self.row_boundaries
+            .iter()
+            .find(|boundary| !boundary.commit_ready)
+            .map(|boundary| boundary.start_row)
+    }
+
+    pub(crate) fn first_mutable_boundary_msg_idx(&self) -> Option<usize> {
+        self.row_boundaries
+            .iter()
+            .find(|boundary| !boundary.commit_ready)
+            .map(|boundary| boundary.msg_idx)
+    }
+
+    pub(crate) fn first_mutable_boundary_block_idx(&self) -> Option<usize> {
+        self.row_boundaries
+            .iter()
+            .find(|boundary| !boundary.commit_ready)
+            .and_then(|boundary| boundary.block_idx)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LiveMessageBoundary {
+struct LiveRowBoundary {
     msg_idx: usize,
+    block_idx: Option<usize>,
+    kind: LiveRowBoundaryKind,
     start_row: usize,
     commit_ready: bool,
+}
+
+impl LiveRowBoundary {
+    fn shifted(mut self, offset: usize) -> Self {
+        self.start_row = self.start_row.saturating_add(offset);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveRowBoundaryKind {
+    Message,
+    AssistantLabel,
+    AssistantText,
+    AssistantNotice,
+    AssistantTool,
+    AssistantIndicator,
 }
 
 pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
@@ -71,30 +116,53 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
     let active_msg_idx = app.active_turn_assistant_idx();
     let runtime_indicator = sync_runtime_indicator(app);
     let mut rows = Vec::new();
-    let mut message_boundaries = Vec::new();
+    let mut row_boundaries = Vec::new();
     let mut previous_block_kind = None;
 
     for msg_idx in 0..app.messages.len() {
         let role = app.messages[msg_idx].role.clone();
         let block_kind = message_block_kind(&role);
-        let commit_ready = message_commit_ready(&app.messages[msg_idx]);
 
-        let message_rows = match role {
-            MessageRole::Welcome => serialize_welcome_message(app, msg_idx, width),
+        let rendered_message = match role {
+            MessageRole::Welcome => RenderedMessageRows::message(
+                serialize_welcome_message(app, msg_idx, width),
+                LiveRowBoundary {
+                    msg_idx,
+                    block_idx: None,
+                    kind: LiveRowBoundaryKind::Message,
+                    start_row: 0,
+                    commit_ready: message_commit_ready(&app.messages[msg_idx]),
+                },
+            ),
             MessageRole::User | MessageRole::System(_) => {
                 let rendered = build_user_system_message_rows(
                     &mut app.messages[msg_idx],
                     message_render_context(current_mode_id.as_deref(), width),
                 );
-                segments_to_physical_rows(&rendered.segments, width, false)
+                RenderedMessageRows::message(
+                    segments_to_physical_rows(&rendered.segments, width, false),
+                    LiveRowBoundary {
+                        msg_idx,
+                        block_idx: None,
+                        kind: LiveRowBoundaryKind::Message,
+                        start_row: 0,
+                        commit_ready: true,
+                    },
+                )
             }
             MessageRole::Assistant => {
-                let items = assistant_render_items_from_message(&app.messages[msg_idx], msg_idx);
+                let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
+                let items = assistant_render_items_from_message(
+                    &app.messages[msg_idx],
+                    msg_idx,
+                    active_mutable,
+                );
                 let indicator =
                     assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
                 let spinner = spinner_state_for_live(app.spinner_frame);
-                let rows = render_assistant_rows(AssistantRowsRequest {
+                let rendered = render_assistant_rows(AssistantRowsRequest {
                     app: Some(app),
+                    msg_idx,
                     items,
                     indicator,
                     current_mode_id: current_mode_id.as_deref(),
@@ -112,16 +180,16 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
                     assistant_turn_id = tracing::field::Empty,
                     show_label = true,
                     leading_blank_lines = 0,
-                    committed_rendered_rows = rows.len(),
+                    committed_rendered_rows = rendered.rows.len(),
                     live_rendered_rows = 0,
                     indicator = ?indicator,
-                    preview = %preview_rows(&rows, 4),
+                    preview = %preview_rows(&rendered.rows, 4),
                 );
-                rows
+                rendered
             }
         };
 
-        if message_rows.is_empty() {
+        if rendered_message.rows.is_empty() {
             continue;
         }
 
@@ -130,12 +198,14 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
             std::iter::repeat_with(Line::default)
                 .take(top_level_leading_blank_lines(previous_block_kind, block_kind)),
         );
-        message_boundaries.push(LiveMessageBoundary { msg_idx, start_row, commit_ready });
-        rows.extend(message_rows);
+        row_boundaries.extend(
+            rendered_message.boundaries.into_iter().map(|boundary| boundary.shifted(start_row)),
+        );
+        rows.extend(rendered_message.rows);
         previous_block_kind = Some(block_kind);
     }
 
-    SerializedLiveRows { rows, message_boundaries }
+    SerializedLiveRows { rows, row_boundaries }
 }
 
 fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<'static>> {
@@ -262,19 +332,61 @@ enum AssistantRenderItem {
 }
 
 struct AssistantRenderItemSpec {
+    msg_idx: usize,
     leading_blank_lines: usize,
+    block_idx: Option<usize>,
+    boundary_kind: LiveRowBoundaryKind,
+    commit_ready: bool,
     item: AssistantRenderItem,
 }
 
+struct RenderedMessageRows {
+    rows: Vec<Line<'static>>,
+    boundaries: Vec<LiveRowBoundary>,
+}
+
+impl RenderedMessageRows {
+    fn message(rows: Vec<Line<'static>>, boundary: LiveRowBoundary) -> Self {
+        let boundaries = if rows.is_empty() { Vec::new() } else { vec![boundary] };
+        Self { rows, boundaries }
+    }
+}
+
+fn active_assistant_message_is_mutable(app: &App, msg_idx: usize) -> bool {
+    app.active_turn_assistant_idx() == Some(msg_idx)
+        && (app.is_compacting || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
+}
+
 struct PendingAssistantTextRun {
+    msg_idx: usize,
     leading_blank_lines: usize,
+    block_idx: usize,
     text: String,
     trailing_spacing: TextBlockSpacing,
+    commit_ready: bool,
 }
 
 impl PendingAssistantTextRun {
-    fn new(leading_blank_lines: usize, text: &str, trailing_spacing: TextBlockSpacing) -> Self {
-        Self { leading_blank_lines, text: text.to_owned(), trailing_spacing }
+    fn new(
+        msg_idx: usize,
+        leading_blank_lines: usize,
+        block_idx: usize,
+        text: &str,
+        trailing_spacing: TextBlockSpacing,
+        commit_ready: bool,
+    ) -> Self {
+        Self {
+            msg_idx,
+            leading_blank_lines,
+            block_idx,
+            text: text.to_owned(),
+            trailing_spacing,
+            commit_ready,
+        }
+    }
+
+    const fn can_merge(&self, commit_ready: bool) -> bool {
+        self.commit_ready == commit_ready
     }
 
     fn append(&mut self, text: &str, trailing_spacing: TextBlockSpacing) {
@@ -284,7 +396,11 @@ impl PendingAssistantTextRun {
 
     fn into_render_item(self) -> AssistantRenderItemSpec {
         AssistantRenderItemSpec {
+            msg_idx: self.msg_idx,
             leading_blank_lines: self.leading_blank_lines,
+            block_idx: Some(self.block_idx),
+            boundary_kind: LiveRowBoundaryKind::AssistantText,
+            commit_ready: self.commit_ready,
             item: AssistantRenderItem::Text(
                 TextBlock::from_complete(&self.text).with_trailing_spacing(self.trailing_spacing),
             ),
@@ -324,10 +440,13 @@ struct AssistantInlineLayoutState {
 fn assistant_render_items_from_message(
     message: &ChatMessage,
     msg_idx: usize,
+    active_mutable: bool,
 ) -> Vec<AssistantRenderItemSpec> {
     let mut items = Vec::with_capacity(message.blocks.len());
     let mut pending_text: Option<PendingAssistantTextRun> = None;
     let mut previous_kind = None;
+    let active_tail_block_idx =
+        active_mutable.then(|| last_visible_assistant_block_idx(message)).flatten();
 
     for (block_idx, block) in message.blocks.iter().enumerate() {
         match block {
@@ -335,16 +454,23 @@ fn assistant_render_items_from_message(
                 if text.text.is_empty() {
                     continue;
                 }
-                if let Some(pending) = pending_text.as_mut() {
+                let commit_ready = active_tail_block_idx != Some(block_idx);
+                if let Some(pending) = pending_text.as_mut()
+                    && pending.can_merge(commit_ready)
+                {
                     pending.append(&text.text, text.trailing_spacing);
                 } else {
+                    flush_pending_text_run(&mut pending_text, &mut items);
                     let current_kind = AssistantInlineItemKind::TextLike;
                     let leading_blank_lines =
                         leading_blank_lines_between(previous_kind, current_kind);
                     pending_text = Some(PendingAssistantTextRun::new(
+                        msg_idx,
                         leading_blank_lines,
+                        block_idx,
                         &text.text,
                         text.trailing_spacing,
+                        commit_ready,
                     ));
                     previous_kind = Some(current_kind);
                 }
@@ -354,7 +480,11 @@ fn assistant_render_items_from_message(
                 let current_kind = AssistantInlineItemKind::TextLike;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
                 items.push(AssistantRenderItemSpec {
+                    msg_idx,
                     leading_blank_lines,
+                    block_idx: Some(block_idx),
+                    boundary_kind: LiveRowBoundaryKind::AssistantNotice,
+                    commit_ready: active_tail_block_idx != Some(block_idx),
                     item: AssistantRenderItem::Notice(NoticeBlock {
                         severity: notice.severity,
                         text: TextBlock::from_complete(&notice.text.text)
@@ -372,7 +502,11 @@ fn assistant_render_items_from_message(
                 let current_kind = AssistantInlineItemKind::Tool;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
                 items.push(AssistantRenderItemSpec {
+                    msg_idx,
                     leading_blank_lines,
+                    block_idx: Some(block_idx),
+                    boundary_kind: LiveRowBoundaryKind::AssistantTool,
+                    commit_ready: tool_call_commit_ready(tool),
                     item: AssistantRenderItem::CanonicalTool { msg_idx, block_idx },
                 });
                 previous_kind = Some(current_kind);
@@ -383,6 +517,31 @@ fn assistant_render_items_from_message(
 
     flush_pending_text_run(&mut pending_text, &mut items);
     items
+}
+
+fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
+    message.blocks.iter().enumerate().rev().find_map(|(block_idx, block)| match block {
+        MessageBlock::Text(text) if !text.text.is_empty() => Some(block_idx),
+        MessageBlock::Notice(_) => Some(block_idx),
+        MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() => {
+            Some(block_idx)
+        }
+        MessageBlock::Text(_)
+        | MessageBlock::ToolCall(_)
+        | MessageBlock::Welcome(_)
+        | MessageBlock::ImageAttachment(_) => None,
+    })
+}
+
+fn tool_call_commit_ready(tool: &ToolCallInfo) -> bool {
+    matches!(
+        tool.status,
+        model::ToolCallStatus::Completed
+            | model::ToolCallStatus::Failed
+            | model::ToolCallStatus::Killed
+    ) && tool.pending_permission.is_none()
+        && tool.pending_question.is_none()
+        && tool.terminal_id.is_none()
 }
 
 fn flush_pending_text_run(
@@ -411,6 +570,7 @@ fn leading_blank_lines_between(
 
 struct AssistantRowsRequest<'a> {
     app: Option<&'a mut App>,
+    msg_idx: usize,
     items: Vec<AssistantRenderItemSpec>,
     indicator: Option<AssistantRuntimeIndicator>,
     current_mode_id: Option<&'a str>,
@@ -421,11 +581,25 @@ struct AssistantRowsRequest<'a> {
     has_prior_assistant_content: bool,
 }
 
-fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'static>> {
+fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessageRows {
+    if request.items.is_empty() && request.indicator.is_none() {
+        return RenderedMessageRows { rows: Vec::new(), boundaries: Vec::new() };
+    }
+
     let render_context = message_render_context(request.current_mode_id, request.width);
     let mut rows = Vec::new();
+    let mut boundaries = Vec::new();
     rows.extend(std::iter::repeat_with(Line::default).take(request.leading_blank_lines));
     if request.show_label {
+        let first_commit_ready = request.items.first().is_some_and(|item| item.commit_ready);
+        let label_start = rows.len().saturating_sub(request.leading_blank_lines);
+        boundaries.push(LiveRowBoundary {
+            msg_idx: request.msg_idx,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::AssistantLabel,
+            start_row: label_start,
+            commit_ready: first_commit_ready,
+        });
         rows.extend(wrap_lines_to_physical_rows(&[assistant_role_label_line()], request.width));
     }
 
@@ -435,15 +609,24 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
     };
 
     for item in request.items {
+        let boundary = AssistantBoundaryMeta {
+            msg_idx: item.msg_idx,
+            block_idx: item.block_idx,
+            kind: item.boundary_kind,
+            commit_ready: item.commit_ready,
+        };
+        let item_leading_blank_lines = item.leading_blank_lines;
         match item.item {
             AssistantRenderItem::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
                 let rendered =
                     render_assistant_text_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
+                    let boundary_start = rows.len();
                     rows.extend(
-                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                        std::iter::repeat_with(Line::default).take(item_leading_blank_lines),
                     );
+                    push_assistant_boundary(&mut boundaries, boundary, boundary_start);
                     state.has_body_content = true;
                     state.has_visible_content = true;
                     rows.extend(rendered);
@@ -455,9 +638,11 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
                 let rendered =
                     render_assistant_notice_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
+                    let boundary_start = rows.len();
                     rows.extend(
-                        std::iter::repeat_with(Line::default).take(item.leading_blank_lines),
+                        std::iter::repeat_with(Line::default).take(item_leading_blank_lines),
                     );
+                    push_assistant_boundary(&mut boundaries, boundary, boundary_start);
                     state.has_body_content = true;
                     state.has_visible_content = true;
                     rows.extend(rendered);
@@ -470,8 +655,10 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
                 };
                 append_rendered_assistant_item(
                     &mut rows,
+                    &mut boundaries,
                     &mut state,
-                    item.leading_blank_lines,
+                    boundary,
+                    item_leading_blank_lines,
                     render_canonical_tool_rows(
                         app,
                         msg_idx,
@@ -485,7 +672,9 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
     }
 
     append_assistant_indicator_rows(
+        request.msg_idx,
         &mut rows,
+        &mut boundaries,
         &state,
         request.indicator,
         request.spinner,
@@ -493,29 +682,57 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> Vec<Line<'sta
     );
 
     if !state.has_visible_content && request.indicator.is_none() {
-        return Vec::new();
+        return RenderedMessageRows { rows: Vec::new(), boundaries: Vec::new() };
     }
 
-    trim_trailing_blank_rows(rows)
+    RenderedMessageRows { rows: trim_trailing_blank_rows(rows), boundaries }
 }
 
 fn append_rendered_assistant_item(
     rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
     state: &mut AssistantInlineLayoutState,
+    boundary: AssistantBoundaryMeta,
     leading_blank_lines: usize,
     rendered: Vec<Line<'static>>,
 ) {
     if rendered.is_empty() {
         return;
     }
+    let boundary_start = rows.len();
     rows.extend(std::iter::repeat_with(Line::default).take(leading_blank_lines));
+    push_assistant_boundary(boundaries, boundary, boundary_start);
     state.has_body_content = true;
     state.has_visible_content = true;
     rows.extend(rendered);
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AssistantBoundaryMeta {
+    msg_idx: usize,
+    block_idx: Option<usize>,
+    kind: LiveRowBoundaryKind,
+    commit_ready: bool,
+}
+
+fn push_assistant_boundary(
+    boundaries: &mut Vec<LiveRowBoundary>,
+    boundary: AssistantBoundaryMeta,
+    start_row: usize,
+) {
+    boundaries.push(LiveRowBoundary {
+        msg_idx: boundary.msg_idx,
+        block_idx: boundary.block_idx,
+        kind: boundary.kind,
+        start_row,
+        commit_ready: boundary.commit_ready,
+    });
+}
+
 fn append_assistant_indicator_rows(
+    msg_idx: usize,
     rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
     state: &AssistantInlineLayoutState,
     indicator: Option<AssistantRuntimeIndicator>,
     spinner: SpinnerState,
@@ -526,9 +743,17 @@ fn append_assistant_indicator_rows(
         Some(AssistantRuntimeIndicator::Thinking { verb }) => thinking_line(spinner.frame, verb),
         None => return,
     };
+    let boundary_start = rows.len();
     if state.has_body_content {
         rows.push(Line::default());
     }
+    boundaries.push(LiveRowBoundary {
+        msg_idx,
+        block_idx: None,
+        kind: LiveRowBoundaryKind::AssistantIndicator,
+        start_row: boundary_start,
+        commit_ready: false,
+    });
     rows.extend(wrap_lines_to_physical_rows(&[line], width));
 }
 
@@ -737,7 +962,7 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{serialize_live_rows_with_boundaries, thinking_line};
+    use super::{LiveRowBoundaryKind, serialize_live_rows_with_boundaries, thinking_line};
     use crate::agent::model;
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, NoticeBlock,
@@ -803,11 +1028,33 @@ mod tests {
     }
 
     fn tool_call_block(id: &str, hidden: bool) -> MessageBlock {
-        tool_call_block_with_interaction(id, hidden, false, false)
+        tool_call_block_with_status_interaction(
+            id,
+            model::ToolCallStatus::Completed,
+            hidden,
+            false,
+            false,
+        )
     }
 
     fn tool_call_block_with_interaction(
         id: &str,
+        hidden: bool,
+        focused_permission: bool,
+        focused_question: bool,
+    ) -> MessageBlock {
+        tool_call_block_with_status_interaction(
+            id,
+            model::ToolCallStatus::Completed,
+            hidden,
+            focused_permission,
+            focused_question,
+        )
+    }
+
+    fn tool_call_block_with_status_interaction(
+        id: &str,
+        status: model::ToolCallStatus,
         hidden: bool,
         focused_permission: bool,
         focused_question: bool,
@@ -820,7 +1067,7 @@ mod tests {
             raw_input_bytes: 0,
             output_metadata: None,
             task_metadata: None,
-            status: model::ToolCallStatus::Completed,
+            status,
             content: Vec::new(),
             hidden,
             terminal_id: None,
@@ -930,8 +1177,85 @@ mod tests {
 
         let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
 
-        assert_eq!(serialized.stable_row_count_before_message(Some(1)), 2);
-        assert_eq!(serialized.stable_row_count_before_message(None), serialized.rows().len());
+        assert_eq!(serialized.stable_row_count(), 2);
+    }
+
+    #[test]
+    fn active_assistant_commits_completed_text_before_streaming_tail() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(TextBlock::from_complete("prefix")),
+            MessageBlock::Text(TextBlock::from_complete("tail")),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
+        let mutable_text = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
+
+        assert_eq!(stable_text, vec!["Claude", "prefix"]);
+        assert_eq!(mutable_text, vec!["tail"]);
+    }
+
+    #[test]
+    fn active_assistant_commits_completed_tool_before_pending_permission_tool() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            tool_call_block("done-tool", false),
+            tool_call_block_with_status_interaction(
+                "pending-tool",
+                model::ToolCallStatus::InProgress,
+                false,
+                true,
+                false,
+            ),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
+        let mutable_text = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
+
+        assert!(stable_text.iter().any(|line| line == "Claude"));
+        assert!(stable_text.iter().any(|line| line.contains("Child Tool")));
+        assert!(mutable_text.iter().any(|line| line.contains("Child Tool")));
+        assert!(mutable_text.iter().any(|line| line.contains("select")));
+    }
+
+    #[test]
+    fn active_assistant_completed_tool_is_commit_ready() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block("done-tool", false)]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn active_assistant_in_progress_tool_keeps_label_mutable() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_status_interaction(
+            "running-tool",
+            model::ToolCallStatus::InProgress,
+            false,
+            false,
+            false,
+        )]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(serialized.stable_row_count(), 0);
+        assert_eq!(
+            serialized.first_mutable_boundary_kind(),
+            Some(LiveRowBoundaryKind::AssistantLabel)
+        );
     }
 
     #[test]
@@ -1106,7 +1430,7 @@ mod tests {
         let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
 
         assert!(!serialized.rows().is_empty());
-        assert_eq!(serialized.stable_row_count_before_message(None), serialized.rows().len());
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
     }
 
     #[test]
@@ -1133,7 +1457,7 @@ mod tests {
         let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
 
         assert!(!serialized.rows().is_empty());
-        assert_eq!(serialized.stable_row_count_before_message(None), 0);
+        assert_eq!(serialized.stable_row_count(), 0);
     }
 
     #[test]
@@ -1146,7 +1470,7 @@ mod tests {
         let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
 
         assert!(line_texts(serialized.rows()).iter().any(|line| line == "queued while connecting"));
-        assert_eq!(serialized.stable_row_count_before_message(None), 0);
+        assert_eq!(serialized.stable_row_count(), 0);
     }
 
     #[test]

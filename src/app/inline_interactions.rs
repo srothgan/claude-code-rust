@@ -89,6 +89,7 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
     if invalidated {
         app.sync_render_cache_slot(mi, bi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.request_chat_mutable_rebuild();
     }
 }
 
@@ -130,6 +131,7 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                 app.sync_render_cache_slot(mi, bi);
                 app.recompute_message_retained_bytes(mi);
                 app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+                app.request_chat_mutable_rebuild();
                 changed = true;
             }
         }

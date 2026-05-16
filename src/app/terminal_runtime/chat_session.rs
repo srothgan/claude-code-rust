@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::chat_terminal::{ChatDrawRequest, ChatTerminal};
-use crate::app::{App, AppStatus};
+use crate::app::App;
 use crate::ui::footer_rows::serialize_footer_rows;
+use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
 use crate::ui::inline_chat_rows::{SerializedLiveRows, serialize_live_rows_with_boundaries};
 use crate::ui::input;
 use crate::ui::input_rows::{blocked_input_lines, build_composer_hint_rows};
@@ -96,7 +97,6 @@ impl ChatTerminalSession {
             );
         }
         app.chat_render.invalidate_live_anchor();
-        self.scrollback.reset();
     }
 
     pub(super) fn suspend_for_fullscreen(&mut self, app: &mut App) {
@@ -131,8 +131,7 @@ impl ChatTerminalSession {
         app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
         let serialized_rows = serialize_live_rows_with_boundaries(app, width);
-        let mutable_msg_idx = active_mutable_message_idx(app);
-        let stable_row_count = serialized_rows.stable_row_count_before_message(mutable_msg_idx);
+        let stable_row_count = serialized_rows.stable_row_count();
         self.draw_incremental(
             app,
             screen_size,
@@ -363,6 +362,13 @@ fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {
             .saturating_add(prepared.layout_plan.live_window.hidden_rows_above()),
         scrollback_commit_rows: prepared.scrollback_plan.rows.len(),
         scrollback_committed_after: prepared.scrollback_plan.committed_after,
+        stable_rows: prepared.serialized_rows.stable_row_count(),
+        first_mutable_boundary_start: prepared.serialized_rows.first_mutable_boundary_start(),
+        first_mutable_boundary_kind: prepared.serialized_rows.first_mutable_boundary_kind(),
+        first_mutable_boundary_msg_idx: prepared.serialized_rows.first_mutable_boundary_msg_idx(),
+        first_mutable_boundary_block_idx: prepared
+            .serialized_rows
+            .first_mutable_boundary_block_idx(),
     });
 }
 
@@ -425,12 +431,6 @@ struct DrawCompletion {
     composer_rows_total: usize,
     composer_rows_visible: usize,
     scrollback_inserted_rows: usize,
-}
-
-fn active_mutable_message_idx(app: &App) -> Option<usize> {
-    (app.is_compacting || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
-        .then(|| app.active_turn_assistant_idx())
-        .flatten()
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -801,6 +801,11 @@ struct InlineChatDrawSummary<'a> {
     live_rows_hidden_above: usize,
     scrollback_commit_rows: usize,
     scrollback_committed_after: usize,
+    stable_rows: usize,
+    first_mutable_boundary_start: Option<usize>,
+    first_mutable_boundary_kind: Option<LiveRowBoundaryKind>,
+    first_mutable_boundary_msg_idx: Option<usize>,
+    first_mutable_boundary_block_idx: Option<usize>,
 }
 
 fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
@@ -818,6 +823,11 @@ fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
         live_rows_mutable = summary.live_rows_mutable,
         live_rows_visible = summary.live_rows_visible.len(),
         live_rows_hidden_above = summary.live_rows_hidden_above,
+        stable_rows = summary.stable_rows,
+        first_mutable_boundary_start = ?summary.first_mutable_boundary_start,
+        first_mutable_boundary_kind = ?summary.first_mutable_boundary_kind,
+        first_mutable_boundary_msg_idx = ?summary.first_mutable_boundary_msg_idx,
+        first_mutable_boundary_block_idx = ?summary.first_mutable_boundary_block_idx,
         scrollback_commit_rows = summary.scrollback_commit_rows,
         scrollback_committed_after = summary.scrollback_committed_after,
         composer_rows_total = summary.composer_rows_total,
@@ -949,6 +959,25 @@ mod tests {
         app.chat_render.live_region.anchor_valid = true;
 
         session.reattach_after_fullscreen(&mut app);
+
+        assert_eq!(session.scrollback, state);
+        assert!(!app.chat_render.live_region.anchor_valid);
+        let repeated = session.scrollback.prepare(&rows, 4, 80);
+        assert!(repeated.rows.is_empty());
+        assert_eq!(repeated.committed_after, 4);
+    }
+
+    #[test]
+    fn mutable_viewport_clear_preserves_scrollback_commit_state() {
+        let rows = rows(6);
+        let mut state = ScrollbackCommitState::default();
+        let first = state.prepare(&rows, 4, 80);
+        state.complete(first.committed_after);
+        let mut session = session_with_scrollback(state.clone());
+        let mut app = App::test_default();
+        app.chat_render.live_region.anchor_valid = true;
+
+        session.clear_mutable_viewport(&mut app);
 
         assert_eq!(session.scrollback, state);
         assert!(!app.chat_render.live_region.anchor_valid);
