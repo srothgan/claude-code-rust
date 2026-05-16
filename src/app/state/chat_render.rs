@@ -7,6 +7,7 @@ pub struct ChatRenderState {
     pub terminal_height: u16,
     pub line_wrap_disabled: bool,
     pub thinking_verb: Option<&'static str>,
+    pub resize_purge_replay_after_turn: bool,
     pub composer: ComposerRenderState,
     pub live_region: LiveRegionRenderState,
 }
@@ -35,6 +36,16 @@ impl ChatRenderState {
         self.live_region.hidden_rows_above = 0;
         self.live_region.viewport_height = 0;
         self.live_region.last_rendered_rows = 0;
+    }
+
+    pub fn mark_resize_purge_replay_during_turn(&mut self) {
+        self.resize_purge_replay_after_turn = true;
+    }
+
+    pub fn take_resize_purge_replay_after_turn(&mut self) -> bool {
+        let replay_needed = self.resize_purge_replay_after_turn;
+        self.resize_purge_replay_after_turn = false;
+        replay_needed
     }
 }
 
@@ -70,6 +81,7 @@ mod tests {
             terminal_height: 40,
             line_wrap_disabled: true,
             thinking_verb: Some("Pondering"),
+            resize_purge_replay_after_turn: true,
             composer: ComposerRenderState {
                 width: 120,
                 hint_rows: 1,
@@ -95,6 +107,7 @@ mod tests {
         assert_eq!(state.terminal_height, 40);
         assert!(state.line_wrap_disabled);
         assert_eq!(state.thinking_verb, Some("Pondering"));
+        assert!(state.resize_purge_replay_after_turn);
         assert_eq!(state.composer, ComposerRenderState::default());
         assert_eq!(state.live_region.total_rows, 0);
         assert_eq!(state.live_region.hidden_rows_above, 0);
@@ -119,5 +132,15 @@ mod tests {
         assert_eq!(state.live_region.hidden_rows_above, 0);
         assert_eq!(state.live_region.viewport_height, 0);
         assert_eq!(state.live_region.last_rendered_rows, 0);
+    }
+
+    #[test]
+    fn resize_purge_replay_after_turn_flag_is_drained() {
+        let mut state = ChatRenderState::default();
+
+        state.mark_resize_purge_replay_during_turn();
+
+        assert!(state.take_resize_purge_replay_after_turn());
+        assert!(!state.take_resize_purge_replay_after_turn());
     }
 }

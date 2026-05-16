@@ -758,6 +758,10 @@ mod tests {
         rows.iter().map(line_text).collect()
     }
 
+    fn compact_text(rows: &[Line<'_>]) -> String {
+        line_texts(rows).join("").chars().filter(|ch| !ch.is_whitespace()).collect()
+    }
+
     fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
         serialize_live_rows_with_boundaries(app, width).rows().to_vec()
     }
@@ -889,6 +893,34 @@ mod tests {
     }
 
     #[test]
+    fn width_rebuild_wraps_same_canonical_transcript_to_different_row_counts() {
+        let mut app = App::test_default();
+        app.push_message_tracked(user_text_message(
+            "Resize should rebuild canonical user prose from messages with enough words to wrap \
+             differently at narrow widths.",
+        ));
+        app.messages.push(assistant_text_message(
+            "Assistant rows also come directly from app.messages, so changing width changes \
+             physical row count without changing semantic text.",
+        ));
+
+        let narrow_rows = serialize_live_rows(&mut app, 32);
+        let wide_rows = serialize_live_rows(&mut app, 120);
+        let narrow_text = line_texts(&narrow_rows).join("\n");
+        let wide_text = line_texts(&wide_rows).join("\n");
+
+        assert!(
+            narrow_rows.len() > wide_rows.len(),
+            "narrow rows should wrap more physical rows; narrow={narrow_text:?}, wide={wide_text:?}"
+        );
+        assert_eq!(compact_text(&narrow_rows), compact_text(&wide_rows));
+        assert!(narrow_text.contains("User"));
+        assert!(narrow_text.contains("Claude"));
+        assert!(wide_text.contains("User"));
+        assert!(wide_text.contains("Claude"));
+    }
+
+    #[test]
     fn live_row_boundaries_stop_stable_prefix_before_active_assistant() {
         let mut app = App::test_default();
         app.push_message_tracked(user_text_message("hello"));
@@ -986,6 +1018,30 @@ mod tests {
     }
 
     #[test]
+    fn thinking_remains_render_only_across_width_rebuilds() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_message());
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Thinking;
+        app.chat_render.thinking_verb = Some("Pondering");
+
+        for width in [32, 120, 32] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
+
+            assert_eq!(text.first().map(String::as_str), Some("Claude"));
+            assert!(
+                text.iter().any(|line| line.contains("Pondering...")),
+                "thinking indicator missing at width {width}: {text:?}"
+            );
+            assert!(
+                app.messages[0].blocks.is_empty(),
+                "thinking indicator must not be persisted into app.messages"
+            );
+        }
+    }
+
+    #[test]
     fn live_rows_keep_system_row_after_active_assistant_turn() {
         let mut app = App::test_default();
         app.messages.push(assistant_text_message("streaming"));
@@ -1008,6 +1064,38 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
+    }
+
+    #[test]
+    fn welcome_renders_once_across_repeated_width_rebuilds() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
+
+        for width in [36, 120, 36] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
+
+            assert_eq!(
+                text.iter().filter(|line| line.as_str() == "Overview").count(),
+                1,
+                "welcome overview duplicated at width {width}: {text:?}"
+            );
+            assert_eq!(
+                text.iter().filter(|line| line.contains("Version:")).count(),
+                1,
+                "welcome version row duplicated at width {width}: {text:?}"
+            );
+            assert_eq!(
+                text.iter().filter(|line| line.contains("Subscription:")).count(),
+                1,
+                "welcome subscription row duplicated at width {width}: {text:?}"
+            );
+            assert_eq!(
+                text.iter().filter(|line| line.contains("Session ID:")).count(),
+                1,
+                "welcome session row duplicated at width {width}: {text:?}"
+            );
+        }
     }
 
     #[test]
@@ -1066,9 +1154,11 @@ mod tests {
         let mut app = App::test_default();
         app.messages.push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
 
-        let rows = serialize_live_rows(&mut app, 120);
+        for width in [32, 120, 32] {
+            let rows = serialize_live_rows(&mut app, width);
 
-        assert!(rows.is_empty());
+            assert!(rows.is_empty(), "hidden tool rendered rows at width {width}");
+        }
     }
 
     #[test]
@@ -1078,11 +1168,16 @@ mod tests {
             "child-1", true, true, false,
         )]));
 
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
+        for width in [32, 120, 32] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
 
-        assert!(text.iter().any(|line| line == "Claude"));
-        assert!(text.iter().any(|line| line.contains("Child Tool")));
+            assert!(text.iter().any(|line| line == "Claude"), "missing label at width {width}");
+            assert!(
+                text.iter().any(|line| line.contains("Child Tool")),
+                "missing tool title at width {width}: {text:?}"
+            );
+        }
     }
 
     #[test]
@@ -1092,10 +1187,15 @@ mod tests {
             "child-1", true, false, true,
         )]));
 
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
+        for width in [32, 120, 32] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
 
-        assert!(text.iter().any(|line| line == "Claude"));
-        assert!(text.iter().any(|line| line.contains("Child Tool")));
+            assert!(text.iter().any(|line| line == "Claude"), "missing label at width {width}");
+            assert!(
+                text.iter().any(|line| line.contains("Child Tool")),
+                "missing tool title at width {width}: {text:?}"
+            );
+        }
     }
 }

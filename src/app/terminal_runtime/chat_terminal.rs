@@ -16,6 +16,7 @@ use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
+pub(super) const RESIZE_PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatDrawRequest {
@@ -63,23 +64,58 @@ impl ChatTerminal {
 
     pub(super) fn reset_session_boundary(&mut self) -> anyhow::Result<()> {
         let cleared_area = self.clear_owned_region("session_boundary_reset")?;
+        self.reset_after_owned_region_clear(cleared_area);
+        Ok(())
+    }
+
+    pub(super) fn reset_resize_purge_replay(&mut self) -> anyhow::Result<()> {
+        let (terminal_width, terminal_height) = crossterm::terminal::size()
+            .context("failed to read terminal size before resize purge")?;
+        let mut stdout = std::io::stdout();
+        stdout
+            .write_all(RESIZE_PURGE_REPLAY_CLEAR_ANSI.as_bytes())
+            .context("failed to queue resize purge replay clear")?;
+        stdout.flush().context("failed to flush resize purge replay clear")?;
+
+        self.reset_after_resize_purge_replay_clear(terminal_width, terminal_height);
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_resize_purge_replay_cleared",
+            message = "terminal scrollback and visible screen cleared before resize replay",
+            outcome = "success",
+            terminal_width = terminal_width.max(1),
+            terminal_height = terminal_height.max(1),
+            owned_top = self.state.owned_top,
+            owned_bottom = self.state.owned_bottom,
+        );
+        Ok(())
+    }
+
+    fn reset_visible_with_reason(&mut self, reason: &'static str) -> anyhow::Result<()> {
+        let cleared_area = self.clear_owned_region(reason)?;
+        self.reset_after_owned_region_clear(cleared_area);
+        Ok(())
+    }
+
+    fn reset_visible_state(&mut self) {
+        self.terminal = None;
+    }
+
+    fn reset_after_owned_region_clear(&mut self, cleared_area: Option<Rect>) {
         self.reset_visible_state();
         if let Some(area) = cleared_area {
             self.anchor_next_viewport_to_cleared_region(area);
         } else {
             self.state.area = None;
         }
-        Ok(())
     }
 
-    fn reset_visible_with_reason(&mut self, reason: &'static str) -> anyhow::Result<()> {
-        let _ = self.clear_owned_region(reason)?;
-        self.reset_visible_state();
-        Ok(())
-    }
-
-    fn reset_visible_state(&mut self) {
+    fn reset_after_resize_purge_replay_clear(&mut self, terminal_width: u16, terminal_height: u16) {
+        let screen_height = terminal_height.max(1);
         self.terminal = None;
+        self.state.owned_top = 0;
+        self.state.owned_bottom = screen_height;
+        self.state.area = Some(Rect::new(0, 0, terminal_width.max(1), 1));
     }
 
     pub(super) fn reset_mutable_viewport(&mut self) -> anyhow::Result<()> {
@@ -151,6 +187,47 @@ impl ChatTerminal {
                 Ok(ChatDrawOutcome { viewport_area, inserted_scrollback_rows })
             })
             .context("failed synchronized inline chat terminal update")?
+    }
+
+    pub(super) fn can_insert_scrollback_rows(
+        &self,
+        chat_frame: ChatDrawRequest,
+        row_count: usize,
+    ) -> bool {
+        if row_count == 0 {
+            return true;
+        }
+
+        let Some(viewport_area) = self.predicted_viewport_after_ensure(chat_frame) else {
+            return false;
+        };
+        let inserted_rows = u16::try_from(row_count).unwrap_or(u16::MAX);
+        let plan = plan_owned_insert(
+            viewport_area,
+            self.state.owned_top,
+            inserted_rows,
+            chat_frame.terminal_height.max(1),
+        );
+
+        !matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows)
+    }
+
+    fn predicted_viewport_after_ensure(&self, chat_frame: ChatDrawRequest) -> Option<Rect> {
+        let geometry_plan = plan_inline_geometry(
+            self.state.area,
+            chat_frame.requested_inline_height,
+            chat_frame.terminal_width,
+            chat_frame.terminal_height,
+        );
+        let anchor = geometry_plan.target_area.or(self.state.area)?;
+        let screen_height = chat_frame.terminal_height.max(1);
+
+        Some(Rect::new(
+            0,
+            inline_viewport_top_after_create(anchor.y, geometry_plan.height, screen_height),
+            chat_frame.terminal_width.max(1),
+            geometry_plan.height,
+        ))
     }
 
     fn ensure_inline_terminal_height(
@@ -282,6 +359,20 @@ impl ChatTerminal {
             let remaining_rows =
                 u16::try_from(rows.len().saturating_sub(inserted_rows)).unwrap_or(u16::MAX);
             let plan = self.prepare_scrollback_insert_plan(remaining_rows, terminal_height)?;
+            if matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows) {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_RENDER,
+                    event_name = "inline_chat_scrollback_insert_deferred",
+                    message = "stable chat rows were not inserted because the inline viewport cannot be moved safely",
+                    outcome = "deferred",
+                    rows_remaining = rows.len().saturating_sub(inserted_rows),
+                    inserted_rows,
+                    viewport = ?self.state.area,
+                    terminal_height,
+                    max_insert_rows = plan.max_insert_rows_for_viewport,
+                );
+                return Ok(inserted_rows);
+            }
             let chunk_len = usize::from(plan.inserted_rows);
             if chunk_len == 0 {
                 bail!(
@@ -332,18 +423,6 @@ impl ChatTerminal {
             max_insert_rows_for_viewport = plan.max_insert_rows_for_viewport,
             scroll_rows_before_insert = plan.scroll_rows_before_insert,
         );
-
-        if matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows) {
-            bail!(
-                "refusing unsafe inline scrollback insert: rows={}, viewport={:?}, owned={}..{}, terminal_height={}, max_insert_rows={}",
-                row_count,
-                area,
-                self.state.owned_top,
-                self.state.owned_bottom,
-                terminal_height,
-                plan.max_insert_rows_for_viewport
-            );
-        }
 
         Ok(plan)
     }
@@ -790,11 +869,12 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminal, InlineViewportState, ScrollbackInsertAction,
+        ChatDrawRequest, ChatTerminal, InlineViewportState, ScrollbackInsertAction,
         inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
         plan_inline_geometry, plan_owned_insert, shift_area_up, viewport_area_after_insert_exact,
     };
     use ratatui::layout::Rect;
+    use ratatui::text::Line;
 
     #[test]
     fn inline_viewport_state_height_derives_from_area() {
@@ -900,5 +980,73 @@ mod tests {
 
         assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
         assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
+    }
+
+    #[test]
+    fn visible_reset_anchor_restarts_next_viewport_at_cleared_top() {
+        let mut terminal = ChatTerminal::new(17);
+        terminal.state.owned_bottom = 37;
+        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
+
+        terminal.reset_after_owned_region_clear(Some(Rect::new(0, 17, 120, 20)));
+
+        assert_eq!(terminal.state.area, Some(Rect::new(0, 17, 120, 1)));
+
+        let plan = plan_inline_geometry(terminal.state.area, 11, 120, 37);
+
+        assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
+        assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
+    }
+
+    #[test]
+    fn resize_purge_replay_uses_codex_clear_sequence() {
+        assert_eq!(
+            super::RESIZE_PURGE_REPLAY_CLEAR_ANSI,
+            "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H"
+        );
+    }
+
+    #[test]
+    fn resize_purge_replay_reset_anchors_viewport_at_top() {
+        let mut terminal = ChatTerminal::new(12);
+        terminal.state.owned_bottom = 29;
+        terminal.state.area = Some(Rect::new(0, 17, 120, 6));
+
+        terminal.reset_after_resize_purge_replay_clear(120, 39);
+
+        assert!(terminal.terminal.is_none());
+        assert_eq!(terminal.state.owned_top, 0);
+        assert_eq!(terminal.state.owned_bottom, 39);
+        assert_eq!(terminal.state.area, Some(Rect::new(0, 0, 120, 1)));
+    }
+
+    #[test]
+    fn scrollback_preflight_rejects_full_height_resize_replay_insert() {
+        let mut terminal = ChatTerminal::new(0);
+        terminal.reset_after_resize_purge_replay_clear(124, 32);
+
+        let can_insert = terminal.can_insert_scrollback_rows(
+            ChatDrawRequest {
+                requested_inline_height: 32,
+                terminal_width: 124,
+                terminal_height: 32,
+            },
+            19,
+        );
+
+        assert!(!can_insert);
+    }
+
+    #[test]
+    fn unsafe_scrollback_insert_is_deferred_without_error() {
+        let mut terminal = ChatTerminal::new(0);
+        terminal.state.owned_bottom = 32;
+        terminal.state.area = Some(Rect::new(0, 0, 124, 32));
+        let rows: Vec<Line<'static>> =
+            (0..19).map(|idx| Line::from(format!("row {idx}"))).collect();
+
+        let inserted = terminal.insert_scrollback_rows(&rows, 124, 32).unwrap();
+
+        assert_eq!(inserted, 0);
     }
 }

@@ -71,6 +71,20 @@ impl ChatTerminalSession {
         self.scrollback.reset();
     }
 
+    pub(super) fn clear_for_resize_purge_replay(&mut self, app: &mut App) {
+        if let Err(err) = self.terminal.reset_resize_purge_replay() {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_resize_purge_replay_failed",
+                message = "failed to purge terminal before resize replay",
+                outcome = "failure",
+                error_message = %err,
+            );
+        }
+        app.chat_render.invalidate_live_anchor();
+        self.scrollback.reset_for_resize_purge_replay();
+    }
+
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
         if let Err(err) = self.terminal.reset_mutable_viewport() {
             tracing::warn!(
@@ -101,11 +115,38 @@ impl ChatTerminalSession {
         let serialized_rows = serialize_live_rows_with_boundaries(app, width);
         let mutable_msg_idx = active_mutable_message_idx(app);
         let stable_row_count = serialized_rows.stable_row_count_before_message(mutable_msg_idx);
+        self.draw_incremental(
+            app,
+            screen_size,
+            width,
+            terminal_height,
+            &serialized_rows,
+            stable_row_count,
+        )
+    }
+
+    fn draw_incremental(
+        &mut self,
+        app: &mut App,
+        screen_size: (u16, u16),
+        width: u16,
+        terminal_height: u16,
+        serialized_rows: &SerializedLiveRows,
+        stable_row_count: usize,
+    ) -> anyhow::Result<()> {
         let scrollback_plan =
             self.scrollback.prepare(serialized_rows.rows(), stable_row_count, width);
+        let composer = Self::build_composer_surface(app, width);
+        let scrollback_plan = self.defer_unsafe_scrollback_insert(
+            scrollback_plan,
+            serialized_rows,
+            stable_row_count,
+            &composer,
+            width,
+            terminal_height,
+        );
         let live_rows =
             serialized_rows.rows().get(scrollback_plan.committed_after..).unwrap_or_default();
-        let composer = Self::build_composer_surface(app, width);
         let requested_layout_plan = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
         let layout_plan =
             MutableLayoutPlan::new(live_rows, &composer, requested_layout_plan.viewport_height);
@@ -118,7 +159,7 @@ impl ChatTerminalSession {
 
         log_prepared_draw(&PreparedDrawLog {
             app,
-            serialized_rows: &serialized_rows,
+            serialized_rows,
             live_rows,
             layout_plan,
             composer: &composer,
@@ -193,6 +234,51 @@ impl ChatTerminalSession {
         Ok(())
     }
 
+    fn defer_unsafe_scrollback_insert(
+        &self,
+        scrollback_plan: ScrollbackCommitPlan,
+        serialized_rows: &SerializedLiveRows,
+        stable_row_count: usize,
+        composer: &ComposerSurface,
+        width: u16,
+        terminal_height: u16,
+    ) -> ScrollbackCommitPlan {
+        if scrollback_plan.rows.is_empty() {
+            return scrollback_plan;
+        }
+
+        let candidate_live_rows =
+            serialized_rows.rows().get(scrollback_plan.committed_after..).unwrap_or_default();
+        let candidate_layout =
+            MutableLayoutPlan::new(candidate_live_rows, composer, terminal_height);
+        let candidate_frame = ChatDrawRequest {
+            requested_inline_height: candidate_layout.viewport_height,
+            terminal_width: width,
+            terminal_height,
+        };
+        if self.terminal.can_insert_scrollback_rows(candidate_frame, scrollback_plan.rows.len()) {
+            return scrollback_plan;
+        }
+
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_scrollback_insert_deferred",
+            message = "stable chat rows kept in source-backed live window because inline insertion is unsafe for current viewport",
+            outcome = "deferred",
+            rows = scrollback_plan.rows.len(),
+            committed_rows = self.scrollback.committed_rows(),
+            requested_inline_height = candidate_frame.requested_inline_height,
+            terminal_width = width,
+            terminal_height,
+        );
+        ScrollbackCommitPlan::empty(
+            self.scrollback
+                .committed_rows()
+                .min(stable_row_count)
+                .min(serialized_rows.rows().len()),
+        )
+    }
+
     fn reset_inline_terminal(&mut self, app: &mut App) {
         if let Err(err) = self.terminal.reset_visible() {
             tracing::warn!(
@@ -241,7 +327,7 @@ impl ChatTerminalSession {
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
-    app.request_chat_visible_rebuild();
+    app.request_chat_resize_purge_replay_rebuild();
 }
 
 fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {
@@ -333,11 +419,22 @@ fn active_mutable_message_idx(app: &App) -> Option<usize> {
 struct ScrollbackCommitState {
     width: u16,
     committed_rows: usize,
+    cap_next_purge_replay: bool,
 }
+
+const RESIZE_PURGE_REPLAY_MAX_ROWS: usize = 9_000;
 
 impl ScrollbackCommitState {
     fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    fn reset_for_resize_purge_replay(&mut self) {
+        *self = Self { cap_next_purge_replay: true, ..Self::default() };
+    }
+
+    fn committed_rows(&self) -> usize {
+        self.committed_rows
     }
 
     fn prepare(
@@ -362,7 +459,11 @@ impl ScrollbackCommitState {
             return ScrollbackCommitPlan::empty(stable_row_count);
         }
 
-        let start = self.committed_rows.min(stable_row_count);
+        let start = if self.cap_next_purge_replay && self.committed_rows == 0 {
+            stable_row_count.saturating_sub(RESIZE_PURGE_REPLAY_MAX_ROWS)
+        } else {
+            self.committed_rows.min(stable_row_count)
+        };
         ScrollbackCommitPlan {
             rows: rows[start..stable_row_count].to_vec(),
             committed_after: stable_row_count,
@@ -371,6 +472,7 @@ impl ScrollbackCommitState {
 
     fn complete(&mut self, committed_after: usize) {
         self.committed_rows = self.committed_rows.max(committed_after);
+        self.cap_next_purge_replay = false;
     }
 }
 
@@ -776,6 +878,37 @@ mod tests {
 
         let next = state.prepare(&rows, 6, 100);
         assert_eq!(next.rows, rows[5..6]);
+    }
+
+    #[test]
+    fn resize_purge_replay_caps_first_stable_insert_to_tail_rows() {
+        let rows = rows(6);
+        let mut state = ScrollbackCommitState::default();
+
+        state.reset_for_resize_purge_replay();
+        let first = state.prepare(&rows, 5, 80);
+
+        assert_eq!(first.rows, rows[0..5]);
+        assert_eq!(first.committed_after, 5);
+        assert!(state.cap_next_purge_replay);
+    }
+
+    #[test]
+    fn resize_purge_replay_cap_skips_oldest_stable_rows() {
+        let rows = rows(super::RESIZE_PURGE_REPLAY_MAX_ROWS + 3);
+        let mut state = ScrollbackCommitState::default();
+
+        state.reset_for_resize_purge_replay();
+        let plan = state.prepare(&rows, rows.len(), 80);
+
+        assert_eq!(plan.rows, rows[3..]);
+        assert_eq!(plan.committed_after, rows.len());
+        state.complete(plan.committed_after);
+
+        let repeated = state.prepare(&rows, rows.len(), 80);
+        assert!(repeated.rows.is_empty());
+        assert_eq!(repeated.committed_after, rows.len());
+        assert!(!state.cap_next_purge_replay);
     }
 
     #[test]

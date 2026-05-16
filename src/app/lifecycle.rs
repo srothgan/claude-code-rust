@@ -30,6 +30,7 @@ pub enum ChatRebuildKind {
     None,
     MutableViewport,
     VisibleScreen,
+    ResizePurgeReplay,
     SessionBoundary,
 }
 
@@ -51,6 +52,11 @@ impl ChatSurfaceDirtyState {
 
     pub fn request_visible_screen_rebuild(&mut self) {
         self.rebuild = self.rebuild.max(ChatRebuildKind::VisibleScreen);
+        self.repaint = true;
+    }
+
+    pub fn request_resize_purge_replay_rebuild(&mut self) {
+        self.rebuild = self.rebuild.max(ChatRebuildKind::ResizePurgeReplay);
         self.repaint = true;
     }
 
@@ -190,13 +196,28 @@ mod tests {
     }
 
     #[test]
+    fn chat_resize_purge_replay_rebuild_dominates_visible_rebuild() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+
+        dirty.request_visible_screen_rebuild();
+        dirty.request_resize_purge_replay_rebuild();
+        dirty.request_mutable_rebuild();
+        dirty.request_visible_screen_rebuild();
+
+        assert_eq!(dirty.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert!(dirty.repaint);
+    }
+
+    #[test]
     fn chat_session_boundary_rebuild_dominates_visible_rebuild() {
         let mut dirty = ChatSurfaceDirtyState::default();
 
         dirty.request_visible_screen_rebuild();
+        dirty.request_resize_purge_replay_rebuild();
         dirty.request_session_boundary_rebuild();
         dirty.request_mutable_rebuild();
         dirty.request_visible_screen_rebuild();
+        dirty.request_resize_purge_replay_rebuild();
 
         assert_eq!(dirty.rebuild, ChatRebuildKind::SessionBoundary);
         assert!(dirty.repaint);

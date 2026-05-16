@@ -70,7 +70,10 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
 fn handle_resize(app: &mut App, width: u16, height: u16) {
     match app.terminal_lifecycle {
         super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
-            app.request_chat_visible_rebuild();
+            app.request_chat_resize_purge_replay_rebuild();
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+                app.chat_render.mark_resize_purge_replay_during_turn();
+            }
         }
         super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
             app.request_fullscreen_repaint();
@@ -446,10 +449,10 @@ mod tests {
     use crate::agent::events::TerminalProcess;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
-        BlockCache, CancelOrigin, ChatRebuildKind, FocusOwner, FocusTarget, FullscreenView,
-        InlinePermission, InlineQuestion, ReleaseReason, SurfaceMode, TerminalLifecycleState,
-        TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
-        UsageSourceKind, mention,
+        BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
+        FullscreenView, InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason,
+        SurfaceMode, TerminalLifecycleState, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+        ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
@@ -504,6 +507,111 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct MessageSnapshot {
+        role: MessageRole,
+        blocks: Vec<BlockSnapshot>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum BlockSnapshot {
+        Text {
+            text: String,
+            trailing_spacing: TextBlockSpacing,
+        },
+        Notice {
+            severity: SystemSeverity,
+            text: String,
+        },
+        ToolCall {
+            id: String,
+            title: String,
+            status: model::ToolCallStatus,
+            hidden: bool,
+        },
+        Welcome {
+            version: String,
+            subscription: String,
+            cwd: String,
+            session_id: String,
+            tip_seed: u64,
+        },
+        ImageAttachment {
+            count: usize,
+        },
+    }
+
+    fn message_snapshots(app: &App) -> Vec<MessageSnapshot> {
+        app.messages
+            .iter()
+            .map(|message| MessageSnapshot {
+                role: message.role.clone(),
+                blocks: message.blocks.iter().map(block_snapshot).collect(),
+            })
+            .collect()
+    }
+
+    fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
+        match block {
+            MessageBlock::Text(block) => BlockSnapshot::Text {
+                text: block.text.clone(),
+                trailing_spacing: block.trailing_spacing,
+            },
+            MessageBlock::Notice(block) => {
+                BlockSnapshot::Notice { severity: block.severity, text: block.text.text.clone() }
+            }
+            MessageBlock::ToolCall(tool_call) => BlockSnapshot::ToolCall {
+                id: tool_call.id.clone(),
+                title: tool_call.title.clone(),
+                status: tool_call.status,
+                hidden: tool_call.hidden,
+            },
+            MessageBlock::Welcome(block) => BlockSnapshot::Welcome {
+                version: block.version.clone(),
+                subscription: block.subscription.clone(),
+                cwd: block.cwd.clone(),
+                session_id: block.session_id.clone(),
+                tip_seed: block.tip_seed,
+            },
+            MessageBlock::ImageAttachment(block) => {
+                BlockSnapshot::ImageAttachment { count: block.count }
+            }
+        }
+    }
+
+    fn seed_resize_measurements(app: &mut App) {
+        app.chat_render.terminal_width = 90;
+        app.chat_render.terminal_height = 30;
+        app.chat_render.composer = ComposerRenderState {
+            width: 90,
+            hint_rows: 1,
+            editor_rows: 2,
+            footer_rows: 1,
+            total_rows: 4,
+            caret_row: 1,
+            caret_col: 3,
+            last_rendered_rows: 4,
+        };
+        app.chat_render.live_region = LiveRegionRenderState {
+            anchor_valid: true,
+            total_rows: 12,
+            hidden_rows_above: 3,
+            viewport_height: 9,
+            last_rendered_rows: 7,
+        };
+    }
+
+    fn assert_resize_measurements_cleared(app: &App, width: u16, height: u16) {
+        assert_eq!(app.chat_render.terminal_width, width);
+        assert_eq!(app.chat_render.terminal_height, height);
+        assert_eq!(app.chat_render.composer, ComposerRenderState::default());
+        assert!(!app.chat_render.live_region.anchor_valid);
+        assert_eq!(app.chat_render.live_region.total_rows, 0);
+        assert_eq!(app.chat_render.live_region.hidden_rows_above, 0);
+        assert_eq!(app.chat_render.live_region.viewport_height, 0);
+        assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
     }
 
     fn first_block_text(msg: &ChatMessage) -> &str {
@@ -1285,23 +1393,14 @@ mod tests {
         let mut app = make_test_app();
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
         app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-        app.chat_render.terminal_width = 90;
-        app.chat_render.terminal_height = 30;
-        app.chat_render.composer.total_rows = 4;
-        app.chat_render.composer.last_rendered_rows = 4;
-        app.chat_render.live_region.anchor_valid = true;
-        app.chat_render.live_region.last_rendered_rows = 7;
+        seed_resize_measurements(&mut app);
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
         assert!(!app.surface_dirty.fullscreen.redraw);
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
-        assert_eq!(app.chat_render.terminal_width, 120);
-        assert_eq!(app.chat_render.terminal_height, 40);
-        assert_eq!(app.chat_render.composer.total_rows, 0);
-        assert_eq!(app.chat_render.composer.last_rendered_rows, 0);
-        assert!(!app.chat_render.live_region.anchor_valid);
-        assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert!(app.surface_dirty.chat.repaint);
+        assert_resize_measurements_cleared(&app, 120, 40);
     }
 
     #[test]
@@ -1310,21 +1409,76 @@ mod tests {
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
         app.terminal_lifecycle =
             TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
+        seed_resize_measurements(&mut app);
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
         assert!(app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(!app.surface_dirty.chat.repaint);
+        assert_resize_measurements_cleared(&app, 120, 40);
     }
 
     #[test]
-    fn resize_marks_hidden_chat_dirty_when_terminal_is_released() {
+    fn resize_while_released_to_child_stores_size_without_drawing_hidden_chat() {
         let mut app = make_test_app();
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
         app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
+        seed_resize_measurements(&mut app);
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
         assert!(!app.surface_dirty.fullscreen.redraw);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(!app.surface_dirty.chat.repaint);
+        assert_resize_measurements_cleared(&app, 120, 40);
+    }
+
+    #[test]
+    fn resize_does_not_mutate_messages() {
+        let mut app = make_test_app();
+        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+        app.messages.push(user_msg("hello"));
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::Text(TextBlock::from_complete("answer")),
+            MessageBlock::ToolCall(Box::new(tool_call(
+                "tc-resize",
+                model::ToolCallStatus::InProgress,
+            ))),
+        ]));
+        let before = message_snapshots(&app);
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert_eq!(message_snapshots(&app), before);
+    }
+
+    #[test]
+    fn resize_does_not_clear_active_assistant_ownership() {
+        let mut app = make_test_app();
+        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+        app.messages.push(user_msg("hello"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "streaming answer",
+        ))]));
+        app.bind_active_turn_assistant(1);
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert_eq!(app.active_turn_assistant_idx(), Some(1));
+    }
+
+    #[test]
+    fn resize_during_active_turn_marks_final_purge_replay_needed() {
+        let mut app = make_test_app();
+        app.surface_dirty = crate::app::SurfaceDirtyState::default();
+        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+        app.status = AppStatus::Running;
+
+        handle_terminal_event(&mut app, Event::Resize(120, 40));
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert!(app.chat_render.resize_purge_replay_after_turn);
     }
 
     #[test]

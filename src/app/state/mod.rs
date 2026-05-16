@@ -384,6 +384,10 @@ impl App {
         self.surface_dirty.chat.request_visible_screen_rebuild();
     }
 
+    pub(crate) fn request_chat_resize_purge_replay_rebuild(&mut self) {
+        self.surface_dirty.chat.request_resize_purge_replay_rebuild();
+    }
+
     pub(crate) fn request_chat_session_boundary_rebuild(&mut self) {
         self.surface_dirty.chat.request_session_boundary_rebuild();
     }

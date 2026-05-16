@@ -175,6 +175,10 @@ impl TerminalRuntime {
                     session.clear(app);
                     Ok(())
                 }
+                ChatRebuildKind::ResizePurgeReplay => {
+                    session.clear_for_resize_purge_replay(app);
+                    Ok(())
+                }
                 ChatRebuildKind::SessionBoundary => {
                     session.clear_session_boundary(app);
                     Ok(())
