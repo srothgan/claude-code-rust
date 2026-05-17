@@ -18,9 +18,10 @@ pub use chat_render::{
 };
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
-    ChatMessage, ImageAttachmentBlock, IncrementalMarkdown, MessageBlock, MessageRole, NoticeBlock,
-    NoticeDedupKey, RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing,
-    WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown,
+    MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,
+    SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,

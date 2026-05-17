@@ -1,10 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{
-    App, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, TextBlock,
-    TextBlockSpacing,
-};
+use super::super::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 
 pub(super) fn reset_for_new_session(
@@ -121,30 +118,16 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
             block.markdown.append(&text.text);
             block.cache.invalidate();
         } else {
-            let mut incr = IncrementalMarkdown::default();
-            incr.append(&text.text);
-            last.blocks.push(MessageBlock::Text(TextBlock {
-                text: text.text.clone(),
-                cache: BlockCache::default(),
-                markdown: incr,
-                trailing_spacing: TextBlockSpacing::default(),
-            }));
+            last.blocks.push(MessageBlock::Text(TextBlock::from_complete(&text.text)));
         }
         let last_idx = app.messages.len().saturating_sub(1);
         app.sync_after_message_blocks_changed(last_idx);
         return;
     }
 
-    let mut incr = IncrementalMarkdown::default();
-    incr.append(&text.text);
     app.push_message_tracked(ChatMessage::new(
         MessageRole::User,
-        vec![MessageBlock::Text(TextBlock {
-            text: text.text.clone(),
-            cache: BlockCache::default(),
-            markdown: incr,
-            trailing_spacing: TextBlockSpacing::default(),
-        })],
+        vec![MessageBlock::Text(TextBlock::from_complete(&text.text))],
         None,
     ));
 }

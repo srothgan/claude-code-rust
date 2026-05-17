@@ -84,10 +84,12 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
             break;
         };
 
-        let (completed, remainder) = match blocks.get(tail_idx) {
-            Some(MessageBlock::Text(block)) => {
-                (block.text[..split.split_at].to_owned(), block.text[split.split_at..].to_owned())
-            }
+        let (tail_id, completed, remainder) = match blocks.get(tail_idx) {
+            Some(MessageBlock::Text(block)) => (
+                block.id,
+                block.text[..split.split_at].to_owned(),
+                block.text[split.split_at..].to_owned(),
+            ),
             _ => break,
         };
 
@@ -95,7 +97,7 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
             break;
         }
 
-        blocks[tail_idx] = new_text_block(remainder);
+        blocks[tail_idx] = MessageBlock::Text(TextBlock::new_with_id(tail_id, remainder));
         blocks.insert(tail_idx, completed_text_block(completed, split));
         split_count += 1;
     }

@@ -57,17 +57,17 @@ pub use lifecycle::{
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatRenderState,
-    ChatRenderTraceState, ComposerRenderState, ExtraUsage, ImageAttachmentBlock,
-    IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation,
-    LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageRole, MessageUsage, ModeInfo,
-    ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck,
-    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
-    SystemSeverity, TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name,
+    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatMessageId,
+    ChatRenderState, ChatRenderTraceState, ComposerRenderState, ExtraUsage, HistoryOutputId,
+    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
+    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
+    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo, SelectionPoint,
+    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSize, TerminalSizeChange,
+    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

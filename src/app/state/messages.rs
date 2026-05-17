@@ -9,9 +9,58 @@ use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static NEXT_TRANSCRIPT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_transcript_id() -> u64 {
+    NEXT_TRANSCRIPT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChatMessageId(u64);
+
+impl ChatMessageId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(next_transcript_id())
+    }
+}
+
+impl Default for ChatMessageId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MessageBlockId(u64);
+
+impl MessageBlockId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(next_transcript_id())
+    }
+}
+
+impl Default for MessageBlockId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HistoryOutputId {
+    Message(ChatMessageId),
+    AssistantLabel(ChatMessageId),
+    AssistantIndicator(ChatMessageId),
+    Block(MessageBlockId),
+    ToolCall(String),
+}
+
 pub struct ChatMessage {
+    pub id: ChatMessageId,
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
     pub usage: Option<MessageUsage>,
@@ -20,7 +69,7 @@ pub struct ChatMessage {
 impl ChatMessage {
     #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { role, blocks, usage }
+        Self { id: ChatMessageId::new(), role, blocks, usage }
     }
 
     #[must_use]
@@ -28,6 +77,7 @@ impl ChatMessage {
         Self::new(
             MessageRole::Welcome,
             vec![MessageBlock::Welcome(WelcomeBlock {
+                id: MessageBlockId::new(),
                 version: version.to_owned(),
                 subscription: subscription.to_owned(),
                 cwd: cwd.to_owned(),
@@ -259,6 +309,7 @@ impl TextBlockSpacing {
 }
 
 pub struct TextBlock {
+    pub id: MessageBlockId,
     pub text: String,
     pub cache: BlockCache,
     pub markdown: IncrementalMarkdown,
@@ -274,7 +325,13 @@ pub struct TextBlock {
 impl TextBlock {
     #[must_use]
     pub fn new(text: String) -> Self {
+        Self::new_with_id(MessageBlockId::new(), text)
+    }
+
+    #[must_use]
+    pub fn new_with_id(id: MessageBlockId, text: String) -> Self {
         Self {
+            id,
             markdown: IncrementalMarkdown::from_complete(&text),
             text,
             cache: BlockCache::default(),
@@ -312,6 +369,7 @@ pub enum NoticeDedupKey {
 }
 
 pub struct NoticeBlock {
+    pub id: MessageBlockId,
     pub severity: SystemSeverity,
     pub text: TextBlock,
     pub dedup_key: Option<NoticeDedupKey>,
@@ -320,7 +378,7 @@ pub struct NoticeBlock {
 impl NoticeBlock {
     #[must_use]
     pub fn new(severity: SystemSeverity, text: String) -> Self {
-        Self { severity, text: TextBlock::new(text), dedup_key: None }
+        Self { id: MessageBlockId::new(), severity, text: TextBlock::new(text), dedup_key: None }
     }
 
     #[must_use]
@@ -335,6 +393,7 @@ impl NoticeBlock {
     }
 
     pub fn replace_text(&mut self, text: &str) {
+        self.id = MessageBlockId::new();
         self.text = TextBlock::from_complete(text);
     }
 
@@ -358,6 +417,7 @@ pub enum MessageBlock {
 /// to satisfy the render-budget invariant that every [`MessageBlock`] variant
 /// has a cache, even though the cached content is trivially small.
 pub struct ImageAttachmentBlock {
+    pub id: MessageBlockId,
     pub count: usize,
     pub cache: BlockCache,
 }
@@ -365,7 +425,7 @@ pub struct ImageAttachmentBlock {
 impl ImageAttachmentBlock {
     #[must_use]
     pub fn new(count: usize) -> Self {
-        Self { count, cache: BlockCache::default() }
+        Self { id: MessageBlockId::new(), count, cache: BlockCache::default() }
     }
 }
 
@@ -385,6 +445,7 @@ pub enum SystemSeverity {
 }
 
 pub struct WelcomeBlock {
+    pub id: MessageBlockId,
     pub version: String,
     pub subscription: String,
     pub cwd: String,

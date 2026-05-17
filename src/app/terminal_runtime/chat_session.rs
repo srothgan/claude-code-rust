@@ -1,8 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::chat_terminal::{ChatDrawRequest, ChatTerminal};
-use crate::app::App;
+use super::chat_terminal::{ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch};
+use super::history_insert::RenderedHistoryRows;
+use crate::app::{App, HistoryOutputId};
 use crate::ui::footer_rows::serialize_footer_rows;
 use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
 use crate::ui::inline_chat_rows::{SerializedLiveRows, serialize_live_rows_with_boundaries};
@@ -14,10 +15,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::collections::BTreeSet;
 
 pub(super) struct ChatTerminalSession {
     terminal: ChatTerminal,
-    scrollback: ScrollbackCommitState,
+    history: HistoryCommitState,
 }
 
 impl ChatTerminalSession {
@@ -47,15 +49,12 @@ impl ChatTerminalSession {
             owned_top,
         );
 
-        Ok(Self {
-            terminal: ChatTerminal::new(owned_top),
-            scrollback: ScrollbackCommitState::default(),
-        })
+        Ok(Self { terminal: ChatTerminal::new(owned_top), history: HistoryCommitState::default() })
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
         self.reset_inline_terminal(app);
-        self.scrollback.reset();
+        self.history.reset();
     }
 
     pub(super) fn clear_session_boundary(&mut self, app: &mut App) {
@@ -69,7 +68,7 @@ impl ChatTerminalSession {
             );
         }
         app.chat_render.invalidate_live_anchor();
-        self.scrollback.reset();
+        self.history.reset();
     }
 
     pub(super) fn clear_for_resize_purge_replay(&mut self, app: &mut App) {
@@ -83,7 +82,7 @@ impl ChatTerminalSession {
             );
         }
         app.chat_render.invalidate_live_anchor();
-        self.scrollback.reset_for_resize_purge_replay();
+        self.history.reset_for_resize_purge_replay();
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
@@ -106,7 +105,7 @@ impl ChatTerminalSession {
             event_name = "inline_chat_fullscreen_suspended",
             message = "inline chat session suspended before fullscreen surface",
             outcome = "success",
-            committed_rows = self.scrollback.committed_rows(),
+            confirmed_ids = self.history.confirmed_len(),
         );
     }
 
@@ -117,7 +116,7 @@ impl ChatTerminalSession {
             event_name = "inline_chat_fullscreen_reattached",
             message = "inline chat session reattached after fullscreen surface",
             outcome = "success",
-            committed_rows = self.scrollback.committed_rows(),
+            confirmed_ids = self.history.confirmed_len(),
         );
     }
 
@@ -131,15 +130,7 @@ impl ChatTerminalSession {
         app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
         let serialized_rows = serialize_live_rows_with_boundaries(app, width);
-        let stable_row_count = serialized_rows.stable_row_count();
-        self.draw_incremental(
-            app,
-            screen_size,
-            width,
-            terminal_height,
-            &serialized_rows,
-            stable_row_count,
-        )
+        self.draw_incremental(app, screen_size, width, terminal_height, &serialized_rows)
     }
 
     fn draw_incremental(
@@ -149,21 +140,11 @@ impl ChatTerminalSession {
         width: u16,
         terminal_height: u16,
         serialized_rows: &SerializedLiveRows,
-        stable_row_count: usize,
     ) -> anyhow::Result<()> {
-        let scrollback_plan =
-            self.scrollback.prepare(serialized_rows.rows(), stable_row_count, width);
         let composer = Self::build_composer_surface(app, width);
-        let scrollback_plan = self.defer_unsafe_scrollback_insert(
-            scrollback_plan,
-            serialized_rows,
-            stable_row_count,
-            &composer,
-            width,
-            terminal_height,
-        );
-        let live_rows =
-            serialized_rows.rows().get(scrollback_plan.committed_after..).unwrap_or_default();
+        let mut history_plan =
+            self.prepare_history_flush(serialized_rows, &composer, width, terminal_height);
+        let live_rows = history_plan.live_rows.as_slice();
         let requested_layout_plan = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
         let layout_plan =
             MutableLayoutPlan::new(live_rows, &composer, requested_layout_plan.viewport_height);
@@ -182,46 +163,43 @@ impl ChatTerminalSession {
             composer: &composer,
             visible_composer_row_count,
             composer_preview_rows: &composer_preview_rows,
-            scrollback_plan: &scrollback_plan,
+            history_plan: &history_plan,
         });
 
         let visible_live_rows = layout_plan.live_visible_rows(live_rows).to_vec();
+        let live_rows_mutable_count = live_rows.len();
         let visible_live_row_count = visible_live_rows.len();
         let chat_frame = ChatDrawRequest {
             requested_inline_height: requested_layout_plan.viewport_height,
             terminal_width: width,
             terminal_height,
         };
-        let outcome_result = self.terminal.draw_chat_frame(
-            chat_frame,
-            &scrollback_plan.rows,
-            |frame, viewport_area| {
-                let (live_area, hint_area, editor_area, footer_area) =
-                    layout_plan.areas(viewport_area);
-                if !live_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
-                }
-                if !hint_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
-                }
-                if !editor_area.is_empty() {
-                    render_composer_editor(frame, app, &composer.editor, editor_area);
-                }
-                if !footer_area.is_empty() {
-                    frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
-                }
-            },
-        );
+        let history_action = history_plan.take_action();
+        self.queue_history_plan(history_action);
+        let outcome_result = self.terminal.draw_chat_frame(chat_frame, |frame, viewport_area| {
+            let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
+            if !live_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
+            }
+            if !hint_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
+            }
+            if !editor_area.is_empty() {
+                render_composer_editor(frame, app, &composer.editor, editor_area);
+            }
+            if !footer_area.is_empty() {
+                frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
+            }
+        });
         let outcome = match outcome_result {
             Ok(outcome) => outcome,
             Err(err) => {
+                self.history.mark_out_of_sync();
                 mark_chat_terminal_history_out_of_sync(app);
                 return Err(err);
             }
         };
-        if outcome.inserted_scrollback_rows == scrollback_plan.rows.len() {
-            self.scrollback.complete(scrollback_plan.committed_after);
-        }
+        self.complete_history_flush(app, width, &outcome);
         let viewport_area = outcome.viewport_area;
         let (live_area, hint_area, editor_area, footer_area) = layout_plan.areas(viewport_area);
         complete_draw(
@@ -236,14 +214,14 @@ impl ChatTerminalSession {
                 terminal_width: screen_size.0,
                 terminal_height: screen_size.1,
                 live_rows_total: serialized_rows.rows().len(),
-                live_rows_mutable: live_rows.len(),
+                live_rows_mutable: live_rows_mutable_count,
                 live_rows_visible: visible_live_row_count,
-                live_rows_hidden_above: scrollback_plan
-                    .committed_after
+                live_rows_hidden_above: history_plan
+                    .excluded_rows
                     .saturating_add(layout_plan.live_window.hidden_rows_above()),
                 composer_rows_total: composer.total_len(),
                 composer_rows_visible: visible_composer_row_count,
-                scrollback_inserted_rows: outcome.inserted_scrollback_rows,
+                scrollback_inserted_rows: outcome.flushed_history.flushed_rows,
             },
         );
 
@@ -251,30 +229,109 @@ impl ChatTerminalSession {
         Ok(())
     }
 
-    fn defer_unsafe_scrollback_insert(
-        &self,
-        scrollback_plan: ScrollbackCommitPlan,
+    fn prepare_history_flush(
+        &mut self,
         serialized_rows: &SerializedLiveRows,
-        stable_row_count: usize,
         composer: &ComposerSurface,
         width: u16,
         terminal_height: u16,
-    ) -> ScrollbackCommitPlan {
-        if scrollback_plan.rows.is_empty() {
-            return scrollback_plan;
+    ) -> HistoryFlushPlan {
+        let width = width.max(1);
+        let mut base_excluded_ids = self.history.confirmed_ids().clone();
+        base_excluded_ids.extend(self.terminal.pending_history_ids());
+
+        if !self.history.is_synced() {
+            return self.prepare_replay_history_flush(serialized_rows, width, base_excluded_ids);
         }
 
-        let candidate_live_rows =
-            serialized_rows.rows().get(scrollback_plan.committed_after..).unwrap_or_default();
+        self.prepare_static_history_flush(
+            serialized_rows,
+            composer,
+            width,
+            terminal_height,
+            base_excluded_ids,
+        )
+    }
+
+    fn prepare_replay_history_flush(
+        &mut self,
+        serialized_rows: &SerializedLiveRows,
+        width: u16,
+        base_excluded_ids: BTreeSet<HistoryOutputId>,
+    ) -> HistoryFlushPlan {
+        if self.terminal.is_replay_active() {
+            if self.terminal.active_replay_matches_width(width) {
+                let mut excluded_ids = base_excluded_ids;
+                excluded_ids.extend(self.terminal.replay_pending_ids());
+                return history_flush_without_action(serialized_rows, excluded_ids, true);
+            }
+
+            self.terminal.cancel_replay();
+        }
+
+        let replay =
+            build_replay_history_batches(serialized_rows, width, self.history.cap_replay_rows());
+        if replay.confirm_ids.is_empty() {
+            self.history.mark_terminal_history_synced(width, Vec::new());
+            return history_flush_without_action(serialized_rows, base_excluded_ids, true);
+        }
+
+        let mut excluded_ids = base_excluded_ids;
+        excluded_ids.extend(replay.confirm_ids.iter().cloned());
+        let live_rows = serialized_rows.rows_excluding_ids(&excluded_ids);
+        let replay_rows = replay.rows;
+        HistoryFlushPlan::new(
+            live_rows,
+            excluded_row_count(serialized_rows, &excluded_ids),
+            excluded_ids,
+            HistoryFlushAction::StartReplay {
+                render_width: width,
+                batches: replay.batches,
+                confirm_ids: replay.confirm_ids,
+            },
+            replay_rows,
+            true,
+        )
+    }
+
+    fn prepare_static_history_flush(
+        &self,
+        serialized_rows: &SerializedLiveRows,
+        composer: &ComposerSurface,
+        width: u16,
+        terminal_height: u16,
+        base_excluded_ids: BTreeSet<HistoryOutputId>,
+    ) -> HistoryFlushPlan {
+        let candidate_batches =
+            build_static_history_batches(serialized_rows, width, &base_excluded_ids);
+        if candidate_batches.is_empty() {
+            return history_flush_without_action(serialized_rows, base_excluded_ids, false);
+        }
+
+        let candidate_ids = candidate_batches
+            .iter()
+            .flat_map(|batch| batch.confirm_ids.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut candidate_excluded_ids = base_excluded_ids.clone();
+        candidate_excluded_ids.extend(candidate_ids);
+        let candidate_live_rows = serialized_rows.rows_excluding_ids(&candidate_excluded_ids);
         let candidate_layout =
-            MutableLayoutPlan::new(candidate_live_rows, composer, terminal_height);
+            MutableLayoutPlan::new(&candidate_live_rows, composer, terminal_height);
         let candidate_frame = ChatDrawRequest {
             requested_inline_height: candidate_layout.viewport_height,
             terminal_width: width,
             terminal_height,
         };
-        if self.terminal.can_insert_scrollback_rows(candidate_frame, scrollback_plan.rows.len()) {
-            return scrollback_plan;
+        let candidate_rows = candidate_batches.iter().map(|batch| batch.rows.len()).sum();
+        if self.terminal.can_insert_scrollback_rows(candidate_frame, candidate_rows) {
+            return HistoryFlushPlan::new(
+                candidate_live_rows,
+                excluded_row_count(serialized_rows, &candidate_excluded_ids),
+                candidate_excluded_ids,
+                HistoryFlushAction::QueueStatic(candidate_batches),
+                candidate_rows,
+                false,
+            );
         }
 
         tracing::debug!(
@@ -282,18 +339,50 @@ impl ChatTerminalSession {
             event_name = "inline_chat_scrollback_insert_deferred",
             message = "stable chat rows kept in source-backed live window because inline insertion is unsafe for current viewport",
             outcome = "deferred",
-            rows = scrollback_plan.rows.len(),
-            committed_rows = self.scrollback.committed_rows(),
+            rows = candidate_rows,
+            confirmed_ids = self.history.confirmed_len(),
+            history_width = self.history.width,
             requested_inline_height = candidate_frame.requested_inline_height,
             terminal_width = width,
             terminal_height,
         );
-        ScrollbackCommitPlan::empty(
-            self.scrollback
-                .committed_rows()
-                .min(stable_row_count)
-                .min(serialized_rows.rows().len()),
-        )
+
+        history_flush_without_action(serialized_rows, base_excluded_ids, false)
+    }
+
+    fn queue_history_plan(&mut self, action: HistoryFlushAction) {
+        match action {
+            HistoryFlushAction::None => {}
+            HistoryFlushAction::QueueStatic(batches) => {
+                for batch in batches {
+                    self.terminal.queue_static_history(batch);
+                }
+            }
+            HistoryFlushAction::StartReplay { render_width, batches, confirm_ids } => {
+                self.terminal.start_replay(render_width, batches, confirm_ids);
+            }
+        }
+    }
+
+    fn complete_history_flush(
+        &mut self,
+        app: &mut App,
+        width: u16,
+        outcome: &super::chat_terminal::ChatDrawOutcome,
+    ) {
+        if outcome.flushed_history.replay_complete {
+            self.history
+                .mark_terminal_history_synced(width, outcome.flushed_history.confirmed_ids.clone());
+        } else if !outcome.flushed_history.confirmed_ids.is_empty() {
+            self.history.confirm(width, outcome.flushed_history.confirmed_ids.clone());
+        }
+
+        if outcome.flushed_history.replay_incomplete
+            || (outcome.flushed_history.flushed_rows > 0
+                && !self.terminal.pending_history_ids().is_empty())
+        {
+            app.request_chat_repaint();
+        }
     }
 
     fn reset_inline_terminal(&mut self, app: &mut App) {
@@ -357,11 +446,13 @@ fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {
         composer_rows_visible: prepared.visible_composer_row_count,
         composer_preview: preview_rows(prepared.composer_preview_rows, 3),
         live_rows_hidden_above: prepared
-            .scrollback_plan
-            .committed_after
+            .history_plan
+            .excluded_rows
             .saturating_add(prepared.layout_plan.live_window.hidden_rows_above()),
-        scrollback_commit_rows: prepared.scrollback_plan.rows.len(),
-        scrollback_committed_after: prepared.scrollback_plan.committed_after,
+        history_queued_rows: prepared.history_plan.queued_rows,
+        history_excluded_rows: prepared.history_plan.excluded_rows,
+        history_excluded_ids: prepared.history_plan.excluded_ids.len(),
+        history_full_rebuild: prepared.history_plan.full_rebuild,
         stable_rows: prepared.serialized_rows.stable_row_count(),
         first_mutable_boundary_start: prepared.serialized_rows.first_mutable_boundary_start(),
         first_mutable_boundary_kind: prepared.serialized_rows.first_mutable_boundary_kind(),
@@ -380,7 +471,7 @@ struct PreparedDrawLog<'a> {
     composer: &'a ComposerSurface,
     visible_composer_row_count: usize,
     composer_preview_rows: &'a [Line<'static>],
-    scrollback_plan: &'a ScrollbackCommitPlan,
+    history_plan: &'a HistoryFlushPlan,
 }
 
 fn complete_draw(app: &mut App, completion: DrawCompletion) {
@@ -433,77 +524,263 @@ struct DrawCompletion {
     scrollback_inserted_rows: usize,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct ScrollbackCommitState {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HistoryCommitState {
     width: u16,
-    committed_rows: usize,
+    confirmed: BTreeSet<HistoryOutputId>,
+    history_in_sync: bool,
     cap_next_purge_replay: bool,
 }
 
 const RESIZE_PURGE_REPLAY_MAX_ROWS: usize = 9_000;
 
-impl ScrollbackCommitState {
+impl Default for HistoryCommitState {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            confirmed: BTreeSet::new(),
+            history_in_sync: true,
+            cap_next_purge_replay: false,
+        }
+    }
+}
+
+impl HistoryCommitState {
     fn reset(&mut self) {
         *self = Self::default();
     }
 
     fn reset_for_resize_purge_replay(&mut self) {
-        *self = Self { cap_next_purge_replay: true, ..Self::default() };
+        *self = Self { history_in_sync: false, cap_next_purge_replay: true, ..Self::default() };
     }
 
-    fn committed_rows(&self) -> usize {
-        self.committed_rows
+    fn confirmed_ids(&self) -> &BTreeSet<HistoryOutputId> {
+        &self.confirmed
     }
 
-    fn prepare(
-        &mut self,
-        rows: &[Line<'static>],
-        stable_row_count: usize,
-        width: u16,
-    ) -> ScrollbackCommitPlan {
-        let width = width.max(1);
-        let stable_row_count = stable_row_count.min(rows.len());
-
-        if self.width == 0 {
-            self.width = width;
-        } else if self.width != width {
-            self.width = width;
-            self.committed_rows = stable_row_count;
-            return ScrollbackCommitPlan::empty(stable_row_count);
-        }
-
-        if self.committed_rows > rows.len() {
-            self.committed_rows = stable_row_count;
-            return ScrollbackCommitPlan::empty(stable_row_count);
-        }
-
-        let start = if self.cap_next_purge_replay && self.committed_rows == 0 {
-            stable_row_count.saturating_sub(RESIZE_PURGE_REPLAY_MAX_ROWS)
-        } else {
-            self.committed_rows.min(stable_row_count)
-        };
-        ScrollbackCommitPlan {
-            rows: rows[start..stable_row_count].to_vec(),
-            committed_after: stable_row_count,
-        }
+    fn confirmed_len(&self) -> usize {
+        self.confirmed.len()
     }
 
-    fn complete(&mut self, committed_after: usize) {
-        self.committed_rows = self.committed_rows.max(committed_after);
+    fn is_synced(&self) -> bool {
+        self.history_in_sync
+    }
+
+    fn cap_replay_rows(&self) -> Option<usize> {
+        self.cap_next_purge_replay.then_some(RESIZE_PURGE_REPLAY_MAX_ROWS)
+    }
+
+    fn confirm(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
+        self.width = width.max(1);
+        self.confirmed.extend(ids);
+        self.history_in_sync = true;
         self.cap_next_purge_replay = false;
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ScrollbackCommitPlan {
-    rows: Vec<Line<'static>>,
-    committed_after: usize,
-}
-
-impl ScrollbackCommitPlan {
-    fn empty(committed_after: usize) -> Self {
-        Self { rows: Vec::new(), committed_after }
+    fn mark_terminal_history_synced(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
+        self.width = width.max(1);
+        self.confirmed.extend(ids);
+        self.history_in_sync = true;
+        self.cap_next_purge_replay = false;
     }
+
+    fn mark_out_of_sync(&mut self) {
+        self.confirmed.clear();
+        self.history_in_sync = false;
+    }
+}
+
+struct HistoryFlushPlan {
+    live_rows: Vec<Line<'static>>,
+    excluded_rows: usize,
+    excluded_ids: BTreeSet<HistoryOutputId>,
+    action: HistoryFlushAction,
+    queued_rows: usize,
+    full_rebuild: bool,
+}
+
+impl HistoryFlushPlan {
+    fn new(
+        live_rows: Vec<Line<'static>>,
+        excluded_rows: usize,
+        excluded_ids: BTreeSet<HistoryOutputId>,
+        action: HistoryFlushAction,
+        queued_rows: usize,
+        full_rebuild: bool,
+    ) -> Self {
+        Self { live_rows, excluded_rows, excluded_ids, action, queued_rows, full_rebuild }
+    }
+
+    fn take_action(&mut self) -> HistoryFlushAction {
+        std::mem::replace(&mut self.action, HistoryFlushAction::None)
+    }
+}
+
+enum HistoryFlushAction {
+    None,
+    QueueStatic(Vec<PendingHistoryBatch>),
+    StartReplay {
+        render_width: u16,
+        batches: Vec<PendingHistoryBatch>,
+        confirm_ids: Vec<HistoryOutputId>,
+    },
+}
+
+struct ReplayHistoryPlan {
+    batches: Vec<PendingHistoryBatch>,
+    confirm_ids: Vec<HistoryOutputId>,
+    rows: usize,
+}
+
+fn history_flush_without_action(
+    serialized_rows: &SerializedLiveRows,
+    excluded_ids: BTreeSet<HistoryOutputId>,
+    full_rebuild: bool,
+) -> HistoryFlushPlan {
+    let live_rows = serialized_rows.rows_excluding_ids(&excluded_ids);
+    HistoryFlushPlan::new(
+        live_rows,
+        excluded_row_count(serialized_rows, &excluded_ids),
+        excluded_ids,
+        HistoryFlushAction::None,
+        0,
+        full_rebuild,
+    )
+}
+
+fn build_static_history_batches(
+    serialized_rows: &SerializedLiveRows,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> Vec<PendingHistoryBatch> {
+    let stable_row_count = serialized_rows.stable_row_count();
+    let mut batches = Vec::new();
+    let mut rows = Vec::new();
+    let mut ids = Vec::new();
+    let mut expected_start = None;
+
+    for segment in serialized_rows.segments() {
+        if !segment.commit_ready || segment.start_row >= stable_row_count {
+            break;
+        }
+        let segment_ids = unexcluded_ids(&segment.ids, excluded_ids);
+        if segment_ids.is_empty() {
+            continue;
+        }
+        if expected_start.is_some_and(|expected| expected != segment.start_row) {
+            push_history_batch(&mut batches, HistoryBatchKind::Normal, width, &mut rows, &mut ids);
+        }
+
+        rows.extend(serialized_rows.rows()[segment.start_row..segment.end_row].iter().cloned());
+        ids.extend(segment_ids);
+        expected_start = Some(segment.end_row);
+    }
+
+    push_history_batch(&mut batches, HistoryBatchKind::Normal, width, &mut rows, &mut ids);
+    batches
+}
+
+fn build_replay_history_batches(
+    serialized_rows: &SerializedLiveRows,
+    width: u16,
+    row_cap: Option<usize>,
+) -> ReplayHistoryPlan {
+    let stable_row_count = serialized_rows.stable_row_count();
+    let stable_segments = serialized_rows
+        .segments()
+        .iter()
+        .filter(|segment| segment.commit_ready && segment.start_row < stable_row_count)
+        .collect::<Vec<_>>();
+    let confirm_ids = unique_ids(stable_segments.iter().flat_map(|segment| segment.ids.iter()));
+
+    let start_idx = row_cap.map_or(0, |cap| {
+        let mut rows = 0usize;
+        let mut start = stable_segments.len();
+        for (idx, segment) in stable_segments.iter().enumerate().rev() {
+            let segment_rows = segment.end_row.saturating_sub(segment.start_row);
+            if rows > 0 && rows.saturating_add(segment_rows) > cap {
+                break;
+            }
+            rows = rows.saturating_add(segment_rows);
+            start = idx;
+        }
+        start
+    });
+
+    let mut batches = Vec::new();
+    let mut rows = Vec::new();
+    let mut ids = Vec::new();
+    let mut queued_rows = 0usize;
+    let mut expected_start = None;
+    let empty = BTreeSet::new();
+
+    for segment in stable_segments.into_iter().skip(start_idx) {
+        let segment_ids = unexcluded_ids(&segment.ids, &empty);
+        if segment_ids.is_empty() {
+            continue;
+        }
+        if expected_start.is_some_and(|expected| expected != segment.start_row) || rows.len() >= 160
+        {
+            queued_rows = queued_rows.saturating_add(rows.len());
+            push_history_batch(&mut batches, HistoryBatchKind::Replay, width, &mut rows, &mut ids);
+        }
+        rows.extend(serialized_rows.rows()[segment.start_row..segment.end_row].iter().cloned());
+        ids.extend(segment_ids);
+        expected_start = Some(segment.end_row);
+    }
+
+    queued_rows = queued_rows.saturating_add(rows.len());
+    push_history_batch(&mut batches, HistoryBatchKind::Replay, width, &mut rows, &mut ids);
+
+    ReplayHistoryPlan { batches, confirm_ids, rows: queued_rows }
+}
+
+fn push_history_batch(
+    batches: &mut Vec<PendingHistoryBatch>,
+    kind: HistoryBatchKind,
+    width: u16,
+    rows: &mut Vec<Line<'static>>,
+    ids: &mut Vec<HistoryOutputId>,
+) {
+    if rows.is_empty() {
+        ids.clear();
+        return;
+    }
+    batches.push(PendingHistoryBatch::new(
+        kind,
+        RenderedHistoryRows::new(width, std::mem::take(rows)),
+        unique_ids(ids.iter()),
+    ));
+    ids.clear();
+}
+
+fn unexcluded_ids(
+    ids: &[HistoryOutputId],
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> Vec<HistoryOutputId> {
+    let mut seen = BTreeSet::new();
+    ids.iter()
+        .filter(|id| !excluded_ids.contains(*id))
+        .filter(|id| seen.insert((*id).clone()))
+        .cloned()
+        .collect()
+}
+
+fn unique_ids<'a>(ids: impl IntoIterator<Item = &'a HistoryOutputId>) -> Vec<HistoryOutputId> {
+    let mut seen = BTreeSet::new();
+    ids.into_iter().filter(|id| seen.insert((*id).clone())).cloned().collect()
+}
+
+fn excluded_row_count(
+    serialized_rows: &SerializedLiveRows,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> usize {
+    serialized_rows
+        .segments()
+        .iter()
+        .filter(|segment| segment.ids.iter().all(|id| excluded_ids.contains(id)))
+        .map(|segment| segment.end_row.saturating_sub(segment.start_row))
+        .sum()
 }
 
 struct ComposerSurface {
@@ -799,8 +1076,10 @@ struct InlineChatDrawSummary<'a> {
     composer_rows_visible: usize,
     composer_preview: String,
     live_rows_hidden_above: usize,
-    scrollback_commit_rows: usize,
-    scrollback_committed_after: usize,
+    history_queued_rows: usize,
+    history_excluded_rows: usize,
+    history_excluded_ids: usize,
+    history_full_rebuild: bool,
     stable_rows: usize,
     first_mutable_boundary_start: Option<usize>,
     first_mutable_boundary_kind: Option<LiveRowBoundaryKind>,
@@ -828,8 +1107,10 @@ fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
         first_mutable_boundary_kind = ?summary.first_mutable_boundary_kind,
         first_mutable_boundary_msg_idx = ?summary.first_mutable_boundary_msg_idx,
         first_mutable_boundary_block_idx = ?summary.first_mutable_boundary_block_idx,
-        scrollback_commit_rows = summary.scrollback_commit_rows,
-        scrollback_committed_after = summary.scrollback_committed_after,
+        history_queued_rows = summary.history_queued_rows,
+        history_excluded_rows = summary.history_excluded_rows,
+        history_excluded_ids = summary.history_excluded_ids,
+        history_full_rebuild = summary.history_full_rebuild,
         composer_rows_total = summary.composer_rows_total,
         composer_rows_visible = summary.composer_rows_visible,
         live_preview = %preview_rows(summary.live_rows_visible, 3),
@@ -852,12 +1133,11 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminalSession, ComposerEditor, ComposerSurface, MutableLayoutPlan,
-        ScrollbackCommitState,
+        ChatTerminalSession, ComposerEditor, ComposerSurface, HistoryCommitState, MutableLayoutPlan,
     };
-    use crate::app::App;
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
+    use crate::app::{App, ChatMessageId, HistoryOutputId};
     use ratatui::layout::Rect;
     use ratatui::text::Line;
 
@@ -877,113 +1157,80 @@ mod tests {
         }
     }
 
-    fn session_with_scrollback(scrollback: ScrollbackCommitState) -> ChatTerminalSession {
-        ChatTerminalSession { terminal: ChatTerminal::new(0), scrollback }
+    fn output_id() -> HistoryOutputId {
+        HistoryOutputId::AssistantLabel(ChatMessageId::new())
+    }
+
+    fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
+        ChatTerminalSession { terminal: ChatTerminal::new(0), history }
     }
 
     #[test]
-    fn scrollback_commit_state_commits_stable_prefix_once() {
-        let rows = rows(5);
-        let mut state = ScrollbackCommitState::default();
+    fn history_commit_state_confirms_output_ids_once() {
+        let mut state = HistoryCommitState::default();
+        let first = output_id();
+        let second = output_id();
 
-        let first = state.prepare(&rows, 3, 80);
-        assert_eq!(first.rows, rows[0..3]);
-        assert_eq!(first.committed_after, 3);
-        state.complete(first.committed_after);
+        state.confirm(80, vec![first.clone()]);
+        state.confirm(80, vec![first.clone(), second.clone()]);
 
-        let repeated = state.prepare(&rows, 3, 80);
-        assert!(repeated.rows.is_empty());
-        assert_eq!(repeated.committed_after, 3);
-
-        let extended = state.prepare(&rows, 5, 80);
-        assert_eq!(extended.rows, rows[3..5]);
-        assert_eq!(extended.committed_after, 5);
+        assert_eq!(state.confirmed_len(), 2);
+        assert!(state.confirmed_ids().contains(&first));
+        assert!(state.confirmed_ids().contains(&second));
+        assert!(state.is_synced());
     }
 
     #[test]
-    fn scrollback_commit_state_does_not_duplicate_rows_after_width_change() {
-        let rows = rows(6);
-        let mut state = ScrollbackCommitState::default();
-
-        let first = state.prepare(&rows, 3, 80);
-        state.complete(first.committed_after);
-
-        let width_change = state.prepare(&rows, 5, 100);
-        assert!(width_change.rows.is_empty());
-        assert_eq!(width_change.committed_after, 5);
-        state.complete(width_change.committed_after);
-
-        let next = state.prepare(&rows, 6, 100);
-        assert_eq!(next.rows, rows[5..6]);
-    }
-
-    #[test]
-    fn resize_purge_replay_caps_first_stable_insert_to_tail_rows() {
-        let rows = rows(6);
-        let mut state = ScrollbackCommitState::default();
+    fn resize_purge_replay_marks_history_unsynced_and_caps_replay_rows() {
+        let mut state = HistoryCommitState::default();
+        state.confirm(80, vec![output_id()]);
 
         state.reset_for_resize_purge_replay();
-        let first = state.prepare(&rows, 5, 80);
 
-        assert_eq!(first.rows, rows[0..5]);
-        assert_eq!(first.committed_after, 5);
-        assert!(state.cap_next_purge_replay);
+        assert!(!state.is_synced());
+        assert_eq!(state.confirmed_len(), 0);
+        assert_eq!(state.cap_replay_rows(), Some(super::RESIZE_PURGE_REPLAY_MAX_ROWS));
     }
 
     #[test]
-    fn resize_purge_replay_cap_skips_oldest_stable_rows() {
-        let rows = rows(super::RESIZE_PURGE_REPLAY_MAX_ROWS + 3);
-        let mut state = ScrollbackCommitState::default();
+    fn replay_completion_marks_history_synced_and_clears_cap() {
+        let mut state = HistoryCommitState::default();
+        let id = output_id();
 
         state.reset_for_resize_purge_replay();
-        let plan = state.prepare(&rows, rows.len(), 80);
+        state.mark_terminal_history_synced(80, vec![id.clone()]);
 
-        assert_eq!(plan.rows, rows[3..]);
-        assert_eq!(plan.committed_after, rows.len());
-        state.complete(plan.committed_after);
-
-        let repeated = state.prepare(&rows, rows.len(), 80);
-        assert!(repeated.rows.is_empty());
-        assert_eq!(repeated.committed_after, rows.len());
-        assert!(!state.cap_next_purge_replay);
+        assert!(state.is_synced());
+        assert_eq!(state.cap_replay_rows(), None);
+        assert!(state.confirmed_ids().contains(&id));
     }
 
     #[test]
-    fn fullscreen_reattach_preserves_scrollback_commit_state() {
-        let rows = rows(6);
-        let mut state = ScrollbackCommitState::default();
-        let first = state.prepare(&rows, 4, 80);
-        state.complete(first.committed_after);
-        let mut session = session_with_scrollback(state.clone());
+    fn fullscreen_reattach_preserves_history_commit_state() {
+        let mut state = HistoryCommitState::default();
+        state.confirm(80, vec![output_id()]);
+        let mut session = session_with_history(state.clone());
         let mut app = App::test_default();
         app.chat_render.live_region.anchor_valid = true;
 
         session.reattach_after_fullscreen(&mut app);
 
-        assert_eq!(session.scrollback, state);
+        assert_eq!(session.history, state);
         assert!(!app.chat_render.live_region.anchor_valid);
-        let repeated = session.scrollback.prepare(&rows, 4, 80);
-        assert!(repeated.rows.is_empty());
-        assert_eq!(repeated.committed_after, 4);
     }
 
     #[test]
-    fn mutable_viewport_clear_preserves_scrollback_commit_state() {
-        let rows = rows(6);
-        let mut state = ScrollbackCommitState::default();
-        let first = state.prepare(&rows, 4, 80);
-        state.complete(first.committed_after);
-        let mut session = session_with_scrollback(state.clone());
+    fn mutable_viewport_clear_preserves_history_commit_state() {
+        let mut state = HistoryCommitState::default();
+        state.confirm(80, vec![output_id()]);
+        let mut session = session_with_history(state.clone());
         let mut app = App::test_default();
         app.chat_render.live_region.anchor_valid = true;
 
         session.clear_mutable_viewport(&mut app);
 
-        assert_eq!(session.scrollback, state);
+        assert_eq!(session.history, state);
         assert!(!app.chat_render.live_region.anchor_valid);
-        let repeated = session.scrollback.prepare(&rows, 4, 80);
-        assert!(repeated.rows.is_empty());
-        assert_eq!(repeated.committed_after, 4);
     }
 
     #[test]

@@ -3,8 +3,8 @@
 
 use crate::agent::model;
 use crate::app::{
-    App, AppStatus, ChatMessage, MessageBlock, MessageRole, NoticeBlock, SystemSeverity, TextBlock,
-    TextBlockSpacing, ToolCallInfo, WelcomeBlock,
+    App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
+    NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo, WelcomeBlock,
 };
 use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
 use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
@@ -17,6 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopLevelInlineBlockKind {
@@ -41,7 +42,7 @@ enum AssistantRuntimeIndicator {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SerializedLiveRows {
     rows: Vec<Line<'static>>,
-    row_boundaries: Vec<LiveRowBoundary>,
+    segments: Vec<LiveRowSegment>,
 }
 
 impl SerializedLiveRows {
@@ -49,44 +50,65 @@ impl SerializedLiveRows {
         &self.rows
     }
 
+    pub(crate) fn segments(&self) -> &[LiveRowSegment] {
+        &self.segments
+    }
+
+    pub(crate) fn rows_excluding_ids(
+        &self,
+        excluded_ids: &BTreeSet<HistoryOutputId>,
+    ) -> Vec<Line<'static>> {
+        let mut rows = Vec::new();
+        for segment in &self.segments {
+            if segment.ids.iter().all(|id| excluded_ids.contains(id)) {
+                continue;
+            }
+            rows.extend(self.rows[segment.start_row..segment.end_row].iter().cloned());
+        }
+        rows
+    }
+
     pub(crate) fn stable_row_count(&self) -> usize {
-        self.row_boundaries
+        self.segments
             .iter()
-            .find(|boundary| !boundary.commit_ready)
-            .map_or(self.rows.len(), |boundary| boundary.start_row)
+            .find(|segment| !segment.commit_ready)
+            .map_or(self.rows.len(), |segment| segment.start_row)
     }
 
     pub(crate) fn first_mutable_boundary_kind(&self) -> Option<LiveRowBoundaryKind> {
-        self.row_boundaries
-            .iter()
-            .find(|boundary| !boundary.commit_ready)
-            .map(|boundary| boundary.kind)
+        self.segments.iter().find(|segment| !segment.commit_ready).map(|segment| segment.kind)
     }
 
     pub(crate) fn first_mutable_boundary_start(&self) -> Option<usize> {
-        self.row_boundaries
-            .iter()
-            .find(|boundary| !boundary.commit_ready)
-            .map(|boundary| boundary.start_row)
+        self.segments.iter().find(|segment| !segment.commit_ready).map(|segment| segment.start_row)
     }
 
     pub(crate) fn first_mutable_boundary_msg_idx(&self) -> Option<usize> {
-        self.row_boundaries
-            .iter()
-            .find(|boundary| !boundary.commit_ready)
-            .map(|boundary| boundary.msg_idx)
+        self.segments.iter().find(|segment| !segment.commit_ready).map(|segment| segment.msg_idx)
     }
 
     pub(crate) fn first_mutable_boundary_block_idx(&self) -> Option<usize> {
-        self.row_boundaries
+        self.segments
             .iter()
-            .find(|boundary| !boundary.commit_ready)
-            .and_then(|boundary| boundary.block_idx)
+            .find(|segment| !segment.commit_ready)
+            .and_then(|segment| segment.block_idx)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LiveRowSegment {
+    pub(crate) ids: Vec<HistoryOutputId>,
+    pub(crate) msg_idx: usize,
+    pub(crate) block_idx: Option<usize>,
+    pub(crate) kind: LiveRowBoundaryKind,
+    pub(crate) start_row: usize,
+    pub(crate) end_row: usize,
+    pub(crate) commit_ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LiveRowBoundary {
+    ids: Vec<HistoryOutputId>,
     msg_idx: usize,
     block_idx: Option<usize>,
     kind: LiveRowBoundaryKind,
@@ -98,6 +120,18 @@ impl LiveRowBoundary {
     fn shifted(mut self, offset: usize) -> Self {
         self.start_row = self.start_row.saturating_add(offset);
         self
+    }
+
+    fn into_segment(self, end_row: usize) -> Option<LiveRowSegment> {
+        (self.start_row < end_row).then_some(LiveRowSegment {
+            ids: self.ids,
+            msg_idx: self.msg_idx,
+            block_idx: self.block_idx,
+            kind: self.kind,
+            start_row: self.start_row,
+            end_row,
+            commit_ready: self.commit_ready,
+        })
     }
 }
 
@@ -127,6 +161,7 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
             MessageRole::Welcome => RenderedMessageRows::message(
                 serialize_welcome_message(app, msg_idx, width),
                 LiveRowBoundary {
+                    ids: welcome_output_ids(&app.messages[msg_idx]),
                     msg_idx,
                     block_idx: None,
                     kind: LiveRowBoundaryKind::Message,
@@ -142,6 +177,7 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
                 RenderedMessageRows::message(
                     segments_to_physical_rows(&rendered.segments, width, false),
                     LiveRowBoundary {
+                        ids: vec![HistoryOutputId::Message(app.messages[msg_idx].id)],
                         msg_idx,
                         block_idx: None,
                         kind: LiveRowBoundaryKind::Message,
@@ -160,8 +196,10 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
                 let indicator =
                     assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
                 let spinner = spinner_state_for_live(app.spinner_frame);
+                let message_id = app.messages[msg_idx].id;
                 let rendered = render_assistant_rows(AssistantRowsRequest {
                     app: Some(app),
+                    message_id,
                     msg_idx,
                     items,
                     indicator,
@@ -205,7 +243,38 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
         previous_block_kind = Some(block_kind);
     }
 
-    SerializedLiveRows { rows, row_boundaries }
+    let segments = live_boundaries_to_segments(row_boundaries, rows.len());
+    SerializedLiveRows { rows, segments }
+}
+
+fn live_boundaries_to_segments(
+    mut boundaries: Vec<LiveRowBoundary>,
+    row_count: usize,
+) -> Vec<LiveRowSegment> {
+    boundaries.sort_by_key(|boundary| boundary.start_row);
+    let mut segments = Vec::with_capacity(boundaries.len());
+    for idx in 0..boundaries.len() {
+        let end_row =
+            boundaries.get(idx + 1).map_or(row_count, |next| next.start_row).min(row_count);
+        if let Some(segment) = boundaries[idx].clone().into_segment(end_row) {
+            segments.push(segment);
+        }
+    }
+    segments
+}
+
+fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
+    message
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            MessageBlock::Welcome(welcome) => Some(vec![HistoryOutputId::Block(welcome.id)]),
+            MessageBlock::Text(_)
+            | MessageBlock::Notice(_)
+            | MessageBlock::ToolCall(_)
+            | MessageBlock::ImageAttachment(_) => None,
+        })
+        .unwrap_or_else(|| vec![HistoryOutputId::Message(message.id)])
 }
 
 fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<'static>> {
@@ -332,6 +401,7 @@ enum AssistantRenderItem {
 }
 
 struct AssistantRenderItemSpec {
+    ids: Vec<HistoryOutputId>,
     msg_idx: usize,
     leading_blank_lines: usize,
     block_idx: Option<usize>,
@@ -358,6 +428,7 @@ fn active_assistant_message_is_mutable(app: &App, msg_idx: usize) -> bool {
 }
 
 struct PendingAssistantTextRun {
+    ids: Vec<HistoryOutputId>,
     msg_idx: usize,
     leading_blank_lines: usize,
     block_idx: usize,
@@ -368,6 +439,7 @@ struct PendingAssistantTextRun {
 
 impl PendingAssistantTextRun {
     fn new(
+        id: HistoryOutputId,
         msg_idx: usize,
         leading_blank_lines: usize,
         block_idx: usize,
@@ -376,6 +448,7 @@ impl PendingAssistantTextRun {
         commit_ready: bool,
     ) -> Self {
         Self {
+            ids: vec![id],
             msg_idx,
             leading_blank_lines,
             block_idx,
@@ -389,13 +462,15 @@ impl PendingAssistantTextRun {
         self.commit_ready == commit_ready
     }
 
-    fn append(&mut self, text: &str, trailing_spacing: TextBlockSpacing) {
+    fn append(&mut self, id: HistoryOutputId, text: &str, trailing_spacing: TextBlockSpacing) {
+        self.ids.push(id);
         append_text_run(&mut self.text, self.trailing_spacing, text);
         self.trailing_spacing = trailing_spacing;
     }
 
     fn into_render_item(self) -> AssistantRenderItemSpec {
         AssistantRenderItemSpec {
+            ids: self.ids,
             msg_idx: self.msg_idx,
             leading_blank_lines: self.leading_blank_lines,
             block_idx: Some(self.block_idx),
@@ -458,13 +533,18 @@ fn assistant_render_items_from_message(
                 if let Some(pending) = pending_text.as_mut()
                     && pending.can_merge(commit_ready)
                 {
-                    pending.append(&text.text, text.trailing_spacing);
+                    pending.append(
+                        HistoryOutputId::Block(text.id),
+                        &text.text,
+                        text.trailing_spacing,
+                    );
                 } else {
                     flush_pending_text_run(&mut pending_text, &mut items);
                     let current_kind = AssistantInlineItemKind::TextLike;
                     let leading_blank_lines =
                         leading_blank_lines_between(previous_kind, current_kind);
                     pending_text = Some(PendingAssistantTextRun::new(
+                        HistoryOutputId::Block(text.id),
                         msg_idx,
                         leading_blank_lines,
                         block_idx,
@@ -480,12 +560,14 @@ fn assistant_render_items_from_message(
                 let current_kind = AssistantInlineItemKind::TextLike;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
                 items.push(AssistantRenderItemSpec {
+                    ids: vec![HistoryOutputId::Block(notice.id)],
                     msg_idx,
                     leading_blank_lines,
                     block_idx: Some(block_idx),
                     boundary_kind: LiveRowBoundaryKind::AssistantNotice,
                     commit_ready: active_tail_block_idx != Some(block_idx),
                     item: AssistantRenderItem::Notice(NoticeBlock {
+                        id: notice.id,
                         severity: notice.severity,
                         text: TextBlock::from_complete(&notice.text.text)
                             .with_trailing_spacing(notice.text.trailing_spacing),
@@ -502,6 +584,7 @@ fn assistant_render_items_from_message(
                 let current_kind = AssistantInlineItemKind::Tool;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
                 items.push(AssistantRenderItemSpec {
+                    ids: vec![HistoryOutputId::ToolCall(tool.id.clone())],
                     msg_idx,
                     leading_blank_lines,
                     block_idx: Some(block_idx),
@@ -570,6 +653,7 @@ fn leading_blank_lines_between(
 
 struct AssistantRowsRequest<'a> {
     app: Option<&'a mut App>,
+    message_id: ChatMessageId,
     msg_idx: usize,
     items: Vec<AssistantRenderItemSpec>,
     indicator: Option<AssistantRuntimeIndicator>,
@@ -590,18 +674,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     let mut rows = Vec::new();
     let mut boundaries = Vec::new();
     rows.extend(std::iter::repeat_with(Line::default).take(request.leading_blank_lines));
-    if request.show_label {
-        let first_commit_ready = request.items.first().is_some_and(|item| item.commit_ready);
-        let label_start = rows.len().saturating_sub(request.leading_blank_lines);
-        boundaries.push(LiveRowBoundary {
-            msg_idx: request.msg_idx,
-            block_idx: None,
-            kind: LiveRowBoundaryKind::AssistantLabel,
-            start_row: label_start,
-            commit_ready: first_commit_ready,
-        });
-        rows.extend(wrap_lines_to_physical_rows(&[assistant_role_label_line()], request.width));
-    }
+    append_assistant_label_rows(&mut rows, &mut boundaries, &request);
 
     let mut state = AssistantInlineLayoutState {
         has_body_content: request.has_prior_assistant_content,
@@ -610,6 +683,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
 
     for item in request.items {
         let boundary = AssistantBoundaryMeta {
+            ids: item.ids,
             msg_idx: item.msg_idx,
             block_idx: item.block_idx,
             kind: item.boundary_kind,
@@ -672,13 +746,16 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     }
 
     append_assistant_indicator_rows(
-        request.msg_idx,
         &mut rows,
         &mut boundaries,
         &state,
-        request.indicator,
-        request.spinner,
-        request.width,
+        AssistantIndicatorMeta {
+            message_id: request.message_id,
+            msg_idx: request.msg_idx,
+            indicator: request.indicator,
+            spinner: request.spinner,
+            width: request.width,
+        },
     );
 
     if !state.has_visible_content && request.indicator.is_none() {
@@ -686,6 +763,28 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     }
 
     RenderedMessageRows { rows: trim_trailing_blank_rows(rows), boundaries }
+}
+
+fn append_assistant_label_rows(
+    rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
+    request: &AssistantRowsRequest<'_>,
+) {
+    if !request.show_label {
+        return;
+    }
+
+    let first_commit_ready = request.items.first().is_some_and(|item| item.commit_ready);
+    let label_start = rows.len().saturating_sub(request.leading_blank_lines);
+    boundaries.push(LiveRowBoundary {
+        ids: vec![HistoryOutputId::AssistantLabel(request.message_id)],
+        msg_idx: request.msg_idx,
+        block_idx: None,
+        kind: LiveRowBoundaryKind::AssistantLabel,
+        start_row: label_start,
+        commit_ready: first_commit_ready,
+    });
+    rows.extend(wrap_lines_to_physical_rows(&[assistant_role_label_line()], request.width));
 }
 
 fn append_rendered_assistant_item(
@@ -707,8 +806,9 @@ fn append_rendered_assistant_item(
     rows.extend(rendered);
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct AssistantBoundaryMeta {
+    ids: Vec<HistoryOutputId>,
     msg_idx: usize,
     block_idx: Option<usize>,
     kind: LiveRowBoundaryKind,
@@ -721,6 +821,7 @@ fn push_assistant_boundary(
     start_row: usize,
 ) {
     boundaries.push(LiveRowBoundary {
+        ids: boundary.ids,
         msg_idx: boundary.msg_idx,
         block_idx: boundary.block_idx,
         kind: boundary.kind,
@@ -729,18 +830,26 @@ fn push_assistant_boundary(
     });
 }
 
-fn append_assistant_indicator_rows(
+#[derive(Clone, Copy)]
+struct AssistantIndicatorMeta {
+    message_id: ChatMessageId,
     msg_idx: usize,
-    rows: &mut Vec<Line<'static>>,
-    boundaries: &mut Vec<LiveRowBoundary>,
-    state: &AssistantInlineLayoutState,
     indicator: Option<AssistantRuntimeIndicator>,
     spinner: SpinnerState,
     width: u16,
+}
+
+fn append_assistant_indicator_rows(
+    rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
+    state: &AssistantInlineLayoutState,
+    meta: AssistantIndicatorMeta,
 ) {
-    let line = match indicator {
-        Some(AssistantRuntimeIndicator::Compacting) => compacting_line(spinner.frame),
-        Some(AssistantRuntimeIndicator::Thinking { verb }) => thinking_line(spinner.frame, verb),
+    let line = match meta.indicator {
+        Some(AssistantRuntimeIndicator::Compacting) => compacting_line(meta.spinner.frame),
+        Some(AssistantRuntimeIndicator::Thinking { verb }) => {
+            thinking_line(meta.spinner.frame, verb)
+        }
         None => return,
     };
     let boundary_start = rows.len();
@@ -748,13 +857,14 @@ fn append_assistant_indicator_rows(
         rows.push(Line::default());
     }
     boundaries.push(LiveRowBoundary {
-        msg_idx,
+        ids: vec![HistoryOutputId::AssistantIndicator(meta.message_id)],
+        msg_idx: meta.msg_idx,
         block_idx: None,
         kind: LiveRowBoundaryKind::AssistantIndicator,
         start_row: boundary_start,
         commit_ready: false,
     });
-    rows.extend(wrap_lines_to_physical_rows(&[line], width));
+    rows.extend(wrap_lines_to_physical_rows(&[line], meta.width));
 }
 
 fn spinner_state_for_live(frame: usize) -> SpinnerState {
