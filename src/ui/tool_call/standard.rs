@@ -10,6 +10,7 @@ use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_oute
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
+use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -77,8 +78,7 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
 
 #[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    is_todo_write_tool(tc)
-        || tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
+    tool_call_has_body(tc)
 }
 
 #[must_use]
@@ -111,7 +111,13 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
     let mut content_lines = render_tool_content(tc, content_width);
-    content_lines = cap_tool_content_lines(content_lines, "lines hidden");
+    let protected_source_lines = protected_content_source_lines(tc, &content_lines);
+    content_lines = cap_tool_content_lines(
+        content_lines,
+        content_width,
+        "source lines hidden",
+        protected_source_lines,
+    );
 
     if let Some(ref perm) = tc.pending_permission {
         content_lines.extend(render_permission_lines(tc, perm));
@@ -398,6 +404,22 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
     tc.sdk_tool_name.eq_ignore_ascii_case("read")
 }
 
+fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
+    let mut count = if tc.is_execute_tool() && tc.terminal_command.is_some() {
+        1
+    } else if is_read_tool(tc) {
+        READ_BODY_HEAD_LINES
+    } else {
+        leading_diff_metadata_line_count(lines)
+    }
+    .min(lines.len());
+
+    while lines.get(count).is_some_and(line_text_is_existing_omission_marker) {
+        count += 1;
+    }
+    count
+}
+
 fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let visible_content_lines = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
     let capped_line_count = visible_content_lines.saturating_add(1);
@@ -532,26 +554,87 @@ fn leading_diff_metadata_line_count(lines: &[Line<'static>]) -> usize {
 }
 
 fn line_text_starts_with_repository_label(line: &Line<'static>) -> bool {
-    let mut chars = line.spans.iter().flat_map(|span| span.content.chars());
-    chars.next() == Some('[')
+    line_plain_text(line).trim_start().starts_with('[')
 }
 
 fn line_text_starts_with_diff_count_header(line: &Line<'static>) -> bool {
-    let mut chars = line.spans.iter().flat_map(|span| span.content.chars());
-    chars.next() == Some('(')
+    line_plain_text(line).trim_start().starts_with('(')
 }
 
-fn cap_tool_content_lines(lines: Vec<Line<'static>>, omitted_label: &str) -> Vec<Line<'static>> {
-    if lines.len() <= TOOL_BODY_MAX_LINES {
-        return lines;
+#[derive(Clone)]
+struct WrappedContentRow {
+    source_index: usize,
+    row: Line<'static>,
+}
+
+fn cap_tool_content_lines(
+    lines: Vec<Line<'static>>,
+    width: u16,
+    omitted_label: &str,
+    protected_source_lines: usize,
+) -> Vec<Line<'static>> {
+    let source_line_count = lines.len();
+    let wrapped = wrap_content_lines_with_source(lines, width);
+    if wrapped.len() <= TOOL_BODY_MAX_LINES {
+        return wrapped.into_iter().map(|wrapped| wrapped.row).collect();
     }
-    let tail = TOOL_BODY_MAX_LINES.saturating_sub(1);
-    let omitted = lines.len().saturating_sub(tail);
+
+    let protected_source_lines = protected_source_lines.min(source_line_count);
+    let protected_rows =
+        wrapped.iter().take_while(|row| row.source_index < protected_source_lines).count();
+    if protected_rows >= TOOL_BODY_MAX_LINES {
+        let visible = TOOL_BODY_MAX_LINES.saturating_sub(1);
+        let omitted_rows = wrapped.len().saturating_sub(visible);
+        let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
+        out.extend(wrapped.iter().take(visible).map(|wrapped| wrapped.row.clone()));
+        if omitted_rows > 0 {
+            out.push(Line::from(Span::styled(
+                format!("... {omitted_rows} wrapped rows hidden ..."),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            )));
+        }
+        return out;
+    }
+
+    let tail = TOOL_BODY_MAX_LINES.saturating_sub(protected_rows + 1);
+    let tail_start = wrapped.len().saturating_sub(tail).max(protected_rows);
+    let omitted_rows = tail_start.saturating_sub(protected_rows);
+    let first_tail_source =
+        wrapped.get(tail_start).map_or(source_line_count, |row| row.source_index);
+    let omitted_source_lines = first_tail_source.saturating_sub(protected_source_lines);
+    let omitted = if omitted_source_lines > 0 {
+        format!("... {omitted_source_lines} {omitted_label} ...")
+    } else {
+        format!("... {omitted_rows} wrapped rows hidden ...")
+    };
+
     let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
+    out.extend(wrapped.iter().take(protected_rows).map(|wrapped| wrapped.row.clone()));
     out.push(Line::from(Span::styled(
-        format!("... {omitted} {omitted_label} ..."),
+        omitted,
         Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
     )));
-    out.extend(lines.into_iter().skip(omitted));
+    out.extend(wrapped.into_iter().skip(tail_start).map(|wrapped| wrapped.row));
     out
+}
+
+fn wrap_content_lines_with_source(lines: Vec<Line<'static>>, width: u16) -> Vec<WrappedContentRow> {
+    let mut rows = Vec::new();
+    for (source_index, line) in lines.into_iter().enumerate() {
+        rows.extend(
+            wrap_lines_to_physical_rows(&[line], width)
+                .into_iter()
+                .map(|row| WrappedContentRow { source_index, row }),
+        );
+    }
+    rows
+}
+
+fn line_text_is_existing_omission_marker(line: &Line<'static>) -> bool {
+    let text = line_plain_text(line);
+    text.contains("lines hidden") || text.contains("lines omitted")
+}
+
+fn line_plain_text(line: &Line<'static>) -> String {
+    line.spans.iter().flat_map(|span| span.content.chars()).collect()
 }

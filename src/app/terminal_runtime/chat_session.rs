@@ -1137,9 +1137,14 @@ mod tests {
     };
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
-    use crate::app::{App, ChatMessageId, HistoryOutputId};
+    use crate::app::{
+        App, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole, TextBlock,
+        TextBlockSpacing,
+    };
+    use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+    use std::collections::BTreeSet;
 
     fn rows(count: usize) -> Vec<Line<'static>> {
         (0..count).map(|idx| Line::from(format!("row {idx}"))).collect()
@@ -1159,6 +1164,10 @@ mod tests {
 
     fn output_id() -> HistoryOutputId {
         HistoryOutputId::AssistantLabel(ChatMessageId::new())
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect::<String>().trim_end().into()
     }
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
@@ -1203,6 +1212,43 @@ mod tests {
         assert!(state.is_synced());
         assert_eq!(state.cap_replay_rows(), None);
         assert!(state.confirmed_ids().contains(&id));
+    }
+
+    #[test]
+    fn static_history_batches_do_not_reinsert_confirmed_text_blocks() {
+        let first = TextBlock::from_complete("first paragraph\n\n")
+            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
+        let first_id = first.id;
+        let second = TextBlock::from_complete("second paragraph");
+        let second_id = second.id;
+        let message = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(first), MessageBlock::Text(second)],
+            None,
+        );
+        let message_id = message.id;
+        let mut app = App::test_default();
+        app.messages.push(message);
+
+        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let excluded_ids = BTreeSet::from([
+            HistoryOutputId::AssistantLabel(message_id),
+            HistoryOutputId::Block(first_id),
+        ]);
+        let batches = super::build_static_history_batches(&serialized, 120, &excluded_ids);
+        let inserted_text = batches
+            .iter()
+            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(batches.iter().flat_map(|batch| batch.confirm_ids.iter()).count(), 1);
+        assert!(
+            batches
+                .iter()
+                .any(|batch| batch.confirm_ids.contains(&HistoryOutputId::Block(second_id)))
+        );
+        assert_eq!(inserted_text, vec!["second paragraph"]);
     }
 
     #[test]

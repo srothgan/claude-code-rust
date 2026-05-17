@@ -251,6 +251,10 @@ mod tests {
             .collect()
     }
 
+    fn rendered_line_texts_trimmed(lines: &[Line<'static>]) -> Vec<String> {
+        rendered_line_texts(lines).into_iter().map(|line| line.trim_end().to_owned()).collect()
+    }
+
     // status_icon
 
     #[test]
@@ -433,6 +437,93 @@ mod tests {
                 .all(|line| !line.contains('\u{256D}') && !line.contains('\u{2570}'))
         );
         assert!(rendered_text.iter().all(|line| !line.starts_with("  \u{2502}")));
+    }
+
+    #[test]
+    fn read_body_caps_long_wrapped_line_by_physical_rows() {
+        let mut tc = test_tool_call("tc-read-wrap", "Read", model::ToolCallStatus::Completed);
+        tc.title = "output.txt".to_owned();
+        let long_line = (0..80).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
+        tc.content = vec![model::ToolCallContent::from(long_line)];
+
+        let body = standard::render_tool_call_body(&tc, 24);
+        let rendered = rendered_line_texts_trimmed(&body);
+
+        assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
+        assert!(rendered.iter().any(|line| line.contains("wrapped")));
+    }
+
+    #[test]
+    fn body_cap_reports_hidden_source_lines_when_full_lines_are_omitted() {
+        let mut tc =
+            test_tool_call("tc-source-line-count", "CustomTool", model::ToolCallStatus::Completed);
+        tc.title = "output.txt".to_owned();
+        let text = (0..20).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n");
+        tc.content = vec![model::ToolCallContent::from(text)];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered = rendered_line_texts_trimmed(&body);
+
+        assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
+        assert!(rendered[0].contains("12 source lines hidden"));
+    }
+
+    #[test]
+    fn wrapped_content_cap_keeps_permission_rows_visible() {
+        let mut tc = test_tool_call(
+            "tc-permission-after-cap",
+            "CustomTool",
+            model::ToolCallStatus::InProgress,
+        );
+        tc.title = "output.txt".to_owned();
+        let long_line = (0..80).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
+        tc.content = vec![model::ToolCallContent::from(long_line)];
+
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        tc.pending_permission = Some(crate::app::InlinePermission {
+            options: vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            display: None,
+            response_tx,
+            selected_index: 0,
+            focused: true,
+        });
+
+        let body = standard::render_tool_call_body(&tc, 24);
+        let rendered = rendered_line_texts_trimmed(&body);
+
+        assert!(rendered.iter().any(|line| line.contains("wrapped")));
+        assert!(rendered.iter().any(|line| line.contains("Allow")));
+    }
+
+    #[test]
+    fn cached_tool_body_rerenders_after_width_change() {
+        let mut tc = test_tool_call("tc-cache-width", "Bash", model::ToolCallStatus::Completed);
+        tc.terminal_id = Some("term-cache-width".to_owned());
+        tc.terminal_command = Some("echo wrapped".to_owned());
+        tc.terminal_output =
+            Some("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda".to_owned());
+
+        let mut wide = Vec::new();
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 100, 0, &mut wide);
+
+        let mut narrow = Vec::new();
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 24, 0, &mut narrow);
+
+        assert!(
+            narrow.len() > wide.len(),
+            "narrow render should rebuild cached body at the new width"
+        );
     }
 
     #[test]

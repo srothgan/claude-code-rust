@@ -12,11 +12,9 @@ use crate::ui::spinner_verbs::random_spinner_verb;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,7 +457,7 @@ impl PendingAssistantTextRun {
     }
 
     const fn can_merge(&self, commit_ready: bool) -> bool {
-        self.commit_ready == commit_ready
+        !self.commit_ready && !commit_ready
     }
 
     fn append(&mut self, id: HistoryOutputId, text: &str, trailing_spacing: TextBlockSpacing) {
@@ -1003,61 +1001,6 @@ fn segments_to_physical_rows(
     rows
 }
 
-fn wrap_lines_to_physical_rows(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    if width == 0 {
-        return vec![Line::default(); lines.len()];
-    }
-
-    let height = Paragraph::new(Text::from(lines.to_vec()))
-        .wrap(Wrap { trim: false })
-        .line_count(width)
-        .max(1);
-    let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
-    let mut buffer = Buffer::empty(area);
-    Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).render(area, &mut buffer);
-
-    (0..area.height).map(|row| buffer_row_to_line(&buffer, area, row)).collect()
-}
-
-fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
-    let y = area.y.saturating_add(row);
-    let mut spans = Vec::new();
-    let mut current_style = None;
-    let mut current_text = String::new();
-
-    for x in 0..area.width {
-        let Some(cell) = buf.cell((area.x.saturating_add(x), y)) else {
-            continue;
-        };
-        let symbol = cell.symbol();
-        if symbol.is_empty() {
-            continue;
-        }
-        let style = cell.style();
-        match current_style {
-            Some(existing) if existing == style => current_text.push_str(symbol),
-            Some(existing) => {
-                spans
-                    .push(ratatui::text::Span::styled(std::mem::take(&mut current_text), existing));
-                current_text.push_str(symbol);
-                current_style = Some(style);
-            }
-            None => {
-                current_text.push_str(symbol);
-                current_style = Some(style);
-            }
-        }
-    }
-
-    if let Some(style) = current_style {
-        spans.push(ratatui::text::Span::styled(current_text, style));
-    }
-    Line::from(spans)
-}
-
 fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
     rows.iter()
         .take(limit)
@@ -1383,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn live_adjacent_text_blocks_render_as_one_text_run() {
+    fn live_adjacent_text_blocks_preserve_paragraph_gap() {
         let mut app = App::test_default();
         app.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
@@ -1395,7 +1338,7 @@ mod tests {
 
         let rows = serialize_live_rows(&mut app, 120);
 
-        assert_eq!(line_texts(&rows), vec!["Claude", "line 1: ready", "line 2: ready"]);
+        assert_eq!(line_texts(&rows), vec!["Claude", "line 1: ready", "", "line 2: ready"]);
     }
 
     #[test]

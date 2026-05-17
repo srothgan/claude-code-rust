@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    text::{Line, Span, Text},
+    widgets::{Paragraph, Widget, Wrap},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -46,6 +51,27 @@ pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
 #[must_use]
 pub(crate) fn wrapped_line_count(text: &str, width: usize) -> usize {
     wrap_plain(text, width).len().max(1)
+}
+
+#[must_use]
+pub(crate) fn wrap_lines_to_physical_rows(
+    lines: &[Line<'static>],
+    width: u16,
+) -> Vec<Line<'static>> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    if width == 0 {
+        return vec![Line::default(); lines.len()];
+    }
+
+    let text = Text::from(lines.to_vec());
+    let height = Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(width).max(1);
+    let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(text).wrap(Wrap { trim: false }).render(area, &mut buffer);
+
+    (0..area.height).map(|row| buffer_row_to_line(&buffer, area, row)).collect()
 }
 
 #[must_use]
@@ -229,6 +255,41 @@ fn push_styled_text(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
         return;
     }
     spans.push(Span::styled(text.to_owned(), style));
+}
+
+fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
+    let y = area.y.saturating_add(row);
+    let mut spans = Vec::new();
+    let mut current_style = None;
+    let mut current_text = String::new();
+
+    for x in 0..area.width {
+        let Some(cell) = buf.cell((area.x.saturating_add(x), y)) else {
+            continue;
+        };
+        let symbol = cell.symbol();
+        if symbol.is_empty() {
+            continue;
+        }
+        let style = cell.style();
+        match current_style {
+            Some(existing) if existing == style => current_text.push_str(symbol),
+            Some(existing) => {
+                spans.push(Span::styled(std::mem::take(&mut current_text), existing));
+                current_text.push_str(symbol);
+                current_style = Some(style);
+            }
+            None => {
+                current_text.push_str(symbol);
+                current_style = Some(style);
+            }
+        }
+    }
+
+    if let Some(style) = current_style {
+        spans.push(Span::styled(current_text, style));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
