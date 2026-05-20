@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const https = require("node:https");
+const { spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
 const TARGETS = {
@@ -14,6 +15,8 @@ const TARGETS = {
 };
 
 const MAX_REDIRECTS = 5;
+const BRIDGE_RUNTIME_EXE =
+  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
 
 function getTargetInfo() {
   return TARGETS[`${process.platform}:${process.arch}`];
@@ -56,6 +59,49 @@ async function downloadFile(url, outPath, redirects = 0) {
   });
 }
 
+function installRenamedBridgeRuntime(installDir) {
+  const sourcePath = process.execPath;
+  const runtimePath = path.join(installDir, BRIDGE_RUNTIME_EXE);
+
+  try {
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
+      throw new Error("current Node.js executable could not be resolved");
+    }
+
+    if (path.resolve(sourcePath) !== path.resolve(runtimePath)) {
+      fs.copyFileSync(sourcePath, runtimePath);
+    }
+
+    if (process.platform !== "win32") {
+      fs.chmodSync(runtimePath, 0o755);
+    }
+
+    const result = spawnSync(runtimePath, ["--version"], {
+      encoding: "utf8",
+      windowsHide: true
+    });
+    const version = String(result.stdout || "").trim();
+
+    if (result.status !== 0 || !/^v\d+\./.test(version)) {
+      throw new Error(
+        `copied runtime failed validation${result.stderr ? `: ${result.stderr.trim()}` : ""}`
+      );
+    }
+
+    console.log(`Installed renamed Agent SDK bridge runtime ${BRIDGE_RUNTIME_EXE} (${version})`);
+  } catch (error) {
+    try {
+      fs.rmSync(runtimePath, { force: true });
+    } catch {
+      // Best-effort cleanup only; the Rust binary can still fall back to `node`.
+    }
+    console.warn(
+      `Skipping renamed Agent SDK bridge runtime: ${error.message}. ` +
+        "claude-rs will fall back to the `node` executable on PATH."
+    );
+  }
+}
+
 async function main() {
   const info = getTargetInfo();
   if (!info) {
@@ -82,6 +128,8 @@ async function main() {
   if (process.platform !== "win32") {
     fs.chmodSync(binaryPath, 0o755);
   }
+
+  installRenamedBridgeRuntime(installDir);
 
   console.log(`Installed claude-code-rust ${version} (${info.target})`);
 }

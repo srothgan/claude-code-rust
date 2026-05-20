@@ -54,6 +54,15 @@ import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
 
+const BRIDGE_RUNTIME_PROCESS_NAME =
+  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
+const BRIDGE_RUNTIME_GUARD_PROMPT =
+  `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
+  "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
+const GERMAN_LANGUAGE_PROMPT =
+  "Always respond to the user in German unless the user explicitly asks for a different language. " +
+  "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.";
+
 function makeSessionState(): SessionState {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   return {
@@ -581,9 +590,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
-    append:
-      "Always respond to the user in German unless the user explicitly asks for a different language. " +
-      "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
+    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
   });
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
@@ -702,7 +709,7 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
   assert.equal(options.allowDangerouslySkipPermissions, true);
 });
 
-test("buildQueryOptions omits startup overrides for default logout path", () => {
+test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
     cwd: "C:/work",
@@ -718,7 +725,11 @@ test("buildQueryOptions omits startup overrides for default logout path", () => 
   assert.equal("model" in options, false);
   assert.equal("permissionMode" in options, false);
   assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.equal("systemPrompt" in options, false);
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: BRIDGE_RUNTIME_GUARD_PROMPT,
+  });
   assert.equal("agentProgressSummaries" in options, false);
 });
 
@@ -1185,9 +1196,7 @@ test("buildQueryOptions trims language before appending system prompt", () => {
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
     preset: "claude_code",
-    append:
-      "Always respond to the user in German unless the user explicitly asks for a different language. " +
-      "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.",
+    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
   });
 });
 

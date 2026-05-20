@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 const BRIDGE_SCRIPT_RELATIVE_PATH: &str = "agent-sdk/dist/bridge.js";
+const BRIDGE_RUNTIME_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE_NODE";
 const MAX_BRIDGE_EXE_ANCESTORS: usize = 8;
+#[cfg(windows)]
+const RENAMED_BRIDGE_RUNTIME_FILE_NAME: &str = "claude-rs-bridge-node.exe";
+#[cfg(not(windows))]
+const RENAMED_BRIDGE_RUNTIME_FILE_NAME: &str = "claude-rs-bridge-node";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BridgeLauncher {
@@ -39,9 +44,7 @@ impl BridgeLauncher {
 
 pub fn resolve_bridge_launcher(explicit_script: Option<&Path>) -> anyhow::Result<BridgeLauncher> {
     let script = resolve_bridge_script_path(explicit_script)?;
-    let runtime = which::which("node")
-        .map_err(|_| anyhow::Error::new(AppError::NodeNotFound))
-        .context("failed to resolve `node` runtime")?;
+    let runtime = resolve_bridge_runtime_path()?;
     Ok(BridgeLauncher { runtime_path: runtime, script_path: script })
 }
 
@@ -58,12 +61,55 @@ fn resolve_bridge_script_path(explicit_script: Option<&Path>) -> anyhow::Result<
     BridgeScriptResolver::from_process(explicit_script).resolve()
 }
 
+fn resolve_bridge_runtime_path() -> anyhow::Result<PathBuf> {
+    let env_runtime = std::env::var_os(BRIDGE_RUNTIME_ENV_VAR).map(PathBuf::from);
+    let current_exe = std::env::current_exe().ok();
+    resolve_bridge_runtime_path_with(
+        env_runtime.as_deref(),
+        current_exe.as_deref(),
+        cfg!(debug_assertions),
+        || which::which("node"),
+    )
+}
+
+fn resolve_bridge_runtime_path_with(
+    env_runtime: Option<&Path>,
+    current_exe: Option<&Path>,
+    allow_dev_fallbacks: bool,
+    node_lookup: impl FnOnce() -> Result<PathBuf, which::Error>,
+) -> anyhow::Result<PathBuf> {
+    if let Some(path) = env_runtime {
+        return validate_runtime_path(path)
+            .with_context(|| format!("invalid {BRIDGE_RUNTIME_ENV_VAR} runtime override"));
+    }
+
+    for candidate in renamed_bridge_runtime_candidates(current_exe, allow_dev_fallbacks) {
+        if is_automatic_runtime_candidate(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    node_lookup()
+        .map_err(|_| anyhow::Error::new(AppError::NodeNotFound))
+        .context("failed to resolve `node` runtime")
+}
+
 fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
         return Err(anyhow::anyhow!("bridge script does not exist: {}", path.display()));
     }
     if !path.is_file() {
         return Err(anyhow::anyhow!("bridge script is not a file: {}", path.display()));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn validate_runtime_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if !path.exists() {
+        return Err(anyhow::anyhow!("bridge runtime does not exist: {}", path.display()));
+    }
+    if !path.is_file() {
+        return Err(anyhow::anyhow!("bridge runtime is not a file: {}", path.display()));
     }
     Ok(path.to_path_buf())
 }
@@ -252,6 +298,40 @@ fn exe_relative_bridge_candidates(current_exe: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn renamed_bridge_runtime_candidates(
+    current_exe: Option<&Path>,
+    allow_dev_fallbacks: bool,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(current_exe) = current_exe {
+        for ancestor in current_exe.ancestors().skip(1).take(MAX_BRIDGE_EXE_ANCESTORS) {
+            push_unique_path(&mut candidates, ancestor.join(RENAMED_BRIDGE_RUNTIME_FILE_NAME));
+        }
+    }
+
+    if allow_dev_fallbacks {
+        push_unique_path(&mut candidates, PathBuf::from(RENAMED_BRIDGE_RUNTIME_FILE_NAME));
+        push_unique_path(
+            &mut candidates,
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RENAMED_BRIDGE_RUNTIME_FILE_NAME),
+        );
+    }
+
+    if let Ok(path) = which::which(RENAMED_BRIDGE_RUNTIME_FILE_NAME) {
+        push_unique_path(&mut candidates, path);
+    }
+
+    candidates
+}
+
+fn push_unique_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() || candidates.iter().any(|candidate| candidate == &path) {
+        return;
+    }
+    candidates.push(path);
+}
+
 fn manifest_root_from_script(manifest_script: &Path) -> Option<&Path> {
     manifest_script.parent()?.parent()?.parent()
 }
@@ -260,12 +340,17 @@ fn is_automatic_script_candidate(path: &Path) -> bool {
     !path.as_os_str().is_empty() && path.is_file()
 }
 
+fn is_automatic_runtime_candidate(path: &Path) -> bool {
+    !path.as_os_str().is_empty() && path.is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AutomaticCandidateSource, BRIDGE_SCRIPT_RELATIVE_PATH, BridgeLauncher,
-        BridgeScriptResolver, exe_relative_bridge_candidates, resolve_bridge_launcher,
-        resolve_bridge_launcher_with_runtime,
+        BridgeScriptResolver, RENAMED_BRIDGE_RUNTIME_FILE_NAME, exe_relative_bridge_candidates,
+        resolve_bridge_launcher, resolve_bridge_launcher_with_runtime,
+        resolve_bridge_runtime_path_with,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -568,6 +653,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn renamed_bridge_runtime_next_to_installed_exe_wins_over_node_path() {
+        let fixture = resolver_fixture();
+
+        let resolved =
+            resolve_bridge_runtime_path_with(None, Some(&fixture.installed_exe), false, || {
+                Ok(fixture.node_runtime.clone())
+            })
+            .expect("renamed bridge runtime should resolve");
+
+        assert_eq!(resolved, fixture.packaged_runtime);
+    }
+
+    #[test]
+    fn bridge_runtime_env_override_wins_over_packaged_runtime() {
+        let fixture = resolver_fixture();
+
+        let resolved = resolve_bridge_runtime_path_with(
+            Some(&fixture.env_runtime),
+            Some(&fixture.installed_exe),
+            false,
+            || Ok(fixture.node_runtime.clone()),
+        )
+        .expect("env bridge runtime should resolve");
+
+        assert_eq!(resolved, fixture.env_runtime);
+    }
+
+    #[test]
+    fn node_path_is_fallback_when_renamed_bridge_runtime_is_missing() {
+        let fixture = resolver_fixture();
+
+        let resolved =
+            resolve_bridge_runtime_path_with(None, Some(&fixture.unbundled_exe), false, || {
+                Ok(fixture.node_runtime.clone())
+            })
+            .expect("node fallback should resolve");
+
+        assert_eq!(resolved, fixture.node_runtime);
+    }
+
     struct RuntimeFixture {
         _dir: TempDir,
         runtime_path: PathBuf,
@@ -580,10 +706,13 @@ mod tests {
         unbundled_exe: PathBuf,
         cargo_target_exe: PathBuf,
         packaged_bridge: PathBuf,
+        packaged_runtime: PathBuf,
         cargo_target_bridge: PathBuf,
         cwd_script: PathBuf,
         manifest_script: PathBuf,
         env_script: PathBuf,
+        env_runtime: PathBuf,
+        node_runtime: PathBuf,
     }
 
     fn runtime_fixture() -> std::io::Result<RuntimeFixture> {
@@ -606,20 +735,29 @@ mod tests {
         let cargo_target_exe =
             dir.path().join("manifest").join("target").join("debug").join("claude-rs");
         let packaged_bridge = dir.path().join("package").join(BRIDGE_SCRIPT_RELATIVE_PATH);
+        let packaged_runtime = installed_exe
+            .parent()
+            .expect("installed exe parent")
+            .join(RENAMED_BRIDGE_RUNTIME_FILE_NAME);
         let cargo_target_bridge =
             dir.path().join("manifest").join("target").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let cwd_script = dir.path().join("repo").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let manifest_script = dir.path().join("manifest").join(BRIDGE_SCRIPT_RELATIVE_PATH);
         let env_script = dir.path().join("env").join("bridge.js");
+        let env_runtime = dir.path().join("env").join(RENAMED_BRIDGE_RUNTIME_FILE_NAME);
+        let node_runtime = dir.path().join("node").join(test_runtime_name());
 
         write_test_file(&installed_exe);
         write_test_file(&unbundled_exe);
         write_test_file(&cargo_target_exe);
         write_test_file(&packaged_bridge);
+        write_test_file(&packaged_runtime);
         write_test_file(&cargo_target_bridge);
         write_test_file(&cwd_script);
         write_test_file(&manifest_script);
         write_test_file(&env_script);
+        write_test_file(&env_runtime);
+        write_test_file(&node_runtime);
 
         ResolverFixture {
             dir,
@@ -627,10 +765,13 @@ mod tests {
             unbundled_exe,
             cargo_target_exe,
             packaged_bridge,
+            packaged_runtime,
             cargo_target_bridge,
             cwd_script,
             manifest_script,
             env_script,
+            env_runtime,
+            node_runtime,
         }
     }
 
