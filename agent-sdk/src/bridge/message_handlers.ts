@@ -14,7 +14,12 @@ import {
   emitConnectEvent,
   emitSessionReplacedEvent,
 } from "./events.js";
-import { TOOL_RESULT_TYPES, unwrapToolUseResult } from "./tooling.js";
+import {
+  TOOL_RESULT_TYPES,
+  isToolSearchToolName,
+  isToolSearchToolResultType,
+  unwrapToolUseResult,
+} from "./tooling.js";
 import {
   emitToolCall,
   emitToolCallUpdate,
@@ -321,6 +326,34 @@ function logContentBlockLinkage(
   });
 }
 
+function hideToolUse(session: SessionState, toolUseId: string): void {
+  if (toolUseId) {
+    session.hiddenToolUseIds.add(toolUseId);
+  }
+}
+
+function isHiddenToolUse(session: SessionState, toolUseId: string, toolName: string): boolean {
+  if (!toolUseId) {
+    return false;
+  }
+  if (isToolSearchToolName(toolName)) {
+    hideToolUse(session, toolUseId);
+    return true;
+  }
+  return session.hiddenToolUseIds.has(toolUseId);
+}
+
+function isHiddenToolResult(session: SessionState, toolUseId: string, blockType: string): boolean {
+  if (!toolUseId) {
+    return false;
+  }
+  if (isToolSearchToolResultType(blockType)) {
+    hideToolUse(session, toolUseId);
+    return true;
+  }
+  return session.hiddenToolUseIds.has(toolUseId);
+}
+
 export function handleContentBlock(
   session: SessionState,
   block: Record<string, unknown>,
@@ -352,6 +385,9 @@ export function handleContentBlock(
     if (!toolUseId) {
       return;
     }
+    if (isHiddenToolUse(session, toolUseId, name)) {
+      return;
+    }
     logContentBlockLinkage(session, blockType, toolUseId, name, linkage);
     emitPlanIfTodoWrite(session, name, input);
     emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null);
@@ -361,6 +397,9 @@ export function handleContentBlock(
   if (TOOL_RESULT_TYPES.has(blockType)) {
     const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
     if (!toolUseId) {
+      return;
+    }
+    if (isHiddenToolResult(session, toolUseId, blockType)) {
       return;
     }
     logContentBlockLinkage(session, blockType, toolUseId, undefined, linkage);
@@ -726,6 +765,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_progress") {
     const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
+    if (isHiddenToolUse(session, toolUseId, toolName)) {
+      return;
+    }
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_TOOL,
       eventName: "sdk_tool_progress_linkage_observed",
@@ -754,6 +796,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       : [];
     if (summary && toolIds.length > 0) {
       for (const toolUseId of toolIds) {
+        if (session.hiddenToolUseIds.has(toolUseId)) {
+          continue;
+        }
         emitToolSummaryUpdate(session, toolUseId, summary);
       }
     }
@@ -812,6 +857,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
     const toolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
     if (toolUseId && "tool_use_result" in msg) {
+      if (session.hiddenToolUseIds.has(toolUseId)) {
+        return;
+      }
       const parsed = unwrapToolUseResult(msg.tool_use_result);
       emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, msg.tool_use_result);
     }

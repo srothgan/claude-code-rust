@@ -85,6 +85,7 @@ function makeSessionState(): SessionState {
     pendingQuestions: new Map(),
     pendingElicitations: new Map(),
     mcpStatusRevalidatedAt: new Map(),
+    hiddenToolUseIds: new Set(),
     authHintSent: false,
   };
 }
@@ -1019,6 +1020,63 @@ test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () 
     },
   });
   assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.raw_output, "Inspected auth flow and found the failing check");
+});
+
+test("handleSdkMessage suppresses ToolSearch bridge events without denying SDK use", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      event: {
+        type: "content_block_start",
+        content_block: {
+          type: "server_tool_use",
+          id: "tool-search-1",
+          name: "ToolSearch",
+          input: { query: "src/" },
+        },
+      },
+      uuid: "message-search-start",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "tool_progress",
+      tool_use_id: "tool-search-1",
+      tool_name: "ToolSearch",
+      uuid: "message-search-progress",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      parent_tool_use_id: "tool-search-1",
+      tool_use_result: { content: "matched src/main.rs", is_error: false },
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_search_tool_result",
+            tool_use_id: "tool-search-1",
+            content: "matched src/main.rs",
+            is_error: false,
+          },
+        ],
+      },
+      uuid: "message-search-result",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "tool_use_summary",
+      summary: "Found source files",
+      preceding_tool_use_ids: ["tool-search-1"],
+      uuid: "message-search-summary",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(session.hiddenToolUseIds.has("tool-search-1"), true);
+  assert.equal(session.toolCalls.has("tool-search-1"), false);
 });
 
 test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
@@ -2265,6 +2323,64 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(variantCounts.get("agent_message_chunk"), 1);
   assert.equal(variantCounts.get("tool_call"), 1);
   assert.equal(variantCounts.get("tool_call_update"), 1);
+});
+
+test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "assistant",
+      uuid: "a1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "server_tool_use",
+            id: "tool-search-1",
+            name: "ToolSearch",
+            input: { query: "src/" },
+          },
+          { type: "tool_use", id: "tool-bash", name: "Bash", input: { command: "echo ok" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "u1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_search_tool_result",
+            tool_use_id: "tool-search-1",
+            content: "matched src/main.rs",
+            is_error: false,
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "tool-bash",
+            content: "ok",
+            is_error: false,
+          },
+        ],
+      },
+    },
+  ]);
+
+  const toolCalls = updates.filter((update) => update.type === "tool_call");
+  const toolUpdates = updates.filter((update) => update.type === "tool_call_update");
+
+  assert.deepEqual(
+    toolCalls.map((update) => update.tool_call.tool_call_id),
+    ["tool-bash"],
+  );
+  assert.deepEqual(
+    toolUpdates.map((update) => update.tool_call_update.tool_call_id),
+    ["tool-bash"],
+  );
 });
 
 test("mapSessionMessagesToUpdates preserves parallel tool results", () => {

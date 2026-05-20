@@ -1,7 +1,14 @@
 import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionListEntry, SessionUpdate, ToolCall } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { TOOL_RESULT_TYPES, buildToolResultFields, createToolCall, isToolUseBlockType } from "./tooling.js";
+import {
+  TOOL_RESULT_TYPES,
+  buildToolResultFields,
+  createToolCall,
+  isToolSearchToolName,
+  isToolSearchToolResultType,
+  isToolUseBlockType,
+} from "./tooling.js";
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -38,6 +45,7 @@ function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant
 function pushResumeToolUse(
   updates: SessionUpdate[],
   toolCalls: Map<string, ToolCall>,
+  hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
   parentToolUseId: string | null,
 ): void {
@@ -48,6 +56,11 @@ function pushResumeToolUse(
   const name = typeof block.name === "string" ? block.name : "Tool";
   const input = asRecordOrNull(block.input) ?? {};
 
+  if (isToolSearchToolName(name)) {
+    hiddenToolUseIds.add(toolUseId);
+    return;
+  }
+
   const toolCall = createToolCall(toolUseId, name, input, parentToolUseId);
   toolCall.status = "in_progress";
   toolCalls.set(toolUseId, toolCall);
@@ -57,10 +70,16 @@ function pushResumeToolUse(
 function pushResumeToolResult(
   updates: SessionUpdate[],
   toolCalls: Map<string, ToolCall>,
+  hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
 ): void {
   const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
   if (!toolUseId) {
+    return;
+  }
+  const blockType = typeof block.type === "string" ? block.type : "";
+  if (isToolSearchToolResultType(blockType) || hiddenToolUseIds.has(toolUseId)) {
+    hiddenToolUseIds.add(toolUseId);
     return;
   }
   const isError = Boolean(block.is_error);
@@ -125,6 +144,7 @@ export function mapSdkSessions(infos: SDKSessionInfo[], limit = 50): SessionList
 export function mapSessionMessagesToUpdates(messages: SessionMessage[]): SessionUpdate[] {
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
+  const hiddenToolUseIds = new Set<string>();
 
   for (const entry of messages) {
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
@@ -153,11 +173,11 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
           continue;
         }
         if (isToolUseBlockType(blockType) && role === "assistant") {
-          pushResumeToolUse(updates, toolCalls, block, parentToolUseId);
+          pushResumeToolUse(updates, toolCalls, hiddenToolUseIds, block, parentToolUseId);
           continue;
         }
         if (TOOL_RESULT_TYPES.has(blockType)) {
-          pushResumeToolResult(updates, toolCalls, block);
+          pushResumeToolResult(updates, toolCalls, hiddenToolUseIds, block);
           continue;
         }
         if (blockType === "image") {

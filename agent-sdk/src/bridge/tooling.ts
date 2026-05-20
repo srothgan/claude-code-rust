@@ -13,6 +13,15 @@ export const TOOL_RESULT_TYPES = new Set([
   "mcp_tool_result",
 ]);
 
+export function isToolSearchToolName(name: string): boolean {
+  const normalized = name.replace(/[\s_-]+/g, "").toLowerCase();
+  return normalized === "toolsearch" || normalized === "toolsearchtool";
+}
+
+export function isToolSearchToolResultType(blockType: string): boolean {
+  return blockType === "tool_search_tool_result";
+}
+
 export function isToolUseBlockType(blockType: string): boolean {
   return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
 }

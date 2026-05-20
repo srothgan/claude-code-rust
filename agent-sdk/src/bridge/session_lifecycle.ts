@@ -46,6 +46,7 @@ import {
   ensureToolCallVisible,
   setToolCallStatus,
 } from "./tool_calls.js";
+import { isToolSearchToolName } from "./tooling.js";
 import {
   requestExitPlanModeApproval,
   requestAskUserQuestionAnswers,
@@ -126,6 +127,7 @@ export type SessionState = {
   pendingQuestions: Map<string, PendingQuestion>;
   pendingElicitations: Map<string, PendingElicitation>;
   mcpStatusRevalidatedAt: Map<string, number>;
+  hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
   lastAssistantError?: string;
@@ -405,6 +407,10 @@ export async function createSession(params: {
   const sessionIdForLogs = () => session?.sessionId ?? provisionalSessionId;
   const canUseTool: CanUseTool = async (toolName, inputData, options) => {
     const toolUseId = options.toolUseID;
+    if (isToolSearchToolName(toolName)) {
+      session?.hiddenToolUseIds.add(toolUseId);
+      return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
+    }
     if (toolName === EXIT_PLAN_MODE_TOOL_NAME) {
       const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
       return await requestExitPlanModeApproval(session, toolUseId, inputData, existing);
@@ -539,6 +545,7 @@ export async function createSession(params: {
     pendingQuestions: new Map<string, PendingQuestion>(),
     pendingElicitations: new Map<string, PendingElicitation>(),
     mcpStatusRevalidatedAt: new Map<string, number>(),
+    hiddenToolUseIds: new Set<string>(),
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
