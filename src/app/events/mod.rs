@@ -1033,10 +1033,14 @@ mod tests {
     }
 
     fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
-        crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries(app, 120)
-            .rows()
-            .iter()
-            .any(|row| row.spans.iter().any(|span| span.content.as_ref().contains(expected)))
+        crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            app,
+            120,
+            &std::collections::BTreeSet::new(),
+        )
+        .rows()
+        .iter()
+        .any(|row| row.spans.iter().any(|span| span.content.as_ref().contains(expected)))
     }
 
     fn session_overview_has_welcome(app: &App) -> bool {
@@ -1931,6 +1935,46 @@ mod tests {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
+    }
+
+    #[test]
+    fn service_status_warning_survives_status_snapshot_welcome_update() {
+        const CONNECTIVITY_MESSAGE: &str =
+            "Claude Code could not connect to the internet. Please check your connection.";
+        let mut app = make_test_app();
+
+        handle_client_event(&mut app, connected_event("opus"));
+        handle_client_event(
+            &mut app,
+            ClientEvent::ServiceStatus {
+                severity: ServiceStatusSeverity::Warning,
+                message: CONNECTIVITY_MESSAGE.into(),
+            },
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "test-session".into(),
+                account: crate::agent::types::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Claude Pro".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+
+        let warning_count = app
+            .messages
+            .iter()
+            .filter(|message| {
+                matches!(message.role, MessageRole::System(Some(SystemSeverity::Warning)))
+            })
+            .filter(|message| first_block_text(message) == CONNECTIVITY_MESSAGE)
+            .count();
+        assert_eq!(warning_count, 1);
     }
 
     #[test]

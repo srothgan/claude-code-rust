@@ -143,7 +143,11 @@ pub(crate) enum LiveRowBoundaryKind {
     AssistantIndicator,
 }
 
-pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
+pub(crate) fn serialize_live_rows_with_boundaries_excluding(
+    app: &mut App,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> SerializedLiveRows {
     let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
     let active_msg_idx = app.active_turn_assistant_idx();
     let runtime_indicator = sync_runtime_indicator(app);
@@ -154,95 +158,246 @@ pub(crate) fn serialize_live_rows_with_boundaries(app: &mut App, width: u16) -> 
     for msg_idx in 0..app.messages.len() {
         let role = app.messages[msg_idx].role.clone();
         let block_kind = message_block_kind(&role);
-
-        let rendered_message = match role {
-            MessageRole::Welcome => RenderedMessageRows::message(
-                serialize_welcome_message(app, msg_idx, width),
-                LiveRowBoundary {
-                    ids: welcome_output_ids(&app.messages[msg_idx]),
-                    msg_idx,
-                    block_idx: None,
-                    kind: LiveRowBoundaryKind::Message,
-                    start_row: 0,
-                    commit_ready: message_commit_ready(&app.messages[msg_idx]),
-                },
-            ),
-            MessageRole::User | MessageRole::System(_) => {
-                let rendered = build_user_system_message_rows(
-                    &mut app.messages[msg_idx],
-                    message_render_context(current_mode_id.as_deref(), width),
-                );
-                RenderedMessageRows::message(
-                    segments_to_physical_rows(&rendered.segments, width, false),
-                    LiveRowBoundary {
-                        ids: vec![HistoryOutputId::Message(app.messages[msg_idx].id)],
-                        msg_idx,
-                        block_idx: None,
-                        kind: LiveRowBoundaryKind::Message,
-                        start_row: 0,
-                        commit_ready: true,
-                    },
-                )
-            }
-            MessageRole::Assistant => {
-                let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
-                let items = assistant_render_items_from_message(
-                    &app.messages[msg_idx],
-                    msg_idx,
-                    active_mutable,
-                );
-                let indicator =
-                    assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
-                let spinner = spinner_state_for_live(app.spinner_frame);
-                let message_id = app.messages[msg_idx].id;
-                let rendered = render_assistant_rows(AssistantRowsRequest {
-                    app: Some(app),
-                    message_id,
-                    msg_idx,
-                    items,
-                    indicator,
-                    current_mode_id: current_mode_id.as_deref(),
-                    width,
-                    spinner,
-                    show_label: true,
-                    leading_blank_lines: 0,
-                    has_prior_assistant_content: false,
-                });
-                tracing::debug!(
-                    target: crate::logging::targets::APP_RENDER,
-                    event_name = "inline_chat_assistant_block_built",
-                    message = "assistant message block rendered from canonical app.messages",
-                    outcome = "success",
-                    assistant_turn_id = tracing::field::Empty,
-                    show_label = true,
-                    leading_blank_lines = 0,
-                    committed_rendered_rows = rendered.rows.len(),
-                    live_rendered_rows = 0,
-                    indicator = ?indicator,
-                    preview = %preview_rows(&rendered.rows, 4),
-                );
-                rendered
-            }
-        };
-
-        if rendered_message.rows.is_empty() {
-            continue;
-        }
-
-        let start_row = rows.len();
-        rows.extend(
-            std::iter::repeat_with(Line::default)
-                .take(top_level_leading_blank_lines(previous_block_kind, block_kind)),
+        let rendered_message = render_live_message_rows(
+            app,
+            msg_idx,
+            &role,
+            LiveRowsRenderContext {
+                current_mode_id: current_mode_id.as_deref(),
+                active_msg_idx,
+                runtime_indicator,
+                width,
+                excluded_ids,
+            },
         );
-        row_boundaries.extend(
-            rendered_message.boundaries.into_iter().map(|boundary| boundary.shifted(start_row)),
+
+        append_rendered_live_message(
+            &mut rows,
+            &mut row_boundaries,
+            &mut previous_block_kind,
+            block_kind,
+            rendered_message,
         );
-        rows.extend(rendered_message.rows);
-        previous_block_kind = Some(block_kind);
     }
 
     let segments = live_boundaries_to_segments(row_boundaries, rows.len());
     SerializedLiveRows { rows, segments }
+}
+
+#[derive(Clone, Copy)]
+struct LiveRowsRenderContext<'a> {
+    current_mode_id: Option<&'a str>,
+    active_msg_idx: Option<usize>,
+    runtime_indicator: Option<AssistantRuntimeIndicator>,
+    width: u16,
+    excluded_ids: &'a BTreeSet<HistoryOutputId>,
+}
+
+fn render_live_message_rows(
+    app: &mut App,
+    msg_idx: usize,
+    role: &MessageRole,
+    context: LiveRowsRenderContext<'_>,
+) -> RenderedMessageRows {
+    match role {
+        MessageRole::Welcome => {
+            render_welcome_live_rows(app, msg_idx, context.width, context.excluded_ids)
+        }
+        MessageRole::User | MessageRole::System(_) => render_user_system_live_rows(
+            app,
+            msg_idx,
+            context.current_mode_id,
+            context.width,
+            context.excluded_ids,
+        ),
+        MessageRole::Assistant => render_assistant_live_rows(
+            app,
+            msg_idx,
+            context.current_mode_id,
+            context.active_msg_idx,
+            context.runtime_indicator,
+            context.width,
+            context.excluded_ids,
+        ),
+    }
+}
+
+fn render_welcome_live_rows(
+    app: &App,
+    msg_idx: usize,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> RenderedMessageRows {
+    let ids = welcome_output_ids(&app.messages[msg_idx]);
+    let commit_ready = message_commit_ready(&app.messages[msg_idx]);
+    if ids_are_excluded(&ids, excluded_ids) {
+        return RenderedMessageRows::skipped_transcript_content();
+    }
+
+    RenderedMessageRows::message(
+        serialize_welcome_message(app, msg_idx, width),
+        LiveRowBoundary {
+            ids,
+            msg_idx,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::Message,
+            start_row: 0,
+            commit_ready,
+        },
+    )
+}
+
+fn render_user_system_live_rows(
+    app: &mut App,
+    msg_idx: usize,
+    current_mode_id: Option<&str>,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> RenderedMessageRows {
+    let ids = vec![HistoryOutputId::Message(app.messages[msg_idx].id)];
+    if ids_are_excluded(&ids, excluded_ids) {
+        return RenderedMessageRows::skipped_transcript_content();
+    }
+
+    let rendered = build_user_system_message_rows(
+        &mut app.messages[msg_idx],
+        message_render_context(current_mode_id, width),
+    );
+    RenderedMessageRows::message(
+        segments_to_physical_rows(&rendered.segments, width, false),
+        LiveRowBoundary {
+            ids,
+            msg_idx,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::Message,
+            start_row: 0,
+            commit_ready: true,
+        },
+    )
+}
+
+fn render_assistant_live_rows(
+    app: &mut App,
+    msg_idx: usize,
+    current_mode_id: Option<&str>,
+    active_msg_idx: Option<usize>,
+    runtime_indicator: Option<AssistantRuntimeIndicator>,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> RenderedMessageRows {
+    let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
+    let items =
+        assistant_render_items_from_message(&app.messages[msg_idx], msg_idx, active_mutable);
+    let selection = select_unexcluded_assistant_items(items, excluded_ids);
+    let indicator = assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
+    if selection.items.is_empty() && indicator.is_none() {
+        return if selection.had_body_content {
+            RenderedMessageRows::skipped_transcript_content()
+        } else {
+            RenderedMessageRows::empty()
+        };
+    }
+
+    let message_id = app.messages[msg_idx].id;
+    let label_ids = vec![HistoryOutputId::AssistantLabel(message_id)];
+    let show_label = !ids_are_excluded(&label_ids, excluded_ids);
+    let skipped_static_body = selection.skipped_body_before_rendered_content;
+    let spinner = spinner_state_for_live(app.spinner_frame);
+    let rendered = render_assistant_rows(AssistantRowsRequest {
+        app: Some(app),
+        message_id,
+        msg_idx,
+        items: selection.items,
+        indicator,
+        current_mode_id,
+        width,
+        spinner,
+        show_label,
+        leading_blank_lines: 0,
+        has_prior_assistant_content: skipped_static_body,
+    });
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = "inline_chat_assistant_block_built",
+        message = "assistant message block rendered from canonical app.messages",
+        outcome = "success",
+        assistant_turn_id = tracing::field::Empty,
+        show_label,
+        leading_blank_lines = 0,
+        skipped_static_body,
+        committed_rendered_rows = rendered.rows.len(),
+        live_rendered_rows = 0,
+        indicator = ?indicator,
+        preview = %preview_rows(&rendered.rows, 4),
+    );
+    rendered
+}
+
+fn append_rendered_live_message(
+    rows: &mut Vec<Line<'static>>,
+    row_boundaries: &mut Vec<LiveRowBoundary>,
+    previous_block_kind: &mut Option<TopLevelInlineBlockKind>,
+    block_kind: TopLevelInlineBlockKind,
+    rendered_message: RenderedMessageRows,
+) {
+    if !rendered_message.had_transcript_content {
+        return;
+    }
+
+    if rendered_message.rows.is_empty() {
+        *previous_block_kind = Some(block_kind);
+        return;
+    }
+
+    let start_row = rows.len();
+    rows.extend(
+        std::iter::repeat_with(Line::default)
+            .take(top_level_leading_blank_lines(*previous_block_kind, block_kind)),
+    );
+    row_boundaries.extend(
+        rendered_message.boundaries.into_iter().map(|boundary| boundary.shifted(start_row)),
+    );
+    rows.extend(rendered_message.rows);
+    *previous_block_kind = Some(block_kind);
+}
+
+fn ids_are_excluded(ids: &[HistoryOutputId], excluded_ids: &BTreeSet<HistoryOutputId>) -> bool {
+    !ids.is_empty() && ids.iter().all(|id| excluded_ids.contains(id))
+}
+
+struct AssistantRenderSelection {
+    items: Vec<AssistantRenderItemSpec>,
+    skipped_body_before_rendered_content: bool,
+    had_body_content: bool,
+}
+
+fn select_unexcluded_assistant_items(
+    items: Vec<AssistantRenderItemSpec>,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+) -> AssistantRenderSelection {
+    let mut selected = Vec::with_capacity(items.len());
+    let mut skipped_body_before_rendered_content = false;
+    let mut had_body_content = false;
+    let mut rendered_body_seen = false;
+
+    for item in items {
+        had_body_content = true;
+        if ids_are_excluded(&item.ids, excluded_ids) {
+            if !rendered_body_seen {
+                skipped_body_before_rendered_content = true;
+            }
+            continue;
+        }
+
+        rendered_body_seen = true;
+        selected.push(item);
+    }
+
+    AssistantRenderSelection {
+        items: selected,
+        skipped_body_before_rendered_content,
+        had_body_content,
+    }
 }
 
 fn live_boundaries_to_segments(
@@ -411,12 +566,27 @@ struct AssistantRenderItemSpec {
 struct RenderedMessageRows {
     rows: Vec<Line<'static>>,
     boundaries: Vec<LiveRowBoundary>,
+    had_transcript_content: bool,
 }
 
 impl RenderedMessageRows {
+    fn empty() -> Self {
+        Self { rows: Vec::new(), boundaries: Vec::new(), had_transcript_content: false }
+    }
+
     fn message(rows: Vec<Line<'static>>, boundary: LiveRowBoundary) -> Self {
-        let boundaries = if rows.is_empty() { Vec::new() } else { vec![boundary] };
-        Self { rows, boundaries }
+        let had_transcript_content = !rows.is_empty();
+        let boundaries = if had_transcript_content { vec![boundary] } else { Vec::new() };
+        Self { rows, boundaries, had_transcript_content }
+    }
+
+    fn rendered(rows: Vec<Line<'static>>, boundaries: Vec<LiveRowBoundary>) -> Self {
+        let had_transcript_content = !rows.is_empty();
+        Self { rows, boundaries, had_transcript_content }
+    }
+
+    fn skipped_transcript_content() -> Self {
+        Self { rows: Vec::new(), boundaries: Vec::new(), had_transcript_content: true }
     }
 }
 
@@ -665,7 +835,7 @@ struct AssistantRowsRequest<'a> {
 
 fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessageRows {
     if request.items.is_empty() && request.indicator.is_none() {
-        return RenderedMessageRows { rows: Vec::new(), boundaries: Vec::new() };
+        return RenderedMessageRows::empty();
     }
 
     let render_context = message_render_context(request.current_mode_id, request.width);
@@ -757,10 +927,10 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     );
 
     if !state.has_visible_content && request.indicator.is_none() {
-        return RenderedMessageRows { rows: Vec::new(), boundaries: Vec::new() };
+        return RenderedMessageRows::empty();
     }
 
-    RenderedMessageRows { rows: trim_trailing_blank_rows(rows), boundaries }
+    RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
 }
 
 fn append_assistant_label_rows(
@@ -1015,13 +1185,17 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveRowBoundaryKind, serialize_live_rows_with_boundaries, thinking_line};
+    use super::{
+        LiveRowBoundaryKind, SerializedLiveRows, serialize_live_rows_with_boundaries_excluding,
+        thinking_line,
+    };
     use crate::agent::model;
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, NoticeBlock,
-        TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
+        App, AppStatus, BlockCache, ChatMessage, HistoryOutputId, MessageBlock, MessageRole,
+        NoticeBlock, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
+    use std::collections::BTreeSet;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
@@ -1041,7 +1215,11 @@ mod tests {
     }
 
     fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
-        serialize_live_rows_with_boundaries(app, width).rows().to_vec()
+        serialize_all_rows_with_boundaries(app, width).rows().to_vec()
+    }
+
+    fn serialize_all_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
+        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new())
     }
 
     #[test]
@@ -1088,6 +1266,16 @@ mod tests {
             false,
             false,
         )
+    }
+
+    fn named_tool_call_block(id: &str, title: &str, sdk_tool_name: &str) -> MessageBlock {
+        let mut block = tool_call_block(id, false);
+        let MessageBlock::ToolCall(tool) = &mut block else {
+            unreachable!("tool_call_block always returns a tool call");
+        };
+        tool.title = title.to_owned();
+        tool.sdk_tool_name = sdk_tool_name.to_owned();
+        block
     }
 
     fn tool_call_block_with_interaction(
@@ -1228,7 +1416,7 @@ mod tests {
         app.bind_active_turn_assistant(1);
         app.status = AppStatus::Running;
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert_eq!(serialized.stable_row_count(), 2);
     }
@@ -1243,7 +1431,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
         let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
         let mutable_text = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
 
@@ -1267,7 +1455,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
         let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
         let mutable_text = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
 
@@ -1284,7 +1472,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
     }
@@ -1302,7 +1490,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert_eq!(serialized.stable_row_count(), 0);
         assert_eq!(
@@ -1377,6 +1565,87 @@ mod tests {
 
         assert!(text.iter().any(|line| line == "Claude"));
         assert!(text.iter().any(|line| line.contains("Child Tool")));
+    }
+
+    #[test]
+    fn excluded_static_assistant_text_prefix_is_not_rendered_into_live_rows() {
+        let first = TextBlock::from_complete("first paragraph\n\n")
+            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
+        let first_id = first.id;
+        let second = TextBlock::from_complete("second paragraph");
+        let second_id = second.id;
+        let message =
+            assistant_blocks_message(vec![MessageBlock::Text(first), MessageBlock::Text(second)]);
+        let message_id = message.id;
+        let mut app = App::test_default();
+        app.messages.push(message);
+        let excluded_ids = BTreeSet::from([
+            HistoryOutputId::AssistantLabel(message_id),
+            HistoryOutputId::Block(first_id),
+        ]);
+
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids);
+        let text = line_texts(serialized.rows());
+
+        assert_eq!(text, vec!["second paragraph"]);
+        assert!(
+            serialized
+                .segments()
+                .iter()
+                .all(|segment| !segment.ids.contains(&HistoryOutputId::Block(first_id)))
+        );
+        assert!(
+            serialized
+                .segments()
+                .iter()
+                .any(|segment| segment.ids.contains(&HistoryOutputId::Block(second_id)))
+        );
+    }
+
+    #[test]
+    fn excluded_static_tool_prefix_is_not_rendered_before_active_tool() {
+        let mut done = named_tool_call_block("done-tool", "Done Tool", "CustomTool");
+        let mut running = tool_call_block_with_status_interaction(
+            "running-tool",
+            model::ToolCallStatus::InProgress,
+            false,
+            false,
+            false,
+        );
+        let MessageBlock::ToolCall(tool) = &mut running else {
+            unreachable!("tool_call_block_with_status_interaction returns a tool call");
+        };
+        tool.title = "Running Tool".to_owned();
+        tool.sdk_tool_name = "CustomTool".to_owned();
+        let MessageBlock::ToolCall(tool) = &mut done else {
+            unreachable!("named_tool_call_block returns a tool call");
+        };
+        tool.status = model::ToolCallStatus::Completed;
+
+        let message = assistant_blocks_message(vec![done, running]);
+        let message_id = message.id;
+        let mut app = App::test_default();
+        app.messages.push(message);
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+        let excluded_ids = BTreeSet::from([
+            HistoryOutputId::AssistantLabel(message_id),
+            HistoryOutputId::ToolCall("done-tool".to_owned()),
+        ]);
+
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids);
+        let text = line_texts(serialized.rows());
+
+        assert!(!text.iter().any(|line| line == "Claude"));
+        assert!(!text.iter().any(|line| line.contains("Done Tool")));
+        assert!(text.iter().any(|line| line.contains("Running Tool")));
+        assert_eq!(serialized.stable_row_count(), 0);
+        assert_eq!(
+            serialized.first_mutable_boundary_kind(),
+            Some(LiveRowBoundaryKind::AssistantTool)
+        );
     }
 
     #[test]
@@ -1480,7 +1749,7 @@ mod tests {
         let mut app = App::test_default();
         app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert!(!serialized.rows().is_empty());
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
@@ -1507,7 +1776,7 @@ mod tests {
         app.status = AppStatus::Connecting;
         app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert!(!serialized.rows().is_empty());
         assert_eq!(serialized.stable_row_count(), 0);
@@ -1520,7 +1789,7 @@ mod tests {
         app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
         app.push_message_tracked(user_text_message("queued while connecting"));
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert!(line_texts(serialized.rows()).iter().any(|line| line == "queued while connecting"));
         assert_eq!(serialized.stable_row_count(), 0);

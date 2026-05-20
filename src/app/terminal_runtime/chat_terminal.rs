@@ -102,6 +102,7 @@ pub(super) struct ChatTerminal {
     state: InlineViewportState,
     pending_history: VecDeque<PendingHistoryBatch>,
     replay: Option<ReplayState>,
+    pending_native_clear_reason: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -144,6 +145,7 @@ impl ChatTerminal {
             state: InlineViewportState::new(owned_top),
             pending_history: VecDeque::new(),
             replay: None,
+            pending_native_clear_reason: None,
         }
     }
 
@@ -190,6 +192,7 @@ impl ChatTerminal {
         self.terminal = None;
         self.pending_history.clear();
         self.replay = None;
+        self.pending_native_clear_reason = None;
     }
 
     fn reset_after_owned_region_clear(&mut self, cleared_area: Option<Rect>) {
@@ -206,6 +209,7 @@ impl ChatTerminal {
         self.terminal = None;
         self.pending_history.clear();
         self.replay = None;
+        self.pending_native_clear_reason = None;
         self.state.owned_top = 0;
         self.state.owned_bottom = screen_height;
         self.state.area = Some(Rect::new(0, 0, terminal_width.max(1), 1));
@@ -214,6 +218,7 @@ impl ChatTerminal {
     pub(super) fn reset_mutable_viewport(&mut self) -> anyhow::Result<()> {
         self.clear_inline_terminal_viewport("mutable_reset")?;
         self.terminal = None;
+        self.pending_native_clear_reason = None;
         Ok(())
     }
 
@@ -448,11 +453,16 @@ impl ChatTerminal {
         );
         self.terminal = Some(terminal);
         self.state.area = Some(predicted_area);
+        self.request_native_inline_clear("inline_terminal_ensure");
         self.mark_area_owned(predicted_area, screen_height, "inline_terminal_ensure");
         Ok(())
     }
 
     fn clear_inline_terminal_viewport(&mut self, reason: &'static str) -> anyhow::Result<()> {
+        if self.clear_ratatui_inline_viewport(reason)? {
+            return Ok(());
+        }
+
         let Some(area) = self.state.area else {
             return Ok(());
         };
@@ -477,6 +487,10 @@ impl ChatTerminal {
     where
         F: FnOnce(&mut ratatui::Frame<'_>, Rect),
     {
+        if let Some(reason) = self.pending_native_clear_reason {
+            self.clear_ratatui_inline_viewport(reason)?;
+        }
+
         let terminal = self
             .terminal
             .as_mut()
@@ -491,6 +505,41 @@ impl ChatTerminal {
             .context("failed to draw ratatui inline chat viewport")?;
 
         Ok(viewport_area)
+    }
+
+    fn request_native_inline_clear(&mut self, reason: &'static str) {
+        self.pending_native_clear_reason = Some(reason);
+    }
+
+    fn clear_ratatui_inline_viewport(&mut self, reason: &'static str) -> anyhow::Result<bool> {
+        let Some(terminal) = self.terminal.as_mut() else {
+            return Ok(false);
+        };
+        let terminal_height = terminal
+            .size()
+            .context("failed to read terminal size before ratatui inline clear")?
+            .height
+            .max(1);
+        terminal.clear().context("failed to clear ratatui inline viewport")?;
+        self.pending_native_clear_reason = None;
+        if let Some(area) = self.state.area {
+            self.state.owned_top = self.state.owned_top.min(area.top().min(terminal_height));
+            self.state.owned_bottom = terminal_height;
+        }
+
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_native_viewport_cleared",
+            message = "ratatui inline viewport cleared before mutable redraw",
+            outcome = "success",
+            reason,
+            viewport_top = self.state.area.map(Rect::top),
+            viewport_bottom = self.state.area.map(Rect::bottom),
+            owned_top = self.state.owned_top,
+            owned_bottom = self.state.owned_bottom,
+        );
+
+        Ok(true)
     }
 
     fn flush_queued_history(
@@ -728,6 +777,7 @@ impl ChatTerminal {
                 Paragraph::new(rendered_rows).render(buffer.area, buffer);
             })
             .context("failed to insert committed chat rows above inline viewport")?;
+        self.request_native_inline_clear("scrollback_insert");
 
         let after_area =
             viewport_area_after_insert_exact(before_area, plan.inserted_rows, terminal_height)
@@ -793,6 +843,7 @@ impl ChatTerminal {
             queue!(stdout, Print("\r\n")).context("failed to queue owned growth newline")?;
         }
         stdout.flush().context("failed to flush owned growth newlines")?;
+        self.request_native_inline_clear("owned_region_growth");
 
         let old_top = self.state.owned_top;
         let old_bottom = self.state.owned_bottom;
@@ -877,6 +928,9 @@ impl ChatTerminal {
                 .context("failed to queue bounded inline clear")?;
         }
         stdout.flush().context("failed to flush bounded inline clear")?;
+        if self.terminal.is_some() {
+            self.request_native_inline_clear(reason);
+        }
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -1136,8 +1190,23 @@ mod tests {
         inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert, shift_area_up,
         viewport_area_after_insert_exact,
     };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Cell;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
+    use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
+    use ratatui::{TerminalOptions, Viewport};
+
+    fn trimmed_backend_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(Cell::symbol).collect::<String>().trim_end().to_owned())
+            .collect()
+    }
 
     #[test]
     fn inline_viewport_state_height_derives_from_area() {
@@ -1154,6 +1223,102 @@ mod tests {
         let area = Rect::new(0, 28, 120, 5);
 
         assert_eq!(shift_area_up(area, 5), Rect::new(0, 23, 120, 5));
+    }
+
+    #[test]
+    fn ratatui_inline_insert_preserves_unchanged_viewport_rows() {
+        let backend = TestBackend::new(48, 8);
+        let mut terminal =
+            Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(3) })
+                .expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("prompt"),
+                        Line::from("[Auto] [Opus]"),
+                        Line::from("loc"),
+                    ]),
+                    frame.area(),
+                );
+            })
+            .expect("initial draw");
+        terminal
+            .insert_before(3, |buffer| {
+                Paragraph::new(vec![
+                    Line::from("Error"),
+                    Line::from("failed to set mode to auto"),
+                    Line::default(),
+                ])
+                .render(buffer.area, buffer);
+            })
+            .expect("insert before");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("prompt"),
+                        Line::from("[Default] [Opus]"),
+                        Line::from("loc"),
+                    ]),
+                    frame.area(),
+                );
+            })
+            .expect("post-insert draw");
+
+        let lines = trimmed_backend_lines(&terminal);
+
+        assert!(lines.iter().any(|line| line == "Error"));
+        assert!(lines.iter().any(|line| line == "failed to set mode to auto"));
+        assert!(lines.windows(3).any(|rows| {
+            rows[0] == "prompt" && rows[1] == "[Default] [Opus]" && rows[2] == "loc"
+        }));
+    }
+
+    #[test]
+    fn ratatui_inline_native_clear_after_insert_removes_shrunken_viewport_rows() {
+        let backend = TestBackend::new(48, 8);
+        let mut terminal =
+            Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(3) })
+                .expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from("live tool output that should disappear"),
+                        Line::from("live detail that should disappear"),
+                        Line::from("prompt"),
+                    ]),
+                    frame.area(),
+                );
+            })
+            .expect("initial draw");
+        terminal
+            .insert_before(2, |buffer| {
+                Paragraph::new(vec![
+                    Line::from("static transcript row"),
+                    Line::from("static transcript detail"),
+                ])
+                .render(buffer.area, buffer);
+            })
+            .expect("insert before");
+        terminal.clear().expect("native inline clear");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(RatatuiClear, area);
+                frame.render_widget(Paragraph::new(vec![Line::from("prompt")]), area);
+            })
+            .expect("post-clear draw");
+
+        let lines = trimmed_backend_lines(&terminal);
+
+        assert!(lines.iter().any(|line| line == "static transcript row"));
+        assert!(lines.iter().any(|line| line == "static transcript detail"));
+        assert!(lines.iter().any(|line| line == "prompt"));
+        assert!(!lines.iter().any(|line| line.contains("should disappear")));
     }
 
     #[test]

@@ -6,7 +6,9 @@ use super::history_insert::RenderedHistoryRows;
 use crate::app::{App, HistoryOutputId};
 use crate::ui::footer_rows::serialize_footer_rows;
 use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
-use crate::ui::inline_chat_rows::{SerializedLiveRows, serialize_live_rows_with_boundaries};
+use crate::ui::inline_chat_rows::{
+    SerializedLiveRows, serialize_live_rows_with_boundaries_excluding,
+};
 use crate::ui::input;
 use crate::ui::input_rows::{blocked_input_lines, build_composer_hint_rows};
 use crate::ui::theme;
@@ -129,8 +131,17 @@ impl ChatTerminalSession {
         let terminal_height = screen_size.1.max(1);
         app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
-        let serialized_rows = serialize_live_rows_with_boundaries(app, width);
-        self.draw_incremental(app, screen_size, width, terminal_height, &serialized_rows)
+        let base_excluded_ids = self.base_history_excluded_ids();
+        let serialized_rows =
+            serialize_live_rows_with_boundaries_excluding(app, width, &base_excluded_ids);
+        self.draw_incremental(
+            app,
+            screen_size,
+            width,
+            terminal_height,
+            &serialized_rows,
+            base_excluded_ids,
+        )
     }
 
     fn draw_incremental(
@@ -140,10 +151,16 @@ impl ChatTerminalSession {
         width: u16,
         terminal_height: u16,
         serialized_rows: &SerializedLiveRows,
+        base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> anyhow::Result<()> {
         let composer = Self::build_composer_surface(app, width);
-        let mut history_plan =
-            self.prepare_history_flush(serialized_rows, &composer, width, terminal_height);
+        let mut history_plan = self.prepare_history_flush(
+            serialized_rows,
+            &composer,
+            width,
+            terminal_height,
+            base_excluded_ids,
+        );
         let live_rows = history_plan.live_rows.as_slice();
         let requested_layout_plan = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
         let layout_plan =
@@ -235,11 +252,9 @@ impl ChatTerminalSession {
         composer: &ComposerSurface,
         width: u16,
         terminal_height: u16,
+        base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> HistoryFlushPlan {
         let width = width.max(1);
-        let mut base_excluded_ids = self.history.confirmed_ids().clone();
-        base_excluded_ids.extend(self.terminal.pending_history_ids());
-
         if !self.history.is_synced() {
             return self.prepare_replay_history_flush(serialized_rows, width, base_excluded_ids);
         }
@@ -251,6 +266,12 @@ impl ChatTerminalSession {
             terminal_height,
             base_excluded_ids,
         )
+    }
+
+    fn base_history_excluded_ids(&self) -> BTreeSet<HistoryOutputId> {
+        let mut excluded_ids = self.history.confirmed_ids().clone();
+        excluded_ids.extend(self.terminal.pending_history_ids());
+        excluded_ids
     }
 
     fn prepare_replay_history_flush(
@@ -1141,7 +1162,7 @@ mod tests {
         App, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole, TextBlock,
         TextBlockSpacing,
     };
-    use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries;
+    use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1230,7 +1251,8 @@ mod tests {
         let mut app = App::test_default();
         app.messages.push(message);
 
-        let serialized = serialize_live_rows_with_boundaries(&mut app, 120);
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new());
         let excluded_ids = BTreeSet::from([
             HistoryOutputId::AssistantLabel(message_id),
             HistoryOutputId::Block(first_id),
