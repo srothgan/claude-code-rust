@@ -73,6 +73,7 @@ pub use trust::TrustSelection;
 pub use update_check::start_update_check;
 pub use view::{FullscreenView, SurfaceMode};
 
+use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crossterm::event::EventStream;
 use futures::{FutureExt as _, StreamExt};
@@ -105,6 +106,7 @@ async fn run_tui_loop(
     let mut events = EventStream::new();
     let tick_duration = Duration::from_millis(16);
     let mut last_render = Instant::now();
+    let mut service_status_check_started = false;
 
     loop {
         start_connection(app);
@@ -116,7 +118,7 @@ async fn run_tui_loop(
                 events::handle_terminal_event(app, event);
             }
             Some(event) = app.event_rx.recv() => {
-                events::handle_client_event(app, event);
+                handle_runtime_client_event(app, event, &mut service_status_check_started);
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -143,7 +145,7 @@ async fn run_tui_loop(
             // Then client events
             match app.event_rx.try_recv() {
                 Ok(event) => {
-                    events::handle_client_event(app, event);
+                    handle_runtime_client_event(app, event, &mut service_status_check_started);
                 }
                 Err(_) => break,
             }
@@ -235,6 +237,20 @@ async fn run_tui_loop(
     }
 
     Ok(())
+}
+
+fn handle_runtime_client_event(
+    app: &mut App,
+    event: ClientEvent,
+    service_status_check_started: &mut bool,
+) {
+    let start_service_status_check =
+        matches!(event, ClientEvent::Connected { .. }) && !*service_status_check_started;
+    events::handle_client_event(app, event);
+    if start_service_status_check {
+        *service_status_check_started = true;
+        service_status_check::start_service_status_check(app);
+    }
 }
 
 fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::TerminalRuntime) {

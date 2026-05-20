@@ -66,7 +66,6 @@ fn run() -> anyhow::Result<()> {
         // Phase 2: start non-session startup work + TUI.
         // The bridge itself is started from the TUI loop only after trust is accepted.
         claude_code_rust::app::start_update_check(&app, &cli);
-        claude_code_rust::app::start_service_status_check(&app);
         let result = claude_code_rust::app::run_tui(&mut app).await;
         maybe_print_resume_hint(&app, result.is_ok());
 

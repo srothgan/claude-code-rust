@@ -9,6 +9,8 @@ use tracing::{Instrument as _, info_span};
 
 const SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(4);
 const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.json";
+const SERVICE_STATUS_CONNECTIVITY_MESSAGE: &str =
+    "Claude Code could not connect to the internet. Please check your connection.";
 
 /// Component names we care about. "Claude Code" is the primary component;
 /// "Claude API" is included because Claude Code depends on it.
@@ -81,8 +83,34 @@ pub fn start_service_status_check(app: &App) {
 }
 
 async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
-    let client = reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build().ok()?;
-    let response = client.get(STATUSPAGE_SUMMARY_URL).send().await.ok()?;
+    let client = match reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_NETWORK,
+                event_name = "service_check_failed",
+                message = "service status client creation failed",
+                outcome = "failure",
+                error_message = %error,
+                url = STATUSPAGE_SUMMARY_URL,
+            );
+            return Some(connectivity_issue());
+        }
+    };
+    let response = match client.get(STATUSPAGE_SUMMARY_URL).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_NETWORK,
+                event_name = "service_check_failed",
+                message = "service status request failed",
+                outcome = "failure",
+                error_message = %error,
+                url = STATUSPAGE_SUMMARY_URL,
+            );
+            return Some(connectivity_issue());
+        }
+    };
     if !response.status().is_success() {
         tracing::warn!(
             target: crate::logging::targets::APP_NETWORK,
@@ -97,6 +125,13 @@ async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
 
     let payload = response.json::<SummaryResponse>().await.ok()?;
     classify_summary(&payload)
+}
+
+fn connectivity_issue() -> ServiceStatusIssue {
+    ServiceStatusIssue {
+        severity: ServiceStatusSeverity::Warning,
+        message: SERVICE_STATUS_CONNECTIVITY_MESSAGE.to_owned(),
+    }
 }
 
 fn is_relevant_component(name: &str) -> bool {
@@ -170,6 +205,16 @@ mod tests {
             vec![],
         );
         assert!(classify_summary(&s).is_none());
+    }
+
+    #[test]
+    fn connectivity_issue_is_warning_with_user_facing_message() {
+        let issue = connectivity_issue();
+        assert_eq!(issue.severity, ServiceStatusSeverity::Warning);
+        assert_eq!(
+            issue.message,
+            "Claude Code could not connect to the internet. Please check your connection.",
+        );
     }
 
     #[test]
