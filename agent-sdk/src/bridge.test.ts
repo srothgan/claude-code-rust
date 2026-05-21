@@ -2259,7 +2259,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.112");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.146");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
