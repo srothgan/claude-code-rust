@@ -49,6 +49,7 @@ use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::git_context::GitContextState;
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
+use super::keymap::ResolvedKeymap;
 use super::mention;
 use super::plugins::PluginsState;
 use super::slash;
@@ -205,6 +206,8 @@ pub struct App {
     pub todos: Vec<TodoItem>,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
+    /// Resolved keyboard bindings used by chat-surface dispatch.
+    pub keymap: ResolvedKeymap,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
     /// Plugin inventory and UI state for the Config > Plugins view.
@@ -851,6 +854,7 @@ impl App {
             tool_call_index: HashMap::default(),
             todos: Vec::new(),
             focus: FocusManager::default(),
+            keymap: ResolvedKeymap::defaults(),
             available_commands: Vec::new(),
             plugins: PluginsState::default(),
             available_agents: Vec::new(),

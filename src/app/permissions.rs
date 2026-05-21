@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::inline_interactions::{
-    focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
-    get_focused_interaction_tc, invalidate_if_changed, pop_next_valid_interaction_id,
+    clear_inline_interaction_focus, focus_next_inline_interaction, focused_interaction,
+    focused_interaction_dirty_idx, focused_interaction_is_active, get_focused_interaction_tc,
+    handle_interaction_focus_cycle, invalidate_if_changed, normalize_pending_interaction_queue,
+    pop_next_valid_interaction_id,
 };
-use super::keys::is_ctrl_char_shortcut;
 use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::agent::model::PermissionOptionKind;
+use crate::app::keymap::InteractionAction;
+use crate::app::keys::KeyOutcome;
 use crossterm::event::{KeyCode, KeyEvent};
 
 fn focused_permission(app: &App) -> Option<&crate::app::InlinePermission> {
@@ -51,26 +54,6 @@ fn option_tokens(option: &model::PermissionOption) -> (bool, bool, bool, bool) {
     (allow_like, reject_like, persistent_like, session_like)
 }
 
-fn option_is_allow_once_fallback(option: &model::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
-    allow_like && !reject_like && !persistent_like && !session_like
-}
-
-fn option_is_allow_always_fallback(option: &model::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
-    allow_like && !reject_like && persistent_like
-}
-
-fn option_is_allow_non_once_fallback(option: &model::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like, session_like) = option_tokens(option);
-    allow_like && !reject_like && (persistent_like || session_like)
-}
-
-fn option_is_reject_once_fallback(option: &model::PermissionOption) -> bool {
-    let (allow_like, reject_like, persistent_like, _) = option_tokens(option);
-    reject_like && !allow_like && !persistent_like
-}
-
 fn option_is_reject_fallback(option: &model::PermissionOption) -> bool {
     let (allow_like, reject_like, _, _) = option_tokens(option);
     reject_like && !allow_like
@@ -82,6 +65,75 @@ pub(super) fn focused_permission_is_plan_approval(app: &App) -> bool {
             matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
         })
     })
+}
+
+fn focused_permission_option_count(app: &App) -> usize {
+    focused_permission(app).map_or(0, |permission| permission.options.len())
+}
+
+pub(super) fn execute_permission_action(
+    app: &mut App,
+    action: InteractionAction,
+    key: KeyEvent,
+) -> KeyOutcome {
+    normalize_pending_interaction_queue(app);
+    if !focused_interaction_is_active(app) || focused_permission(app).is_none() {
+        return KeyOutcome::Ignored;
+    }
+
+    let option_count = focused_permission_option_count(app);
+    match action {
+        InteractionAction::MovePrevious => {
+            if let Some(outcome) = handle_permission_vertical_focus_cycle(app, key) {
+                return outcome;
+            }
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_permission_option_left(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveNext => {
+            if let Some(outcome) = handle_permission_vertical_focus_cycle(app, key) {
+                return outcome;
+            }
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_permission_option_right(app, option_count);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Confirm => {
+            if option_count == 0 {
+                return KeyOutcome::Ignored;
+            }
+            respond_permission(app, None);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Cancel => {
+            if !respond_permission_reject_or_cancel(app, option_count) {
+                return KeyOutcome::Ignored;
+            }
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::FocusNext => {
+            clear_inline_interaction_focus(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveStart
+        | InteractionAction::MoveEnd
+        | InteractionAction::ToggleSelection
+        | InteractionAction::ToggleNotes => KeyOutcome::Ignored,
+    }
+}
+
+fn handle_permission_vertical_focus_cycle(app: &mut App, key: KeyEvent) -> Option<KeyOutcome> {
+    if !matches!(key.code, KeyCode::Up | KeyCode::Down) || focused_permission_is_plan_approval(app)
+    {
+        return None;
+    }
+
+    handle_interaction_focus_cycle(app, key, true, false).map(|_consumed| KeyOutcome::Handled(true))
 }
 
 fn move_permission_option_left(app: &mut App) {
@@ -163,72 +215,15 @@ fn handle_permission_option_keys(
     }
 }
 
-fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<bool> {
-    if !matches!(key.code, KeyCode::Char(_)) {
-        return None;
-    }
-    if focused_permission_is_plan_approval(app) {
-        if is_ctrl_char_shortcut(key, 'y') {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::PlanApprove)
-            {
-                respond_permission(app, Some(idx));
-                return Some(true);
-            }
-            return Some(false);
-        }
-        if is_ctrl_char_shortcut(key, 'n') {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::PlanReject) {
-                respond_permission(app, Some(idx));
-                return Some(true);
-            }
-            return Some(false);
-        }
-        if is_ctrl_char_shortcut(key, 'a') {
-            return Some(false);
-        }
-        return None;
-    }
-    if is_ctrl_char_shortcut(key, 'y') {
-        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
-            .or_else(|| focused_option_index_where(app, option_is_allow_once_fallback))
-            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowSession))
-            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
-            .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
-            .or_else(|| focused_option_index_where(app, option_is_allow_non_once_fallback))
-        {
-            respond_permission(app, Some(idx));
-            return Some(true);
-        }
-        return Some(false);
-    }
-    if is_ctrl_char_shortcut(key, 'a') {
-        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowSession)
-            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
-            .or_else(|| focused_option_index_where(app, option_is_allow_non_once_fallback))
-        {
-            respond_permission(app, Some(idx));
-            return Some(true);
-        }
-        return Some(false);
-    }
-    if is_ctrl_char_shortcut(key, 'n') {
-        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
-            .or_else(|| focused_option_index_where(app, option_is_reject_once_fallback))
-        {
-            respond_permission(app, Some(idx));
-            return Some(true);
-        }
-        return Some(false);
-    }
-    None
-}
-
+#[allow(dead_code)]
+// Slice 6 keeps this raw-key wrapper only for legacy-focused unit coverage.
+// Production dispatch uses `execute_permission_action` through the keymap executor.
 pub(super) fn handle_permission_key(
     app: &mut App,
     key: KeyEvent,
     interaction_has_focus: bool,
 ) -> bool {
-    let option_count = focused_permission(app).map_or(0, |permission| permission.options.len());
+    let option_count = focused_permission_option_count(app);
     let plan_approval = focused_permission_is_plan_approval(app);
 
     if let Some(consumed) =
@@ -236,10 +231,23 @@ pub(super) fn handle_permission_key(
     {
         return consumed;
     }
-    if let Some(consumed) = handle_permission_quick_shortcuts(app, key) {
-        return consumed;
-    }
     false
+}
+
+fn respond_permission_reject_or_cancel(app: &mut App, option_count: usize) -> bool {
+    if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
+        .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
+        .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
+    {
+        respond_permission(app, Some(idx));
+        true
+    } else if option_count > 0 {
+        respond_permission(app, Some(option_count - 1));
+        true
+    } else {
+        respond_permission_cancel(app);
+        true
+    }
 }
 
 fn respond_permission(app: &mut App, override_index: Option<usize>) {
@@ -300,7 +308,6 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     focus_next_inline_interaction(app);
 }
 
-#[cfg(test)]
 fn respond_permission_cancel(app: &mut App) {
     let Some(tool_id) = pop_next_valid_interaction_id(app) else {
         return;
@@ -432,23 +439,22 @@ mod tests {
         assert!(permission_focused(&app, "perm-1"));
         assert!(!permission_focused(&app, "perm-2"));
 
-        let consumed = crate::app::inline_interactions::handle_interaction_focus_cycle(
+        let consumed = execute_permission_action(
             &mut app,
+            InteractionAction::MoveNext,
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            true,
-            false,
         );
-        assert_eq!(consumed, Some(true));
+        assert_eq!(consumed, KeyOutcome::Handled(true));
         assert_eq!(app.pending_interaction_ids, vec!["perm-2", "perm-1"]);
         assert!(permission_focused(&app, "perm-2"));
         assert!(!permission_focused(&app, "perm-1"));
 
-        let consumed = handle_permission_key(
+        let consumed = execute_permission_action(
             &mut app,
+            InteractionAction::Confirm,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            true,
         );
-        assert!(consumed);
+        assert_eq!(consumed, KeyOutcome::Handled(true));
 
         let resp2 = rx2.try_recv().expect("focused permission should receive response");
         let model::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
@@ -476,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn step4_ctrl_y_maps_to_allow_once_kind_and_only_resolves_one_permission() {
+    fn ctrl_y_is_not_a_permission_quick_shortcut() {
         let mut app = App::test_default();
         let mut rx1 = add_permission(
             &mut app,
@@ -507,14 +513,10 @@ mod tests {
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
             true,
         );
-        assert!(consumed);
+        assert!(!consumed);
 
-        let resp1 = rx1.try_recv().expect("first permission should be answered");
-        let model::RequestPermissionOutcome::Selected(sel1) = resp1.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel1.option_id.clone(), "allow-once");
-        assert_eq!(app.pending_interaction_ids, vec!["perm-2"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
+        assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
         assert!(matches!(rx2.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -541,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_y_approves_plan_permission() {
+    fn ctrl_shortcuts_are_not_consumed_for_plan_approval() {
         let mut app = App::test_default();
         let mut rx = add_permission(
             &mut app,
@@ -561,88 +563,17 @@ mod tests {
             true,
         );
 
-        let consumed = handle_permission_key(
-            &mut app,
+        for key in [
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(consumed);
-
-        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+y");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "plan-approve");
-    }
-
-    #[test]
-    fn raw_ctrl_y_approves_plan_permission() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    PermissionOptionKind::PlanReject,
-                ),
-            ],
-            true,
-        );
-
-        let consumed = handle_permission_key(
-            &mut app,
             KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE),
-            true,
-        );
-        assert!(consumed);
-
-        let resp = rx.try_recv().expect("plan permission should be answered by raw ctrl+y");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "plan-approve");
-    }
-
-    #[test]
-    fn ctrl_n_rejects_plan_permission() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    PermissionOptionKind::PlanReject,
-                ),
-            ],
-            true,
-        );
-
-        let consumed = handle_permission_key(
-            &mut app,
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(consumed);
+        ] {
+            let consumed = handle_permission_key(&mut app, key, true);
+            assert!(!consumed);
+        }
 
-        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+n");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "plan-reject");
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -684,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_n_rejects_focused_permission() {
+    fn ctrl_n_is_not_a_permission_quick_shortcut() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
 
@@ -693,14 +624,9 @@ mod tests {
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
             true,
         );
-        assert!(consumed);
-        assert!(app.pending_interaction_ids.is_empty());
-
-        let resp = rx.try_recv().expect("permission should be answered by ctrl+n");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "reject-once");
+        assert!(!consumed);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -735,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_matches_allow_always_by_label_when_kind_is_missing() {
+    fn ctrl_a_is_not_a_permission_quick_shortcut() {
         let mut app = App::test_default();
         let mut rx = add_permission(
             &mut app,
@@ -765,17 +691,13 @@ mod tests {
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
             true,
         );
-        assert!(consumed);
-
-        let resp = rx.try_recv().expect("permission should be answered by ctrl+a fallback");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "allow-always");
+        assert!(!consumed);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
-    fn ctrl_a_accepts_uppercase_with_shift_modifier() {
+    fn ctrl_a_with_shift_is_not_a_permission_quick_shortcut() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
 
@@ -784,13 +706,9 @@ mod tests {
             KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
             true,
         );
-        assert!(consumed);
-
-        let resp = rx.try_recv().expect("permission should be answered by uppercase ctrl+a");
-        let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel.option_id.clone(), "allow-always");
+        assert!(!consumed);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]

@@ -17,9 +17,11 @@ use super::{
     PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSizeChange, TextBlock,
 };
 use crate::agent::model;
-use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
+#[cfg(all(test, target_os = "macos"))]
+use crate::app::keys::CMD_MOD;
 #[cfg(test)]
-use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
+use crate::app::keys::WORD_NAV_MOD;
+use crate::app::keys::{KeyOutcome, RuntimeCommand, reclaim_input_from_inline_prompt_if_needed};
 use crate::app::todos::apply_plan_todos;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
@@ -27,36 +29,63 @@ use crossterm::event::{Event, KeyEventKind};
 
 pub use client::handle_client_event;
 
-pub fn handle_terminal_event(app: &mut App, event: Event) {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TerminalEventOutcome {
+    changed: bool,
+    runtime_command: Option<RuntimeCommand>,
+}
+
+impl TerminalEventOutcome {
+    pub(crate) fn runtime_command(self) -> Option<RuntimeCommand> {
+        self.runtime_command
+    }
+
+    fn ignored() -> Self {
+        Self { changed: false, runtime_command: None }
+    }
+
+    fn handled(changed: bool) -> Self {
+        Self { changed, runtime_command: None }
+    }
+
+    fn from_key_outcome(outcome: KeyOutcome) -> Self {
+        Self { changed: outcome.changed(), runtime_command: outcome.runtime_command() }
+    }
+}
+
+pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcome {
     if matches!(app.terminal_lifecycle, super::TerminalLifecycleState::ReleasedToChild(_))
         && !matches!(&event, Event::Resize(_, _))
     {
-        return;
+        return TerminalEventOutcome::ignored();
     }
 
-    let changed = match event {
+    let outcome = match event {
         Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
             dispatch_mouse_by_view(app, mouse);
-            true
+            TerminalEventOutcome::handled(true)
         }
-        Event::Paste(text) => dispatch_paste_by_view(app, &text),
+        Event::Paste(text) => TerminalEventOutcome::handled(dispatch_paste_by_view(app, &text)),
         Event::FocusGained => {
             app.notifications.on_focus_gained();
             app.sync_git_context();
-            true
+            TerminalEventOutcome::handled(true)
         }
         Event::FocusLost => {
             app.notifications.on_focus_lost();
-            true
+            TerminalEventOutcome::handled(true)
         }
-        Event::Resize(width, height) => handle_resize(app, width, height),
+        Event::Resize(width, height) => {
+            TerminalEventOutcome::handled(handle_resize(app, width, height))
+        }
         // Non-press key events (Release, Repeat) -- ignored.
-        Event::Key(_) => false,
+        Event::Key(_) => TerminalEventOutcome::ignored(),
     };
-    if changed {
+    if outcome.changed {
         app.request_active_surface_repaint();
     }
+    outcome
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
@@ -142,23 +171,23 @@ fn log_resize_classification(app: &App, size_change: TerminalSizeChange, action:
     );
 }
 
-fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> TerminalEventOutcome {
     match app.surface_mode {
         SurfaceMode::Chat => {
             app.active_paste_session = None;
-            super::keys::dispatch_key_by_focus(app, key)
+            TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
-            true
+            TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Trusted) => {
             super::trust::handle_key(app, key);
-            true
+            TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
             super::session_picker::handle_key(app, key);
-            true
+            TerminalEventOutcome::handled(true)
         }
     }
 }
@@ -501,6 +530,10 @@ mod tests {
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::agent::events::TerminalProcess;
+    use crate::app::keymap::{
+        KeyAction, KeyBinding, KeyBindingSource, KeyContext, KeySpec, ResolvedKeymap,
+        TerminalAction,
+    };
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
@@ -3831,14 +3864,19 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_z_and_y_undo_and_redo_textarea_history() {
+    fn configured_undo_and_redo_restore_textarea_history() {
         let mut app = make_test_app();
         app.input.set_text("hello world");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
         assert_eq!(app.input.text(), "hello ");
 
+        #[cfg(target_os = "macos")]
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
+        #[cfg(target_os = "windows")]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('_'), KeyModifiers::CONTROL));
         assert_eq!(app.input.text(), "hello world");
 
         #[cfg(target_os = "macos")]
@@ -3847,8 +3885,24 @@ mod tests {
             KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT),
         );
         #[cfg(not(target_os = "macos"))]
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), CMD_MOD));
+        handle_normal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        );
         assert_eq!(app.input.text(), "hello ");
+    }
+
+    #[test]
+    fn ctrl_y_yanks_the_last_killed_text() {
+        let mut app = make_test_app();
+        app.input.set_text("hello world");
+        app.input.move_home();
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "");
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "hello world");
     }
 
     #[test]
@@ -4450,7 +4504,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_ctrl_y_resolves_pending_permission() {
+    fn permission_ctrl_y_does_not_resolve_pending_permission() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
             &mut app,
@@ -4475,16 +4529,15 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+y should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "allow");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
-    fn permission_ctrl_a_resolves_pending_permission() {
+    fn permission_ctrl_a_does_not_resolve_pending_permission() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
             &mut app,
@@ -4514,16 +4567,15 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+a should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "allow-always");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
-    fn permission_ctrl_n_works_even_when_mention_focus_owns_navigation() {
+    fn permission_ctrl_n_does_not_bypass_mention_focus() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
             &mut app,
@@ -4563,16 +4615,15 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+n should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
-    fn plan_approval_raw_ctrl_y_resolves_without_editing_input() {
+    fn plan_approval_raw_ctrl_y_does_not_resolve_permission() {
         let mut app = make_test_app();
         app.input.set_text("seed");
         let mut response_rx = attach_pending_permission(
@@ -4598,13 +4649,12 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE)),
         );
 
-        let resp = response_rx.try_recv().expect("raw ctrl+y should resolve plan approval");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "plan-approve");
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         assert_eq!(app.input.text(), "seed");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
@@ -4692,6 +4742,36 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_c_clears_local_draft_before_quitting() {
+        let mut app = make_test_app();
+        app.input.set_text("draft");
+        app.pending_submit = Some(app.input.snapshot());
+        app.pending_paste_text = "queued paste".to_owned();
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "image-data".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.input.is_empty());
+        assert!(app.pending_submit.is_none());
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_images.is_empty());
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn ctrl_q_quits() {
         let mut app = make_test_app();
 
@@ -4701,6 +4781,26 @@ mod tests {
         );
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn terminal_event_outcome_carries_runtime_command() {
+        let mut app = make_test_app();
+        app.keymap = ResolvedKeymap::from_bindings([KeyBinding::new(
+            KeyContext::Global,
+            KeySpec::char('s', KeyModifiers::CONTROL),
+            KeyAction::Terminal(TerminalAction::Suspend),
+            KeyBindingSource::Config,
+        )])
+        .expect("custom test keymap should validate");
+
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(outcome.runtime_command, Some(crate::app::keys::RuntimeCommand::SuspendProcess));
     }
 
     #[test]

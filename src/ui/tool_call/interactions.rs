@@ -85,17 +85,6 @@ pub(super) fn render_permission_lines(
             }
             spans.extend(name_spans);
         }
-
-        let shortcut = match opt.kind {
-            PermissionOptionKind::AllowOnce => " (Ctrl+y)",
-            PermissionOptionKind::AllowSession | PermissionOptionKind::AllowAlways => " (Ctrl+a)",
-            PermissionOptionKind::RejectOnce => " (Ctrl+n)",
-            PermissionOptionKind::RejectAlways
-            | PermissionOptionKind::QuestionChoice
-            | PermissionOptionKind::PlanApprove
-            | PermissionOptionKind::PlanReject => "",
-        };
-        spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
     }
 
     lines.push(Line::from(spans));
@@ -210,10 +199,10 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     // Stacked approve / reject options.
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
-        let (icon, icon_color, shortcut) = match opt.kind {
-            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green, " [Ctrl+y]"),
-            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red, " [Ctrl+n]"),
-            _ => ("\u{00b7}", Color::Gray, ""),
+        let (icon, icon_color) = match opt.kind {
+            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green),
+            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red),
+            _ => ("\u{00b7}", Color::Gray),
         };
 
         let name_style = if is_selected {
@@ -233,12 +222,11 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
         }
         line_spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
         line_spans.push(Span::styled(opt.name.clone(), name_style));
-        line_spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
         lines.push(Line::from(line_spans));
     }
 
     lines.push(Line::from(Span::styled(
-        "  \u{2191}\u{2193} select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject",
+        "  \u{2191}\u{2193} select  enter confirm  esc reject",
         Style::default().fg(theme::DIM),
     )));
 
@@ -584,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_approval_hints_use_ctrl_shortcuts_only() {
+    fn plan_approval_hints_use_selection_and_enter() {
         let tc = test_tool_call("ExitPlanMode");
         let perm = test_permission(PermissionOptionKind::PlanApprove);
 
@@ -596,11 +584,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("[Ctrl+y]"));
-        assert!(rendered.contains("[Ctrl+n]"));
-        assert!(rendered.contains("Ctrl+y approve"));
-        assert!(rendered.contains("Ctrl+n/esc reject"));
-        assert!(!rendered.contains(" [y]"));
-        assert!(!rendered.contains(" [n]"));
+        assert!(rendered.contains("select"));
+        assert!(rendered.contains("enter confirm"));
+        assert!(rendered.contains("esc reject"));
+        assert!(!rendered.contains("Ctrl+y"));
+        assert!(!rendered.contains("Ctrl+n"));
     }
 }

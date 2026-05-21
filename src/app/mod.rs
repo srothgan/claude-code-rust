@@ -14,6 +14,7 @@ mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
+pub mod keymap;
 mod keys;
 mod lifecycle;
 pub(crate) mod mention;
@@ -57,16 +58,16 @@ pub use lifecycle::{
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CancelOrigin, ChatMessage, ChatMessageId,
-    ChatRenderState, ChatRenderTraceState, ComposerRenderState, ExtraUsage, HistoryOutputId,
-    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
-    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
-    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo, SelectionPoint,
-    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSize, TerminalSizeChange,
-    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
+    App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin, ChatMessage,
+    ChatMessageId, ChatRenderState, ChatRenderTraceState, ComposerRenderState, ExtraUsage,
+    HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
+    InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
+    MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
+    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
+    RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState, SystemSeverity,
+    TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
+    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
@@ -75,6 +76,7 @@ pub use view::{FullscreenView, SurfaceMode};
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use anyhow::Context as _;
 use crossterm::event::EventStream;
 use futures::{FutureExt as _, StreamExt};
 use std::time::{Duration, Instant};
@@ -115,7 +117,8 @@ async fn run_tui_loop(
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
-                events::handle_terminal_event(app, event);
+                let outcome = events::handle_terminal_event(app, event);
+                handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
             }
             Some(event) = app.event_rx.recv() => {
                 handle_runtime_client_event(app, event, &mut service_status_check_started);
@@ -139,7 +142,8 @@ async fn run_tui_loop(
         loop {
             // Try terminal events first (keeps typing responsive)
             if let Some(Some(Ok(event))) = events.next().now_or_never() {
-                events::handle_terminal_event(app, event);
+                let outcome = events::handle_terminal_event(app, event);
+                handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
                 continue;
             }
             // Then client events
@@ -237,6 +241,70 @@ async fn run_tui_loop(
     }
 
     Ok(())
+}
+
+fn handle_runtime_command(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+    command: Option<keys::RuntimeCommand>,
+) -> anyhow::Result<()> {
+    match command {
+        Some(keys::RuntimeCommand::SuspendProcess) => suspend_tui_process(app, terminal_runtime),
+        Some(keys::RuntimeCommand::ReleaseToChild) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "runtime_release_to_child_ignored",
+                message = "release-to-child key command has no active child process",
+                outcome = "ignored",
+            );
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+fn suspend_tui_process(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+) -> anyhow::Result<()> {
+    tab_title::restore_tab_title(&app.cwd);
+    terminal_runtime.restore(app);
+
+    #[cfg(unix)]
+    let suspend_result = suspend_current_process();
+    #[cfg(not(unix))]
+    let suspend_result = {
+        suspend_current_process();
+        Ok(())
+    };
+    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap(app)
+        .context("failed to restore terminal after process resume")?;
+    *terminal_runtime = resumed_runtime;
+    tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+    app.request_active_surface_repaint();
+
+    suspend_result
+}
+
+#[cfg(unix)]
+fn suspend_current_process() -> anyhow::Result<()> {
+    // SAFETY: `raise` targets the current process with a constant signal and does
+    // not dereference pointers or rely on external memory validity.
+    let result = unsafe { libc::raise(libc::SIGTSTP) };
+    (result == 0)
+        .then_some(())
+        .ok_or_else(std::io::Error::last_os_error)
+        .context("failed to suspend TUI process")
+}
+
+#[cfg(not(unix))]
+fn suspend_current_process() {
+    tracing::warn!(
+        target: crate::logging::targets::APP_LIFECYCLE,
+        event_name = "runtime_suspend_ignored",
+        message = "process suspend is not supported on this platform",
+        outcome = "ignored",
+    );
 }
 
 fn handle_runtime_client_event(

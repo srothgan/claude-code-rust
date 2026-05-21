@@ -175,6 +175,7 @@ pub fn create_app(cli: &Cli) -> App {
         tool_call_index: HashMap::new(),
         todos: Vec::<TodoItem>::new(),
         focus: FocusManager::default(),
+        keymap: super::keymap::ResolvedKeymap::defaults(),
         available_commands: Vec::new(),
         plugins: PluginsState::default(),
         available_agents: Vec::new(),

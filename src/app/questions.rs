@@ -3,10 +3,13 @@
 
 use super::inline_interactions::{
     focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
-    get_focused_interaction_tc, invalidate_if_changed, pop_next_valid_interaction_id,
+    focused_interaction_is_active, get_focused_interaction_tc, invalidate_if_changed,
+    normalize_pending_interaction_queue, pop_next_valid_interaction_id,
 };
 use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
+use crate::app::keymap::InteractionAction;
+use crate::app::keys::KeyOutcome;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn focused_question(app: &App) -> Option<&crate::app::InlineQuestion> {
@@ -23,6 +26,144 @@ pub(super) fn focused_question_is_editing_notes(app: &App) -> bool {
 
 fn focused_question_option_count(app: &App) -> usize {
     focused_question(app).map_or(0, |question| question.prompt.options.len())
+}
+
+pub(super) fn execute_question_action(
+    app: &mut App,
+    action: InteractionAction,
+    key: KeyEvent,
+) -> KeyOutcome {
+    normalize_pending_interaction_queue(app);
+    if !has_focused_question(app) || !focused_interaction_is_active(app) {
+        return KeyOutcome::Ignored;
+    }
+
+    if focused_question_is_editing_notes(app) {
+        return execute_question_note_action(app, action, key);
+    }
+
+    let option_count = focused_question_option_count(app);
+    match action {
+        InteractionAction::MovePrevious => {
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_question_option_left(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveNext => {
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_question_option_right(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveStart => {
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_question_option_to_start(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveEnd => {
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            move_question_option_to_end(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::ToggleSelection => {
+            if option_count == 0 {
+                return KeyOutcome::Handled(false);
+            }
+            toggle_question_selection(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::ToggleNotes => {
+            set_question_notes_editing(app, true);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Confirm => {
+            if option_count == 0 {
+                return KeyOutcome::Ignored;
+            }
+            respond_question(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Cancel => {
+            respond_question_cancel(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::FocusNext => KeyOutcome::Ignored,
+    }
+}
+
+fn execute_question_note_action(
+    app: &mut App,
+    action: InteractionAction,
+    key: KeyEvent,
+) -> KeyOutcome {
+    match action {
+        InteractionAction::MovePrevious => {
+            if !matches!(key.code, KeyCode::Up) {
+                move_question_notes_cursor(app, -1);
+            }
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveNext => {
+            if !matches!(key.code, KeyCode::Down) {
+                move_question_notes_cursor(app, 1);
+            }
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveStart => {
+            move_question_notes_cursor_to_start(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::MoveEnd => {
+            move_question_notes_cursor_to_end(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::ToggleNotes => {
+            set_question_notes_editing(app, false);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Confirm => {
+            respond_question(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::Cancel => {
+            respond_question_cancel(app);
+            KeyOutcome::Handled(true)
+        }
+        InteractionAction::FocusNext | InteractionAction::ToggleSelection => KeyOutcome::Ignored,
+    }
+}
+
+pub(super) fn handle_question_note_key(app: &mut App, key: KeyEvent) -> Option<KeyOutcome> {
+    normalize_pending_interaction_queue(app);
+    if !has_focused_question(app)
+        || !focused_interaction_is_active(app)
+        || !focused_question_is_editing_notes(app)
+    {
+        return None;
+    }
+
+    match key.code {
+        KeyCode::Backspace => {
+            delete_question_note_char_before(app);
+            Some(KeyOutcome::Handled(true))
+        }
+        KeyCode::Delete => {
+            delete_question_note_char_after(app);
+            Some(KeyOutcome::Handled(true))
+        }
+        KeyCode::Char(ch) if is_printable_question_note_modifiers(key.modifiers) => {
+            insert_question_note_char(app, ch);
+            Some(KeyOutcome::Handled(true))
+        }
+        _ => None,
+    }
 }
 
 fn is_printable_question_note_modifiers(modifiers: KeyModifiers) -> bool {
@@ -355,6 +496,9 @@ fn respond_question_cancel(app: &mut App) {
     focus_next_inline_interaction(app);
 }
 
+#[allow(dead_code)]
+// Slice 6 keeps this raw-key wrapper only for legacy-focused unit coverage.
+// Production dispatch uses `execute_question_action` through the keymap executor.
 pub(super) fn handle_question_key(
     app: &mut App,
     key: KeyEvent,
@@ -540,13 +684,19 @@ mod tests {
             true,
         );
 
-        let consumed_right =
-            handle_question_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), true);
-        let consumed_enter =
-            handle_question_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), true);
+        let consumed_right = execute_question_action(
+            &mut app,
+            InteractionAction::MoveNext,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        );
+        let consumed_enter = execute_question_action(
+            &mut app,
+            InteractionAction::Confirm,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
 
-        assert_eq!(consumed_right, Some(true));
-        assert_eq!(consumed_enter, Some(true));
+        assert_eq!(consumed_right, KeyOutcome::Handled(true));
+        assert_eq!(consumed_enter, KeyOutcome::Handled(true));
         assert!(app.pending_interaction_ids.is_empty());
 
         let resp = rx.try_recv().expect("question should be answered");
@@ -581,42 +731,53 @@ mod tests {
         );
 
         assert_eq!(
-            handle_question_key(
+            execute_question_action(
                 &mut app,
+                InteractionAction::ToggleSelection,
                 KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-                true
             ),
-            Some(true)
+            KeyOutcome::Handled(true)
         );
         assert_eq!(
-            handle_question_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), true),
-            Some(true)
-        );
-        assert_eq!(
-            handle_question_key(
+            execute_question_action(
                 &mut app,
-                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-                true
+                InteractionAction::MoveNext,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
             ),
-            Some(true)
+            KeyOutcome::Handled(true)
         );
         assert_eq!(
-            handle_question_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), true),
-            Some(true)
+            execute_question_action(
+                &mut app,
+                InteractionAction::ToggleSelection,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            ),
+            KeyOutcome::Handled(true)
+        );
+        assert_eq!(
+            execute_question_action(
+                &mut app,
+                InteractionAction::ToggleNotes,
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            ),
+            KeyOutcome::Handled(true)
         );
         for ch in ['n', 'o', 't', 'e'] {
             assert_eq!(
-                handle_question_key(
+                handle_question_note_key(
                     &mut app,
                     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                    true
                 ),
-                Some(true)
+                Some(KeyOutcome::Handled(true))
             );
         }
         assert_eq!(
-            handle_question_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), true),
-            Some(true)
+            execute_question_action(
+                &mut app,
+                InteractionAction::Confirm,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            KeyOutcome::Handled(true)
         );
 
         let resp = rx.try_recv().expect("question should be answered");

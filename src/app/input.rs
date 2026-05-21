@@ -306,6 +306,30 @@ impl InputState {
         changed
     }
 
+    pub fn textarea_delete_line_before(&mut self) -> bool {
+        let changed = self.editor.delete_line_by_head();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
+    }
+
+    pub fn textarea_delete_line_after(&mut self) -> bool {
+        let changed = self.editor.delete_line_by_end();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
+    }
+
+    pub fn textarea_yank(&mut self) -> bool {
+        let changed = self.editor.paste();
+        if changed {
+            self.bump_content_version();
+        }
+        changed
+    }
+
     pub fn insert_newline(&mut self) {
         let _ = self.textarea_insert_newline();
     }

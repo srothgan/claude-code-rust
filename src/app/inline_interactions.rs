@@ -1,9 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{
-    App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo, permissions, questions,
-};
+use super::{App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crossterm::event::{KeyCode, KeyEvent};
 
 pub(super) fn focused_interaction_id(app: &App) -> Option<&str> {
@@ -221,24 +219,4 @@ pub(super) fn handle_interaction_focus_cycle(
 
     set_interaction_focused(app, 0, true);
     Some(true)
-}
-
-pub(super) fn handle_inline_interaction_key(app: &mut App, key: KeyEvent) -> bool {
-    normalize_pending_interaction_queue(app);
-    let interaction_has_focus = focused_interaction_is_active(app);
-    let has_question = questions::has_focused_question(app);
-    let plan_approval = permissions::focused_permission_is_plan_approval(app);
-
-    if let Some(consumed) = handle_interaction_focus_cycle(
-        app,
-        key,
-        interaction_has_focus,
-        has_question || plan_approval,
-    ) {
-        return consumed;
-    }
-    if has_question {
-        return questions::handle_question_key(app, key, interaction_has_focus).unwrap_or(false);
-    }
-    permissions::handle_permission_key(app, key, interaction_has_focus)
 }

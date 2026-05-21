@@ -503,6 +503,7 @@ dependencies = [
  "futures",
  "ignore",
  "image",
+ "libc",
  "notify",
  "notify-rust",
  "pretty_assertions",
