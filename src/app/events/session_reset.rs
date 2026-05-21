@@ -154,6 +154,11 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
+    super::clear_compaction_state(app, false);
+    app.status = super::super::AppStatus::Ready;
+    app.cancelled_turn_pending_hint = false;
+    app.pending_cancel_origin = None;
+    app.pending_auto_submit_after_cancel = false;
     app.enforce_history_retention_tracked();
 }
 

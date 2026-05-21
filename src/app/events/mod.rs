@@ -2729,6 +2729,9 @@ mod tests {
         assert!(canonical_messages_contain_text(&app, "first user line"));
         assert!(canonical_messages_contain_text(&app, "assistant reply"));
         assert!(!session_overview_has_welcome(&app));
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.pending_cancel_origin, None);
+        assert!(!app.pending_auto_submit_after_cancel);
 
         handle_client_event(
             &mut app,
@@ -2777,6 +2780,9 @@ mod tests {
         assert!(live_rows_contain_text(&mut app, "startup user line"));
         assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
         assert!(!session_overview_has_welcome(&app));
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.pending_cancel_origin, None);
+        assert!(!app.pending_auto_submit_after_cancel);
 
         handle_client_event(
             &mut app,
@@ -2794,6 +2800,46 @@ mod tests {
         );
 
         assert!(!session_overview_has_welcome(&app));
+    }
+
+    #[test]
+    fn startup_resume_history_allows_immediate_prompt_submit() {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        let history_updates = vec![
+            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("startup user line")),
+            )),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("startup assistant reply")),
+            )),
+        ];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("startup-resume"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates,
+            },
+        );
+        while rx.try_recv().is_ok() {}
+
+        app.input.set_text("next prompt");
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        super::super::finalize_deferred_submit(&mut app);
+
+        let envelope = rx.try_recv().expect("prompt command should be sent");
+        assert!(matches!(
+            envelope.command,
+            crate::agent::wire::BridgeCommand::Prompt { session_id, .. }
+                if session_id == "startup-resume"
+        ));
+        assert_eq!(app.pending_cancel_origin, None);
+        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(rx.try_recv().is_err(), "resume submit should not send cancel");
     }
 
     #[test]
