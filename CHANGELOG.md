@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-05-21 [Changes][v0.12.0]
+
+### Features
+
+- **Inline terminal chat runtime** (#165, @srothgan): Replace the full-screen chat surface with inline terminal-owned rendering.
+- **Resolved action-based keymap** (#166, @srothgan): Route shortcuts through semantic actions and generate help from the resolved keymap.
+- **macOS modifier key support** (#159, @TomasWeisss): Support Command-key shortcuts in terminal modes.
+
+### Fixes
+
+- **Inline rendering stability** (#165, @srothgan): Stabilize resume, resize, fullscreen return, slash notices, and active-turn state on the inline path.
+- **Tool-call and diff rendering** (#152, #165, #166, @srothgan): Preserve diff indentation, show compact change counts, uncap plan markdown, and keep concrete tool output.
+- **Agent SDK bridge events** (#165, @srothgan): Suppress `ToolSearch` events, protect the packaged bridge runtime, and accept fractional API retry delays.
+
+### UI
+
+- **Composer hints and Help tab** (#165, #166, @srothgan): Move autocomplete into compact composer rows and Help into fullscreen config.
+- **Compact inline tools and todos** (#165, @srothgan): Render todos inline and tighten standard tool body caps.
+
+### Documentation
+
+- **README billing and commands cleanup** (#165, @srothgan): Document Agent SDK billing changes, custom slash commands, and remove the outdated Architecture section.
+
+### CI and Dependencies
+
+- **Agent SDK 0.3.146 refresh** (#165, @srothgan): Update the Agent SDK bridge dependencies and package locks.
+- **Rust dependency updates** (#151, #154, #155, #156, #157, #158, #160, #161, #162, #163, #164): Bump Rust dependencies and clarify the `rand` audit ignore.
+- **rustls-webpki advisory fix** (#153): Bump `rustls-webpki` to `0.103.13` for `RUSTSEC-2026-0104`.
+
 ## [0.11.3] - 2026-04-19 [Changes][v0.11.3]
 
 ### Fixes
@@ -517,6 +546,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.12.0]: https://github.com/srothgan/claude-code-rust/compare/v0.11.3...v0.12.0
 [v0.11.3]: https://github.com/srothgan/claude-code-rust/compare/v0.11.2...v0.11.3
 [v0.11.2]: https://github.com/srothgan/claude-code-rust/compare/v0.11.1...v0.11.2
 [v0.11.1]: https://github.com/srothgan/claude-code-rust/compare/v0.11.0...v0.11.1

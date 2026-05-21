@@ -12,13 +12,6 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
-> [!WARNING]
-> **Agent SDK billing changes on June 15, 2026.** Anthropic says Agent SDK usage, `claude -p`, Claude Code GitHub Actions, and third-party Agent SDK apps will use a separate monthly Agent SDK credit instead of normal interactive Claude or Claude Code subscription limits. Because Claude Code Rust wraps the Agent SDK, treat usage through this project as Agent SDK usage. If that credit is exhausted, continued use may require enabling extra usage billed at standard API rates, or requests may pause until the credit refreshes.
->
-> Sources:
-> - [Anthropic support: Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
-> - [ClaudeDevs announcement](https://x.com/ClaudeDevs/status/2054610152817619388)
-
 ## Requisites
 
 - Node.js 18+ (for the Agent SDK bridge)
@@ -41,6 +34,13 @@ If `claude-rs` resolves to an older global shim, ensure your npm global bin dire
 ```bash
 claude-rs
 ```
+
+> [!WARNING]
+> **Agent SDK billing changes on June 15, 2026.** Anthropic says Agent SDK usage, `claude -p`, Claude Code GitHub Actions, and third-party Agent SDK apps will use a separate monthly Agent SDK credit instead of normal interactive Claude or Claude Code subscription limits. Because Claude Code Rust wraps the Agent SDK, treat usage through this project as Agent SDK usage. If that credit is exhausted, continued use may require enabling extra usage billed at standard API rates, or requests may pause until the credit refreshes.
+>
+> Sources:
+> - [Anthropic support: Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+> - [ClaudeDevs announcement](https://x.com/ClaudeDevs/status/2054610152817619388)
 
 ## Why
 
