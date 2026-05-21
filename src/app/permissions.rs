@@ -166,74 +166,6 @@ fn move_permission_option_right(app: &mut App, option_count: usize) {
     invalidate_if_changed(app, dirty_idx, changed);
 }
 
-fn handle_permission_option_keys(
-    app: &mut App,
-    key: KeyEvent,
-    interaction_has_focus: bool,
-    option_count: usize,
-    plan_approval: bool,
-) -> Option<bool> {
-    if !interaction_has_focus {
-        return None;
-    }
-    match key.code {
-        KeyCode::Left if option_count > 0 => {
-            move_permission_option_left(app);
-            Some(true)
-        }
-        KeyCode::Right if option_count > 0 => {
-            move_permission_option_right(app, option_count);
-            Some(true)
-        }
-        KeyCode::Up if plan_approval && option_count > 0 => {
-            move_permission_option_left(app);
-            Some(true)
-        }
-        KeyCode::Down if plan_approval && option_count > 0 => {
-            move_permission_option_right(app, option_count);
-            Some(true)
-        }
-        KeyCode::Enter if option_count > 0 => {
-            respond_permission(app, None);
-            Some(true)
-        }
-        KeyCode::Esc => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
-                .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
-                .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
-            {
-                respond_permission(app, Some(idx));
-                Some(true)
-            } else if option_count > 0 {
-                respond_permission(app, Some(option_count - 1));
-                Some(true)
-            } else {
-                Some(false)
-            }
-        }
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-// Slice 6 keeps this raw-key wrapper only for legacy-focused unit coverage.
-// Production dispatch uses `execute_permission_action` through the keymap executor.
-pub(super) fn handle_permission_key(
-    app: &mut App,
-    key: KeyEvent,
-    interaction_has_focus: bool,
-) -> bool {
-    let option_count = focused_permission_option_count(app);
-    let plan_approval = focused_permission_is_plan_approval(app);
-
-    if let Some(consumed) =
-        handle_permission_option_keys(app, key, interaction_has_focus, option_count, plan_approval)
-    {
-        return consumed;
-    }
-    false
-}
-
 fn respond_permission_reject_or_cancel(app: &mut App, option_count: usize) -> bool {
     if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
         .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
@@ -339,6 +271,7 @@ fn respond_permission_cancel(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::keymap::KeyContext;
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission,
         MessageBlock, MessageRole, ToolCallInfo,
@@ -466,284 +399,44 @@ mod tests {
     }
 
     #[test]
-    fn step3_lowercase_a_is_not_consumed_by_permission_shortcuts() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-            true,
-        );
-
-        assert!(!consumed, "lowercase 'a' should flow to normal typing");
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ctrl_y_is_not_a_permission_quick_shortcut() {
-        let mut app = App::test_default();
-        let mut rx1 = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow-always",
-                    "Allow always",
-                    PermissionOptionKind::AllowAlways,
-                ),
-                model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "reject-once",
-                    "Reject",
-                    PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-        let mut rx2 = add_permission(&mut app, "perm-2", allow_options(), false);
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(!consumed);
-
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
-        assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-        assert!(matches!(rx2.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn plain_y_and_n_are_not_consumed() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-
-        let consumed_y = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-            true,
-        );
-        let consumed_n = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-            true,
-        );
-
-        assert!(!consumed_y);
-        assert!(!consumed_n);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ctrl_shortcuts_are_not_consumed_for_plan_approval() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    PermissionOptionKind::PlanReject,
-                ),
-            ],
-            true,
-        );
+    fn default_permission_keymap_has_no_letter_shortcuts() {
+        let app = App::test_default();
 
         for key in [
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-        ] {
-            let consumed = handle_permission_key(&mut app, key, true);
-            assert!(!consumed);
-        }
-
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn plain_y_and_n_are_not_consumed_for_plan_approval() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    PermissionOptionKind::PlanReject,
-                ),
-            ],
-            true,
-        );
-
-        let consumed_y = handle_permission_key(
-            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-            true,
-        );
-        let consumed_n = handle_permission_key(
-            &mut app,
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-            true,
-        );
-
-        assert!(!consumed_y);
-        assert!(!consumed_n);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ctrl_n_is_not_a_permission_quick_shortcut() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(!consumed);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ctrl_n_does_not_trigger_reject_always() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "reject-always",
-                    "Reject always",
-                    PermissionOptionKind::RejectAlways,
-                ),
-            ],
-            true,
-        );
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(!consumed);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn ctrl_a_is_not_a_permission_quick_shortcut() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "allow-always",
-                    "Allow always",
-                    PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "reject-once",
-                    "Reject",
-                    PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-
-        let consumed = handle_permission_key(
-            &mut app,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            true,
-        );
-        assert!(!consumed);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE),
+        ] {
+            assert_eq!(app.keymap.action_for_event(KeyContext::InlinePermission, key), None);
+        }
     }
 
     #[test]
-    fn ctrl_a_with_shift_is_not_a_permission_quick_shortcut() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            true,
-        );
-        assert!(!consumed);
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn left_right_not_consumed_when_permission_not_focused() {
+    fn permission_actions_are_ignored_when_prompt_is_not_focused() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), false);
 
-        let consumed_left = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-            false,
+        assert_eq!(
+            execute_permission_action(
+                &mut app,
+                InteractionAction::MoveNext,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            ),
+            KeyOutcome::Ignored
         );
-        let consumed_right = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            false,
-        );
-
-        assert!(!consumed_left);
-        assert!(!consumed_right);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn enter_not_consumed_when_permission_not_focused() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(&mut app, "perm-1", allow_options(), false);
-
-        let consumed = handle_permission_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            false,
+        assert_eq!(
+            execute_permission_action(
+                &mut app,
+                InteractionAction::Confirm,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            KeyOutcome::Ignored
         );
 
-        assert!(!consumed);
         assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }

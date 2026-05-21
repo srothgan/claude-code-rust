@@ -221,11 +221,6 @@ pub enum KeyContext {
     AutocompleteSubagent,
     InlinePermission,
     InlineQuestion,
-    Config,
-    ConfigHelp,
-    ConfigOverlay,
-    TrustPrompt,
-    SessionPicker,
 }
 
 impl KeyContext {
@@ -239,11 +234,6 @@ impl KeyContext {
             Self::AutocompleteSubagent => "autocomplete_subagent",
             Self::InlinePermission => "inline_permission",
             Self::InlineQuestion => "inline_question",
-            Self::Config => "config",
-            Self::ConfigHelp => "config_help",
-            Self::ConfigOverlay => "config_overlay",
-            Self::TrustPrompt => "trust_prompt",
-            Self::SessionPicker => "session_picker",
         }
     }
 
@@ -257,11 +247,6 @@ impl KeyContext {
             Self::AutocompleteSubagent => &[Self::AutocompleteSubagent, Self::Global],
             Self::InlinePermission => &[Self::InlinePermission, Self::Global],
             Self::InlineQuestion => &[Self::InlineQuestion, Self::Global],
-            Self::Config => &[Self::Config, Self::Global],
-            Self::ConfigHelp => &[Self::ConfigHelp, Self::Config, Self::Global],
-            Self::ConfigOverlay => &[Self::ConfigOverlay, Self::Config, Self::Global],
-            Self::TrustPrompt => &[Self::TrustPrompt, Self::Global],
-            Self::SessionPicker => &[Self::SessionPicker, Self::Global],
         }
     }
 }
@@ -278,7 +263,6 @@ pub enum KeyAction {
     Input(InputAction),
     Autocomplete(AutocompleteAction),
     Interaction(InteractionAction),
-    Config(ConfigAction),
     Terminal(TerminalAction),
 }
 
@@ -337,21 +321,8 @@ pub enum InteractionAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ConfigAction {
-    Close,
-    Confirm,
-    Toggle,
-    MovePrevious,
-    MoveNext,
-    MoveLeft,
-    MoveRight,
-    Help,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TerminalAction {
     Suspend,
-    ReleaseToChild,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,7 +332,6 @@ pub struct KeyActionDescriptor {
     pub label: &'static str,
     pub description: &'static str,
     pub default_contexts: &'static [KeyContext],
-    pub implemented: bool,
 }
 
 impl KeyAction {
@@ -375,10 +345,6 @@ impl KeyAction {
 
     pub fn description(self) -> &'static str {
         self.descriptor().description
-    }
-
-    pub fn implemented(self) -> bool {
-        self.descriptor().implemented
     }
 
     pub fn descriptor(self) -> &'static KeyActionDescriptor {
@@ -410,7 +376,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Quit",
         description: "Quit the application.",
         default_contexts: &[KeyContext::Global, KeyContext::ChatBlocked],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::ClearInputOrQuit),
@@ -418,7 +383,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Clear draft / quit",
         description: "Clear local input state, or quit when input is already empty.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::Redraw),
@@ -426,7 +390,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Redraw screen",
         description: "Request a visible chat redraw.",
         default_contexts: &[KeyContext::Global],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::CancelTurn),
@@ -434,7 +397,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Cancel turn",
         description: "Cancel the active turn from chat input.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::SubmitInput),
@@ -442,7 +404,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Send message",
         description: "Submit the current chat input.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion),
@@ -450,7 +411,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Focus prompt / accept suggestion",
         description: "Focus a pending prompt, or accept the current prompt suggestion.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::CycleMode),
@@ -458,7 +418,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Cycle mode",
         description: "Cycle to the next available model mode.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveCharLeft),
@@ -466,7 +425,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move left",
         description: "Move the input cursor one character left.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveCharRight),
@@ -474,7 +432,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move right",
         description: "Move the input cursor one character right.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveWordLeft),
@@ -482,7 +439,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move word left",
         description: "Move the input cursor one word left.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveWordRight),
@@ -490,7 +446,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move word right",
         description: "Move the input cursor one word right.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveLineStart),
@@ -498,7 +453,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move line start",
         description: "Move the input cursor to the start of the line.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveLineEnd),
@@ -506,7 +460,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move line end",
         description: "Move the input cursor to the end of the line.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveUp),
@@ -514,7 +467,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move up",
         description: "Move the input cursor up, or browse chat history.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveDown),
@@ -522,7 +474,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Move down",
         description: "Move the input cursor down, or browse chat history.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::DeleteCharBefore),
@@ -530,7 +481,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Delete before cursor",
         description: "Delete the character before the input cursor.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::DeleteCharAfter),
@@ -538,7 +488,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Delete after cursor",
         description: "Delete the character after the input cursor.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::DeleteWordBefore),
@@ -546,7 +495,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Delete word before cursor",
         description: "Delete the word before the input cursor.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::DeleteWordAfter),
@@ -554,7 +502,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Delete word after cursor",
         description: "Delete the word after the input cursor.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::KillLineStart),
@@ -562,7 +509,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Kill line start",
         description: "Delete input text from the cursor to the start of the line.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::KillLineEnd),
@@ -570,7 +516,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Kill line end",
         description: "Delete input text from the cursor to the end of the line.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::Yank),
@@ -578,7 +523,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Yank",
         description: "Paste the most recently killed input text.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::Undo),
@@ -586,7 +530,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Undo",
         description: "Undo the previous input edit.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::Redo),
@@ -594,7 +537,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Redo",
         description: "Redo the previously undone input edit.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::InsertNewline),
@@ -602,7 +544,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Insert newline",
         description: "Insert a newline into the current input draft.",
         default_contexts: &[KeyContext::ChatInput],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Autocomplete(AutocompleteAction::MovePrevious),
@@ -614,7 +555,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
             KeyContext::AutocompleteSlash,
             KeyContext::AutocompleteSubagent,
         ],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Autocomplete(AutocompleteAction::MoveNext),
@@ -626,7 +566,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
             KeyContext::AutocompleteSlash,
             KeyContext::AutocompleteSubagent,
         ],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Autocomplete(AutocompleteAction::Confirm),
@@ -638,7 +577,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
             KeyContext::AutocompleteSlash,
             KeyContext::AutocompleteSubagent,
         ],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Autocomplete(AutocompleteAction::Cancel),
@@ -650,7 +588,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
             KeyContext::AutocompleteSlash,
             KeyContext::AutocompleteSubagent,
         ],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::MovePrevious),
@@ -658,7 +595,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Previous option",
         description: "Move to the previous inline prompt option.",
         default_contexts: &[KeyContext::InlinePermission, KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::MoveNext),
@@ -666,7 +602,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Next option",
         description: "Move to the next inline prompt option.",
         default_contexts: &[KeyContext::InlinePermission, KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::MoveStart),
@@ -674,7 +609,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "First option",
         description: "Move to the first inline prompt option.",
         default_contexts: &[KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::MoveEnd),
@@ -682,7 +616,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Last option",
         description: "Move to the last inline prompt option.",
         default_contexts: &[KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::Confirm),
@@ -690,7 +623,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Confirm option",
         description: "Confirm the selected inline prompt option.",
         default_contexts: &[KeyContext::InlinePermission, KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::Cancel),
@@ -698,7 +630,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Cancel prompt",
         description: "Cancel or reject the active inline prompt.",
         default_contexts: &[KeyContext::InlinePermission, KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::FocusNext),
@@ -706,7 +637,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Return to draft / next prompt",
         description: "Return focus to the draft, or move to the next inline permission prompt.",
         default_contexts: &[KeyContext::InlinePermission],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::ToggleSelection),
@@ -714,7 +644,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Toggle selection",
         description: "Toggle the selected inline question option.",
         default_contexts: &[KeyContext::InlineQuestion],
-        implemented: true,
     },
     KeyActionDescriptor {
         action: KeyAction::Interaction(InteractionAction::ToggleNotes),
@@ -722,71 +651,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Toggle notes",
         description: "Toggle notes editing for the active inline question.",
         default_contexts: &[KeyContext::InlineQuestion],
-        implemented: true,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::Close),
-        id: "config.close",
-        label: "Close config",
-        description: "Close the active config view or overlay.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigHelp, KeyContext::ConfigOverlay],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::Confirm),
-        id: "config.confirm",
-        label: "Confirm config",
-        description: "Confirm the selected config item.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigOverlay],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::Toggle),
-        id: "config.toggle",
-        label: "Toggle config",
-        description: "Toggle the selected config option.",
-        default_contexts: &[KeyContext::Config],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::MovePrevious),
-        id: "config.move_previous",
-        label: "Previous config item",
-        description: "Move to the previous config item.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigHelp, KeyContext::ConfigOverlay],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::MoveNext),
-        id: "config.move_next",
-        label: "Next config item",
-        description: "Move to the next config item.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigHelp, KeyContext::ConfigOverlay],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::MoveLeft),
-        id: "config.move_left",
-        label: "Move config left",
-        description: "Move left within the active config control.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigHelp],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::MoveRight),
-        id: "config.move_right",
-        label: "Move config right",
-        description: "Move right within the active config control.",
-        default_contexts: &[KeyContext::Config, KeyContext::ConfigHelp],
-        implemented: false,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Config(ConfigAction::Help),
-        id: "config.help",
-        label: "Config help",
-        description: "Open or focus config help.",
-        default_contexts: &[KeyContext::Config],
-        implemented: false,
     },
     KeyActionDescriptor {
         action: KeyAction::Terminal(TerminalAction::Suspend),
@@ -794,15 +658,6 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         label: "Suspend process",
         description: "Suspend the TUI process after restoring terminal state.",
         default_contexts: &[KeyContext::Global],
-        implemented: true,
-    },
-    KeyActionDescriptor {
-        action: KeyAction::Terminal(TerminalAction::ReleaseToChild),
-        id: "terminal.release_to_child",
-        label: "Release terminal to child",
-        description: "Release terminal control to an active child process.",
-        default_contexts: &[KeyContext::Global],
-        implemented: false,
     },
 ];
 
@@ -869,9 +724,6 @@ pub enum KeymapBuildError {
     UncataloguedAction {
         action: KeyAction,
     },
-    UnimplementedDefaultAction {
-        action: KeyAction,
-    },
     ShadowedGlobalBinding {
         context: KeyContext,
         spec: KeySpec,
@@ -906,11 +758,6 @@ impl fmt::Display for KeymapBuildError {
             Self::UncataloguedAction { action } => {
                 write!(formatter, "key binding references uncatalogued action {action:?}")
             }
-            Self::UnimplementedDefaultAction { action } => write!(
-                formatter,
-                "default key binding references unimplemented action {}",
-                action.id()
-            ),
             Self::ShadowedGlobalBinding { context, spec, context_action, global_action } => write!(
                 formatter,
                 "key binding for {spec} in {context} shadows global binding: {context_action:?} and {global_action:?}"
@@ -950,19 +797,14 @@ impl ResolvedKeymap {
         let mut ordered_bindings = Vec::new();
         let mut actions: HashMap<KeyBindingLookup, ResolvedBinding> = HashMap::new();
         for binding in bindings {
-            let Some(descriptor) = action_descriptor(binding.action) else {
+            if action_descriptor(binding.action).is_none() {
                 return Err(KeymapBuildError::UncataloguedAction { action: binding.action });
-            };
+            }
             if let Some(reason) = platform_invalid_binding_reason(&binding) {
                 return Err(KeymapBuildError::PlatformInvalidBinding {
                     context: binding.context,
                     spec: binding.spec,
                     reason,
-                });
-            }
-            if binding.source == KeyBindingSource::Default && !descriptor.implemented {
-                return Err(KeymapBuildError::UnimplementedDefaultAction {
-                    action: binding.action,
                 });
             }
             let lookup = KeyBindingLookup { context: binding.context, spec: binding.spec.clone() };
@@ -1574,44 +1416,6 @@ mod tests {
     }
 
     #[test]
-    fn resolved_keymap_prefers_exact_context_before_family_fallback() {
-        let keymap = ResolvedKeymap::from_bindings([
-            KeyBinding::new(
-                KeyContext::Config,
-                "ctrl-x".parse().expect("parse key"),
-                KeyAction::App(AppAction::Redraw),
-                KeyBindingSource::Config,
-            ),
-            KeyBinding::new(
-                KeyContext::ConfigHelp,
-                "ctrl-x".parse().expect("parse key"),
-                KeyAction::App(AppAction::Quit),
-                KeyBindingSource::Config,
-            ),
-        ])
-        .expect("build keymap");
-
-        assert_eq!(
-            keymap.resolve(KeyContext::ConfigHelp, &"ctrl-x".parse().expect("parse key")),
-            Some(ResolvedKeyAction {
-                action: KeyAction::App(AppAction::Quit),
-                requested_context: KeyContext::ConfigHelp,
-                matched_context: KeyContext::ConfigHelp,
-                source: KeyBindingSource::Config,
-            })
-        );
-        assert_eq!(
-            keymap.resolve(KeyContext::ConfigOverlay, &"ctrl-x".parse().expect("parse key")),
-            Some(ResolvedKeyAction {
-                action: KeyAction::App(AppAction::Redraw),
-                requested_context: KeyContext::ConfigOverlay,
-                matched_context: KeyContext::Config,
-                source: KeyBindingSource::Config,
-            })
-        );
-    }
-
-    #[test]
     fn resolved_keymap_does_not_resolve_binding_outside_resolution_chain() {
         let keymap = ResolvedKeymap::from_bindings([KeyBinding::new(
             KeyContext::ChatInput,
@@ -1727,35 +1531,9 @@ mod tests {
             assert_eq!(descriptor.action.id(), descriptor.id);
             assert_eq!(descriptor.action.label(), descriptor.label);
             assert_eq!(descriptor.action.description(), descriptor.description);
-            assert_eq!(descriptor.action.implemented(), descriptor.implemented);
         }
 
         assert_eq!(KeyAction::from_id("input.missing"), None);
-    }
-
-    #[test]
-    fn future_actions_are_catalogued_but_not_default_bound() {
-        for action in [
-            KeyAction::Config(ConfigAction::Close),
-            KeyAction::Config(ConfigAction::Confirm),
-            KeyAction::Config(ConfigAction::Toggle),
-            KeyAction::Config(ConfigAction::MovePrevious),
-            KeyAction::Config(ConfigAction::MoveNext),
-            KeyAction::Config(ConfigAction::MoveLeft),
-            KeyAction::Config(ConfigAction::MoveRight),
-            KeyAction::Config(ConfigAction::Help),
-            KeyAction::Terminal(TerminalAction::ReleaseToChild),
-        ] {
-            assert!(!action.implemented(), "{} should stay gated", action.id());
-        }
-
-        for binding in default_bindings() {
-            assert!(
-                binding.action.implemented(),
-                "{} should not be in default bindings until its executor is implemented",
-                binding.action.id()
-            );
-        }
     }
 
     #[test]

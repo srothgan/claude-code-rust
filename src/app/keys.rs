@@ -22,7 +22,6 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
     SuspendProcess,
-    ReleaseToChild,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,7 +234,6 @@ fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOut
         KeyAction::Input(action) => execute_input_action(app, action),
         KeyAction::Autocomplete(action) => execute_autocomplete_action(app, action).into(),
         KeyAction::Interaction(action) => execute_interaction_action(app, action, key),
-        KeyAction::Config(_) => KeyOutcome::Ignored,
         KeyAction::Terminal(action) => execute_terminal_action(action),
     }
 }
@@ -443,7 +441,6 @@ fn execute_interaction_action(
 fn execute_terminal_action(action: TerminalAction) -> KeyOutcome {
     match action {
         TerminalAction::Suspend => KeyOutcome::Runtime(RuntimeCommand::SuspendProcess),
-        TerminalAction::ReleaseToChild => KeyOutcome::Runtime(RuntimeCommand::ReleaseToChild),
     }
 }
 
@@ -870,9 +867,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 mod tests {
     use super::*;
     use crate::app::FocusTarget;
-    use crate::app::keymap::{
-        ConfigAction, KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap,
-    };
+    use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::time::{Duration, Instant};
 
@@ -953,7 +948,7 @@ mod tests {
         app.keymap = ResolvedKeymap::from_bindings([KeyBinding::new(
             KeyContext::ChatInput,
             KeySpec::new(KeyCodeSpec::Char('x'), KeyModifiers::NONE),
-            KeyAction::Config(ConfigAction::Close),
+            KeyAction::Interaction(InteractionAction::MoveNext),
             KeyBindingSource::Config,
         )])
         .expect("custom test keymap should validate");

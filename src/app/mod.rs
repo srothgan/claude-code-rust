@@ -250,15 +250,6 @@ fn handle_runtime_command(
 ) -> anyhow::Result<()> {
     match command {
         Some(keys::RuntimeCommand::SuspendProcess) => suspend_tui_process(app, terminal_runtime),
-        Some(keys::RuntimeCommand::ReleaseToChild) => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_LIFECYCLE,
-                event_name = "runtime_release_to_child_ignored",
-                message = "release-to-child key command has no active child process",
-                outcome = "ignored",
-            );
-            Ok(())
-        }
         None => Ok(()),
     }
 }
