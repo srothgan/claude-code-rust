@@ -995,13 +995,13 @@ fn global_default_bindings() -> Vec<KeyBinding> {
     ];
     #[cfg(unix)]
     {
-        let mut bindings = bindings;
-        bindings.push(KeyBinding::default(
+        let mut unix_bindings = bindings;
+        unix_bindings.push(KeyBinding::default(
             KeyContext::Global,
             KeySpec::char('z', KeyModifiers::CONTROL),
             KeyAction::Terminal(TerminalAction::Suspend),
         ));
-        bindings
+        unix_bindings
     }
     #[cfg(not(unix))]
     {
