@@ -111,13 +111,23 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
     let mut content_lines = render_tool_content(tc, content_width);
-    let protected_source_lines = protected_content_source_lines(tc, &content_lines);
-    content_lines = cap_tool_content_lines(
-        content_lines,
-        content_width,
-        "source lines hidden",
-        protected_source_lines,
-    );
+    content_lines = match tool_content_height_policy(tc) {
+        ToolContentHeightPolicy::Bounded => {
+            let protected_source_lines = protected_content_source_lines(tc, &content_lines);
+            cap_tool_content_lines(
+                content_lines,
+                content_width,
+                "source lines hidden",
+                protected_source_lines,
+            )
+        }
+        ToolContentHeightPolicy::Unbounded => {
+            wrap_content_lines_with_source(content_lines, content_width)
+                .into_iter()
+                .map(|wrapped| wrapped.row)
+                .collect()
+        }
+    };
 
     if let Some(ref perm) = tc.pending_permission {
         content_lines.extend(render_permission_lines(tc, perm));
@@ -398,6 +408,38 @@ fn todo_omission_line() -> Line<'static> {
 fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
     tc.is_exit_plan_mode_tool()
         || matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task" | "WebSearch" | "WebFetch")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolContentHeightPolicy {
+    Bounded,
+    Unbounded,
+}
+
+fn tool_content_height_policy(tc: &ToolCallInfo) -> ToolContentHeightPolicy {
+    if renders_only_plan_file_content(tc) {
+        ToolContentHeightPolicy::Unbounded
+    } else {
+        ToolContentHeightPolicy::Bounded
+    }
+}
+
+fn renders_only_plan_file_content(tc: &ToolCallInfo) -> bool {
+    let mut saw_plan_file = false;
+
+    for content in &tc.content {
+        match content {
+            model::ToolCallContent::Diff(diff) if is_plan_file_path(&diff.path) => {
+                saw_plan_file = true;
+            }
+            model::ToolCallContent::Terminal(_) => {}
+            model::ToolCallContent::Diff(_)
+            | model::ToolCallContent::McpResource(_)
+            | model::ToolCallContent::Content(_) => return false,
+        }
+    }
+
+    saw_plan_file
 }
 
 fn is_read_tool(tc: &ToolCallInfo) -> bool {

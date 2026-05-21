@@ -938,6 +938,43 @@ mod tests {
     }
 
     #[test]
+    fn plan_file_markdown_body_is_not_capped_by_tool_height() {
+        let mut tc = test_tool_call(
+            "Write .claude/plans/long.md",
+            "Write",
+            model::ToolCallStatus::Completed,
+        );
+        let plan_text = (0..24).map(|idx| format!("- Step {idx}")).collect::<Vec<_>>().join("\n");
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+            ".claude/plans/long.md",
+            plan_text,
+        ))];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered = rendered_line_texts_trimmed(&body);
+
+        assert!(body.len() > TOOL_BODY_MAX_LINES);
+        assert!(rendered.iter().any(|line| line.contains("Step 23")));
+        assert!(!rendered.iter().any(|line| line.contains("hidden")));
+        assert!(!rendered.iter().any(|line| line.contains("omitted")));
+    }
+
+    #[test]
+    fn non_plan_write_diff_body_stays_capped_by_tool_height() {
+        let mut tc =
+            test_tool_call("Write notes/long.md", "Write", model::ToolCallStatus::Completed);
+        let new_text = (0..80).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n");
+        tc.content =
+            vec![model::ToolCallContent::Diff(model::Diff::new("notes/long.md", new_text))];
+
+        let body = standard::render_tool_call_body(&tc, 80);
+        let rendered = rendered_line_texts_trimmed(&body);
+
+        assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
+        assert!(rendered.iter().any(|line| line.contains("diff lines omitted")));
+    }
+
+    #[test]
     fn internal_error_detection_accepts_xml_payload() {
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
