@@ -191,7 +191,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
         app.request_active_surface_repaint();
         return;
     }
-    push_system_message_with_severity(app, Some(SystemSeverity::Error), msg);
+    super::notices::emit_system_notice(app, SystemSeverity::Error, msg);
     clear_pending_command(app);
     app.resuming_session_id = None;
 }

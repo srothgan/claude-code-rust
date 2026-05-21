@@ -2346,6 +2346,69 @@ mod tests {
     }
 
     #[test]
+    fn slash_command_error_during_active_turn_inserts_inline_notice() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+            "streaming answer",
+        ))]));
+        app.bind_active_turn_assistant(0);
+        app.pending_command_label = Some("Switching mode...".into());
+        app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SlashCommandError("failed to set mode to auto".into()),
+        );
+
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+        assert_eq!(app.messages.len(), 1);
+        assert!(app.turn_notice_refs.is_empty());
+        let [MessageBlock::Text(text), MessageBlock::Notice(notice)] =
+            app.messages[0].blocks.as_slice()
+        else {
+            panic!("expected assistant text followed by inline notice");
+        };
+        assert_eq!(text.text, "streaming answer");
+        assert_eq!(notice.severity, SystemSeverity::Error);
+        assert_eq!(notice.text.text, "failed to set mode to auto");
+        assert!(notice.dedup_key.is_none());
+    }
+
+    #[test]
+    fn slash_command_error_without_active_turn_inserts_standalone_notice() {
+        let mut app = make_test_app();
+        app.status = AppStatus::CommandPending;
+        app.pending_command_label = Some("Switching mode...".into());
+        app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SlashCommandError("failed to set mode to auto".into()),
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(app.pending_command_label.is_none());
+        assert!(app.pending_command_ack.is_none());
+        let Some(ChatMessage {
+            role: MessageRole::System(Some(SystemSeverity::Error)),
+            blocks,
+            ..
+        }) = app.messages.last()
+        else {
+            panic!("expected standalone system notice");
+        };
+        let [MessageBlock::Notice(notice)] = blocks.as_slice() else {
+            panic!("expected standalone notice block");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Error);
+        assert_eq!(notice.text.text, "failed to set mode to auto");
+        assert!(notice.dedup_key.is_none());
+    }
+
+    #[test]
     fn slash_command_error_during_thinking_turn_does_not_stop_turn_status() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;

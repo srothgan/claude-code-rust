@@ -6,8 +6,18 @@ use super::super::{
     NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
 };
 
+#[derive(Clone)]
+struct TurnNoticeTracking {
+    dedup_key: NoticeDedupKey,
+    stage: NoticeStage,
+}
+
 pub(super) fn clear_turn_notice_tracking(app: &mut App) {
     app.clear_turn_notice_refs();
+}
+
+pub(super) fn emit_system_notice(app: &mut App, severity: SystemSeverity, message: &str) {
+    insert_notice(app, severity, message, None);
 }
 
 pub(super) fn upsert_turn_notice(
@@ -45,7 +55,13 @@ pub(super) fn upsert_turn_notice(
                 && let Some(owner_idx) = app.active_turn_assistant_idx()
             {
                 app.turn_notice_refs.remove(existing_ref_idx);
-                insert_inline_notice(app, owner_idx, dedup_key, stage, severity, message);
+                insert_inline_notice(
+                    app,
+                    owner_idx,
+                    severity,
+                    message,
+                    Some(TurnNoticeTracking { dedup_key, stage }),
+                );
                 return;
             }
 
@@ -67,59 +83,77 @@ fn insert_new_notice(
     severity: SystemSeverity,
     message: &str,
 ) {
+    insert_notice(app, severity, message, Some(TurnNoticeTracking { dedup_key, stage }));
+}
+
+fn insert_notice(
+    app: &mut App,
+    severity: SystemSeverity,
+    message: &str,
+    tracking: Option<TurnNoticeTracking>,
+) {
     if let Some(owner_idx) = app.active_turn_assistant_idx() {
-        insert_inline_notice(app, owner_idx, dedup_key, stage, severity, message);
+        insert_inline_notice(app, owner_idx, severity, message, tracking);
     } else {
-        insert_standalone_notice(app, dedup_key, stage, severity, message);
+        insert_standalone_notice(app, severity, message, tracking);
     }
 }
 
 fn insert_inline_notice(
     app: &mut App,
     owner_idx: usize,
-    dedup_key: NoticeDedupKey,
-    stage: NoticeStage,
     severity: SystemSeverity,
     message: &str,
+    tracking: Option<TurnNoticeTracking>,
 ) {
     let Some(owner) = app.messages.get_mut(owner_idx) else {
-        insert_standalone_notice(app, dedup_key, stage, severity, message);
+        insert_standalone_notice(app, severity, message, tracking);
         return;
     };
     let block_idx = owner.blocks.len();
-    owner.blocks.push(MessageBlock::Notice(
-        NoticeBlock::from_complete(severity, message).with_dedup_key(dedup_key.clone()),
-    ));
+    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
+    owner.blocks.push(MessageBlock::Notice(notice_block(severity, message, dedup_key)));
     app.sync_after_message_blocks_changed(owner_idx);
     app.invalidate_layout(InvalidationLevel::MessageChanged(owner_idx));
-    app.turn_notice_refs.push(TurnNoticeRef {
-        dedup_key,
-        stage,
-        location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
-    });
+    if let Some(tracking) = tracking {
+        app.turn_notice_refs.push(TurnNoticeRef {
+            dedup_key: tracking.dedup_key,
+            stage: tracking.stage,
+            location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
+        });
+    }
 }
 
 fn insert_standalone_notice(
     app: &mut App,
-    dedup_key: NoticeDedupKey,
-    stage: NoticeStage,
     severity: SystemSeverity,
     message: &str,
+    tracking: Option<TurnNoticeTracking>,
 ) {
     let msg_idx = app.messages.len();
+    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(Some(severity)),
-        vec![MessageBlock::Notice(
-            NoticeBlock::from_complete(severity, message).with_dedup_key(dedup_key.clone()),
-        )],
+        vec![MessageBlock::Notice(notice_block(severity, message, dedup_key))],
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.turn_notice_refs.push(TurnNoticeRef {
-        dedup_key,
-        stage,
-        location: TurnNoticeLocation::Standalone { msg_idx },
-    });
+    if let Some(tracking) = tracking {
+        app.turn_notice_refs.push(TurnNoticeRef {
+            dedup_key: tracking.dedup_key,
+            stage: tracking.stage,
+            location: TurnNoticeLocation::Standalone { msg_idx },
+        });
+    }
+}
+
+fn notice_block(
+    severity: SystemSeverity,
+    message: &str,
+    dedup_key: Option<NoticeDedupKey>,
+) -> NoticeBlock {
+    let block = NoticeBlock::from_complete(severity, message);
+    if let Some(dedup_key) = dedup_key { block.with_dedup_key(dedup_key) } else { block }
 }
 
 fn update_inline_notice(
