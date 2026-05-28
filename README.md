@@ -5,6 +5,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 [![npm version](https://img.shields.io/npm/v/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
 [![npm downloads](https://img.shields.io/npm/dm/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
 [![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
@@ -35,6 +36,8 @@ If `claude-rs` resolves to an older global shim, ensure your npm global bin dire
 claude-rs
 ```
 
+Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
+
 > [!WARNING]
 > **Agent SDK billing changes on June 15, 2026.** Anthropic says Agent SDK usage, `claude -p`, Claude Code GitHub Actions, and third-party Agent SDK apps will use a separate monthly Agent SDK credit instead of normal interactive Claude or Claude Code subscription limits. Because Claude Code Rust wraps the Agent SDK, treat usage through this project as Agent SDK usage. If that credit is exhausted, continued use may require enabling extra usage billed at standard API rates, or requests may pause until the credit refreshes.
 >
@@ -54,14 +57,15 @@ The stock Claude Code TUI runs on Node.js with React Ink. This causes real probl
 
 Claude Code Rust fixes all of these by compiling to a single native binary with direct terminal control via Crossterm.
 
-## Custom Commands
+## Documentation
 
-Claude Code Rust adds project-local slash commands that set environment variables via `.claude/settings.local.json` without leaving the TUI. Changes apply on the next session.
+The manual covers installation from npm and source, help, slash commands, keyboard shortcuts, settings, diagnostics, architecture, and the changelog:
 
-| Command | Usage | Description |
-|---------|-------|-------------|
-| `/1m-context` | `/1m-context <enable\|disable\|status>` | Disable the 1 million token context window to improve model performance and prevent quality degradation on large context windows. |
-| `/opus-version` | `/opus-version <4.5\|4.6\|4.7\|default\|status>` | Pin the Opus model version for the current folder. Useful for switching to 4.6 or 4.5 to avoid 4.7's tokenization issues. Use `default` to clear the pin. |
+- [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
+- [Usage](https://srothgan.github.io/claude-code-rust/usage.html)
+- [Help](https://srothgan.github.io/claude-code-rust/help.html)
+- [Slash commands](https://srothgan.github.io/claude-code-rust/commands.html)
+- [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
 
 ## Status
 

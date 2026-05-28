@@ -30,6 +30,7 @@ node_modules/
 .npm-cache/
 /vendor/
 /agent-sdk/dist/
+/docs/book/
 
 # Local Claude Code config
 .claude/

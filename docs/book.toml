@@ -1,0 +1,18 @@
+[book]
+title = "Claude Code Rust"
+authors = ["Simon Peter Rothgang"]
+description = "User and contributor documentation for Claude Code Rust."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/srothgan/claude-code-rust"
+edit-url-template = "https://github.com/srothgan/claude-code-rust/edit/main/docs/{path}"
+site-url = "/claude-code-rust/"
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+no-section-label = true
