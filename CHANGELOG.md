@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.1] - 2026-05-28 [Changes][v0.12.1]
+
+### Documentation
+
+- **mdBook manual and GitHub Pages workflow** (@srothgan): Add a repo-native manual and Pages deployment workflow.
+
+### Fixes
+
+- **CLI help examples** (@srothgan): Remove the invalid installed-binary `--features perf` example.
+
 ## [0.12.0] - 2026-05-21 [Changes][v0.12.0]
 
 ### Features
