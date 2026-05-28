@@ -49,7 +49,7 @@ impl DiagnosticsPreset {
     about = "Native Rust terminal for Claude Code"
 )]
 #[command(
-    after_help = "Examples:\n  claude-rs --enable-logs --diagnostics-preset session\n  claude-rs --enable-logs --diagnostics-preset render\n  claude-rs --features perf --enable-logs --enable-perf --diagnostics-preset full"
+    after_help = "Examples:\n  claude-rs --enable-logs --diagnostics-preset session\n  claude-rs --enable-logs --diagnostics-preset render"
 )]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
