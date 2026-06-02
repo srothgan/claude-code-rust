@@ -49,7 +49,7 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 tui-markdown = { version = "0.3.7" }
 tui-textarea-2 = "0.11.0"
-unicode-segmentation = "1.12.0"
+unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 uuid = { version = "1.23.1", features = ["v4"] }
 which = "8.0.2"
