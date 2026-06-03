@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
     convert_account_info, convert_current_model, convert_mode_state, map_available_models,
-    map_permission_request, map_question_request, map_session_update,
+    map_mcp_server_status, map_permission_request, map_question_request, map_session_update,
 };
 
 struct ConnectedEventData {
@@ -168,7 +168,11 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
         }
         crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
+            let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
+                session_id,
+                servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                error,
+            });
         }
     }
 }

@@ -598,6 +598,23 @@ pub struct McpTool {
     pub annotations: Option<McpToolAnnotations>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerToolPermissionPolicy {
+    #[serde(rename = "always_allow")]
+    Allow,
+    #[serde(rename = "always_ask")]
+    Ask,
+    #[serde(rename = "always_deny")]
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerToolPolicy {
+    pub name: String,
+    pub permission_policy: McpServerToolPermissionPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
@@ -607,16 +624,32 @@ pub enum McpServerConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
     Sse {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<McpServerToolPolicy>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
     Http {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<McpServerToolPolicy>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
 }
 
@@ -629,16 +662,26 @@ pub enum McpServerStatusConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Sse {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Http {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Sdk {
         name: String,
@@ -647,6 +690,10 @@ pub enum McpServerStatusConfig {
     ClaudeaiProxy {
         url: String,
         id: String,
+        timeout: Option<u64>,
+    },
+    Unknown {
+        raw_type: String,
     },
 }
 
@@ -675,7 +722,8 @@ pub struct McpSetServersResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate,
+        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerStatus,
+        McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus, SessionUpdate,
         SystemNoticeSeverity,
     };
 
@@ -819,6 +867,35 @@ mod tests {
                 ref message,
             } if message == "Plugin install failed."
         ));
+    }
+
+    #[test]
+    fn mcp_status_deserializes_latest_config_fields() {
+        let server: McpServerStatus = serde_json::from_value(serde_json::json!({
+            "name": "notion",
+            "status": "connected",
+            "config": {
+                "type": "http",
+                "url": "https://mcp.notion.com/mcp",
+                "headers": { "Authorization": "Bearer token" },
+                "tools": [
+                    { "name": "search", "permission_policy": "always_ask" }
+                ],
+                "timeout": 5000,
+                "always_load": true
+            },
+            "tools": []
+        }))
+        .expect("deserialize MCP server status");
+
+        let Some(McpServerStatusConfig::Http { tools, timeout, always_load, .. }) = server.config
+        else {
+            panic!("expected http MCP config");
+        };
+        assert_eq!(timeout, Some(5000));
+        assert_eq!(always_load, Some(true));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].permission_policy, McpServerToolPermissionPolicy::Ask);
     }
 
     #[test]

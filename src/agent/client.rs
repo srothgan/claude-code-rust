@@ -709,6 +709,9 @@ mod tests {
             crate::agent::types::McpServerConfig::Http {
                 url: "https://mcp.notion.com/mcp".to_owned(),
                 headers: BTreeMap::new(),
+                tools: Vec::new(),
+                timeout: Some(5000),
+                always_load: Some(true),
             },
         )]);
 

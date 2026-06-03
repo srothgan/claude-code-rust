@@ -18,7 +18,6 @@ import type {
   BridgeCommand,
   ElicitationAction,
   ElicitationRequest,
-  EffortLevel,
   FastModeState,
   ApiRetryError,
   Json,

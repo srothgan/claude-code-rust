@@ -1466,7 +1466,7 @@ mod tests {
                 .join("\n")
         }
 
-        let backend = TestBackend::new(100, 24);
+        let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -1990,24 +1990,26 @@ mod tests {
                 selected_index: 0,
             },
         ));
-        app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+        app.mcp.servers = vec![crate::agent::model::McpServerStatus {
             name: "filesystem".to_owned(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
-            server_info: Some(crate::agent::types::McpServerInfo {
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
+            server_info: Some(crate::agent::model::McpServerInfo {
                 name: "Filesystem".to_owned(),
                 version: "1.2.3".to_owned(),
             }),
             error: None,
-            config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
+            config: Some(crate::agent::model::McpServerStatusConfig::Stdio {
                 command: "npx".to_owned(),
                 args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
                 env: BTreeMap::new(),
+                timeout: Some(5000),
+                always_load: Some(true),
             }),
             scope: Some("project".to_owned()),
-            tools: vec![crate::agent::types::McpTool {
+            tools: vec![crate::agent::model::McpTool {
                 name: "read_file".to_owned(),
                 description: Some("Read a file".to_owned()),
-                annotations: Some(crate::agent::types::McpToolAnnotations {
+                annotations: Some(crate::agent::model::McpToolAnnotations {
                     read_only: Some(true),
                     destructive: Some(false),
                     open_world: Some(false),

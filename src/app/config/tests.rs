@@ -1305,15 +1305,17 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+    app.mcp.servers = vec![crate::agent::model::McpServerStatus {
         name: "filesystem".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
-        config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
+        config: Some(crate::agent::model::McpServerStatusConfig::Stdio {
             command: "npx".to_owned(),
             args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
             env: BTreeMap::new(),
+            timeout: None,
+            always_load: None,
         }),
         scope: Some("project".to_owned()),
         tools: vec![],
@@ -1350,9 +1352,9 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: None,
         config: None,
@@ -1400,9 +1402,9 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: None,
@@ -1437,16 +1439,17 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let server = crate::agent::types::McpServerStatus {
+    let server = crate::agent::model::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: Some(
             "MCP server requires authentication but no OAuth token is configured.".to_owned(),
         ),
-        config: Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy {
+        config: Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy {
             url: "https://mcp-proxy.anthropic.com/v1/mcp/server".to_owned(),
             id: "mcpsrv_test".to_owned(),
+            timeout: None,
         }),
         scope: Some("session".to_owned()),
         tools: Vec::new(),

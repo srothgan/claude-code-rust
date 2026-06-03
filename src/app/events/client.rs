@@ -1,5 +1,62 @@
 use super::{App, session, turn};
-use crate::agent::events::ClientEvent;
+use crate::agent::{
+    events::ClientEvent,
+    model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig},
+};
+
+fn mcp_status_label(status: McpServerConnectionStatus) -> &'static str {
+    match status {
+        McpServerConnectionStatus::Connected => "connected",
+        McpServerConnectionStatus::Failed => "failed",
+        McpServerConnectionStatus::NeedsAuth => "needs-auth",
+        McpServerConnectionStatus::Pending => "pending",
+        McpServerConnectionStatus::Disabled => "disabled",
+    }
+}
+
+fn mcp_config_diagnostics(
+    config: Option<&McpServerStatusConfig>,
+) -> (&'static str, Option<u64>, Option<bool>, usize) {
+    match config {
+        Some(McpServerStatusConfig::Stdio { timeout, always_load, .. }) => {
+            ("stdio", *timeout, *always_load, 0)
+        }
+        Some(McpServerStatusConfig::Sse { tools, timeout, always_load, .. }) => {
+            ("sse", *timeout, *always_load, tools.len())
+        }
+        Some(McpServerStatusConfig::Http { tools, timeout, always_load, .. }) => {
+            ("http", *timeout, *always_load, tools.len())
+        }
+        Some(McpServerStatusConfig::Sdk { .. }) => ("sdk", None, None, 0),
+        Some(McpServerStatusConfig::ClaudeaiProxy { timeout, .. }) => {
+            ("claudeai-proxy", *timeout, None, 0)
+        }
+        Some(McpServerStatusConfig::Unknown { .. }) => ("unknown", None, None, 0),
+        None => ("missing", None, None, 0),
+    }
+}
+
+fn mcp_server_diagnostic_summaries(servers: &[McpServerStatus]) -> Vec<serde_json::Value> {
+    servers
+        .iter()
+        .map(|server| {
+            let (config_type, timeout_ms, always_load, configured_tool_policy_count) =
+                mcp_config_diagnostics(server.config.as_ref());
+            serde_json::json!({
+                "name": server.name,
+                "status": mcp_status_label(server.status),
+                "config_type": config_type,
+                "scope": server.scope,
+                "timeout_ms": timeout_ms,
+                "always_load": always_load,
+                "tool_count": server.tools.len(),
+                "configured_tool_policy_count": configured_tool_policy_count,
+                "has_error": server.error.as_deref().is_some_and(|error| !error.is_empty()),
+                "has_server_info": server.server_info.is_some(),
+            })
+        })
+        .collect()
+}
 
 #[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
@@ -203,6 +260,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             let server_count = servers.len();
             let error_present = error.is_some();
+            let server_diagnostics = mcp_server_diagnostic_summaries(&servers);
             app.mcp.servers = servers;
             app.mcp.in_flight = false;
             app.mcp.last_error = error;
@@ -214,13 +272,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     app.mcp.servers.iter().find(|server| server.name == server_name)
                     && !matches!(
                         server.status,
-                        crate::agent::types::McpServerConnectionStatus::NeedsAuth
-                            | crate::agent::types::McpServerConnectionStatus::Pending
+                        crate::agent::model::McpServerConnectionStatus::NeedsAuth
+                            | crate::agent::model::McpServerConnectionStatus::Pending
                     )
                 {
                     if matches!(
                         server.status,
-                        crate::agent::types::McpServerConnectionStatus::Connected
+                        crate::agent::model::McpServerConnectionStatus::Connected
                     ) {
                         app.config.status_message =
                             Some(format!("{} authenticated successfully.", server.name));
@@ -237,6 +295,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 session_id = %session_id,
                 server_count,
                 error_present,
+                servers = ?server_diagnostics,
             );
         }
         ClientEvent::UsageRefreshStarted { epoch } => {

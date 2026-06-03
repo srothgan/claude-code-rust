@@ -367,22 +367,40 @@ export interface McpTool {
   annotations?: McpToolAnnotations;
 }
 
+export type McpServerToolPermissionPolicy =
+  | "always_allow"
+  | "always_ask"
+  | "always_deny";
+
+export interface McpServerToolPolicy {
+  name: string;
+  permission_policy: McpServerToolPermissionPolicy;
+}
+
 export type McpServerConfig =
   | {
       type: "stdio";
       command: string;
       args?: string[];
       env?: Record<string, string>;
+      timeout?: number;
+      always_load?: boolean;
     }
   | {
       type: "sse";
       url: string;
       headers?: Record<string, string>;
+      tools?: McpServerToolPolicy[];
+      timeout?: number;
+      always_load?: boolean;
     }
   | {
       type: "http";
       url: string;
       headers?: Record<string, string>;
+      tools?: McpServerToolPolicy[];
+      timeout?: number;
+      always_load?: boolean;
     };
 
 export type McpServerStatusConfig =
@@ -395,6 +413,11 @@ export type McpServerStatusConfig =
       type: "claudeai-proxy";
       url: string;
       id: string;
+      timeout?: number;
+    }
+  | {
+      type: "unknown";
+      raw_type: string;
     };
 
 export interface McpServerStatus {

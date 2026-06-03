@@ -1,6 +1,11 @@
-import type { BridgeCommand, McpServerConfig, McpServerStatus } from "../types.js";
+import type { BridgeCommand, McpServerStatus } from "../types.js";
 import { emitMcpOperationError, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import {
+  bridgeMcpServersToSdk,
+  mapMcpServerStatus,
+  summarizeMcpServersForDiagnostics,
+} from "./mcp_metadata.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 type QueryWithMcpAuth = import("@anthropic-ai/claude-agent-sdk").Query & {
@@ -133,6 +138,7 @@ export async function emitMcpSnapshotEvent(
   rememberKnownConnectedMcpServers(mapped);
   logMcpSuccess("mcp_snapshot_emitted", "MCP snapshot emitted", session.sessionId, requestId, {
     server_count: mapped.length,
+    servers: summarizeMcpServersForDiagnostics(mapped),
   });
   writeEvent(
     {
@@ -360,7 +366,7 @@ export async function handleMcpSetServersCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await session.query.setMcpServers(command.servers as Record<string, McpServerConfig>);
+    await session.query.setMcpServers(bridgeMcpServersToSdk(command.servers));
     logMcpSuccess(
       "mcp_servers_set_completed",
       "MCP server configuration updated",
@@ -508,87 +514,5 @@ export async function handleMcpOauthCallbackUrlCommand(
       requestId,
       command.server_name,
     );
-  }
-}
-
-function mapMcpServerStatus(
-  status: Awaited<ReturnType<import("@anthropic-ai/claude-agent-sdk").Query["mcpServerStatus"]>>[number],
-): McpServerStatus {
-  return {
-    name: status.name,
-    status: status.status,
-    ...(status.serverInfo
-      ? {
-          server_info: {
-            name: status.serverInfo.name,
-            version: status.serverInfo.version,
-          },
-        }
-      : {}),
-    ...(status.error ? { error: status.error } : {}),
-    ...(status.config ? { config: mapMcpServerStatusConfig(status.config) } : {}),
-    ...(status.scope ? { scope: status.scope } : {}),
-    tools: Array.isArray(status.tools)
-      ? status.tools.map((tool) => ({
-          name: tool.name,
-          ...(tool.description ? { description: tool.description } : {}),
-          ...(tool.annotations
-            ? {
-                annotations: {
-                  ...(typeof tool.annotations.readOnly === "boolean"
-                    ? { read_only: tool.annotations.readOnly }
-                    : {}),
-                  ...(typeof tool.annotations.destructive === "boolean"
-                    ? { destructive: tool.annotations.destructive }
-                    : {}),
-                  ...(typeof tool.annotations.openWorld === "boolean"
-                    ? { open_world: tool.annotations.openWorld }
-                    : {}),
-                },
-              }
-            : {}),
-        }))
-      : [],
-  };
-}
-
-function mapMcpServerStatusConfig(
-  config: NonNullable<
-    Awaited<ReturnType<import("@anthropic-ai/claude-agent-sdk").Query["mcpServerStatus"]>>[number]["config"]
-  >,
-): import("../types.js").McpServerStatusConfig {
-  switch (config.type) {
-    case "stdio":
-      return {
-        type: "stdio",
-        command: config.command,
-        ...(Array.isArray(config.args) && config.args.length > 0 ? { args: config.args } : {}),
-        ...(config.env ? { env: config.env } : {}),
-      };
-    case "sse":
-      return {
-        type: "sse",
-        url: config.url,
-        ...(config.headers ? { headers: config.headers } : {}),
-      };
-    case "http":
-      return {
-        type: "http",
-        url: config.url,
-        ...(config.headers ? { headers: config.headers } : {}),
-      };
-    case "sdk":
-      return {
-        type: "sdk",
-        name: config.name,
-      };
-    case "claudeai-proxy":
-      return {
-        type: "claudeai-proxy",
-        url: config.url,
-        id: config.id,
-      };
-    default:
-      throw new Error(`unsupported MCP status config: ${JSON.stringify(config)}`);
   }
 }

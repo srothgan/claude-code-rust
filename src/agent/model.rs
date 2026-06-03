@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -233,6 +234,106 @@ impl McpResource {
             blob_saved_to.filter(|path| !path.trim().is_empty()).map(PathBuf::from);
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerConnectionStatus {
+    Connected,
+    Failed,
+    NeedsAuth,
+    Pending,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct McpToolAnnotations {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub open_world: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerToolPermissionPolicy {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl McpServerToolPermissionPolicy {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "always allow",
+            Self::Ask => "always ask",
+            Self::Deny => "always deny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerToolPolicy {
+    pub name: String,
+    pub permission_policy: McpServerToolPermissionPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerStatusConfig {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Sse {
+        url: String,
+        headers: BTreeMap<String, String>,
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Sdk {
+        name: String,
+    },
+    ClaudeaiProxy {
+        url: String,
+        id: String,
+        timeout: Option<u64>,
+    },
+    Unknown {
+        raw_type: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub status: McpServerConnectionStatus,
+    pub server_info: Option<McpServerInfo>,
+    pub error: Option<String>,
+    pub config: Option<McpServerStatusConfig>,
+    pub scope: Option<String>,
+    pub tools: Vec<McpTool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

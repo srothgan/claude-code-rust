@@ -4,10 +4,8 @@ use super::overlay::{
     render_overlay_shell,
 };
 use super::theme;
-use crate::agent::types::{
-    ElicitationAction, ElicitationMode, McpServerConnectionStatus, McpServerStatus,
-    McpServerStatusConfig,
-};
+use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
+use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
 use ratatui::Frame;
@@ -497,22 +495,68 @@ fn auth_redirect_action_lines(
 
 fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
     match config {
-        McpServerStatusConfig::Stdio { command, args, env } => {
+        McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
             let args_label = if args.is_empty() { "(none)".to_owned() } else { args.join(" ") };
-            vec![
+            let mut lines = vec![
                 detail_kv("Command", command, Color::White),
                 detail_kv("Args", &args_label, Color::White),
                 detail_kv("Env", &format!("{} variable(s)", env.len()), Color::White),
-            ]
+            ];
+            append_mcp_runtime_config_lines(&mut lines, *timeout, *always_load, &[]);
+            lines
         }
-        McpServerStatusConfig::Sse { url, headers }
-        | McpServerStatusConfig::Http { url, headers } => vec![
-            detail_kv("URL", url, Color::White),
-            detail_kv("Headers", &format!("{} configured", headers.len()), Color::White),
-        ],
+        McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load }
+        | McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
+            let mut lines = vec![
+                detail_kv("URL", url, Color::White),
+                detail_kv("Headers", &format!("{} configured", headers.len()), Color::White),
+            ];
+            append_mcp_runtime_config_lines(&mut lines, *timeout, *always_load, tools);
+            lines
+        }
         McpServerStatusConfig::Sdk { name } => vec![detail_kv("SDK server", name, Color::White)],
-        McpServerStatusConfig::ClaudeaiProxy { url, id } => {
-            vec![detail_kv("Proxy URL", url, Color::White), detail_kv("Proxy ID", id, Color::White)]
+        McpServerStatusConfig::ClaudeaiProxy { url, id, timeout } => {
+            let mut lines = vec![
+                detail_kv("Proxy URL", url, Color::White),
+                detail_kv("Proxy ID", id, Color::White),
+            ];
+            append_mcp_runtime_config_lines(&mut lines, *timeout, None, &[]);
+            lines
+        }
+        McpServerStatusConfig::Unknown { raw_type } => {
+            vec![detail_kv("Config type", &format!("unknown ({raw_type})"), theme::DIM)]
+        }
+    }
+}
+
+fn append_mcp_runtime_config_lines(
+    lines: &mut Vec<Line<'static>>,
+    timeout: Option<u64>,
+    always_load: Option<bool>,
+    tools: &[crate::agent::model::McpServerToolPolicy],
+) {
+    if let Some(timeout_ms) = timeout {
+        lines.push(detail_kv("Timeout", &format!("{timeout_ms} ms"), Color::White));
+    }
+    if let Some(always_load) = always_load {
+        lines.push(detail_kv(
+            "Always load",
+            if always_load { "enabled" } else { "disabled" },
+            Color::White,
+        ));
+    }
+    if !tools.is_empty() {
+        lines.push(detail_kv(
+            "Tool policies",
+            &format!("{} configured", tools.len()),
+            Color::White,
+        ));
+        for tool in tools {
+            lines.push(detail_kv(
+                &format!("  {}", tool.name),
+                tool.permission_policy.label(),
+                Color::White,
+            ));
         }
     }
 }
@@ -601,6 +645,9 @@ fn server_summary_line(server: &McpServerStatus) -> String {
             | McpServerStatusConfig::ClaudeaiProxy { url, .. },
         ) => parts.push(url.clone()),
         Some(McpServerStatusConfig::Sdk { name }) => parts.push(format!("sdk {name}")),
+        Some(McpServerStatusConfig::Unknown { raw_type }) => {
+            parts.push(format!("unknown config {raw_type}"));
+        }
         None => {}
     }
     parts.join("  |  ")
@@ -650,7 +697,7 @@ fn transport_label(config: Option<&McpServerStatusConfig>) -> &'static str {
         Some(McpServerStatusConfig::Http { .. }) => "http",
         Some(McpServerStatusConfig::Sdk { .. }) => "sdk",
         Some(McpServerStatusConfig::ClaudeaiProxy { .. }) => "claudeai-proxy",
-        None => "unknown",
+        Some(McpServerStatusConfig::Unknown { .. }) | None => "unknown",
     }
 }
 
@@ -748,6 +795,12 @@ mod tests {
                 config: Some(McpServerStatusConfig::Http {
                     url: "https://mcp.notion.com/mcp".to_owned(),
                     headers: BTreeMap::new(),
+                    tools: vec![crate::agent::model::McpServerToolPolicy {
+                        name: "search".to_owned(),
+                        permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                    }],
+                    timeout: Some(5000),
+                    always_load: Some(true),
                 }),
                 scope: Some("user".to_owned()),
                 tools: vec![],
@@ -755,7 +808,7 @@ mod tests {
             McpServerStatus {
                 name: "filesystem".to_owned(),
                 status: McpServerConnectionStatus::Connected,
-                server_info: Some(crate::agent::types::McpServerInfo {
+                server_info: Some(crate::agent::model::McpServerInfo {
                     name: "Filesystem".to_owned(),
                     version: "1.2.3".to_owned(),
                 }),
@@ -767,12 +820,14 @@ mod tests {
                         "@modelcontextprotocol/server-filesystem".to_owned(),
                     ],
                     env: BTreeMap::new(),
+                    timeout: None,
+                    always_load: None,
                 }),
                 scope: Some("project".to_owned()),
-                tools: vec![crate::agent::types::McpTool {
+                tools: vec![crate::agent::model::McpTool {
                     name: "read_file".to_owned(),
                     description: Some("Read a file".to_owned()),
-                    annotations: Some(crate::agent::types::McpToolAnnotations {
+                    annotations: Some(crate::agent::model::McpToolAnnotations {
                         read_only: Some(true),
                         destructive: Some(false),
                         open_world: Some(false),
@@ -792,5 +847,25 @@ mod tests {
         assert!(rendered.contains("1 tool"));
         assert!(!rendered.contains("Details"));
         assert!(!rendered.contains("Servers"));
+    }
+
+    #[test]
+    fn config_lines_render_latest_mcp_fields() {
+        let lines = config_lines(&McpServerStatusConfig::Http {
+            url: "https://mcp.notion.com/mcp".to_owned(),
+            headers: BTreeMap::new(),
+            tools: vec![crate::agent::model::McpServerToolPolicy {
+                name: "search".to_owned(),
+                permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Deny,
+            }],
+            timeout: Some(5000),
+            always_load: Some(true),
+        });
+        let text = lines.iter().map(Line::to_string).collect::<Vec<_>>().join("\n");
+
+        assert!(text.contains("5000 ms"));
+        assert!(text.contains("enabled"));
+        assert!(text.contains("search"));
+        assert!(text.contains("always deny"));
     }
 }

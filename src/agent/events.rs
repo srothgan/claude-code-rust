@@ -100,7 +100,7 @@ pub enum ClientEvent {
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
-        servers: Vec<crate::agent::types::McpServerStatus>,
+        servers: Vec<model::McpServerStatus>,
         error: Option<String>,
     },
     /// Usage refresh task started.

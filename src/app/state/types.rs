@@ -153,7 +153,7 @@ pub struct SessionUsageState {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct McpState {
-    pub servers: Vec<crate::agent::types::McpServerStatus>,
+    pub servers: Vec<model::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,

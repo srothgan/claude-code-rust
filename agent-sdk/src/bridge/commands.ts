@@ -5,13 +5,13 @@ import type {
   ElicitationAction,
   EffortLevel,
   Json,
-  McpServerConfig,
   ModeInfo,
   ModeState,
   PermissionOutcome,
   QuestionOutcome,
   SessionLaunchSettings,
 } from "../types.js";
+import { parseMcpServersRecord } from "./mcp_metadata.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { resolveCurrentModel } from "./session_lifecycle.js";
 
@@ -260,44 +260,6 @@ function expectBoolean(
   return value;
 }
 
-function parseMcpServerConfig(
-  value: unknown,
-  context: string,
-): McpServerConfig {
-  const record = asRecord(value, context);
-  const type = expectString(record, "type", context);
-  switch (type) {
-    case "stdio":
-      return {
-        type,
-        command: expectString(record, "command", context),
-        ...(record.args === undefined ? {} : { args: expectStringArray(record, "args", context) }),
-        ...(record.env === undefined ? {} : { env: expectStringMap(record, "env", context) }),
-      };
-    case "sse":
-    case "http":
-      return {
-        type,
-        url: expectString(record, "url", context),
-        ...(record.headers === undefined
-          ? {}
-          : { headers: expectStringMap(record, "headers", context) }),
-      };
-    default:
-      throw new Error(`${context}.type must be one of stdio, sse, http`);
-  }
-}
-
-function parseMcpServersRecord(
-  value: unknown,
-  context: string,
-): Record<string, McpServerConfig> {
-  const record = asRecord(value, context);
-  return Object.fromEntries(
-    Object.entries(record).map(([key, entry]) => [key, parseMcpServerConfig(entry, `${context}.${key}`)]),
-  );
-}
-
 export function parseCommandEnvelope(line: string): { requestId?: string; command: BridgeCommand } {
   const raw = asRecord(JSON.parse(line) as BridgeCommandEnvelope, "command envelope");
   const requestId = typeof raw.request_id === "string" ? raw.request_id : undefined;
@@ -518,23 +480,6 @@ function expectStringArray(
     }
     return entry;
   });
-}
-
-function expectStringMap(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): Record<string, string> {
-  const value = record[key];
-  const parsed = asRecord(value, `${context}.${key}`);
-  return Object.fromEntries(
-    Object.entries(parsed).map(([entryKey, entryValue]) => {
-      if (typeof entryValue !== "string") {
-        throw new Error(`${context}.${key}.${entryKey} must be a string`);
-      }
-      return [entryKey, entryValue];
-    }),
-  );
 }
 
 function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: string } {

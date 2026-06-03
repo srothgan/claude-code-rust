@@ -1687,9 +1687,9 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2061,9 +2061,9 @@ mod tests {
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2113,9 +2113,9 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2277,9 +2277,9 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "current".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2291,9 +2291,9 @@ mod tests {
             &mut app,
             ClientEvent::McpSnapshotReceived {
                 session_id: "old-session".into(),
-                servers: vec![crate::agent::types::McpServerStatus {
+                servers: vec![crate::agent::model::McpServerStatus {
                     name: "stale".into(),
-                    status: crate::agent::types::McpServerConnectionStatus::Connected,
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
                     server_info: None,
                     error: None,
                     config: None,

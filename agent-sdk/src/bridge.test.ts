@@ -28,6 +28,9 @@ import {
   parseFastModeState,
   parseRuntimeSessionState,
   parseRateLimitStatus,
+  bridgeMcpConfigToSdk,
+  mapMcpServerStatus,
+  mapMcpServerStatusConfig,
   normalizeSettingsParseError,
   normalizeToolKind,
   parseCommandEnvelope,
@@ -417,6 +420,14 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
           headers: {
             "X-Test": "1",
           },
+          timeout: 5000,
+          always_load: true,
+          tools: [
+            {
+              name: "search",
+              permission_policy: "always_ask",
+            },
+          ],
         },
       },
     }),
@@ -435,8 +446,131 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
       headers: {
         "X-Test": "1",
       },
+      timeout: 5000,
+      always_load: true,
+      tools: [
+        {
+          name: "search",
+          permission_policy: "always_ask",
+        },
+      ],
     },
   });
+});
+
+test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: { bad: { type: "http", url: "https://mcp.example.com", timeout: 999 } },
+        }),
+      ),
+    /mcp_set_servers\.servers\.bad\.timeout must be an integer >= 1000/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: { bad: { type: "http", url: "https://mcp.example.com", always_load: "yes" } },
+        }),
+      ),
+    /mcp_set_servers\.servers\.bad\.always_load must be a boolean/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "http",
+              url: "https://mcp.example.com",
+              tools: [{ name: "read", permission_policy: "sometimes" }],
+            },
+          },
+        }),
+      ),
+    /permission_policy must be one of always_allow, always_ask, always_deny/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "stdio",
+              command: "npx",
+              tools: [{ name: "read", permission_policy: "always_allow" }],
+            },
+          },
+        }),
+      ),
+    /tools is only supported for http and sse MCP servers/,
+  );
+});
+
+test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
+  assert.deepEqual(
+    bridgeMcpConfigToSdk({
+      type: "sse",
+      url: "https://mcp.example.com/sse",
+      timeout: 2500,
+      always_load: true,
+      tools: [{ name: "search", permission_policy: "always_allow" }],
+    }),
+    {
+      type: "sse",
+      url: "https://mcp.example.com/sse",
+      timeout: 2500,
+      alwaysLoad: true,
+      tools: [{ name: "search", permission_policy: "always_allow" }],
+    },
+  );
+});
+
+test("mapMcpServerStatus preserves latest MCP status config fields", () => {
+  const mapped = mapMcpServerStatus({
+    name: "notion",
+    status: "connected",
+    config: {
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer token" },
+      timeout: 5000,
+      alwaysLoad: true,
+      tools: [{ name: "search", permission_policy: "always_deny" }],
+    },
+    tools: [],
+  });
+
+  assert.deepEqual(mapped.config, {
+    type: "http",
+    url: "https://mcp.notion.com/mcp",
+    headers: { Authorization: "Bearer token" },
+    timeout: 5000,
+    always_load: true,
+    tools: [{ name: "search", permission_policy: "always_deny" }],
+  });
+});
+
+test("mapMcpServerStatusConfig maps unknown config types without throwing", () => {
+  const mapped = mapMcpServerStatusConfig({
+    type: "future-transport",
+    url: "future://server",
+  } as unknown as NonNullable<import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]>);
+
+  assert.deepEqual(mapped, { type: "unknown", raw_type: "future-transport" });
 });
 
 test("parseCommandEnvelope validates reload_plugins command", () => {
@@ -1222,6 +1356,56 @@ test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
   });
 
   assert.equal(events.length, 0);
+});
+
+test("handleSdkMessage emits MCP snapshot from init status payload", () => {
+  const session = makeSessionState();
+  session.query = {
+    supportedCommands: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: "session-1",
+      model: "sonnet",
+      mcp_servers: [
+        {
+          name: "docs",
+          status: "pending",
+          config: {
+            type: "stdio",
+            command: "npx",
+            args: ["-y", "@anthropic-ai/mcp-docs"],
+            timeout: 3000,
+            alwaysLoad: true,
+          },
+          tools: [],
+        },
+      ],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const snapshot = events.find((event) => event.event === "mcp_snapshot");
+  assert.deepEqual(snapshot, {
+    event: "mcp_snapshot",
+    session_id: "session-1",
+    servers: [
+      {
+        name: "docs",
+        status: "pending",
+        config: {
+          type: "stdio",
+          command: "npx",
+          args: ["-y", "@anthropic-ai/mcp-docs"],
+          timeout: 3000,
+          always_load: true,
+        },
+        tools: [],
+      },
+    ],
+  });
 });
 
 test("emitToolProgressUpdate does not reopen completed tools", () => {

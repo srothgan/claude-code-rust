@@ -44,6 +44,94 @@ pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
     }
 }
 
+pub(super) fn map_mcp_server_connection_status(
+    status: types::McpServerConnectionStatus,
+) -> model::McpServerConnectionStatus {
+    match status {
+        types::McpServerConnectionStatus::Connected => model::McpServerConnectionStatus::Connected,
+        types::McpServerConnectionStatus::Failed => model::McpServerConnectionStatus::Failed,
+        types::McpServerConnectionStatus::NeedsAuth => model::McpServerConnectionStatus::NeedsAuth,
+        types::McpServerConnectionStatus::Pending => model::McpServerConnectionStatus::Pending,
+        types::McpServerConnectionStatus::Disabled => model::McpServerConnectionStatus::Disabled,
+    }
+}
+
+fn map_mcp_tool_permission_policy(
+    policy: types::McpServerToolPermissionPolicy,
+) -> model::McpServerToolPermissionPolicy {
+    match policy {
+        types::McpServerToolPermissionPolicy::Allow => model::McpServerToolPermissionPolicy::Allow,
+        types::McpServerToolPermissionPolicy::Ask => model::McpServerToolPermissionPolicy::Ask,
+        types::McpServerToolPermissionPolicy::Deny => model::McpServerToolPermissionPolicy::Deny,
+    }
+}
+
+fn map_mcp_tool_policy(policy: types::McpServerToolPolicy) -> model::McpServerToolPolicy {
+    model::McpServerToolPolicy {
+        name: policy.name,
+        permission_policy: map_mcp_tool_permission_policy(policy.permission_policy),
+    }
+}
+
+fn map_mcp_status_config(config: types::McpServerStatusConfig) -> model::McpServerStatusConfig {
+    match config {
+        types::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
+            model::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load }
+        }
+        types::McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load } => {
+            model::McpServerStatusConfig::Sse {
+                url,
+                headers,
+                tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
+                timeout,
+                always_load,
+            }
+        }
+        types::McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
+            model::McpServerStatusConfig::Http {
+                url,
+                headers,
+                tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
+                timeout,
+                always_load,
+            }
+        }
+        types::McpServerStatusConfig::Sdk { name } => model::McpServerStatusConfig::Sdk { name },
+        types::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout } => {
+            model::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout }
+        }
+        types::McpServerStatusConfig::Unknown { raw_type } => {
+            model::McpServerStatusConfig::Unknown { raw_type }
+        }
+    }
+}
+
+pub(super) fn map_mcp_server_status(status: types::McpServerStatus) -> model::McpServerStatus {
+    model::McpServerStatus {
+        name: status.name,
+        status: map_mcp_server_connection_status(status.status),
+        server_info: status
+            .server_info
+            .map(|info| model::McpServerInfo { name: info.name, version: info.version }),
+        error: status.error,
+        config: status.config.map(map_mcp_status_config),
+        scope: status.scope,
+        tools: status
+            .tools
+            .into_iter()
+            .map(|tool| model::McpTool {
+                name: tool.name,
+                description: tool.description,
+                annotations: tool.annotations.map(|annotations| model::McpToolAnnotations {
+                    read_only: annotations.read_only,
+                    destructive: annotations.destructive,
+                    open_world: annotations.open_world,
+                }),
+            })
+            .collect(),
+    }
+}
+
 fn map_system_notice_severity(
     severity: types::SystemNoticeSeverity,
 ) -> model::SystemNoticeSeverity {
@@ -1183,5 +1271,39 @@ mod tests {
                     .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
             )]
         );
+    }
+
+    #[test]
+    fn map_mcp_server_status_converts_latest_config_fields() {
+        let status = types::McpServerStatus {
+            name: "notion".to_owned(),
+            status: types::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: Some(types::McpServerStatusConfig::Http {
+                url: "https://mcp.notion.com/mcp".to_owned(),
+                headers: std::collections::BTreeMap::new(),
+                tools: vec![types::McpServerToolPolicy {
+                    name: "search".to_owned(),
+                    permission_policy: types::McpServerToolPermissionPolicy::Deny,
+                }],
+                timeout: Some(5000),
+                always_load: Some(true),
+            }),
+            scope: Some("project".to_owned()),
+            tools: Vec::new(),
+        };
+
+        let mapped = super::map_mcp_server_status(status);
+
+        let Some(model::McpServerStatusConfig::Http { tools, timeout, always_load, .. }) =
+            mapped.config
+        else {
+            panic!("expected http MCP config");
+        };
+        assert_eq!(timeout, Some(5000));
+        assert_eq!(always_load, Some(true));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].permission_policy, model::McpServerToolPermissionPolicy::Deny);
     }
 }

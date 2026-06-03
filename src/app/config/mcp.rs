@@ -472,17 +472,17 @@ pub(crate) fn open_mcp_server_details(
 
 #[must_use]
 pub(crate) fn available_mcp_actions(
-    server: &crate::agent::types::McpServerStatus,
+    server: &crate::agent::model::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
     let mut actions = vec![McpServerActionKind::RefreshSnapshot];
-    if matches!(server.status, crate::agent::types::McpServerConnectionStatus::Disabled) {
+    if matches!(server.status, crate::agent::model::McpServerConnectionStatus::Disabled) {
         actions.push(McpServerActionKind::Enable);
     } else {
         if matches!(
             server.status,
-            crate::agent::types::McpServerConnectionStatus::NeedsAuth
-                | crate::agent::types::McpServerConnectionStatus::Failed
-                | crate::agent::types::McpServerConnectionStatus::Pending
+            crate::agent::model::McpServerConnectionStatus::NeedsAuth
+                | crate::agent::model::McpServerConnectionStatus::Failed
+                | crate::agent::model::McpServerConnectionStatus::Pending
         ) {
             actions.push(McpServerActionKind::Authenticate);
         }
@@ -495,14 +495,14 @@ pub(crate) fn available_mcp_actions(
 
 #[must_use]
 pub(crate) fn is_mcp_action_available(
-    server: &crate::agent::types::McpServerStatus,
+    server: &crate::agent::model::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
     !matches!(
         (action, server.config.as_ref()),
         (
             McpServerActionKind::Authenticate,
-            Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy { .. })
+            Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy { .. })
         )
     )
 }

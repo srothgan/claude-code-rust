@@ -94,6 +94,11 @@ export {
 } from "./bridge/session_lifecycle.js";
 export { mapAvailableModels } from "./bridge/model_metadata.js";
 export {
+  bridgeMcpConfigToSdk,
+  mapMcpServerStatus,
+  mapMcpServerStatusConfig,
+} from "./bridge/mcp_metadata.js";
+export {
   apiProviderIsExternal,
   isKnownApiProvider,
   mapSdkAccountInfo,

@@ -444,6 +444,7 @@ mod tests {
         BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope, SessionLaunchSettings,
     };
     use crate::agent::types;
+    use std::collections::BTreeMap;
 
     #[test]
     fn command_envelope_roundtrip_json() {
@@ -477,6 +478,51 @@ mod tests {
                 "command": "set_effort",
                 "session_id": "s1",
                 "effort": "max"
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_set_servers_command_serializes_latest_fields_as_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpSetServers {
+                session_id: "s1".to_owned(),
+                servers: BTreeMap::from([(
+                    "notion".to_owned(),
+                    types::McpServerConfig::Http {
+                        url: "https://mcp.notion.com/mcp".to_owned(),
+                        headers: BTreeMap::new(),
+                        tools: vec![types::McpServerToolPolicy {
+                            name: "search".to_owned(),
+                            permission_policy: types::McpServerToolPermissionPolicy::Allow,
+                        }],
+                        timeout: Some(5000),
+                        always_load: Some(true),
+                    },
+                )]),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "mcp_set_servers",
+                "session_id": "s1",
+                "servers": {
+                    "notion": {
+                        "type": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                        "headers": {},
+                        "tools": [
+                            { "name": "search", "permission_policy": "always_allow" }
+                        ],
+                        "timeout": 5000,
+                        "always_load": true
+                    }
+                }
             })
         );
     }
