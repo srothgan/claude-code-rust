@@ -19,6 +19,7 @@ import type {
   BridgeCommand,
   ElicitationAction,
   ElicitationRequest,
+  EffortLevel,
   FastModeState,
   Json,
   PermissionOutcome,
@@ -1021,8 +1022,12 @@ export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableMo
       supports_effort: entry.supportsEffort === true,
       supported_effort_levels: Array.isArray(entry.supportedEffortLevels)
         ? entry.supportedEffortLevels.filter(
-            (level): level is "low" | "medium" | "high" =>
-              level === "low" || level === "medium" || level === "high",
+            (level): level is EffortLevel =>
+              level === "low" ||
+              level === "medium" ||
+              level === "high" ||
+              level === "xhigh" ||
+              level === "max",
           )
         : [],
       ...(typeof entry.supportsAdaptiveThinking === "boolean"

@@ -326,6 +326,15 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
+    pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
+        self.config_options
+            .get("effortLevel")
+            .and_then(serde_json::Value::as_str)
+            .and_then(model::EffortLevel::from_stored)
+            .unwrap_or_else(|| self.config.thinking_effort_effective())
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.

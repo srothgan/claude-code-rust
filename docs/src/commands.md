@@ -13,6 +13,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
 | `/docs` | `/docs <mode|models|shortcuts|commands|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
+| `/effort` | `/effort <low|medium|high|xhigh|max>` | Change thinking effort for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
 | `/plugins` | `/plugins` | Open plugin management. |

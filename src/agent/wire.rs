@@ -70,6 +70,10 @@ pub enum BridgeCommand {
         session_id: String,
         mode: String,
     },
+    SetEffort {
+        session_id: String,
+        effort: String,
+    },
     GenerateSessionTitle {
         session_id: String,
         description: String,
@@ -153,6 +157,7 @@ impl BridgeCommand {
             Self::CancelTurn { .. } => "cancel_turn",
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
+            Self::SetEffort { .. } => "set_effort",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
             Self::NewSession { .. } => "new_session",
@@ -181,6 +186,7 @@ impl BridgeCommand {
             | Self::CancelTurn { session_id }
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
+            | Self::SetEffort { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
@@ -213,6 +219,7 @@ impl BridgeCommand {
             | Self::CancelTurn { .. }
             | Self::SetModel { .. }
             | Self::SetMode { .. }
+            | Self::SetEffort { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
             | Self::NewSession { .. }
@@ -448,6 +455,28 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn set_effort_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetEffort {
+                session_id: "s1".to_owned(),
+                effort: "max".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_effort",
+                "session_id": "s1",
+                "effort": "max"
+            })
+        );
     }
 
     #[test]

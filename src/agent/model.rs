@@ -646,15 +646,22 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 impl EffortLevel {
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+
     #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -664,6 +671,8 @@ impl EffortLevel {
             Self::Low => "Low",
             Self::Medium => "Medium",
             Self::High => "High",
+            Self::XHigh => "XHigh",
+            Self::Max => "Max",
         }
     }
 
@@ -673,6 +682,8 @@ impl EffortLevel {
             Self::Low => "Fastest responses",
             Self::Medium => "Balanced speed and depth",
             Self::High => "Deeper reasoning",
+            Self::XHigh => "Deeper than high",
+            Self::Max => "Maximum effort",
         }
     }
 
@@ -682,6 +693,8 @@ impl EffortLevel {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
             _ => None,
         }
     }
@@ -898,9 +911,12 @@ pub enum RateLimitStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    OauthOrgNotAllowed,
     BillingError,
     RateLimit,
+    Overloaded,
     InvalidRequest,
+    ModelNotFound,
     ServerError,
     MaxOutputTokens,
     Unknown,
@@ -930,6 +946,7 @@ pub struct RateLimitUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
+    Requesting,
     Idle,
 }
 

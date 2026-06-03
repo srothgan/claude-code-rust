@@ -40,9 +40,12 @@ fn format_api_retry_message(
 fn api_retry_error_label(error: ApiRetryError) -> &'static str {
     match error {
         ApiRetryError::AuthenticationFailed => "authentication_failed",
+        ApiRetryError::OauthOrgNotAllowed => "oauth_org_not_allowed",
         ApiRetryError::BillingError => "billing_error",
         ApiRetryError::RateLimit => "rate_limit",
+        ApiRetryError::Overloaded => "overloaded",
         ApiRetryError::InvalidRequest => "invalid_request",
+        ApiRetryError::ModelNotFound => "model_not_found",
         ApiRetryError::ServerError => "server_error",
         ApiRetryError::MaxOutputTokens => "max_output_tokens",
         ApiRetryError::Unknown => "connection error",

@@ -766,6 +766,56 @@ mod tests {
     }
 
     #[test]
+    fn effort_argument_candidates_include_session_only_max() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    crate::agent::model::EffortLevel::Low,
+                    crate::agent::model::EffortLevel::Medium,
+                    crate::agent::model::EffortLevel::High,
+                    crate::agent::model::EffortLevel::XHigh,
+                ]),
+        );
+
+        let candidates = argument_candidates(&app, "/effort", 0);
+
+        assert_eq!(
+            candidates.iter().map(|candidate| candidate.insert_value.as_str()).collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "max"
+                && candidate.secondary.as_deref() == Some("Max - Maximum effort")
+        }));
+    }
+
+    #[test]
+    fn effort_argument_candidates_filter_by_query() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                .supports_effort(true)
+                .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
+        );
+        app.input.set_text("/effort xh");
+        let _ = app.input.set_cursor(0, "/effort xh".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(matches!(slash.context, SlashContext::Argument { .. }));
+        assert_eq!(
+            slash
+                .candidates
+                .iter()
+                .map(|candidate| candidate.insert_value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["xhigh"]
+        );
+    }
+
+    #[test]
     fn docs_argument_candidates_are_static_topics() {
         let app = App::test_default();
         let candidates = argument_candidates(&app, "/docs", 0);
@@ -1112,6 +1162,141 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.current_model = Some(
+                    crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
+                );
+
+                let consumed = try_handle_submit(&mut app, "/effort xhigh");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching effort..."));
+                assert!(matches!(
+                    app.pending_command_ack.as_ref(),
+                    Some(super::super::PendingCommandAck::ConfigOption { option_id })
+                        if option_id == "effortLevel"
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set effort command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetEffort {
+                        session_id: "sess-1".to_owned(),
+                        effort: "xhigh".to_owned(),
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "effortLevel".to_owned(),
+                                value: serde_json::json!("xhigh"),
+                            },
+                        ),
+                    ),
+                );
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert_eq!(
+                    app.config_options.get("effortLevel"),
+                    Some(&serde_json::json!("xhigh"))
+                );
+                assert_eq!(
+                    app.session_thinking_effort_effective(),
+                    crate::agent::model::EffortLevel::XHigh
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_accepts_session_only_max() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.current_model = Some(
+                    crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(vec![
+                            crate::agent::model::EffortLevel::Low,
+                            crate::agent::model::EffortLevel::Medium,
+                            crate::agent::model::EffortLevel::High,
+                        ]),
+                );
+
+                let consumed = try_handle_submit(&mut app, "/effort max");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set effort command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetEffort {
+                        session_id: "sess-1".to_owned(),
+                        effort: "max".to_owned(),
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[test]
+    fn effort_invalid_arguments_return_usage() {
+        for input in ["/effort", "/effort banana", "/effort high extra"] {
+            let mut app = App::test_default();
+
+            let consumed = try_handle_submit(&mut app, input);
+
+            assert!(consumed);
+            let Some(last) = app.messages.last() else {
+                panic!("expected system usage message for {input}");
+            };
+            let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+                panic!("expected text block");
+            };
+            assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max>");
+            assert!(!matches!(app.status, AppStatus::CommandPending));
+        }
+    }
+
+    #[test]
+    fn effort_rejects_models_without_effort_support() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some("sess-1".into());
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku")
+                .supports_effort(false),
+        );
+
+        let consumed = try_handle_submit(&mut app, "/effort high");
+
+        assert!(consumed);
+        assert!(rx.try_recv().is_err());
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Cannot switch effort: current model does not support effort.");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn new_session_sets_command_pending() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1287,6 +1472,7 @@ mod tests {
     fn single_argument_builtin_selection_closes_autocomplete() {
         for (command, value) in [
             ("/docs", "commands"),
+            ("/effort", "xhigh"),
             ("/mode", "plan"),
             ("/model", "sonnet"),
             ("/opus-version", "4.7"),

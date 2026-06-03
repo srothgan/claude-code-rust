@@ -32,12 +32,25 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
 pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
     match error {
         types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
+        types::ApiRetryError::OauthOrgNotAllowed => model::ApiRetryError::OauthOrgNotAllowed,
         types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
         types::ApiRetryError::RateLimit => model::ApiRetryError::RateLimit,
+        types::ApiRetryError::Overloaded => model::ApiRetryError::Overloaded,
         types::ApiRetryError::InvalidRequest => model::ApiRetryError::InvalidRequest,
+        types::ApiRetryError::ModelNotFound => model::ApiRetryError::ModelNotFound,
         types::ApiRetryError::ServerError => model::ApiRetryError::ServerError,
         types::ApiRetryError::MaxOutputTokens => model::ApiRetryError::MaxOutputTokens,
         types::ApiRetryError::Unknown => model::ApiRetryError::Unknown,
+    }
+}
+
+fn map_effort_level(level: types::EffortLevel) -> model::EffortLevel {
+    match level {
+        types::EffortLevel::Low => model::EffortLevel::Low,
+        types::EffortLevel::Medium => model::EffortLevel::Medium,
+        types::EffortLevel::High => model::EffortLevel::High,
+        types::EffortLevel::XHigh => model::EffortLevel::XHigh,
+        types::EffortLevel::Max => model::EffortLevel::Max,
     }
 }
 
@@ -97,15 +110,7 @@ pub(super) fn map_available_models(
             mapped = mapped.supports_auto_mode(model_info.supports_auto_mode);
             if !model_info.supported_effort_levels.is_empty() {
                 mapped = mapped.supported_effort_levels(
-                    model_info
-                        .supported_effort_levels
-                        .into_iter()
-                        .map(|level| match level {
-                            types::EffortLevel::Low => model::EffortLevel::Low,
-                            types::EffortLevel::Medium => model::EffortLevel::Medium,
-                            types::EffortLevel::High => model::EffortLevel::High,
-                        })
-                        .collect(),
+                    model_info.supported_effort_levels.into_iter().map(map_effort_level).collect(),
                 );
             }
             mapped
@@ -121,15 +126,7 @@ pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model
     )
     .supports_effort(current_model.supports_effort)
     .supported_effort_levels(
-        current_model
-            .supported_effort_levels
-            .into_iter()
-            .map(|level| match level {
-                types::EffortLevel::Low => model::EffortLevel::Low,
-                types::EffortLevel::Medium => model::EffortLevel::Medium,
-                types::EffortLevel::High => model::EffortLevel::High,
-            })
-            .collect(),
+        current_model.supported_effort_levels.into_iter().map(map_effort_level).collect(),
     )
     .supports_fast_mode(current_model.supports_fast_mode)
     .supports_auto_mode(current_model.supports_auto_mode)
@@ -254,6 +251,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::SessionStatusUpdate { status } => {
             Some(model::SessionUpdate::SessionStatusUpdate(match status {
                 types::SessionStatus::Compacting => model::SessionStatus::Compacting,
+                types::SessionStatus::Requesting => model::SessionStatus::Requesting,
                 types::SessionStatus::Idle => model::SessionStatus::Idle,
             }))
         }
@@ -636,8 +634,8 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_permission_request, map_question_request, map_session_update,
+        convert_current_model, convert_tool_call, convert_tool_call_update_fields,
+        map_available_models, map_permission_request, map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
 
@@ -653,6 +651,8 @@ mod tests {
                     types::EffortLevel::Low,
                     types::EffortLevel::Medium,
                     types::EffortLevel::High,
+                    types::EffortLevel::XHigh,
+                    types::EffortLevel::Max,
                 ],
                 supports_adaptive_thinking: Some(true),
                 supports_fast_mode: Some(true),
@@ -680,6 +680,8 @@ mod tests {
                         model::EffortLevel::Low,
                         model::EffortLevel::Medium,
                         model::EffortLevel::High,
+                        model::EffortLevel::XHigh,
+                        model::EffortLevel::Max,
                     ])
                     .supports_adaptive_thinking(Some(true))
                     .supports_fast_mode(Some(true))
@@ -689,6 +691,32 @@ mod tests {
                     .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
+        );
+    }
+
+    #[test]
+    fn convert_current_model_preserves_new_effort_levels() {
+        let mapped = convert_current_model(types::CurrentModel {
+            requested_id: Some("sonnet".to_owned()),
+            resolved_id: "claude-sonnet".to_owned(),
+            display_name_short: "Sonnet".to_owned(),
+            display_name_long: "Claude Sonnet".to_owned(),
+            catalog_id: Some("claude-sonnet".to_owned()),
+            supports_effort: true,
+            supported_effort_levels: vec![
+                types::EffortLevel::Low,
+                types::EffortLevel::XHigh,
+                types::EffortLevel::Max,
+            ],
+            supports_fast_mode: Some(true),
+            supports_auto_mode: Some(false),
+            supports_adaptive_thinking: Some(true),
+            is_authoritative: true,
+        });
+
+        assert_eq!(
+            mapped.supported_effort_levels,
+            vec![model::EffortLevel::Low, model::EffortLevel::XHigh, model::EffortLevel::Max,]
         );
     }
 
@@ -710,6 +738,28 @@ mod tests {
                 error: model::ApiRetryError::ServerError,
             })
         );
+        for (wire_error, model_error) in [
+            (types::ApiRetryError::ModelNotFound, model::ApiRetryError::ModelNotFound),
+            (types::ApiRetryError::OauthOrgNotAllowed, model::ApiRetryError::OauthOrgNotAllowed),
+            (types::ApiRetryError::Overloaded, model::ApiRetryError::Overloaded),
+        ] {
+            assert_eq!(
+                map_session_update(types::SessionUpdate::ApiRetryUpdate {
+                    attempt: 1,
+                    max_retries: 4,
+                    retry_delay_ms: 1000.0,
+                    error_status: None,
+                    error: wire_error,
+                }),
+                Some(model::SessionUpdate::ApiRetryUpdate {
+                    attempt: 1,
+                    max_retries: 4,
+                    retry_delay_ms: 1000.0,
+                    error_status: None,
+                    error: model_error,
+                })
+            );
+        }
         assert_eq!(
             map_session_update(types::SessionUpdate::RuntimeSessionStateUpdate {
                 state: types::RuntimeSessionState::RequiresAction,
@@ -723,6 +773,12 @@ mod tests {
                 suggestion: "Add tests".to_owned(),
             }),
             Some(model::SessionUpdate::PromptSuggestionUpdate("Add tests".to_owned()))
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::SessionStatusUpdate {
+                status: types::SessionStatus::Requesting,
+            }),
+            Some(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Requesting))
         );
     }
 

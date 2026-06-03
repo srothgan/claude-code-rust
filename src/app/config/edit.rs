@@ -1,11 +1,11 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DefaultPermissionMode,
-    LanguageOverlayState, ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle,
-    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
-    PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
-    SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
-    resolved_setting, setting_display_value, setting_spec, store,
+    AddMarketplaceOverlayState, ConfigOverlayState, DefaultPermissionMode, LanguageOverlayState,
+    ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle, OutputStyleOverlayState,
+    OverlayFocus, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
+    PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue, SessionRenameOverlayState,
+    SettingFile, SettingId, SettingOptions, SettingSpec, resolved_setting, setting_display_value,
+    setting_spec, store,
 };
 use crate::agent::model::EffortLevel;
 use crate::app::App;
@@ -246,7 +246,7 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             supported_effort_levels: if model.supported_effort_levels.is_empty()
                 && model.supports_effort
             {
-                DEFAULT_EFFORT_LEVELS.to_vec()
+                EffortLevel::ALL.to_vec()
             } else {
                 model.supported_effort_levels.clone()
             },

@@ -12,6 +12,8 @@ import {
   buildSessionListOptions,
   buildToolResultFields,
   createToolCall,
+  applySessionEffort,
+  emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
   mapAvailableAgents,
@@ -1537,6 +1539,29 @@ test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
       error: "server_error",
     },
   );
+  for (const error of [
+    "model_not_found",
+    "oauth_org_not_allowed",
+    "overloaded",
+  ] as const) {
+    assert.deepEqual(
+      buildApiRetryUpdate({
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1500,
+        error_status: 529,
+        error,
+      }),
+      {
+        type: "api_retry_update",
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1500,
+        error_status: 529,
+        error,
+      },
+    );
+  }
 
   assert.deepEqual(
     buildApiRetryUpdate({
@@ -1633,6 +1658,13 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
       uuid: "message-3",
       session_id: "session-1",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: "requesting",
+      uuid: "message-4",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
   assert.deepEqual(
@@ -1648,8 +1680,73 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
         error: "server_error",
       },
       { type: "runtime_session_state_update", state: "idle" },
+      { type: "session_status_update", status: "requesting" },
     ],
   );
+});
+
+test("parseCommandEnvelope validates set_effort command", () => {
+  for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+    const parsed = parseCommandEnvelope(
+      JSON.stringify({
+        request_id: "req-effort",
+        command: "set_effort",
+        session_id: "session-1",
+        effort,
+      }),
+    );
+    assert.equal(parsed.requestId, "req-effort");
+    assert.equal(parsed.command.command, "set_effort");
+    if (parsed.command.command !== "set_effort") {
+      throw new Error("unexpected command variant");
+    }
+    assert.equal(parsed.command.session_id, "session-1");
+    assert.equal(parsed.command.effort, effort);
+  }
+});
+
+test("parseCommandEnvelope rejects unsupported set_effort values", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "set_effort",
+          session_id: "session-1",
+          effort: "banana",
+        }),
+      ),
+    /set_effort\.effort must be one of low, medium, high, xhigh, max/,
+  );
+});
+
+test("applySessionEffort uses live flag settings for xhigh and max", async () => {
+  const calls: unknown[] = [];
+  const query = {
+    async applyFlagSettings(settings: unknown): Promise<void> {
+      calls.push(settings);
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await applySessionEffort(query, "xhigh");
+  await applySessionEffort(query, "max");
+
+  assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
+});
+
+test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
+  const events = captureBridgeEvents(() => {
+    emitEffortConfigOptionUpdate("session-1", "max");
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "config_option_update",
+      option_id: "effortLevel",
+      value: "max",
+    },
+  });
 });
 
 test("shouldEmitStartupAuthRequiredForAccount keeps legacy first-party behavior", () => {
@@ -2664,7 +2761,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
       displayName: "Claude Sonnet",
       description: "Balanced model",
       supportsEffort: true,
-      supportedEffortLevels: ["low", "medium", "high", "max"],
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsAdaptiveThinking: true,
       supportsFastMode: true,
       supportsAutoMode: false,
@@ -2683,7 +2780,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
       display_name: "Claude Sonnet",
       description: "Balanced model",
       supports_effort: true,
-      supported_effort_levels: ["low", "medium", "high"],
+      supported_effort_levels: ["low", "medium", "high", "xhigh", "max"],
       supports_adaptive_thinking: true,
       supports_fast_mode: true,
       supports_auto_mode: false,

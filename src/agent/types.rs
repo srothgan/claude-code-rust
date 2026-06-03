@@ -38,6 +38,9 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,9 +92,12 @@ pub enum RateLimitStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    OauthOrgNotAllowed,
     BillingError,
     RateLimit,
+    Overloaded,
     InvalidRequest,
+    ModelNotFound,
     ServerError,
     MaxOutputTokens,
     #[serde(other)]
@@ -130,6 +136,7 @@ pub struct RateLimitUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
+    Requesting,
     Idle,
 }
 
@@ -650,7 +657,33 @@ pub struct McpSetServersResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiRetryError, SessionUpdate};
+    use super::{ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate};
+
+    #[test]
+    fn available_model_deserializes_new_effort_levels() {
+        let model: AvailableModel = serde_json::from_value(serde_json::json!({
+            "id": "sonnet",
+            "display_name": "Claude Sonnet",
+            "description": null,
+            "supports_effort": true,
+            "supported_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+            "supports_adaptive_thinking": true,
+            "supports_fast_mode": true,
+            "supports_auto_mode": false
+        }))
+        .expect("deserialize available model");
+
+        assert_eq!(
+            model.supported_effort_levels,
+            vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::XHigh,
+                EffortLevel::Max,
+            ]
+        );
+    }
 
     #[test]
     fn api_retry_update_deserializes_unknown_error_defensively() {
@@ -667,6 +700,44 @@ mod tests {
         assert!(matches!(
             update,
             SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
+        ));
+    }
+
+    #[test]
+    fn api_retry_update_deserializes_new_known_errors() {
+        for (raw, expected) in [
+            ("model_not_found", ApiRetryError::ModelNotFound),
+            ("oauth_org_not_allowed", ApiRetryError::OauthOrgNotAllowed),
+            ("overloaded", ApiRetryError::Overloaded),
+        ] {
+            let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+                "type": "api_retry_update",
+                "attempt": 1,
+                "max_retries": 4,
+                "retry_delay_ms": 1000,
+                "error_status": null,
+                "error": raw
+            }))
+            .expect("deserialize api retry update");
+
+            assert!(matches!(
+                update,
+                SessionUpdate::ApiRetryUpdate { error, .. } if error == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn session_status_update_deserializes_requesting() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "session_status_update",
+            "status": "requesting"
+        }))
+        .expect("deserialize session status update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::SessionStatusUpdate { status: SessionStatus::Requesting }
         ));
     }
 

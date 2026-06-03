@@ -3,6 +3,7 @@ import type {
   BridgeCommand,
   BridgeCommandEnvelope,
   ElicitationAction,
+  EffortLevel,
   Json,
   McpServerConfig,
   ModeInfo,
@@ -119,6 +120,24 @@ function expectString(record: Record<string, unknown>, key: string, context: str
   const value = record[key];
   if (typeof value !== "string") {
     throw new Error(`${context}.${key} must be a string`);
+  }
+  return value;
+}
+
+function expectEffortLevel(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): EffortLevel {
+  const value = expectString(record, key, context);
+  if (
+    value !== "low" &&
+    value !== "medium" &&
+    value !== "high" &&
+    value !== "xhigh" &&
+    value !== "max"
+  ) {
+    throw new Error(`${context}.${key} must be one of low, medium, high, xhigh, max`);
   }
   return value;
 }
@@ -335,6 +354,12 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "set_mode",
           session_id: expectString(raw, "session_id", "set_mode"),
           mode: expectString(raw, "mode", "set_mode"),
+        };
+      case "set_effort":
+        return {
+          command: "set_effort",
+          session_id: expectString(raw, "session_id", "set_effort"),
+          effort: expectEffortLevel(raw, "effort", "set_effort"),
         };
       case "generate_session_title":
         return {

@@ -29,7 +29,7 @@ export interface AvailableAgent {
   model?: string;
 }
 
-export type EffortLevel = "low" | "medium" | "high";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AvailableModel {
   id: string;
@@ -86,9 +86,12 @@ export interface RateLimitUpdate {
 
 export type ApiRetryError =
   | "authentication_failed"
+  | "oauth_org_not_allowed"
   | "billing_error"
   | "rate_limit"
+  | "overloaded"
   | "invalid_request"
+  | "model_not_found"
   | "server_error"
   | "unknown"
   | "max_output_tokens";
@@ -212,7 +215,7 @@ export type SessionUpdate =
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
-  | { type: "session_status_update"; status: "compacting" | "idle" }
+  | { type: "session_status_update"; status: "compacting" | "requesting" | "idle" }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 
 export interface PermissionOption {
@@ -442,6 +445,11 @@ export type BridgeCommand =
       command: "set_mode";
       session_id: string;
       mode: string;
+    }
+  | {
+      command: "set_effort";
+      session_id: string;
+      effort: EffortLevel;
     }
   | {
       command: "generate_session_title";

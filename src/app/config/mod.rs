@@ -422,16 +422,8 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
 ];
 const OPUS_MODEL_ALIAS_ID: &str = "opus";
 const OPUS_MODEL_ALIAS_LABEL: &str = "Opus";
-const DEFAULT_EFFORT_LEVELS: [EffortLevel; 3] =
-    [EffortLevel::Low, EffortLevel::Medium, EffortLevel::High];
 const LANGUAGE_MIN_CHARS: usize = 2;
 const LANGUAGE_MAX_CHARS: usize = 30;
-
-const EFFORT_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "low", label: "Low" },
-    SettingOption { stored: "medium", label: "Medium" },
-    SettingOption { stored: "high", label: "High" },
-];
 
 const CONFIG_SETTINGS: [SettingSpec; 14] = [
     SettingSpec {
@@ -620,13 +612,13 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         id: SettingId::ThinkingEffort,
         entry_id: "A20",
         label: "Thinking effort",
-        description: "Controls how much effort Claude uses when thinking for new sessions. Only applies when Always Thinking is on and the selected model supports effort.",
+        description: "Controls how much effort Claude uses when thinking for new sessions: Low, Medium, High, XHigh, or Max. Only applies when Always Thinking is on and the selected model supports effort.",
         file: SettingFile::Settings,
         json_path: &["effortLevel"],
         kind: SettingKind::Enum,
         editor: EditorKind::Overlay,
         source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(EFFORT_OPTIONS),
+        options: SettingOptions::None,
         fallback: FallbackPolicy::AppDefault,
         supported: true,
     },
@@ -1411,6 +1403,9 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
     match spec.kind {
         SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
         SettingKind::Text => Vec::new(),
+        SettingKind::Enum | SettingKind::DynamicEnum if spec.id == SettingId::ThinkingEffort => {
+            EffortLevel::ALL.iter().map(|level| level.label().to_owned()).collect()
+        }
         SettingKind::Enum | SettingKind::DynamicEnum => match spec.options {
             SettingOptions::None => Vec::new(),
             SettingOptions::Static(options) => {

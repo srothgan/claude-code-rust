@@ -7,6 +7,7 @@ use super::{
     APP_SLASH_COMMANDS, AppSlashCommand, MAX_CANDIDATES, SlashCandidate, SlashContext,
     SlashDetection, SlashState, command_spec, normalize_slash_name,
 };
+use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crate::app::config::store;
 use crate::app::dialog::DialogState;
@@ -163,7 +164,10 @@ fn is_builtin_variable_input_command(command_name: &str) -> bool {
         !spec.args.is_empty()
             || matches!(
                 spec.command,
-                AppSlashCommand::Mode | AppSlashCommand::Model | AppSlashCommand::Resume
+                AppSlashCommand::Effort
+                    | AppSlashCommand::Mode
+                    | AppSlashCommand::Model
+                    | AppSlashCommand::Resume
             )
     })
 }
@@ -264,6 +268,28 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
     })
 }
 
+fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
+    let mut levels = match app.current_model.as_ref() {
+        Some(model) if !model.supports_effort => Vec::new(),
+        Some(model) if !model.supported_effort_levels.is_empty() => {
+            model.supported_effort_levels.clone()
+        }
+        _ => EffortLevel::ALL.to_vec(),
+    };
+    if !levels.contains(&EffortLevel::Max) {
+        levels.push(EffortLevel::Max);
+    }
+
+    levels
+        .into_iter()
+        .map(|level| SlashCandidate {
+            insert_value: level.as_stored().to_owned(),
+            primary: level.as_stored().to_owned(),
+            secondary: Some(format!("{} - {}", level.label(), level.description())),
+        })
+        .collect()
+}
+
 fn now_epoch_seconds() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
@@ -317,6 +343,7 @@ pub(super) fn argument_candidates(
 
     match command_name {
         "/1m-context" | "/docs" | "/opus-version" => static_argument_candidates(command_name),
+        "/effort" => effort_argument_candidates(app),
         "/resume" => app
             .recent_sessions
             .iter()

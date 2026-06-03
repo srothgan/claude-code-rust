@@ -668,6 +668,8 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       }
       if (msg.status === "compacting") {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "compacting" });
+      } else if (msg.status === "requesting") {
+        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "requesting" });
       } else if (msg.status === null) {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
       }

@@ -10,6 +10,7 @@ mod settings;
 mod status;
 mod usage;
 
+use crate::agent::model::EffortLevel;
 use crate::app::config::{
     OutputStyle, OverlayFocus, language_input_validation_message, model_overlay_options,
     supported_effort_levels_for_model,
@@ -213,7 +214,11 @@ fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
         sections[1],
     );
 
-    frame.render_widget(Paragraph::new(effort_lines).wrap(Wrap { trim: false }), sections[4]);
+    let effort_scroll = effort_overlay_scroll(app, sections[4].height, sections[4].width);
+    frame.render_widget(
+        Paragraph::new(effort_lines).scroll((effort_scroll, 0)).wrap(Wrap { trim: false }),
+        sections[4],
+    );
 }
 
 fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
@@ -750,6 +755,50 @@ fn model_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) ->
     }
 }
 
+fn effort_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
+    let Some(overlay) = app.config.model_and_effort_overlay() else {
+        return 0;
+    };
+    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
+    if levels.is_empty() || viewport_height == 0 || viewport_width == 0 {
+        return 0;
+    }
+
+    let selected_index =
+        levels.iter().position(|level| *level == overlay.selected_effort).unwrap_or(0);
+    let selected_start = levels
+        .iter()
+        .take(selected_index)
+        .enumerate()
+        .map(|(index, level)| {
+            effort_overlay_option_height(*level, index + 1 == levels.len(), viewport_width)
+        })
+        .sum::<usize>();
+    let selected_height = effort_overlay_option_height(
+        levels[selected_index],
+        selected_index + 1 == levels.len(),
+        viewport_width,
+    );
+    let viewport_height = usize::from(viewport_height);
+
+    if selected_start + selected_height <= viewport_height {
+        0
+    } else {
+        u16::try_from(selected_start + selected_height - viewport_height).unwrap_or(u16::MAX)
+    }
+}
+
+fn effort_overlay_option_height(level: EffortLevel, is_last: bool, viewport_width: u16) -> usize {
+    let lines = vec![
+        Line::from(format!("  {}", level.label())),
+        Line::from(Span::styled(
+            format!("  {}", level.description()),
+            Style::default().fg(theme::DIM),
+        )),
+    ];
+    wrapped_text_height(Text::from(lines), viewport_width) + usize::from(!is_last)
+}
+
 fn model_overlay_option_height(
     option: &crate::app::config::OverlayModelOption,
     is_last: bool,
@@ -897,7 +946,7 @@ fn centered_line_area(area: Rect, content_width: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTINGS_LIMITATION_HINT, model_overlay_lines, model_overlay_scroll,
+        SETTINGS_LIMITATION_HINT, effort_overlay_scroll, model_overlay_lines, model_overlay_scroll,
         model_overlay_title_line, model_overlay_title_text,
     };
     use crate::agent::model::{AvailableModel, EffortLevel};
@@ -1062,6 +1111,30 @@ mod tests {
         let wide_scroll = assert_selected_model_visible(&app, 3, 40);
         assert!(narrow_scroll > 0);
         assert!(narrow_scroll >= wide_scroll);
+    }
+
+    #[test]
+    fn effort_overlay_scroll_keeps_new_high_effort_levels_visible() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            AvailableModel::new("opus", "Opus")
+                .supports_effort(true)
+                .supported_effort_levels(EffortLevel::ALL.to_vec()),
+        ];
+        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+            focus: OverlayFocus::Effort,
+            selected_model: "opus".to_owned(),
+            selected_effort: EffortLevel::Low,
+        }));
+
+        assert_eq!(effort_overlay_scroll(&app, 8, 40), 0);
+
+        app.config
+            .model_and_effort_overlay_mut()
+            .expect("model and effort overlay")
+            .selected_effort = EffortLevel::Max;
+
+        assert!(effort_overlay_scroll(&app, 8, 40) > 0);
     }
 
     #[test]

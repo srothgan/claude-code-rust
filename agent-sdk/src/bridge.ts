@@ -9,6 +9,7 @@ import {
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "./types.js";
+import type { EffortLevel } from "./types.js";
 import {
   buildModeState,
   markModeUnavailableForSession,
@@ -134,6 +135,23 @@ export async function generatePersistedSessionTitle(
     throw new Error("SDK did not return a generated session title");
   }
   return title;
+}
+
+export async function applySessionEffort(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  effort: EffortLevel,
+): Promise<void> {
+  const settings = { effortLevel: effort } as Parameters<typeof query.applyFlagSettings>[0];
+  // applyFlagSettings controls live session settings; SDK Settings typings model persisted effort levels.
+  await query.applyFlagSettings(settings);
+}
+
+export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLevel): void {
+  emitSessionUpdate(sessionId, {
+    type: "config_option_update",
+    option_id: "effortLevel",
+    value: effort,
+  });
 }
 
 const EXPECTED_AGENT_SDK_VERSION = "0.3.161";
@@ -488,6 +506,22 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           }
         }
         slashError(command.session_id, `failed to set mode to ${mode}: ${message}`, requestId);
+      }
+      return;
+    }
+
+    case "set_effort": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await applySessionEffort(session.query, command.effort);
+        emitEffortConfigOptionUpdate(session.sessionId, command.effort);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set effort: ${message}`, requestId);
       }
       return;
     }

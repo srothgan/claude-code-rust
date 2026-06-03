@@ -389,6 +389,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn set_effort(&self, session_id: String, effort: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetEffort { session_id, effort },
+        })
+    }
+
     pub fn generate_session_title(
         &self,
         session_id: String,
@@ -593,6 +600,23 @@ mod tests {
             BridgeCommand::RenameSession {
                 session_id: "session-1".to_owned(),
                 title: "Renamed".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn set_effort_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_effort("session-1".to_owned(), "max".to_owned()).expect("set effort");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetEffort {
+                session_id: "session-1".to_owned(),
+                effort: "max".to_owned(),
             }
         );
     }

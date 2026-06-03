@@ -40,6 +40,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Compact => handle_compact_submit(app, &parsed.args),
         AppSlashCommand::Config => handle_config_submit(app, &parsed.args),
         AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
+        AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
         AppSlashCommand::Help => handle_help_submit(app, &parsed.args),
         AppSlashCommand::Mcp => handle_mcp_submit(app, &parsed.args),
         AppSlashCommand::Plugins => handle_plugins_submit(app, &parsed.args),
@@ -726,6 +727,49 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
             Err(e) => {
                 let _ =
                     tx.send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
+            }
+        }
+    });
+    true
+}
+
+fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
+    let [effort_arg] = args else {
+        push_system_message(app, usage(AppSlashCommand::Effort));
+        return true;
+    };
+    let Some(effort) = crate::agent::model::EffortLevel::from_stored(effort_arg.trim()) else {
+        push_system_message(app, usage(AppSlashCommand::Effort));
+        return true;
+    };
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch effort: not connected yet.",
+        "Cannot switch effort: no active session.",
+    ) else {
+        return true;
+    };
+
+    if app.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
+        push_system_message(app, "Cannot switch effort: current model does not support effort.");
+        return true;
+    }
+
+    set_command_pending(
+        app,
+        "Switching effort...",
+        Some(crate::app::PendingCommandAck::ConfigOption { option_id: "effortLevel".to_owned() }),
+    );
+
+    let tx = app.event_tx.clone();
+    let effort = effort.as_stored().to_owned();
+    tokio::task::spawn_local(async move {
+        match conn.set_effort(sid.to_string(), effort) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /effort: {e}")));
             }
         }
     });
