@@ -55,6 +55,11 @@ import {
   ASK_USER_QUESTION_TOOL_NAME,
 } from "./user_interaction.js";
 import { mapAvailableAgents, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
+import {
+  mapSdkSlashCommands,
+  updateAvailableCommands,
+  type AvailableCommandsSnapshot,
+} from "./available_commands.js";
 import { emitAuthRequired, emitFastModeUpdateIfChanged } from "./error_classification.js";
 
 export type ConnectEventKind = "connected" | "session_replaced";
@@ -131,6 +136,7 @@ export type SessionState = {
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
+  availableCommands?: AvailableCommandsSnapshot;
   lastAssistantError?: string;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
@@ -629,16 +635,11 @@ export async function createSession(params: {
       }
       emitFastModeUpdateIfChanged(session, result.fast_mode_state);
 
-      const commands = Array.isArray(result.commands)
-        ? result.commands.map((command) => ({
-            name: command.name,
-            description: command.description ?? "",
-            input_hint: command.argumentHint ?? undefined,
-          }))
-        : [];
-      if (commands.length > 0) {
-        emitSessionUpdate(session.sessionId, { type: "available_commands_update", commands });
-      }
+      updateAvailableCommands(
+        session,
+        "session_result_commands",
+        mapSdkSlashCommands(result.commands),
+      );
       emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       refreshAvailableAgents(session);
     })

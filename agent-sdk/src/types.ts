@@ -23,6 +23,13 @@ export interface AvailableCommand {
   input_hint?: string;
 }
 
+export type AvailableCommandsSource =
+  | "session_result_commands"
+  | "init_slash_commands"
+  | "supportedCommands"
+  | "commands_changed"
+  | "reload_plugins";
+
 export interface AvailableAgent {
   name: string;
   description: string;
@@ -97,6 +104,7 @@ export type ApiRetryError =
   | "max_output_tokens";
 
 export type RuntimeSessionState = "idle" | "running" | "requires_action";
+export type SystemNoticeSeverity = "info" | "warning" | "error";
 
 export interface SettingsParseErrorUpdate {
   file?: string;
@@ -144,6 +152,9 @@ export interface TaskMetadata {
   total_paused_ms?: number;
   error?: string;
   is_backgrounded?: boolean;
+  request_id?: string;
+  subagent_type?: string;
+  task_description?: string;
 }
 
 export interface ToolLocation {
@@ -196,7 +207,12 @@ export type SessionUpdate =
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
   | { type: "plan"; entries: PlanEntry[] }
-  | { type: "available_commands_update"; commands: AvailableCommand[] }
+  | {
+      type: "available_commands_update";
+      commands: AvailableCommand[];
+      source?: AvailableCommandsSource;
+      generation?: number;
+    }
   | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "mode_state_update"; mode: ModeState }
   | { type: "current_mode_update"; current_mode_id: string }
@@ -216,6 +232,7 @@ export type SessionUpdate =
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "compacting" | "requesting" | "idle" }
+  | { type: "system_notice_update"; severity: SystemNoticeSeverity; message: string }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 
 export interface PermissionOption {

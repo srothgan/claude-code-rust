@@ -112,6 +112,14 @@ pub enum RuntimeSessionState {
     RequiresAction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemNoticeSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsParseErrorUpdate {
     pub file: Option<String>,
@@ -218,6 +226,9 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub request_id: Option<String>,
+    pub subagent_type: Option<String>,
+    pub task_description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +282,8 @@ pub enum SessionUpdate {
     },
     AvailableCommandsUpdate {
         commands: Vec<AvailableCommand>,
+        source: Option<String>,
+        generation: Option<u64>,
     },
     AvailableAgentsUpdate {
         agents: Vec<AvailableAgent>,
@@ -323,6 +336,10 @@ pub enum SessionUpdate {
     },
     SessionStatusUpdate {
         status: SessionStatus,
+    },
+    SystemNoticeUpdate {
+        severity: SystemNoticeSeverity,
+        message: String,
     },
     CompactionBoundary {
         trigger: CompactionTrigger,
@@ -657,7 +674,10 @@ pub struct McpSetServersResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate};
+    use super::{
+        ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate,
+        SystemNoticeSeverity,
+    };
 
     #[test]
     fn available_model_deserializes_new_effort_levels() {
@@ -739,6 +759,77 @@ mod tests {
             update,
             SessionUpdate::SessionStatusUpdate { status: SessionStatus::Requesting }
         ));
+    }
+
+    #[test]
+    fn available_commands_update_deserializes_source_and_generation() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "available_commands_update",
+            "commands": [
+                {
+                    "name": "adobe-retouch-portraits",
+                    "description": "Retouch portraits",
+                    "input_hint": "<file>"
+                }
+            ],
+            "source": "commands_changed",
+            "generation": 2
+        }))
+        .expect("deserialize available commands update");
+
+        let SessionUpdate::AvailableCommandsUpdate { commands, source, generation } = update else {
+            panic!("expected available commands update");
+        };
+
+        assert_eq!(source.as_deref(), Some("commands_changed"));
+        assert_eq!(generation, Some(2));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "adobe-retouch-portraits");
+        assert_eq!(commands[0].input_hint.as_deref(), Some("<file>"));
+    }
+
+    #[test]
+    fn system_notice_update_deserializes() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "system_notice_update",
+            "severity": "warning",
+            "message": "Plugin install failed."
+        }))
+        .expect("deserialize system notice update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::SystemNoticeUpdate {
+                severity: SystemNoticeSeverity::Warning,
+                ref message,
+            } if message == "Plugin install failed."
+        ));
+    }
+
+    #[test]
+    fn task_metadata_deserializes_correlation_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "tool_call_update",
+            "tool_call_update": {
+                "tool_call_id": "tool-1",
+                "fields": {
+                    "task_metadata": {
+                        "request_id": "request-1",
+                        "subagent_type": "tester",
+                        "task_description": "Validate the branch"
+                    }
+                }
+            }
+        }))
+        .expect("deserialize task metadata");
+
+        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
+            panic!("expected tool call update");
+        };
+        let metadata = tool_call_update.fields.task_metadata.expect("task metadata");
+        assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
+        assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
+        assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
     }
 
     #[test]

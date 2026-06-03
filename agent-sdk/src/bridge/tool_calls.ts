@@ -17,6 +17,12 @@ type ToolUpdateKind =
   | "task_updated"
   | "task_notification";
 
+export type ToolCorrelationMetadata = {
+  requestId?: string;
+  subagentType?: string;
+  taskDescription?: string;
+};
+
 const TOOL_SUMMARY_TOOL_NAMES = new Set(["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"]);
 const TASK_LIFECYCLE_TOOL_NAMES = new Set(["Agent", "Task"]);
 
@@ -109,6 +115,32 @@ function parentToolUseIdFromMeta(meta: ToolCall["meta"] | undefined): string | n
       ? claudeCode.parentToolUseId
       : null;
   return parentToolUseId;
+}
+
+function applyToolCorrelationMetadata(
+  toolCall: ToolCall,
+  metadata: ToolCorrelationMetadata | undefined,
+): void {
+  if (!metadata?.requestId && !metadata?.subagentType && !metadata?.taskDescription) {
+    return;
+  }
+  const meta =
+    toolCall.meta && typeof toolCall.meta === "object" && !Array.isArray(toolCall.meta)
+      ? (toolCall.meta as Record<string, unknown>)
+      : {};
+  const claudeCode =
+    meta.claudeCode && typeof meta.claudeCode === "object" && !Array.isArray(meta.claudeCode)
+      ? (meta.claudeCode as Record<string, unknown>)
+      : {};
+  toolCall.meta = {
+    ...meta,
+    claudeCode: {
+      ...claudeCode,
+      ...(metadata.requestId ? { requestId: metadata.requestId } : {}),
+      ...(metadata.subagentType ? { subagentType: metadata.subagentType } : {}),
+      ...(metadata.taskDescription ? { taskDescription: metadata.taskDescription } : {}),
+    },
+  };
 }
 
 function mergeTaskMetadata(
@@ -264,10 +296,12 @@ export function emitToolCall(
   name: string,
   input: Record<string, unknown>,
   parentToolUseId: string | null = null,
+  metadata?: ToolCorrelationMetadata,
 ): void {
   const existing = session.toolCalls.get(toolUseId);
   const resolvedParentToolUseId = parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
   const toolCall = createToolCall(toolUseId, name, input, resolvedParentToolUseId);
+  applyToolCorrelationMetadata(toolCall, metadata);
   const status: ToolCall["status"] = "in_progress";
   toolCall.status = status;
 

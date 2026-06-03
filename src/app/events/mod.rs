@@ -280,6 +280,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 message = "available commands update applied",
                 outcome = "success",
                 command_count = cmds.available_commands.len(),
+                source = cmds.source.as_deref().unwrap_or("unknown"),
+                generation = cmds.generation,
             );
             app.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
@@ -408,6 +410,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 session_status = ?status,
                 compacting = app.is_compacting,
             );
+        }
+        model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
+            let severity = match severity {
+                model::SystemNoticeSeverity::Info => SystemSeverity::Info,
+                model::SystemNoticeSeverity::Warning => SystemSeverity::Warning,
+                model::SystemNoticeSeverity::Error => SystemSeverity::Error,
+            };
+            notices::emit_system_notice(app, severity, &message);
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
@@ -5086,6 +5096,52 @@ mod tests {
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
         assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+    }
+
+    #[test]
+    fn system_notice_update_uses_notice_lane() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::SystemNoticeUpdate {
+                severity: model::SystemNoticeSeverity::Warning,
+                message: "Plugin install failed.".to_owned(),
+            }),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        let MessageBlock::Notice(notice) = &app.messages[0].blocks[0] else {
+            panic!("expected system notice");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert_eq!(notice.text.text, "Plugin install failed.");
+    }
+
+    #[test]
+    fn available_commands_update_replaces_previous_commands() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
+                    "/old",
+                    "Old command",
+                )]),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![
+                    model::AvailableCommand::new("/new", "New command").input_hint("<arg>"),
+                ]),
+            )),
+        );
+
+        assert_eq!(
+            app.available_commands,
+            vec![model::AvailableCommand::new("/new", "New command").input_hint("<arg>")]
+        );
     }
 
     #[test]

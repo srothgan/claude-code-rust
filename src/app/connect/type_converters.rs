@@ -44,6 +44,16 @@ pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
     }
 }
 
+fn map_system_notice_severity(
+    severity: types::SystemNoticeSeverity,
+) -> model::SystemNoticeSeverity {
+    match severity {
+        types::SystemNoticeSeverity::Info => model::SystemNoticeSeverity::Info,
+        types::SystemNoticeSeverity::Warning => model::SystemNoticeSeverity::Warning,
+        types::SystemNoticeSeverity::Error => model::SystemNoticeSeverity::Error,
+    }
+}
+
 fn map_effort_level(level: types::EffortLevel) -> model::EffortLevel {
     match level {
         types::EffortLevel::Low => model::EffortLevel::Low,
@@ -56,8 +66,10 @@ fn map_effort_level(level: types::EffortLevel) -> model::EffortLevel {
 
 pub(super) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
+    source: Option<String>,
+    generation: Option<u64>,
 ) -> model::AvailableCommandsUpdate {
-    model::AvailableCommandsUpdate::new(
+    let mut update = model::AvailableCommandsUpdate::new(
         commands
             .into_iter()
             .map(|cmd| {
@@ -70,7 +82,14 @@ pub(super) fn map_available_commands_update(
                 mapped
             })
             .collect(),
-    )
+    );
+    if let Some(source) = source {
+        update = update.source(source);
+    }
+    if let Some(generation) = generation {
+        update = update.generation(generation);
+    }
+    update
 }
 
 pub(super) fn map_available_agents_update(
@@ -165,9 +184,11 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::Plan { entries } => Some(model::SessionUpdate::Plan(
             model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
         )),
-        types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
-            model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(commands)),
-        ),
+        types::SessionUpdate::AvailableCommandsUpdate { commands, source, generation } => {
+            Some(model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(
+                commands, source, generation,
+            )))
+        }
         types::SessionUpdate::AvailableAgentsUpdate { agents } => {
             Some(model::SessionUpdate::AvailableAgentsUpdate(map_available_agents_update(agents)))
         }
@@ -254,6 +275,12 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 types::SessionStatus::Requesting => model::SessionStatus::Requesting,
                 types::SessionStatus::Idle => model::SessionStatus::Idle,
             }))
+        }
+        types::SessionUpdate::SystemNoticeUpdate { severity, message } => {
+            Some(model::SessionUpdate::SystemNoticeUpdate {
+                severity: map_system_notice_severity(severity),
+                message,
+            })
         }
         types::SessionUpdate::CompactionBoundary { trigger, pre_tokens } => {
             Some(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
@@ -561,6 +588,9 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .total_paused_ms(task_metadata.total_paused_ms)
         .error(task_metadata.error)
         .backgrounded(task_metadata.is_backgrounded)
+        .request_id(task_metadata.request_id)
+        .subagent_type(task_metadata.subagent_type)
+        .task_description(task_metadata.task_description)
 }
 
 fn convert_tool_call_content(
@@ -635,7 +665,8 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 mod tests {
     use super::{
         convert_current_model, convert_tool_call, convert_tool_call_update_fields,
-        map_available_models, map_permission_request, map_question_request, map_session_update,
+        map_available_commands_update, map_available_models, map_permission_request,
+        map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
 
@@ -779,6 +810,16 @@ mod tests {
                 status: types::SessionStatus::Requesting,
             }),
             Some(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Requesting))
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::SystemNoticeUpdate {
+                severity: types::SystemNoticeSeverity::Warning,
+                message: "Plugin install failed.".to_owned(),
+            }),
+            Some(model::SessionUpdate::SystemNoticeUpdate {
+                severity: model::SystemNoticeSeverity::Warning,
+                message: "Plugin install failed.".to_owned(),
+            })
         );
     }
 
@@ -933,6 +974,29 @@ mod tests {
     }
 
     #[test]
+    fn map_available_commands_update_preserves_source_and_generation() {
+        let update = map_available_commands_update(
+            vec![types::AvailableCommand {
+                name: "project-command".to_owned(),
+                description: "Project command".to_owned(),
+                input_hint: Some("<value>".to_owned()),
+            }],
+            Some("commands_changed".to_owned()),
+            Some(3),
+        );
+
+        assert_eq!(
+            update,
+            model::AvailableCommandsUpdate::new(vec![
+                model::AvailableCommand::new("project-command", "Project command")
+                    .input_hint("<value>")
+            ])
+            .source("commands_changed")
+            .generation(3)
+        );
+    }
+
+    #[test]
     fn convert_tool_status_maps_killed() {
         assert_eq!(super::convert_tool_status("killed"), model::ToolCallStatus::Killed);
     }
@@ -945,6 +1009,9 @@ mod tests {
                 total_paused_ms: Some(45),
                 error: Some("Task stopped".to_owned()),
                 is_backgrounded: Some(true),
+                request_id: Some("request-1".to_owned()),
+                subagent_type: Some("tester".to_owned()),
+                task_description: Some("Validate changes".to_owned()),
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -956,7 +1023,10 @@ mod tests {
                     .end_time(Some(123))
                     .total_paused_ms(Some(45))
                     .error(Some("Task stopped".to_owned()))
-                    .backgrounded(Some(true)),
+                    .backgrounded(Some(true))
+                    .request_id(Some("request-1".to_owned()))
+                    .subagent_type(Some("tester".to_owned()))
+                    .task_description(Some("Validate changes".to_owned())),
             )
         );
     }
@@ -977,6 +1047,9 @@ mod tests {
                 total_paused_ms: Some(11),
                 error: Some("Task stopped".to_owned()),
                 is_backgrounded: Some(false),
+                request_id: Some("request-2".to_owned()),
+                subagent_type: Some("reviewer".to_owned()),
+                task_description: Some("Review changes".to_owned()),
             }),
             locations: Vec::new(),
             meta: None,
@@ -990,7 +1063,10 @@ mod tests {
                     .end_time(Some(77))
                     .total_paused_ms(Some(11))
                     .error(Some("Task stopped".to_owned()))
-                    .backgrounded(Some(false)),
+                    .backgrounded(Some(false))
+                    .request_id(Some("request-2".to_owned()))
+                    .subagent_type(Some("reviewer".to_owned()))
+                    .task_description(Some("Review changes".to_owned())),
             )
         );
     }

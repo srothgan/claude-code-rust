@@ -36,6 +36,7 @@ import {
   staleMcpAuthCandidates,
   resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
+  updateAvailableCommands,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
 import {
@@ -1683,6 +1684,333 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
       { type: "session_status_update", status: "requesting" },
     ],
   );
+});
+
+test("handleSdkMessage replaces available commands from commands_changed", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [
+        { name: "/one", description: "First command", argumentHint: "<value>" },
+        { name: "/two", description: undefined, argumentHint: undefined },
+      ],
+      uuid: "message-commands",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "available_commands_update",
+      commands: [
+        { name: "/one", description: "First command", input_hint: "<value>" },
+        { name: "/two", description: "" },
+      ],
+      source: "commands_changed",
+      generation: 1,
+    },
+  ]);
+});
+
+test("handleSdkMessage accepts empty commands_changed replacement list", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [],
+      uuid: "message-commands-empty",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "available_commands_update",
+      commands: [],
+      source: "commands_changed",
+      generation: 1,
+    },
+  ]);
+});
+
+test("available command registry blocks stale supportedCommands after dynamic updates", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    assert.equal(
+      updateAvailableCommands(session, "session_result_commands", [
+        { name: "base", description: "Base command" },
+      ]),
+      true,
+    );
+    assert.equal(
+      updateAvailableCommands(session, "commands_changed", [
+        { name: "base", description: "Base command" },
+        { name: "project-plugin", description: "Project plugin command" },
+      ]),
+      true,
+    );
+    assert.equal(
+      updateAvailableCommands(session, "supportedCommands", [
+        { name: "base", description: "Base command" },
+      ]),
+      false,
+    );
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [{ name: "base", description: "Base command" }],
+        source: "session_result_commands",
+        generation: 1,
+      },
+      {
+        type: "available_commands_update",
+        commands: [
+          { name: "base", description: "Base command" },
+          { name: "project-plugin", description: "Project plugin command" },
+        ],
+        source: "commands_changed",
+        generation: 2,
+      },
+    ],
+  );
+  assert.equal(session.availableCommands?.generation, 2);
+  assert.equal(session.availableCommands?.source, "commands_changed");
+  assert.deepEqual(
+    session.availableCommands?.commands.map((command) => command.name),
+    ["base", "project-plugin"],
+  );
+});
+
+test("available command registry lets authoritative snapshots remove commands", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    updateAvailableCommands(session, "reload_plugins", [
+      { name: "base", description: "Base command" },
+      { name: "removed-plugin", description: "Removed plugin command" },
+    ]);
+    updateAvailableCommands(session, "commands_changed", [
+      { name: "base", description: "Base command" },
+    ]);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [
+          { name: "base", description: "Base command" },
+          { name: "removed-plugin", description: "Removed plugin command" },
+        ],
+        source: "reload_plugins",
+        generation: 1,
+      },
+      {
+        type: "available_commands_update",
+        commands: [{ name: "base", description: "Base command" }],
+        source: "commands_changed",
+        generation: 2,
+      },
+    ],
+  );
+});
+
+test("handleSdkMessage emits system notices for notification mirror and plugin failures", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "notification",
+      key: "sync",
+      text: "Sync completed",
+      priority: "low",
+      uuid: "message-notification",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "mirror_error",
+      error: "append timed out",
+      key: { projectKey: "project", sessionId: "session-1" },
+      uuid: "message-mirror",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "plugin_install",
+      status: "failed",
+      name: "acme",
+      error: "download failed",
+      uuid: "message-plugin",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Sync completed" },
+    { type: "system_notice_update", severity: "warning", message: "Transcript mirror failed: append timed out" },
+    { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
+  ]);
+});
+
+test("handleSdkMessage keeps log-only system messages non-emitting", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "plugin_install",
+      status: "completed",
+      uuid: "message-plugin-complete",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "permission_denied",
+      tool_name: "Bash",
+      tool_use_id: "tool-1",
+      message: "denied",
+      uuid: "message-permission",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "memory_recall",
+      mode: "select",
+      memories: [],
+      uuid: "message-memory",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "thinking_tokens",
+      estimated_tokens: 120,
+      estimated_tokens_delta: 20,
+      uuid: "message-thinking",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage accepts auto-continuation message origin without user output", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "continue" }] },
+      parent_tool_use_id: null,
+      origin: { kind: "auto-continuation" },
+      uuid: "message-auto-continuation",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage preserves assistant correlation metadata on tool calls", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test" } }],
+      },
+      parent_tool_use_id: null,
+      request_id: "request-1",
+      subagent_type: "code-review",
+      task_description: "Review the bridge",
+      uuid: "message-assistant",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => (event.update as Record<string, unknown>).tool_call),
+    [
+      {
+        tool_call_id: "tool-1",
+        title: "npm test",
+        kind: "execute",
+        status: "in_progress",
+        content: [],
+        raw_input: { command: "npm test" },
+        locations: [],
+        meta: {
+          claudeCode: {
+            toolName: "Bash",
+            parentToolUseId: null,
+            requestId: "request-1",
+            subagentType: "code-review",
+            taskDescription: "Review the bridge",
+          },
+        },
+      },
+    ],
+  );
+});
+
+test("handleTaskSystemMessage preserves task correlation metadata", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Run checks",
+      request_id: "request-1",
+      subagent_type: "tester",
+      task_description: "Validate the branch",
+    });
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "tool_call",
+      tool_call: {
+        tool_call_id: "tool-1",
+        title: "Agent",
+        kind: "think",
+        status: "pending",
+        content: [],
+        raw_input: {},
+        locations: [],
+        meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+      },
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-1",
+        fields: {
+          status: "in_progress",
+        },
+      },
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-1",
+        fields: {
+          status: "in_progress",
+          raw_output: "Run checks",
+          content: [{ type: "content", content: { type: "text", text: "Run checks" } }],
+          task_metadata: {
+            request_id: "request-1",
+            subagent_type: "tester",
+            task_description: "Validate the branch",
+          },
+        },
+      },
+    },
+  ]);
 });
 
 test("parseCommandEnvelope validates set_effort command", () => {

@@ -490,6 +490,9 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub request_id: Option<String>,
+    pub subagent_type: Option<String>,
+    pub task_description: Option<String>,
 }
 
 impl TaskMetadata {
@@ -519,6 +522,24 @@ impl TaskMetadata {
     #[must_use]
     pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
         self.is_backgrounded = is_backgrounded;
+        self
+    }
+
+    #[must_use]
+    pub fn request_id(mut self, request_id: Option<String>) -> Self {
+        self.request_id = request_id;
+        self
+    }
+
+    #[must_use]
+    pub fn subagent_type(mut self, subagent_type: Option<String>) -> Self {
+        self.subagent_type = subagent_type;
+        self
+    }
+
+    #[must_use]
+    pub fn task_description(mut self, task_description: Option<String>) -> Self {
+        self.task_description = task_description;
         self
     }
 }
@@ -611,12 +632,26 @@ impl AvailableCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableCommandsUpdate {
     pub available_commands: Vec<AvailableCommand>,
+    pub source: Option<String>,
+    pub generation: Option<u64>,
 }
 
 impl AvailableCommandsUpdate {
     #[must_use]
     pub fn new(available_commands: Vec<AvailableCommand>) -> Self {
-        Self { available_commands }
+        Self { available_commands, source: None, generation: None }
+    }
+
+    #[must_use]
+    pub fn source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
+        self
     }
 }
 
@@ -929,6 +964,13 @@ pub enum RuntimeSessionState {
     RequiresAction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemNoticeSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
@@ -994,6 +1036,10 @@ pub enum SessionUpdate {
         message: String,
     },
     SessionStatusUpdate(SessionStatus),
+    SystemNoticeUpdate {
+        severity: SystemNoticeSeverity,
+        message: String,
+    },
     CompactionBoundary(CompactionBoundary),
 }
 

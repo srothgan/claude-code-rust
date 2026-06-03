@@ -44,6 +44,7 @@ import {
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
+import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available_commands.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   handleMcpAuthenticateCommand,
@@ -71,6 +72,11 @@ export {
 export { looksLikeAuthRequired } from "./bridge/auth.js";
 export { parseCommandEnvelope } from "./bridge/commands.js";
 export { buildSessionListOptions } from "./bridge/events.js";
+export {
+  mapInitSlashCommands,
+  mapSdkSlashCommands,
+  updateAvailableCommands,
+} from "./bridge/available_commands.js";
 export {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
@@ -690,17 +696,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       }
       try {
         const result = await session.query.reloadPlugins();
-        const commands = Array.isArray(result.commands)
-          ? result.commands.map((entry) => ({
-              name: entry.name,
-              description: entry.description ?? "",
-              input_hint: entry.argumentHint ?? undefined,
-            }))
-          : [];
-        emitSessionUpdate(session.sessionId, {
-          type: "available_commands_update",
-          commands,
-        });
+        updateAvailableCommands(session, "reload_plugins", mapSdkSlashCommands(result.commands));
         emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
         await handleMcpStatusCommand(session, requestId);
         emitRuntimeReloadCompleted(session.sessionId, requestId);
