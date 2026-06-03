@@ -161,16 +161,22 @@ pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::ThinkingEffort))? {
         PersistedSettingValue::Missing => Ok(EffortLevel::Medium),
         PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
+        PersistedSettingValue::String(value) => {
+            EffortLevel::from_persisted_setting(&value).ok_or(())
+        }
     }
 }
 
-pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
+pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) -> Result<(), ()> {
+    if !level.is_persistable_setting() {
+        return Err(());
+    }
     write_persisted_setting(
         document,
         setting_spec(SettingId::ThinkingEffort),
         PersistedSettingValue::String(level.as_stored().to_owned()),
     );
+    Ok(())
 }
 
 pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {

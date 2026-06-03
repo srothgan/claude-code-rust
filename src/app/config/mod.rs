@@ -612,7 +612,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         id: SettingId::ThinkingEffort,
         entry_id: "A20",
         label: "Thinking effort",
-        description: "Controls how much effort Claude uses when thinking for new sessions: Low, Medium, High, XHigh, or Max. Only applies when Always Thinking is on and the selected model supports effort.",
+        description: "Controls how much effort Claude uses when thinking for new sessions: Low, Medium, High, or XHigh. Only applies when Always Thinking is on and the selected model supports effort.",
         file: SettingFile::Settings,
         json_path: &["effortLevel"],
         kind: SettingKind::Enum,
@@ -1402,7 +1402,7 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
         SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
         SettingKind::Text => Vec::new(),
         SettingKind::Enum | SettingKind::DynamicEnum if spec.id == SettingId::ThinkingEffort => {
-            EffortLevel::ALL.iter().map(|level| level.label().to_owned()).collect()
+            EffortLevel::PERSISTABLE_SETTINGS.iter().map(|level| level.label().to_owned()).collect()
         }
         SettingKind::Enum | SettingKind::DynamicEnum => match spec.options {
             SettingOptions::None => Vec::new(),
@@ -1638,7 +1638,7 @@ pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
 }
 
 fn effort_level_label(value: &str) -> Option<String> {
-    EffortLevel::from_stored(value).map(|level| level.label().to_owned())
+    EffortLevel::from_persisted_setting(value).map(|level| level.label().to_owned())
 }
 
 fn project_root(app: &App) -> &std::path::Path {

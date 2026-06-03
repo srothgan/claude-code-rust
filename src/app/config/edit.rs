@@ -217,7 +217,15 @@ pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Ve
     model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
         Vec::new,
         |option| {
-            if option.supports_effort { option.supported_effort_levels } else { Vec::new() }
+            if option.supports_effort {
+                option
+                    .supported_effort_levels
+                    .into_iter()
+                    .filter(|level| level.is_persistable_setting())
+                    .collect()
+            } else {
+                Vec::new()
+            }
         },
     )
 }
@@ -246,7 +254,7 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             supported_effort_levels: if model.supported_effort_levels.is_empty()
                 && model.supports_effort
             {
-                EffortLevel::ALL.to_vec()
+                EffortLevel::PERSISTABLE_SETTINGS.to_vec()
             } else {
                 model.supported_effort_levels.clone()
             },
@@ -659,8 +667,16 @@ fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLev
     };
     let mut next_document = app.config.committed_settings_document.clone();
     store::set_model(&mut next_document, Some(model));
-    if model_supports_effort(app, model) {
-        store::set_thinking_effort_level(&mut next_document, effort);
+    if model_supports_effort(app, model)
+        && store::set_thinking_effort_level(&mut next_document, effort).is_err()
+    {
+        app.config.last_error = Some(format!(
+            "{} cannot be saved as a default thinking effort. Use /effort {} for the active session.",
+            effort.label(),
+            effort.as_stored()
+        ));
+        app.config.status_message = None;
+        return false;
     }
     match store::save(&path, &next_document) {
         Ok(()) => {

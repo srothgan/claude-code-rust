@@ -789,6 +789,7 @@ pub enum EffortLevel {
 
 impl EffortLevel {
     pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+    pub const PERSISTABLE_SETTINGS: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::XHigh];
 
     #[must_use]
     pub const fn as_stored(self) -> &'static str {
@@ -833,6 +834,16 @@ impl EffortLevel {
             "max" => Some(Self::Max),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub const fn is_persistable_setting(self) -> bool {
+        !matches!(self, Self::Max)
+    }
+
+    #[must_use]
+    pub fn from_persisted_setting(value: &str) -> Option<Self> {
+        Self::from_stored(value).filter(|level| level.is_persistable_setting())
     }
 }
 

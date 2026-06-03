@@ -211,7 +211,8 @@ mod tests {
         store::set_thinking_effort_level(
             &mut app.config.committed_settings_document,
             EffortLevel::High,
-        );
+        )
+        .expect("high is persistable");
 
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
@@ -321,7 +322,8 @@ mod tests {
         store::set_thinking_effort_level(
             &mut app.config.committed_settings_document,
             EffortLevel::High,
-        );
+        )
+        .expect("high is persistable");
         store::set_fast_mode(&mut app.config.committed_settings_document, true);
         store::set_output_style(
             &mut app.config.committed_local_settings_document,

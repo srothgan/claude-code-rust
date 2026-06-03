@@ -954,6 +954,7 @@ mod tests {
     use crate::app::config::{
         ConfigOverlayState, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
         OutputStyleOverlayState, OverlayFocus, SettingId, setting_specs,
+        supported_effort_levels_for_model,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1114,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_overlay_scroll_keeps_new_high_effort_levels_visible() {
+    fn effort_overlay_filters_session_only_max_from_persisted_settings() {
         let mut app = App::test_default();
         app.available_models = vec![
             AvailableModel::new("opus", "Opus")
@@ -1132,9 +1133,13 @@ mod tests {
         app.config
             .model_and_effort_overlay_mut()
             .expect("model and effort overlay")
-            .selected_effort = EffortLevel::Max;
+            .selected_effort = EffortLevel::XHigh;
 
         assert!(effort_overlay_scroll(&app, 8, 40) > 0);
+        assert_eq!(
+            supported_effort_levels_for_model(&app, "opus"),
+            EffortLevel::PERSISTABLE_SETTINGS.to_vec()
+        );
     }
 
     #[test]

@@ -804,27 +804,43 @@ fn handle_key_cycles_default_permission_mode() {
 }
 
 #[test]
-fn thinking_effort_options_come_from_canonical_effort_levels() {
+fn thinking_effort_options_come_from_persistable_effort_levels() {
     let (_dir, app) = open_settings_test_app();
     let spec = setting_spec(SettingId::ThinkingEffort);
 
     assert_eq!(
         setting_detail_options(&app, spec),
-        EffortLevel::ALL.iter().map(|level| level.label().to_owned()).collect::<Vec<_>>()
+        EffortLevel::PERSISTABLE_SETTINGS
+            .iter()
+            .map(|level| level.label().to_owned())
+            .collect::<Vec<_>>()
     );
-    for level in EffortLevel::ALL {
+    for level in EffortLevel::PERSISTABLE_SETTINGS {
         let mut document = serde_json::json!({ "effortLevel": level.as_stored() });
         assert!(matches!(
             resolve_setting_document(&document, SettingId::ThinkingEffort, &[]).validation,
             SettingValidation::Valid
         ));
-        store::set_thinking_effort_level(&mut document, level);
+        store::set_thinking_effort_level(&mut document, level).expect("level is persistable");
         assert_eq!(store::thinking_effort_level(&document), Ok(level));
     }
 }
 
 #[test]
-fn model_effort_overlay_uses_all_effort_levels_when_runtime_omits_level_list() {
+fn thinking_effort_rejects_max_as_persisted_setting() {
+    let mut document = serde_json::json!({ "effortLevel": "max" });
+
+    assert!(matches!(
+        resolve_setting_document(&document, SettingId::ThinkingEffort, &[]).validation,
+        SettingValidation::InvalidValue
+    ));
+    assert_eq!(store::thinking_effort_level(&document), Err(()));
+    assert_eq!(store::set_thinking_effort_level(&mut document, EffortLevel::Max), Err(()));
+    assert_eq!(document, serde_json::json!({ "effortLevel": "max" }));
+}
+
+#[test]
+fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_list() {
     let (_dir, mut app) = open_settings_test_app();
     app.available_models = vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
     select_setting(&mut app, SettingId::ThinkingEffort);
@@ -835,7 +851,26 @@ fn model_effort_overlay_uses_all_effort_levels_when_runtime_omits_level_list() {
     }
 
     let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
-    assert_eq!(overlay.selected_effort, EffortLevel::Max);
+    assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
+}
+
+#[test]
+fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.available_models = vec![
+        AvailableModel::new("opus", "Opus")
+            .supports_effort(true)
+            .supported_effort_levels(EffortLevel::ALL.to_vec()),
+    ];
+    select_setting(&mut app, SettingId::ThinkingEffort);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for _ in 0..4 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+
+    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
 }
 
 #[test]

@@ -136,7 +136,7 @@ fn resolve_model_setting(
 
 fn option_exists(spec: &SettingSpec, value: &str) -> bool {
     if spec.id == SettingId::ThinkingEffort {
-        return EffortLevel::from_stored(value).is_some();
+        return EffortLevel::from_persisted_setting(value).is_some();
     }
     match spec.options {
         SettingOptions::Static(options) => options.iter().any(|option| option.stored == value),
