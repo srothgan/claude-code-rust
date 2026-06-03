@@ -136,7 +136,7 @@ export async function generatePersistedSessionTitle(
   return title;
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.146";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.161";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
