@@ -345,6 +345,11 @@ mod tests {
         assert!(candidates.iter().any(|c| c.insert_value == "4.6"));
         assert!(candidates.iter().any(|c| c.insert_value == "4.7"));
         assert!(candidates.iter().any(|c| {
+            c.insert_value == "4.8"
+                && c.primary == "4.8"
+                && c.secondary.as_deref() == Some("Claude Opus 4.8")
+        }));
+        assert!(candidates.iter().any(|c| {
             c.insert_value == "default"
                 && c.primary == "default"
                 && c.secondary.as_deref() == Some("Use Claude default Opus alias")
@@ -407,6 +412,21 @@ mod tests {
         let settings_path = dir.path().join(".claude").join("settings.local.json");
         let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
         assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
+    }
+
+    #[test]
+    fn opus_version_48_persists_folder_local_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        let consumed = try_handle_submit(&mut app, "/opus-version 4.8");
+
+        assert!(consumed);
+        let settings_path = dir.path().join(".claude").join("settings.local.json");
+        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
+        assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-8\""));
     }
 
     #[test]
@@ -499,7 +519,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -514,7 +534,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -529,7 +549,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -839,6 +859,35 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
+    }
+
+    #[test]
+    fn docs_models_show_advertised_effort_levels() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
+                .description("Balanced model")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    crate::agent::model::EffortLevel::Low,
+                    crate::agent::model::EffortLevel::Medium,
+                    crate::agent::model::EffortLevel::High,
+                    crate::agent::model::EffortLevel::XHigh,
+                    crate::agent::model::EffortLevel::Max,
+                ])
+                .supports_fast_mode(Some(true)),
+        ];
+
+        let consumed = try_handle_submit(&mut app, "/docs models");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("Docs: Models"));
+        assert!(block.text.contains("Effort: Low, Medium, High, XHigh, Max"));
+        assert!(block.text.contains("Fast mode"));
     }
 
     #[test]

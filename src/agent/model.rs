@@ -886,6 +886,89 @@ impl CurrentModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountApiProvider {
+    FirstParty,
+    Bedrock,
+    Vertex,
+    Foundry,
+    AnthropicAws,
+    Mantle,
+    Gateway,
+    Other(String),
+}
+
+impl AccountApiProvider {
+    #[must_use]
+    pub fn from_wire(value: impl Into<String>) -> Self {
+        match value.into().trim() {
+            "firstParty" => Self::FirstParty,
+            "bedrock" => Self::Bedrock,
+            "vertex" => Self::Vertex,
+            "foundry" => Self::Foundry,
+            "anthropicAws" => Self::AnthropicAws,
+            "mantle" => Self::Mantle,
+            "gateway" => Self::Gateway,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::FirstParty => "First party",
+            Self::Bedrock => "Bedrock",
+            Self::Vertex => "Vertex",
+            Self::Foundry => "Foundry",
+            Self::AnthropicAws => "Anthropic AWS",
+            Self::Mantle => "Mantle",
+            Self::Gateway => "Gateway",
+            Self::Other(provider) => provider.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        !matches!(self, Self::FirstParty)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub email: Option<String>,
+    pub organization: Option<String>,
+    pub subscription_type: Option<String>,
+    pub token_source: Option<String>,
+    pub api_key_source: Option<String>,
+    pub api_provider: Option<AccountApiProvider>,
+}
+
+impl AccountInfo {
+    #[must_use]
+    pub fn login_method_label(&self) -> String {
+        if self.api_provider.as_ref().is_some_and(AccountApiProvider::is_external) {
+            return "External provider".to_owned();
+        }
+        if let Some(source) = self.api_key_source.as_deref() {
+            match source {
+                "oauth" => return "Claude Max Account".to_owned(),
+                "user" => return "User API key".to_owned(),
+                "project" => return "Project API key".to_owned(),
+                "org" => return "Organization API key".to_owned(),
+                "temporary" => return "Temporary key".to_owned(),
+                other if !other.is_empty() => return other.to_owned(),
+                _ => {}
+            }
+        }
+        if let Some(source) = self.token_source.as_deref()
+            && !source.is_empty()
+        {
+            return source.to_owned();
+        }
+        "Unknown".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgentsUpdate {
     pub available_agents: Vec<AvailableAgent>,
 }

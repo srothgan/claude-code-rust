@@ -16,12 +16,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
 const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
+const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 
 fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
     match model_id {
         OPUS_4_5_MODEL_ID => Some("4.5"),
         OPUS_4_6_MODEL_ID => Some("4.6"),
         OPUS_4_7_MODEL_ID => Some("4.7"),
+        OPUS_4_8_MODEL_ID => Some("4.8"),
         _ => None,
     }
 }
@@ -52,6 +54,7 @@ fn model_candidate_secondary(
     Some(
         description
             .replace("Opus 4.7", &format!("Opus {version}"))
+            .replace("Opus 4.8", &format!("Opus {version}"))
             .replace("Opus 4.6", &format!("Opus {version}"))
             .replace("Opus 4.5", &format!("Opus {version}")),
     )

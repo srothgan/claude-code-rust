@@ -160,6 +160,20 @@ pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model
     mapped
 }
 
+pub(super) fn convert_account_info(account: types::AccountInfo) -> model::AccountInfo {
+    model::AccountInfo {
+        email: account.email.filter(|value| !value.trim().is_empty()),
+        organization: account.organization.filter(|value| !value.trim().is_empty()),
+        subscription_type: account.subscription_type.filter(|value| !value.trim().is_empty()),
+        token_source: account.token_source.filter(|value| !value.trim().is_empty()),
+        api_key_source: account.api_key_source.filter(|value| !value.trim().is_empty()),
+        api_provider: account
+            .api_provider
+            .filter(|value| !value.trim().is_empty())
+            .map(model::AccountApiProvider::from_wire),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
@@ -664,9 +678,9 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_current_model, convert_tool_call, convert_tool_call_update_fields,
-        map_available_commands_update, map_available_models, map_permission_request,
-        map_question_request, map_session_update,
+        convert_account_info, convert_current_model, convert_tool_call,
+        convert_tool_call_update_fields, map_available_commands_update, map_available_models,
+        map_permission_request, map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
 
@@ -748,6 +762,36 @@ mod tests {
         assert_eq!(
             mapped.supported_effort_levels,
             vec![model::EffortLevel::Low, model::EffortLevel::XHigh, model::EffortLevel::Max,]
+        );
+    }
+
+    #[test]
+    fn convert_account_info_maps_gateway_and_unknown_providers_to_app_model() {
+        let gateway = convert_account_info(types::AccountInfo {
+            email: Some("user@example.com".to_owned()),
+            organization: Some("org-1".to_owned()),
+            subscription_type: Some("Claude Max".to_owned()),
+            token_source: Some("oauth".to_owned()),
+            api_key_source: Some("user".to_owned()),
+            api_provider: Some("gateway".to_owned()),
+        });
+
+        assert_eq!(gateway.email.as_deref(), Some("user@example.com"));
+        assert_eq!(gateway.api_provider, Some(model::AccountApiProvider::Gateway));
+        assert_eq!(gateway.login_method_label(), "External provider");
+
+        let unknown = convert_account_info(types::AccountInfo {
+            api_provider: Some("customGateway".to_owned()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            unknown.api_provider,
+            Some(model::AccountApiProvider::Other("customGateway".to_owned()))
+        );
+        assert_eq!(
+            unknown.api_provider.as_ref().map(model::AccountApiProvider::label),
+            Some("customGateway")
         );
     }
 

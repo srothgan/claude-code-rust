@@ -277,7 +277,7 @@ pub struct App {
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<crate::agent::types::AccountInfo>,
+    pub account_info: Option<model::AccountInfo>,
 
     /// Indexed terminal tool calls for per-frame terminal snapshot updates.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     fn set_account_subscription(app: &mut App, subscription: &str) {
-        app.account_info = Some(crate::agent::types::AccountInfo {
+        app.account_info = Some(crate::agent::model::AccountInfo {
             subscription_type: Some(subscription.to_owned()),
             ..Default::default()
         });

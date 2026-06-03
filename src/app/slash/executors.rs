@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
 const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
+const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 
 /// Handle slash command submission.
 ///
@@ -65,6 +66,7 @@ fn opus_model_id_for_version(version: &str) -> Option<&'static str> {
         "4.5" => Some(OPUS_4_5_MODEL_ID),
         "4.6" => Some(OPUS_4_6_MODEL_ID),
         "4.7" => Some(OPUS_4_7_MODEL_ID),
+        "4.8" => Some(OPUS_4_8_MODEL_ID),
         _ => None,
     }
 }
@@ -74,6 +76,7 @@ fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
         OPUS_4_5_MODEL_ID => Some("4.5"),
         OPUS_4_6_MODEL_ID => Some("4.6"),
         OPUS_4_7_MODEL_ID => Some("4.7"),
+        OPUS_4_8_MODEL_ID => Some("4.8"),
         _ => None,
     }
 }
@@ -931,7 +934,17 @@ fn model_details(model: &crate::agent::model::AvailableModel) -> String {
         parts.push(description.trim().to_owned());
     }
     if model.supports_effort {
-        parts.push("Effort".to_owned());
+        if model.supported_effort_levels.is_empty() {
+            parts.push("Effort".to_owned());
+        } else {
+            let levels = model
+                .supported_effort_levels
+                .iter()
+                .map(|level| level.label())
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("Effort: {levels}"));
+        }
     }
     if model.supports_adaptive_thinking == Some(true) {
         parts.push("Adaptive thinking".to_owned());

@@ -3,9 +3,8 @@ import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import {
   query,
-  type AccountInfo,
   type CanUseTool,
-  type ModelInfo,
+  type Options,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -62,6 +61,15 @@ import {
   type AvailableCommandsSnapshot,
 } from "./available_commands.js";
 import { emitAuthRequired, emitFastModeUpdateIfChanged } from "./error_classification.js";
+import {
+  mapAvailableModels,
+  resolveCurrentModel,
+  currentModelsEqual,
+} from "./model_metadata.js";
+import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
+
+export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
+export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 
 export type ConnectEventKind = "connected" | "session_replaced";
 
@@ -70,6 +78,7 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
+const STARTUP_FALLBACK_MODEL_ALIAS = "opus";
 
 function permissionDisplayFromCanUseOptions(
   options: Parameters<CanUseTool>[2],
@@ -158,19 +167,7 @@ const requestUserDialogInterceptorInstalled = Symbol("requestUserDialogIntercept
 
 export const sessions = new Map<string, SessionState>();
 
-function nonEmptyString(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-export function shouldEmitStartupAuthRequiredForAccount(account: AccountInfo): boolean {
-  const provider = account.apiProvider;
-  if (nonEmptyString(provider) && provider !== "firstParty") {
-    return false;
-  }
-  return !nonEmptyString(account.email) && !nonEmptyString(account.apiKeySource);
-}
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-const OPUS_MODEL_ALIAS = "opus";
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 function isSdkElicitationContentValue(value: Json): value is string | number | boolean | string[] {
@@ -790,7 +787,7 @@ function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | und
 function initialSessionModel(launchSettings: SessionLaunchSettings): string {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
   const model = typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model || OPUS_MODEL_ALIAS;
+  return model || STARTUP_FALLBACK_MODEL_ALIAS;
 }
 
 function startupModelOption(
@@ -837,11 +834,7 @@ function startupPermissionModeOptions(
 
 function systemPromptFromLaunchSettings(
   launchSettings: SessionLaunchSettings,
-): {
-  type: "preset";
-  preset: "claude_code";
-  append: string;
-} {
+): NonNullable<Options["systemPrompt"]> {
   const language = launchSettings.language?.trim();
   const appendLines = [BRIDGE_RUNTIME_GUARD_PROMPT];
 
@@ -1002,49 +995,6 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       });
     },
   };
-}
-
-export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
-  if (!Array.isArray(models)) {
-    return [];
-  }
-
-  return models
-    .filter((entry): entry is ModelInfo & { value: string; displayName: string } => {
-      return (
-        typeof entry?.value === "string" &&
-        entry.value.trim().length > 0 &&
-        typeof entry.displayName === "string" &&
-        entry.displayName.trim().length > 0
-      );
-    })
-    .map((entry) => ({
-      id: entry.value,
-      display_name: entry.displayName,
-      supports_effort: entry.supportsEffort === true,
-      supported_effort_levels: Array.isArray(entry.supportedEffortLevels)
-        ? entry.supportedEffortLevels.filter(
-            (level): level is EffortLevel =>
-              level === "low" ||
-              level === "medium" ||
-              level === "high" ||
-              level === "xhigh" ||
-              level === "max",
-          )
-        : [],
-      ...(typeof entry.supportsAdaptiveThinking === "boolean"
-        ? { supports_adaptive_thinking: entry.supportsAdaptiveThinking }
-        : {}),
-      ...(typeof entry.supportsFastMode === "boolean"
-        ? { supports_fast_mode: entry.supportsFastMode }
-        : {}),
-      ...(typeof entry.supportsAutoMode === "boolean"
-        ? { supports_auto_mode: entry.supportsAutoMode }
-        : {}),
-      ...(typeof entry.description === "string" && entry.description.trim().length > 0
-        ? { description: entry.description }
-        : {}),
-    }));
 }
 
 export function handlePermissionResponse(command: Extract<BridgeCommand, { command: "permission_response" }>): void {
@@ -1275,252 +1225,6 @@ export function handleElicitationResponse(
     } : {}),
   });
 }
-type NormalizedModelKey = {
-  original: string;
-  family: "opus" | "sonnet" | "haiku" | "unknown";
-  versionParts: number[];
-  variantParts: string[];
-  buildParts: string[];
-  contextSuffix?: string;
-};
-
-const MAX_MODEL_VERSION_PARTS = 2;
-const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
-
-function normalizeModelKey(id: string): NormalizedModelKey {
-  const original = id.trim();
-  if (!original) {
-    return { original, family: "unknown", versionParts: [], variantParts: [], buildParts: [] };
-  }
-
-  const lower = original.toLowerCase();
-  const contextMatch = lower.match(/\[([^\]]+)\]$/);
-  const contextSuffix = contextMatch?.[1];
-  const withoutContext = contextMatch ? lower.slice(0, contextMatch.index) : lower;
-  const withoutPrefix = withoutContext.startsWith("claude-")
-    ? withoutContext.slice("claude-".length)
-    : withoutContext;
-  const parts = withoutPrefix.split("-").filter((part) => part.length > 0);
-  const familyPart = parts[0] ?? "";
-  const family =
-    familyPart === "opus" || familyPart === "sonnet" || familyPart === "haiku"
-      ? familyPart
-      : "unknown";
-  const versionParts: number[] = [];
-  const variantParts: string[] = [];
-  const buildParts: string[] = [];
-
-  if (family !== "unknown") {
-    for (const part of parts.slice(1)) {
-      if (/^\d+$/.test(part)) {
-        if (versionParts.length < MAX_MODEL_VERSION_PARTS) {
-          const parsed = Number.parseInt(part, 10);
-          if (Number.isFinite(parsed)) {
-            versionParts.push(parsed);
-          }
-          continue;
-        }
-        if (RELEASE_BUILD_TOKEN.test(part)) {
-          buildParts.push(part);
-          continue;
-        }
-      }
-      variantParts.push(part);
-    }
-  }
-
-  return {
-    original,
-    family,
-    versionParts,
-    variantParts,
-    buildParts,
-    ...(contextSuffix ? { contextSuffix } : {}),
-  };
-}
-
-function modelKeysAreCompatible(leftId: string, rightId: string): boolean {
-  const left = normalizeModelKey(leftId);
-  const right = normalizeModelKey(rightId);
-  if (left.family === "unknown" || right.family === "unknown") {
-    return left.original.toLowerCase() === right.original.toLowerCase();
-  }
-  if (left.family !== right.family) {
-    return false;
-  }
-  if (left.variantParts.join(".") !== right.variantParts.join(".")) {
-    return false;
-  }
-  if (left.versionParts.length === 0 || right.versionParts.length === 0) {
-    return true;
-  }
-  return left.versionParts.join(".") === right.versionParts.join(".");
-}
-
-function sameContextSuffix(leftId: string, rightId: string): boolean {
-  const left = normalizeModelKey(leftId);
-  const right = normalizeModelKey(rightId);
-  return (left.contextSuffix?.toLowerCase() ?? "") === (right.contextSuffix?.toLowerCase() ?? "");
-}
-
-function sameFamilyAndVersion(leftId: string, rightId: string): boolean {
-  const left = normalizeModelKey(leftId);
-  const right = normalizeModelKey(rightId);
-  if (left.family === "unknown" || right.family === "unknown") {
-    return left.original.toLowerCase() === right.original.toLowerCase();
-  }
-  if (left.family !== right.family) {
-    return false;
-  }
-  if (left.versionParts.length === 0 || right.versionParts.length === 0) {
-    return left.versionParts.length === right.versionParts.length;
-  }
-  return left.versionParts.join(".") === right.versionParts.join(".");
-}
-
-function hasVariantSiblingConflict(
-  availableModels: AvailableModel[],
-  candidateId: string,
-  resolvedId: string,
-): boolean {
-  if (sameContextSuffix(candidateId, resolvedId)) {
-    return false;
-  }
-
-  const resolvedContext = normalizeModelKey(resolvedId).contextSuffix?.toLowerCase() ?? "";
-  if (!resolvedContext) {
-    return false;
-  }
-
-  return availableModels.some((entry) => {
-    if (entry.id === candidateId) {
-      return false;
-    }
-    if (!sameFamilyAndVersion(entry.id, resolvedId)) {
-      return false;
-    }
-    const entryContext = normalizeModelKey(entry.id).contextSuffix?.toLowerCase() ?? "";
-    return entryContext === resolvedContext;
-  });
-}
-
-function humanizeModelId(id: string): string {
-  const normalized = normalizeModelKey(id);
-  if (normalized.family === "unknown") {
-    return id;
-  }
-
-  const familyLabel =
-    normalized.family === "opus"
-      ? "Opus"
-      : normalized.family === "sonnet"
-        ? "Sonnet"
-        : "Haiku";
-  const versionLabel =
-    normalized.versionParts.length > 0 ? ` ${normalized.versionParts.join(".")}` : "";
-  const contextLabel =
-    normalized.contextSuffix?.toLowerCase() === "1m"
-      ? " [1M]"
-      : normalized.contextSuffix
-        ? ` [${normalized.contextSuffix}]`
-        : "";
-  return `${familyLabel}${versionLabel}${contextLabel}`;
-}
-
-function shortDisplayNameForModelId(id: string): string {
-  const normalized = normalizeModelKey(id);
-  if (normalized.family === "unknown") {
-    return id;
-  }
-  const familyLabel = normalized.family === "opus"
-    ? "Opus"
-    : normalized.family === "sonnet"
-      ? "Sonnet"
-      : "Haiku";
-  const versionLabel =
-    normalized.versionParts.length > 0 ? ` ${normalized.versionParts.join(".")}` : "";
-  const contextLabel =
-    normalized.contextSuffix?.toLowerCase() === "1m"
-      ? " [1M]"
-      : normalized.contextSuffix
-        ? ` [${normalized.contextSuffix}]`
-        : "";
-  return `${familyLabel}${versionLabel}${contextLabel}`;
-}
-
-function currentModelIsAuthoritative(
-  resolvedId: string,
-  requestedId: string | undefined,
-): boolean {
-  const resolved = resolvedId.trim();
-  if (!resolved || resolved === "Connecting...") {
-    return Boolean(requestedId?.trim());
-  }
-  return true;
-}
-
-function resolveCatalogModel(
-  availableModels: AvailableModel[],
-  resolvedId: string,
-  requestedId: string | undefined,
-): AvailableModel | undefined {
-  const exactResolved = availableModels.find((entry) => entry.id === resolvedId);
-  if (exactResolved) {
-    return exactResolved;
-  }
-
-  if (requestedId) {
-    const exactRequested = availableModels.find((entry) => entry.id === requestedId);
-    if (
-      exactRequested &&
-      modelKeysAreCompatible(exactRequested.id, resolvedId) &&
-      !hasVariantSiblingConflict(availableModels, exactRequested.id, resolvedId)
-    ) {
-      return exactRequested;
-    }
-  }
-
-  const compatible = availableModels.filter(
-    (entry) =>
-      modelKeysAreCompatible(entry.id, resolvedId) &&
-      !hasVariantSiblingConflict(availableModels, entry.id, resolvedId),
-  );
-  return compatible.length === 1 ? compatible[0] : undefined;
-}
-
-export function resolveCurrentModel(session: SessionState): CurrentModel {
-  const requestedId = session.requestedModelId?.trim() || undefined;
-  const resolvedId =
-    session.resolvedRuntimeModelId?.trim() ||
-    session.model.trim() ||
-    requestedId ||
-    OPUS_MODEL_ALIAS;
-  const catalogModel = resolveCatalogModel(session.availableModels, resolvedId, requestedId);
-  const runtimeDisplayId = resolvedId || requestedId || OPUS_MODEL_ALIAS;
-  const displayNameShort = shortDisplayNameForModelId(runtimeDisplayId);
-  const displayNameLong = humanizeModelId(runtimeDisplayId);
-  const currentModel: CurrentModel = {
-    resolved_id: resolvedId,
-    display_name_short: displayNameShort,
-    display_name_long: displayNameLong,
-    supports_effort: catalogModel?.supports_effort === true,
-    supported_effort_levels: catalogModel?.supported_effort_levels ?? [],
-    is_authoritative: currentModelIsAuthoritative(resolvedId, requestedId),
-    ...(requestedId ? { requested_id: requestedId } : {}),
-    ...(catalogModel ? { catalog_id: catalogModel.id } : {}),
-    ...(catalogModel?.supports_fast_mode !== undefined
-      ? { supports_fast_mode: catalogModel.supports_fast_mode }
-      : {}),
-    ...(catalogModel?.supports_auto_mode !== undefined
-      ? { supports_auto_mode: catalogModel.supports_auto_mode }
-      : {}),
-    ...(catalogModel?.supports_adaptive_thinking !== undefined
-      ? { supports_adaptive_thinking: catalogModel.supports_adaptive_thinking }
-      : {}),
-  };
-  return currentModel;
-}
-
 export function shouldInvalidateResolvedRuntimeModel(
   previousRequestedId: string | undefined,
   previousSessionModel: string,
@@ -1529,11 +1233,6 @@ export function shouldInvalidateResolvedRuntimeModel(
   const previousRequested = previousRequestedId?.trim() || previousSessionModel.trim();
   return previousRequested !== nextRequestedId.trim();
 }
-
-function currentModelsEqual(left: CurrentModel | undefined, right: CurrentModel): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 export function emitCurrentModelUpdate(session: SessionState): boolean {
   if (!session.connected || !session.currentModel) {
     return false;

@@ -675,7 +675,7 @@ pub struct McpSetServersResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate,
+        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, SessionStatus, SessionUpdate,
         SystemNoticeSeverity,
     };
 
@@ -703,6 +703,21 @@ mod tests {
                 EffortLevel::Max,
             ]
         );
+    }
+
+    #[test]
+    fn account_info_deserializes_gateway_provider() {
+        let account: AccountInfo = serde_json::from_value(serde_json::json!({
+            "email": null,
+            "organization": null,
+            "subscription_type": null,
+            "token_source": null,
+            "api_key_source": null,
+            "api_provider": "gateway"
+        }))
+        .expect("deserialize account info");
+
+        assert_eq!(account.api_provider.as_deref(), Some("gateway"));
     }
 
     #[test]

@@ -94,7 +94,7 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: crate::agent::types::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: model::AccountInfo },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.

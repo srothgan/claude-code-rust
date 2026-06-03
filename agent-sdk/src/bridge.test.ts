@@ -16,6 +16,7 @@ import {
   emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
+  mapSdkAccountInfo,
   mapAvailableAgents,
   mapAvailableModels,
   mapSessionMessagesToUpdates,
@@ -39,6 +40,7 @@ import {
   updateAvailableCommands,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import {
   availableModesForSession,
   buildModeState,
@@ -597,6 +599,8 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
   });
+  const _systemPrompt: NonNullable<Options["systemPrompt"]> = options.systemPrompt;
+  assert.ok(_systemPrompt);
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
   assert.equal("allowDangerouslySkipPermissions" in options, false);
@@ -2123,6 +2127,27 @@ test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for extern
   }
 });
 
+test("mapSdkAccountInfo normalizes SDK account metadata through one bridge DTO", () => {
+  assert.deepEqual(
+    mapSdkAccountInfo({
+      email: " user@example.com ",
+      organization: " org-1 ",
+      subscriptionType: " Claude Max ",
+      tokenSource: " oauth ",
+      apiKeySource: " user ",
+      apiProvider: "gateway",
+    }),
+    {
+      email: "user@example.com",
+      organization: "org-1",
+      subscription_type: "Claude Max",
+      token_source: "oauth",
+      api_key_source: "user",
+      api_provider: "gateway",
+    },
+  );
+});
+
 test("handleSdkMessage emits settings parse errors from defensive payloads", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -3308,7 +3333,7 @@ test("emitCurrentModelUpdate can publish catalog-enriched current model metadata
     current_model: {
       resolved_id: "sonnet",
       display_name_short: "Sonnet",
-      display_name_long: "Sonnet",
+      display_name_long: "Claude Sonnet",
       catalog_id: "sonnet",
       supports_effort: true,
       supported_effort_levels: ["low", "medium", "high"],
@@ -3362,8 +3387,30 @@ test("resolveCurrentModel falls back to the requested model immediately after st
 
   assert.equal(currentModel.resolved_id, "sonnet");
   assert.equal(currentModel.display_name_short, "Sonnet");
-  assert.equal(currentModel.display_name_long, "Sonnet");
+  assert.equal(currentModel.display_name_long, "Claude Sonnet");
   assert.equal(currentModel.catalog_id, "sonnet");
+  assert.equal(currentModel.supports_effort, true);
+});
+
+test("resolveCurrentModel keeps runtime version in short display while using catalog capabilities", () => {
+  const session = makeSessionState();
+  session.model = "opus";
+  session.requestedModelId = "opus";
+  session.resolvedRuntimeModelId = "claude-opus-4-7-20260101";
+  session.availableModels = [
+    {
+      id: "opus",
+      display_name: "Opus",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high", "xhigh"],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.display_name_short, "Opus 4.7");
+  assert.equal(currentModel.display_name_long, "Opus");
+  assert.equal(currentModel.catalog_id, "opus");
   assert.equal(currentModel.supports_effort, true);
 });
 

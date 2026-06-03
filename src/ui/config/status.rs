@@ -43,10 +43,8 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     if let Some(ref account) = app.account_info {
         section_header(&mut lines, "Account");
         kv_line(&mut lines, "Login method", &login_method_label(account));
-        if let Some(ref provider) = account.api_provider
-            && !provider.trim().is_empty()
-        {
-            kv_line(&mut lines, "API provider", &api_provider_label(provider.trim()));
+        if let Some(ref provider) = account.api_provider {
+            kv_line(&mut lines, "API provider", provider.label());
         }
         if let Some(ref org) = account.organization
             && !org.is_empty()
@@ -148,42 +146,8 @@ fn model_display(app: &App) -> String {
     current_model.display_name_long.clone()
 }
 
-pub(crate) fn login_method_label(account: &crate::agent::types::AccountInfo) -> String {
-    if let Some(ref provider) = account.api_provider
-        && !provider.trim().is_empty()
-        && provider != "firstParty"
-    {
-        return "External provider".to_owned();
-    }
-    if let Some(ref source) = account.api_key_source {
-        match source.as_str() {
-            "oauth" => return "Claude Max Account".to_owned(),
-            "user" => return "User API key".to_owned(),
-            "project" => return "Project API key".to_owned(),
-            "org" => return "Organization API key".to_owned(),
-            "temporary" => return "Temporary key".to_owned(),
-            other if !other.is_empty() => return other.to_owned(),
-            _ => {}
-        }
-    }
-    if let Some(ref source) = account.token_source
-        && !source.is_empty()
-    {
-        return source.clone();
-    }
-    "Unknown".to_owned()
-}
-
-fn api_provider_label(provider: &str) -> String {
-    match provider {
-        "firstParty" => "First party".to_owned(),
-        "bedrock" => "Bedrock".to_owned(),
-        "vertex" => "Vertex".to_owned(),
-        "foundry" => "Foundry".to_owned(),
-        "anthropicAws" => "Anthropic AWS".to_owned(),
-        "mantle" => "Mantle".to_owned(),
-        other => other.to_owned(),
-    }
+pub(crate) fn login_method_label(account: &crate::agent::model::AccountInfo) -> String {
+    account.login_method_label()
 }
 
 fn resolve_memory_path(app: &App) -> String {
@@ -298,7 +262,7 @@ mod tests {
 
     #[test]
     fn login_method_maps_oauth() {
-        let account = crate::agent::types::AccountInfo {
+        let account = crate::agent::model::AccountInfo {
             api_key_source: Some("oauth".to_owned()),
             ..Default::default()
         };
@@ -307,7 +271,7 @@ mod tests {
 
     #[test]
     fn login_method_maps_user_key() {
-        let account = crate::agent::types::AccountInfo {
+        let account = crate::agent::model::AccountInfo {
             api_key_source: Some("user".to_owned()),
             ..Default::default()
         };
@@ -316,8 +280,8 @@ mod tests {
 
     #[test]
     fn login_method_maps_external_provider() {
-        let account = crate::agent::types::AccountInfo {
-            api_provider: Some("bedrock".to_owned()),
+        let account = crate::agent::model::AccountInfo {
+            api_provider: Some(crate::agent::model::AccountApiProvider::Bedrock),
             ..Default::default()
         };
         assert_eq!(login_method_label(&account), "External provider");
@@ -326,20 +290,20 @@ mod tests {
     #[test]
     fn status_lines_render_api_provider() {
         let mut app = App::test_default();
-        app.account_info = Some(crate::agent::types::AccountInfo {
-            api_provider: Some("mantle".to_owned()),
+        app.account_info = Some(crate::agent::model::AccountInfo {
+            api_provider: Some(crate::agent::model::AccountApiProvider::Gateway),
             ..Default::default()
         });
 
         let text = lines_to_string(&status_lines(&app));
 
         assert!(text.contains("API provider"));
-        assert!(text.contains("Mantle"));
+        assert!(text.contains("Gateway"));
     }
 
     #[test]
     fn login_method_falls_back_to_unknown() {
-        let account = crate::agent::types::AccountInfo::default();
+        let account = crate::agent::model::AccountInfo::default();
         assert_eq!(login_method_label(&account), "Unknown");
     }
 

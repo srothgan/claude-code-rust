@@ -1836,7 +1836,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(crate::agent::types::AccountInfo {
+        app.account_info = Some(crate::agent::model::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
@@ -1998,7 +1998,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "test-session".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Pro".into()),
@@ -2192,7 +2192,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "old-session".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
                     subscription_type: None,
@@ -2221,7 +2221,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2255,7 +2255,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2843,7 +2843,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "active-456".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2894,7 +2894,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "startup-resume".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),

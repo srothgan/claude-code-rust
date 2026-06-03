@@ -45,6 +45,7 @@ import {
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
 import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available_commands.js";
+import { mapSdkAccountInfo } from "./bridge/account_metadata.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   handleMcpAuthenticateCommand,
@@ -90,8 +91,14 @@ export { mapAvailableAgents } from "./bridge/agents.js";
 export {
   attachRequestUserDialogInterceptor,
   buildQueryOptions,
-  mapAvailableModels,
 } from "./bridge/session_lifecycle.js";
+export { mapAvailableModels } from "./bridge/model_metadata.js";
+export {
+  apiProviderIsExternal,
+  isKnownApiProvider,
+  mapSdkAccountInfo,
+  shouldEmitStartupAuthRequiredForAccount,
+} from "./bridge/account_metadata.js";
 export {
   parseFastModeState,
   parseRateLimitStatus,
@@ -598,14 +605,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           {
             event: "status_snapshot",
             session_id: session.sessionId,
-            account: {
-              email: account.email,
-              organization: account.organization,
-              subscription_type: account.subscriptionType,
-              token_source: account.tokenSource,
-              api_key_source: account.apiKeySource,
-              api_provider: account.apiProvider,
-            },
+            account: mapSdkAccountInfo(account),
           },
           requestId,
         );

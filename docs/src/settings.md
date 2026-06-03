@@ -99,7 +99,7 @@ Two slash commands write project-local environment overrides into `./.claude/set
 
 ```text
 /1m-context <enable|disable|status>
-/opus-version <4.5|4.6|4.7|default|status>
+/opus-version <4.5|4.6|4.7|4.8|default|status>
 ```
 
 These settings apply to future sessions. Run `/new-session` after changing them.

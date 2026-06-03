@@ -73,6 +73,7 @@ pub(crate) const OPUS_VERSION_ARGS: &[SlashArgSpec] = &[
     SlashArgSpec { value: "4.5", description: "Claude Opus 4.5" },
     SlashArgSpec { value: "4.6", description: "Claude Opus 4.6" },
     SlashArgSpec { value: "4.7", description: "Claude Opus 4.7" },
+    SlashArgSpec { value: "4.8", description: "Claude Opus 4.8" },
     SlashArgSpec { value: "default", description: "Use Claude default Opus alias" },
     SlashArgSpec { value: "status", description: "Show current project-local Opus pin" },
 ];
@@ -153,7 +154,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::OpusVersion,
         name: "/opus-version",
-        usage: "Usage: /opus-version <4.5|4.6|4.7|default|status>",
+        usage: "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>",
         short_description: "Pin the Opus alias version for this folder",
         long_description: "Set, clear, or inspect the project-local Opus alias pin for future sessions.",
         args: OPUS_VERSION_ARGS,
