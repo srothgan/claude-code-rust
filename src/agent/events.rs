@@ -39,11 +39,16 @@ pub enum ClientEvent {
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnError {
+        message: String,
+        api_error_status: Option<u16>,
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
         message: String,
         class: TurnErrorClass,
+        api_error_status: Option<u16>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
     /// Background connection completed successfully.

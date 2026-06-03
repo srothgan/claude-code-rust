@@ -48,6 +48,7 @@ import {
   buildRateLimitUpdate,
   normalizeSettingsParseErrors,
   numberField,
+  parseApiRetryError,
   parseRuntimeSessionState,
 } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
@@ -525,7 +526,7 @@ export function handleStreamEvent(
 export function handleAssistantMessage(session: SessionState, message: Record<string, unknown>): void {
   const assistantError = typeof message.error === "string" ? message.error : "";
   if (assistantError.length > 0) {
-    session.lastAssistantError = assistantError;
+    session.lastAssistantError = parseApiRetryError(assistantError);
   }
   const metadata = sdkCorrelationMetadata(message);
 
@@ -610,6 +611,7 @@ export function handleResultMessage(session: SessionState, message: Record<strin
   finalizeOpenToolCalls(session, "failed");
   const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
   const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
+  const apiErrorStatus = numberField(message, "api_error_status", "apiErrorStatus");
   writeEvent({
     event: "turn_error",
     session_id: session.sessionId,
@@ -617,6 +619,7 @@ export function handleResultMessage(session: SessionState, message: Record<strin
     error_kind: errorKind,
     ...(subtype ? { sdk_result_subtype: subtype } : {}),
     ...(assistantError ? { assistant_error: assistantError } : {}),
+    ...(apiErrorStatus !== undefined ? { api_error_status: apiErrorStatus } : {}),
     ...(terminalReason ? { terminal_reason: terminalReason } : {}),
   });
   session.lastAssistantError = undefined;

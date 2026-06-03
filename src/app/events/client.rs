@@ -28,11 +28,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnComplete { terminal_reason } => {
             turn::handle_turn_complete_event(app, terminal_reason);
         }
-        ClientEvent::TurnError { message, terminal_reason } => {
-            turn::handle_turn_error_event(app, &message, None, terminal_reason);
+        ClientEvent::TurnError { message, api_error_status, terminal_reason } => {
+            turn::handle_turn_error_event(app, &message, None, api_error_status, terminal_reason);
         }
-        ClientEvent::TurnErrorClassified { message, class, terminal_reason } => {
-            turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
+        ClientEvent::TurnErrorClassified { message, class, api_error_status, terminal_reason } => {
+            turn::handle_turn_error_event(
+                app,
+                &message,
+                Some(class),
+                api_error_status,
+                terminal_reason,
+            );
         }
         ClientEvent::Connected {
             session_id,

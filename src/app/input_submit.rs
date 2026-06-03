@@ -174,8 +174,11 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
             );
         }
         Err(e) => {
-            let _ =
-                tx.send(ClientEvent::TurnError { message: e.to_string(), terminal_reason: None });
+            let _ = tx.send(ClientEvent::TurnError {
+                message: e.to_string(),
+                api_error_status: None,
+                terminal_reason: None,
+            });
         }
     }
 }

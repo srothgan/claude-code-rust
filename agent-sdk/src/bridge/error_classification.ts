@@ -1,4 +1,4 @@
-import type { TurnErrorKind } from "../types.js";
+import type { ApiRetryError, TurnErrorKind } from "../types.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import { writeEvent } from "./events.js";
 import { emitSessionUpdate } from "./events.js";
@@ -38,29 +38,40 @@ export function looksLikePlanLimitError(input: string): boolean {
 export function classifyTurnErrorKind(
   subtype: string,
   errors: string[],
-  assistantError?: string,
+  assistantError?: ApiRetryError,
 ): TurnErrorKind {
   const combined = errors.join("\n");
+
+  switch (assistantError) {
+    case "billing_error":
+    case "rate_limit":
+      return "plan_limit";
+    case "authentication_failed":
+      return "auth_required";
+    case "oauth_org_not_allowed":
+      return "account_access";
+    case "model_not_found":
+      return "model_unavailable";
+    case "overloaded":
+    case "server_error":
+      return "transient_service";
+    case "invalid_request":
+    case "max_output_tokens":
+    case "unknown":
+    case undefined:
+      break;
+  }
 
   if (
     subtype === "error_max_turns" ||
     subtype === "error_max_budget_usd" ||
-    assistantError === "billing_error" ||
-    assistantError === "rate_limit" ||
     (combined.length > 0 && looksLikePlanLimitError(combined))
   ) {
     return "plan_limit";
   }
 
-  if (
-    assistantError === "authentication_failed" ||
-    errors.some((entry) => looksLikeAuthRequired(entry))
-  ) {
+  if (errors.some((entry) => looksLikeAuthRequired(entry))) {
     return "auth_required";
-  }
-
-  if (assistantError === "server_error") {
-    return "internal";
   }
 
   return "other";

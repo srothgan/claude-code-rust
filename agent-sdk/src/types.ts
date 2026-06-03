@@ -572,7 +572,14 @@ export interface InitializeResult {
   };
 }
 
-export type TurnErrorKind = "plan_limit" | "auth_required" | "internal" | "other";
+export type TurnErrorKind =
+  | "plan_limit"
+  | "auth_required"
+  | "account_access"
+  | "model_unavailable"
+  | "transient_service"
+  | "internal"
+  | "other";
 
 export type BridgeEvent =
   | {
@@ -600,7 +607,8 @@ export type BridgeEvent =
       message: string;
       error_kind?: TurnErrorKind;
       sdk_result_subtype?: string;
-      assistant_error?: string;
+      assistant_error?: ApiRetryError;
+      api_error_status?: number;
       terminal_reason?: TerminalReason;
     }
   | { event: "slash_error"; session_id: string; message: string }

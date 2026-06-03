@@ -53,6 +53,7 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
+import { classifyTurnErrorKind } from "./bridge/error_classification.js";
 import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
@@ -1686,6 +1687,16 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
   );
 });
 
+test("classifyTurnErrorKind prefers SDK assistant error codes", () => {
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "model_not_found"), "model_unavailable");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "oauth_org_not_allowed"), "account_access");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "overloaded"), "transient_service");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "server_error"), "transient_service");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "authentication_failed"), "auth_required");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "billing_error"), "plan_limit");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "rate_limit"), "plan_limit");
+});
+
 test("handleSdkMessage replaces available commands from commands_changed", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -2104,6 +2115,7 @@ test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for extern
     "bedrock",
     "vertex",
     "foundry",
+    "gateway",
     "anthropicAws",
     "mantle",
   ] as const) {
@@ -2904,6 +2916,60 @@ test("handleResultMessage emits terminal reason on turn errors", () => {
     error_kind: "plan_limit",
     sdk_result_subtype: "error_max_turns",
     terminal_reason: "max_turns",
+  });
+});
+
+test("handleResultMessage emits typed turn error classifications for SDK assistant errors", () => {
+  const cases = [
+    ["model_not_found", "model_unavailable"],
+    ["oauth_org_not_allowed", "account_access"],
+    ["overloaded", "transient_service"],
+  ] as const;
+
+  for (const [assistantError, errorKind] of cases) {
+    const session = makeSessionState();
+    session.lastAssistantError = assistantError;
+
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: [`failed with ${assistantError}`],
+      });
+    });
+
+    assert.deepEqual(events.at(-1), {
+      event: "turn_error",
+      session_id: "session-1",
+      message: `failed with ${assistantError}`,
+      error_kind: errorKind,
+      sdk_result_subtype: "error_during_execution",
+      assistant_error: assistantError,
+    });
+  }
+});
+
+test("handleResultMessage preserves result api error status", () => {
+  const session = makeSessionState();
+  session.lastAssistantError = "overloaded";
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["service overloaded"],
+      api_error_status: 529,
+    });
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "turn_error",
+    session_id: "session-1",
+    message: "service overloaded",
+    error_kind: "transient_service",
+    sdk_result_subtype: "error_during_execution",
+    assistant_error: "overloaded",
+    api_error_status: 529,
   });
 });
 

@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn model_argument_candidates_hide_sdk_default_option() {
+    fn model_argument_candidates_include_sdk_default_option() {
         let mut app = App::test_default();
         app.available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
@@ -718,8 +718,9 @@ mod tests {
 
         let candidates = argument_candidates(&app, "/model", 0);
 
-        assert!(!candidates.iter().any(|c| c.insert_value == "default"));
-        assert!(!candidates.iter().any(|c| c.primary == "Default"));
+        assert!(candidates.iter().any(|c| c.insert_value == "default"));
+        assert!(candidates.iter().any(|c| c.primary == "Default"));
+        assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Default (recommended)")));
         assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
         assert!(candidates.iter().any(|c| c.insert_value == "opus"));
     }

@@ -5,6 +5,9 @@
 pub enum TurnErrorClass {
     PlanLimit,
     AuthRequired,
+    AccountAccess,
+    ModelUnavailable,
+    TransientService,
     Internal,
     Other,
 }
@@ -13,6 +16,9 @@ pub fn parse_turn_error_class(tag: &str) -> Option<TurnErrorClass> {
     match tag {
         "plan_limit" => Some(TurnErrorClass::PlanLimit),
         "auth_required" => Some(TurnErrorClass::AuthRequired),
+        "account_access" => Some(TurnErrorClass::AccountAccess),
+        "model_unavailable" => Some(TurnErrorClass::ModelUnavailable),
+        "transient_service" => Some(TurnErrorClass::TransientService),
         "internal" => Some(TurnErrorClass::Internal),
         "other" => Some(TurnErrorClass::Other),
         _ => None,
@@ -25,6 +31,12 @@ pub fn classify_turn_error(input: &str) -> TurnErrorClass {
         TurnErrorClass::PlanLimit
     } else if looks_like_auth_required_error_lower(&lower) {
         TurnErrorClass::AuthRequired
+    } else if looks_like_account_access_error_lower(&lower) {
+        TurnErrorClass::AccountAccess
+    } else if looks_like_model_unavailable_error_lower(&lower) {
+        TurnErrorClass::ModelUnavailable
+    } else if looks_like_transient_service_error_lower(&lower) {
+        TurnErrorClass::TransientService
     } else if looks_like_internal_error_lower(&lower) {
         TurnErrorClass::Internal
     } else {
@@ -78,6 +90,46 @@ fn looks_like_auth_required_error_lower(lower: &str) -> bool {
         "login required",
         "not authenticated",
         "unauthorized",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_account_access_error_lower(lower: &str) -> bool {
+    [
+        "oauth_org_not_allowed",
+        "oauth org not allowed",
+        "organization not allowed",
+        "account access not allowed",
+        "org not allowed",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_model_unavailable_error_lower(lower: &str) -> bool {
+    [
+        "model_not_found",
+        "model not found",
+        "model unavailable",
+        "model is unavailable",
+        "model is not available",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_transient_service_error_lower(lower: &str) -> bool {
+    [
+        "overloaded",
+        "overloaded_error",
+        "temporarily overloaded",
+        "service overloaded",
+        "server overloaded",
+        "server_error",
+        "server error",
+        "http 529",
+        "529",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -225,6 +277,16 @@ mod tests {
     }
 
     #[test]
+    fn classifies_sdk_account_model_and_transient_errors() {
+        assert_eq!(classify_turn_error("oauth_org_not_allowed"), TurnErrorClass::AccountAccess);
+        assert_eq!(classify_turn_error("model_not_found"), TurnErrorClass::ModelUnavailable);
+        assert_eq!(
+            classify_turn_error("HTTP 529 overloaded_error"),
+            TurnErrorClass::TransientService
+        );
+    }
+
+    #[test]
     fn classifies_internal_errors() {
         assert_eq!(
             classify_turn_error(
@@ -246,6 +308,15 @@ mod tests {
     fn parses_bridge_turn_error_kind_tags() {
         assert_eq!(parse_turn_error_class("plan_limit"), Some(TurnErrorClass::PlanLimit));
         assert_eq!(parse_turn_error_class("auth_required"), Some(TurnErrorClass::AuthRequired));
+        assert_eq!(parse_turn_error_class("account_access"), Some(TurnErrorClass::AccountAccess));
+        assert_eq!(
+            parse_turn_error_class("model_unavailable"),
+            Some(TurnErrorClass::ModelUnavailable)
+        );
+        assert_eq!(
+            parse_turn_error_class("transient_service"),
+            Some(TurnErrorClass::TransientService)
+        );
         assert_eq!(parse_turn_error_class("internal"), Some(TurnErrorClass::Internal));
         assert_eq!(parse_turn_error_class("other"), Some(TurnErrorClass::Other));
         assert_eq!(parse_turn_error_class("unexpected"), None);

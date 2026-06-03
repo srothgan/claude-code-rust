@@ -201,7 +201,11 @@ async fn error_then_new_turn_recovers() {
 
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "timeout".into(), terminal_reason: None },
+        ClientEvent::TurnError {
+            message: "timeout".into(),
+            api_error_status: None,
+            terminal_reason: None,
+        },
     );
     assert!(matches!(app.status, AppStatus::Error));
 
@@ -464,7 +468,11 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "crashed".into(), terminal_reason: None },
+        ClientEvent::TurnError {
+            message: "crashed".into(),
+            api_error_status: None,
+            terminal_reason: None,
+        },
     );
 
     assert!(matches!(app.status, AppStatus::Error));

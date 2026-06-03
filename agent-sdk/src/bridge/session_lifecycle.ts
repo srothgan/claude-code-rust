@@ -21,6 +21,7 @@ import type {
   ElicitationRequest,
   EffortLevel,
   FastModeState,
+  ApiRetryError,
   Json,
   PermissionOutcome,
   PermissionDisplay,
@@ -137,7 +138,7 @@ export type SessionState = {
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
   availableCommands?: AvailableCommandsSnapshot;
-  lastAssistantError?: string;
+  lastAssistantError?: ApiRetryError;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 };

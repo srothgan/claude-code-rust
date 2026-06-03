@@ -95,16 +95,25 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
         }
         crate::agent::wire::BridgeEvent::TurnError {
-            message, error_kind, terminal_reason, ..
+            message,
+            error_kind,
+            api_error_status,
+            terminal_reason,
+            ..
         } => {
             if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
                 let _ = event_tx.send(ClientEvent::TurnErrorClassified {
                     message,
                     class,
+                    api_error_status,
                     terminal_reason,
                 });
             } else {
-                let _ = event_tx.send(ClientEvent::TurnError { message, terminal_reason });
+                let _ = event_tx.send(ClientEvent::TurnError {
+                    message,
+                    api_error_status,
+                    terminal_reason,
+                });
             }
         }
         crate::agent::wire::BridgeEvent::SlashError { message, .. } => {

@@ -307,6 +307,8 @@ pub enum BridgeEvent {
         sdk_result_subtype: Option<String>,
         assistant_error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_error_status: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         terminal_reason: Option<types::TerminalReason>,
     },
     SlashError {
@@ -491,6 +493,25 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn turn_error_deserializes_api_error_status() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "turn_error",
+            "session_id": "session-1",
+            "message": "service overloaded",
+            "error_kind": "transient_service",
+            "api_error_status": 529
+        }))
+        .expect("deserialize turn error");
+
+        let BridgeEvent::TurnError { api_error_status, error_kind, .. } = decoded.event else {
+            panic!("expected turn_error event");
+        };
+
+        assert_eq!(api_error_status, Some(529));
+        assert_eq!(error_kind.as_deref(), Some("transient_service"));
     }
 
     #[test]

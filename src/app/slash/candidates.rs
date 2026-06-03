@@ -26,10 +26,6 @@ fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
     }
 }
 
-fn is_sdk_default_model_option(model: &crate::agent::model::AvailableModel) -> bool {
-    model.id.eq_ignore_ascii_case("default") || model.display_name.eq_ignore_ascii_case("default")
-}
-
 fn model_candidate_secondary(
     app: &App,
     model: &crate::agent::model::AvailableModel,
@@ -375,7 +371,6 @@ pub(super) fn argument_candidates(
         "/model" => app
             .available_models
             .iter()
-            .filter(|model| !is_sdk_default_model_option(model))
             .map(|model| SlashCandidate {
                 insert_value: model.id.clone(),
                 primary: model.display_name.clone(),

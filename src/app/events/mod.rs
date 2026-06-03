@@ -3168,7 +3168,11 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "adapter failed".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "adapter failed".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert!(!app.pending_compact_clear);
@@ -3218,7 +3222,11 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "cancelled".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "cancelled".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert_eq!(app.messages.len(), 3);
@@ -3241,6 +3249,7 @@ mod tests {
             &mut app,
             ClientEvent::TurnError {
                 message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3266,6 +3275,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "turn failed".into(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3290,6 +3300,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "auth required".into(),
                 class: TurnErrorClass::AuthRequired,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3297,6 +3308,71 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
         assert!(app.should_quit);
         assert_eq!(app.exit_error, Some(crate::error::AppError::AuthRequired));
+    }
+
+    #[test]
+    fn classified_turn_error_model_unavailable_suggests_model_switch() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "model_not_found".into(),
+                class: TurnErrorClass::ModelUnavailable,
+                api_error_status: Some(404),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        assert_eq!(app.exit_error, None);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("The selected model is unavailable"));
+        assert!(text.contains("Use /model"));
+    }
+
+    #[test]
+    fn classified_turn_error_account_access_does_not_quit_for_login() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "oauth_org_not_allowed".into(),
+                class: TurnErrorClass::AccountAccess,
+                api_error_status: Some(403),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        assert_eq!(app.exit_error, None);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("current account or organization"));
+        assert!(text.contains("cannot use the requested resource"));
+    }
+
+    #[test]
+    fn classified_turn_error_transient_service_suggests_retry() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "overloaded".into(),
+                class: TurnErrorClass::TransientService,
+                api_error_status: Some(529),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("temporarily overloaded or unavailable"));
+        assert!(text.contains("retry"));
     }
 
     #[test]
@@ -3311,7 +3387,11 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "boom".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "boom".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert!(app.active_task_ids.is_empty());
@@ -3590,6 +3670,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3630,6 +3711,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3750,6 +3832,7 @@ mod tests {
             &mut app,
             ClientEvent::TurnError {
                 message: "Error: Request was aborted.\n    at stack line".into(),
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -5095,7 +5178,7 @@ mod tests {
             panic!("expected API retry notice");
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
-        assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+        assert_eq!(notice.text.text, "API retry 2/4 after server error HTTP 529, retrying in 1.5s",);
     }
 
     #[test]

@@ -318,6 +318,7 @@ pub(super) fn handle_turn_error_event(
     app: &mut App,
     msg: &str,
     classified: Option<TurnErrorClass>,
+    api_error_status: Option<u16>,
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
     let exit = begin_turn_exit(app, true);
@@ -330,6 +331,7 @@ pub(super) fn handle_turn_error_event(
             message = "turn error suppressed after cancellation request",
             outcome = "cancelled",
             error_preview = %summary,
+            api_error_status = api_error_status.unwrap_or_default(),
             terminal_reason = terminal_reason.map_or("", crate::agent::types::TerminalReason::as_stored),
         );
         app.pending_submit = None;
@@ -351,8 +353,39 @@ pub(super) fn handle_turn_error_event(
         outcome = "failure",
         error_class = ?error_class,
         error_preview = %summary,
+        api_error_status = api_error_status.unwrap_or_default(),
         terminal_reason = terminal_reason.map_or("", crate::agent::types::TerminalReason::as_stored),
     );
+    apply_turn_error_class_side_effects(app, error_class, &summary, api_error_status);
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.pending_auto_submit_after_cancel = false;
+    app.input.clear();
+    app.pending_submit = None;
+    app.status = AppStatus::Error;
+    let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
+        app.last_rate_limit_update
+            .clone()
+            .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
+    } else {
+        None
+    };
+    let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
+    push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
+    if removed_tail_assistant.is_none() && exit.turn_was_active {
+        mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
+    }
+    app.clear_active_turn_assistant();
+    super::notices::clear_turn_notice_tracking(app);
+    request_post_turn_resize_purge_replay_if_needed(app);
+    crate::app::session_runtime::request_context_usage_refresh(app);
+}
+
+fn apply_turn_error_class_side_effects(
+    app: &mut App,
+    error_class: TurnErrorClass,
+    summary: &str,
+    api_error_status: Option<u16>,
+) {
     match error_class {
         TurnErrorClass::PlanLimit => {
             tracing::warn!(
@@ -376,6 +409,39 @@ pub(super) fn handle_turn_error_event(
             app.exit_error = Some(crate::error::AppError::AuthRequired);
             app.should_quit = true;
         }
+        TurnErrorClass::AccountAccess => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "turn_error_classified",
+                message = "turn error indicates account access is not allowed",
+                outcome = "degraded",
+                error_class = "account_access",
+                error_preview = %summary,
+                api_error_status = api_error_status.unwrap_or_default(),
+            );
+        }
+        TurnErrorClass::ModelUnavailable => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_classified",
+                message = "turn error indicates model is unavailable",
+                outcome = "degraded",
+                error_class = "model_unavailable",
+                error_preview = %summary,
+                api_error_status = api_error_status.unwrap_or_default(),
+            );
+        }
+        TurnErrorClass::TransientService => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_classified",
+                message = "turn error indicates transient service failure",
+                outcome = "degraded",
+                error_class = "transient_service",
+                error_preview = %summary,
+                api_error_status = api_error_status.unwrap_or_default(),
+            );
+        }
         TurnErrorClass::Internal => {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -388,27 +454,6 @@ pub(super) fn handle_turn_error_event(
         }
         TurnErrorClass::Other => {}
     }
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.pending_auto_submit_after_cancel = false;
-    app.input.clear();
-    app.pending_submit = None;
-    app.status = AppStatus::Error;
-    let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
-        app.last_rate_limit_update
-            .clone()
-            .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
-    } else {
-        None
-    };
-    let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
-    push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
-    if removed_tail_assistant.is_none() && exit.turn_was_active {
-        mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
-    }
-    app.clear_active_turn_assistant();
-    super::notices::clear_turn_notice_tracking(app);
-    request_post_turn_resize_purge_replay_if_needed(app);
-    crate::app::session_runtime::request_context_usage_refresh(app);
 }
 
 fn request_post_turn_resize_purge_replay_if_needed(app: &mut App) {
@@ -500,6 +545,27 @@ fn push_turn_error_message(
                 format!("{AUTH_REQUIRED_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
             super::push_system_message_with_severity(app, None, &message);
         }
+        TurnErrorClass::AccountAccess => {
+            let summary = summarize_internal_error(error);
+            let message = format!(
+                "The current account or organization cannot use the requested resource: {summary}\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
+            );
+            super::push_system_message_with_severity(app, None, &message);
+        }
+        TurnErrorClass::ModelUnavailable => {
+            let summary = summarize_internal_error(error);
+            let message = format!(
+                "The selected model is unavailable: {summary}\n\nUse /model to choose another available model.\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
+            );
+            super::push_system_message_with_severity(app, None, &message);
+        }
+        TurnErrorClass::TransientService => {
+            let summary = summarize_internal_error(error);
+            let message = format!(
+                "The service is temporarily overloaded or unavailable: {summary}\n\nWait a moment and retry.\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
+            );
+            super::push_system_message_with_severity(app, None, &message);
+        }
         TurnErrorClass::Internal | TurnErrorClass::Other => {
             let message = format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
             super::push_system_message_with_severity(app, None, &message);
@@ -545,7 +611,7 @@ mod tests {
         app.messages.push(user_message("hello"));
         app.messages.push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "cancelled", None, None);
+        handle_turn_error_event(&mut app, "cancelled", None, None, None);
 
         assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::User));
@@ -559,7 +625,7 @@ mod tests {
         app.messages.push(user_message("hello"));
         app.messages.push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "boom", None, None);
+        handle_turn_error_event(&mut app, "boom", None, None, None);
 
         assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::User));
