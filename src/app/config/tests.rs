@@ -336,6 +336,7 @@ fn plugins_inner_tab_switch_does_not_trigger_refresh() {
 fn installed_plugin_enter_opens_actions_overlay() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
+    app.cwd_raw = "C:\\work\\project-a".to_owned();
     app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
         id: "frontend-design@claude-plugins-official".to_owned(),
         version: Some("1.0.0".to_owned()),
@@ -366,7 +367,6 @@ fn installed_plugin_enter_opens_actions_overlay() {
         vec![
             InstalledPluginActionKind::Disable,
             InstalledPluginActionKind::Update,
-            InstalledPluginActionKind::InstallInCurrentProject,
             InstalledPluginActionKind::Uninstall,
         ]
     );

@@ -708,7 +708,6 @@ pub enum InstalledPluginActionKind {
     Enable,
     Disable,
     Update,
-    InstallInCurrentProject,
     Uninstall,
 }
 
@@ -719,7 +718,6 @@ impl InstalledPluginActionKind {
             Self::Enable => "Enable",
             Self::Disable => "Disable",
             Self::Update => "Update",
-            Self::InstallInCurrentProject => "Install in current project",
             Self::Uninstall => "Uninstall",
         }
     }

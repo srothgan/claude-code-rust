@@ -1672,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn plugins_tab_groups_relevant_installed_plugins_above_other_projects() {
+    fn plugins_tab_hides_plugins_from_other_projects() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1729,19 +1729,11 @@ mod tests {
             .expect("draw");
 
         let rendered = buffer_text(terminal.backend().buffer());
-        let user_index =
-            rendered.find("User Plugin From Claude Plugins Official").expect("user plugin");
-        let current_index = rendered
-            .find("Current Local From Claude Plugins Official")
-            .expect("current project plugin");
-        let other_index = rendered
-            .find("Other Local From Claude Plugins Official")
-            .expect("other project plugin");
-
-        assert!(user_index < other_index);
-        assert!(current_index < other_index);
-        assert!(rendered.contains("Available here"));
-        assert!(rendered.contains("Installed elsewhere"));
+        assert!(rendered.contains("User Plugin From Claude Plugins Official"));
+        assert!(rendered.contains("Current Local From Claude Plugins Official"));
+        assert!(!rendered.contains("Other Local From Claude Plugins Official"));
+        assert!(!rendered.contains("Available here"));
+        assert!(!rendered.contains("Installed elsewhere"));
     }
 
     #[test]
@@ -1832,7 +1824,6 @@ mod tests {
                 actions: vec![
                     crate::app::config::InstalledPluginActionKind::Disable,
                     crate::app::config::InstalledPluginActionKind::Update,
-                    crate::app::config::InstalledPluginActionKind::InstallInCurrentProject,
                     crate::app::config::InstalledPluginActionKind::Uninstall,
                 ],
             },
@@ -1848,7 +1839,7 @@ mod tests {
         assert!(rendered.contains("Installed plugin"));
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("Create distinctive interfaces"));
-        assert!(rendered.contains("Install in current project"));
+        assert!(rendered.contains("Uninstall"));
         assert!(rendered.contains("Up/Down select"));
     }
 
