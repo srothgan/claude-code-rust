@@ -688,6 +688,30 @@ pub struct SessionRenameOverlayState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayMessageKind {
+    Info,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayMessage {
+    pub kind: OverlayMessageKind,
+    pub text: String,
+}
+
+impl OverlayMessage {
+    #[must_use]
+    pub fn info(text: impl Into<String>) -> Self {
+        Self { kind: OverlayMessageKind::Info, text: text.into() }
+    }
+
+    #[must_use]
+    pub fn error(text: impl Into<String>) -> Self {
+        Self { kind: OverlayMessageKind::Error, text: text.into() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketplaceActionKind {
     Update,
     Remove,
@@ -785,6 +809,24 @@ pub struct AddMarketplaceOverlayState {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationAction {
+    InstalledPluginUninstall,
+    MarketplaceRemove,
+    McpClearAuth,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmationOverlayState {
+    pub title: String,
+    pub body: String,
+    pub confirm_label: String,
+    pub cancel_label: String,
+    pub selected_index: usize,
+    pub action: ConfirmationAction,
+    pub previous: Box<ConfigOverlayState>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
@@ -799,6 +841,7 @@ pub enum ConfigOverlayState {
     McpCallbackUrl(McpCallbackUrlOverlayState),
     McpElicitation(McpElicitationOverlayState),
     McpAuthRedirect(McpAuthRedirectOverlayState),
+    Confirmation(ConfirmationOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -831,6 +874,7 @@ pub struct ConfigState {
     pub preferences_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
+    pub overlay_message: Option<OverlayMessage>,
     pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
 }
 
@@ -853,6 +897,7 @@ impl Default for ConfigState {
             preferences_path: None,
             status_message: None,
             last_error: None,
+            overlay_message: None,
             pending_session_title_change: None,
         }
     }
@@ -946,335 +991,182 @@ impl ConfigState {
         setting_specs().get(self.selected_setting_index)
     }
 
+    pub fn replace_overlay(&mut self, overlay: ConfigOverlayState) {
+        self.overlay = Some(overlay);
+        self.overlay_message = None;
+    }
+
+    pub fn clear_overlay(&mut self) {
+        self.overlay = None;
+        self.overlay_message = None;
+    }
+
+    pub fn set_overlay_info(&mut self, message: impl Into<String>) {
+        self.overlay_message = Some(OverlayMessage::info(message));
+        self.last_error = None;
+        self.status_message = None;
+    }
+
+    pub fn set_overlay_error(&mut self, message: impl Into<String>) {
+        self.overlay_message = Some(OverlayMessage::error(message));
+        self.last_error = None;
+        self.status_message = None;
+    }
+
     #[must_use]
     pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::ModelAndEffort(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::ModelAndEffort(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::OutputStyle(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::OutputStyle(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::Language(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn language_overlay_mut(&mut self) -> Option<&mut LanguageOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::Language(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn session_rename_overlay(&self) -> Option<&SessionRenameOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::SessionRename(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn session_rename_overlay_mut(&mut self) -> Option<&mut SessionRenameOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::SessionRename(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::InstalledPluginActions(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn installed_plugin_actions_overlay_mut(
         &mut self,
     ) -> Option<&mut InstalledPluginActionOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::InstalledPluginActions(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn plugin_install_overlay(&self) -> Option<&PluginInstallOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::PluginInstallActions(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn plugin_install_overlay_mut(&mut self) -> Option<&mut PluginInstallOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::PluginInstallActions(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn marketplace_actions_overlay(&self) -> Option<&MarketplaceActionsOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::MarketplaceActions(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn marketplace_actions_overlay_mut(
         &mut self,
     ) -> Option<&mut MarketplaceActionsOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::MarketplaceActions(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     #[must_use]
     pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
     pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn confirmation_overlay(&self) -> Option<&ConfirmationOverlayState> {
+        if let Some(ConfigOverlayState::Confirmation(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    pub fn confirmation_overlay_mut(&mut self) -> Option<&mut ConfirmationOverlayState> {
+        if let Some(ConfigOverlayState::Confirmation(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
         }
     }
 
@@ -1317,6 +1209,7 @@ impl ConfigState {
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
         self.overlay = None;
+        self.overlay_message = None;
         self.selected_setting_index =
             self.selected_setting_index.min(setting_specs().len().saturating_sub(1));
         self.settings_scroll_offset = self.settings_scroll_offset.min(self.selected_setting_index);

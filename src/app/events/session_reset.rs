@@ -82,7 +82,7 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.focus = super::super::FocusManager::default();
     app.available_commands.clear();
     app.available_agents.clear();
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.pending_session_title_change = None;
 }
 

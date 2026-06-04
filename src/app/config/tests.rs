@@ -550,6 +550,81 @@ fn add_marketplace_overlay_accepts_paste() {
 }
 
 #[test]
+fn empty_marketplace_source_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.add_marketplace_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Marketplace source cannot be empty");
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
+fn installed_plugin_uninstall_requires_confirmation_and_restores_previous_overlay_on_cancel() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
+        id: "frontend-design@claude-plugins-official".to_owned(),
+        version: Some("1.0.0".to_owned()),
+        scope: "user".to_owned(),
+        enabled: false,
+        installed_at: None,
+        last_updated: None,
+        project_path: None,
+        capability: crate::app::plugins::PluginCapability::Skill,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::InstalledPluginUninstall);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("frontend-design@claude-plugins-official"));
+    assert!(confirmation.body.contains("user scope"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let restored =
+        app.config.installed_plugin_actions_overlay().expect("restored installed actions overlay");
+    assert_eq!(restored.selected_index, 2);
+}
+
+#[test]
+fn marketplace_remove_requires_confirmation_and_escape_restores_previous_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::MarketplaceRemove);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("claude-plugins-official"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let restored = app.config.marketplace_actions_overlay().expect("restored marketplace overlay");
+    assert_eq!(restored.selected_index, 1);
+}
+
+#[test]
 fn plugins_search_accepts_paste_when_focused() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
@@ -1325,6 +1400,48 @@ fn language_overlay_supports_cursor_aware_editing() {
 }
 
 #[test]
+fn invalid_language_confirm_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    select_setting(&mut app, SettingId::Language);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.language_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Language must be at least 2 characters.");
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
+fn escape_cancels_language_overlay_without_writing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = App::test_default();
+    app.settings_home_override = Some(dir.path().to_path_buf());
+    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+    std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
+    open(&mut app).expect("open");
+    select_setting(&mut app, SettingId::Language);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for _ in 0.."German".chars().count() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for ch in "English".chars() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+    assert_eq!(store::language(&read_json_file(&path)), Ok(Some("German".to_owned())));
+}
+
+#[test]
 fn enter_closes_settings_without_editing_selected_row() {
     let (_dir, mut app) = open_settings_test_app();
     select_setting(&mut app, SettingId::FastMode);
@@ -1378,6 +1495,57 @@ fn mcp_details_overlay_enter_closes_overlay() {
 
     assert!(app.config.overlay.is_none());
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+}
+
+#[test]
+fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.mcp.servers = vec![crate::agent::model::McpServerStatus {
+        name: "filesystem".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("project".to_owned()),
+        tools: Vec::new(),
+    }];
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "filesystem".to_owned(),
+        selected_index: 1,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::McpClearAuth);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("filesystem"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let restored = app.config.mcp_details_overlay().expect("restored mcp details overlay");
+    assert_eq!(restored.server_name, "filesystem");
+    assert_eq!(restored.selected_index, 1);
+}
+
+#[test]
+fn empty_mcp_callback_url_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.config.overlay = Some(ConfigOverlayState::McpCallbackUrl(McpCallbackUrlOverlayState {
+        server_name: "filesystem".to_owned(),
+        draft: String::new(),
+        cursor: 0,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.mcp_callback_url_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Callback URL cannot be empty");
+    assert!(app.config.last_error.is_none());
 }
 
 #[test]

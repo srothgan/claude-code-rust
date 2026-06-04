@@ -21,13 +21,15 @@ use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use super::theme;
 use input::{add_marketplace_example_lines, render_text_input_field};
 use overlay::{
     OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_header,
     render_overlay_separator as shared_render_overlay_separator, render_overlay_shell,
+    selected_scroll,
 };
 
 const SETTINGS_LIMITATION_HINT: &str = "Currently, not all settings are supported by claude-rs. This project uses the official Anthropic Claude Agent SDK, which limits claude-rs implementing all Claude Code settings.";
@@ -36,13 +38,7 @@ const MIN_SETTINGS_PANEL_HEIGHT: u16 = 3;
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
 
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .title("Config")
-        .border_style(Style::default().fg(theme::DIM));
-    frame.render_widget(outer, frame_area);
-
-    let inner = frame_area.inner(Margin { vertical: 1, horizontal: 1 });
+    let inner = frame_area.inner(Margin { vertical: 1, horizontal: 2 });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -62,32 +58,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ConfigTab::Usage => usage::render(frame, chunks[1], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
         ConfigTab::Help => help::render(frame, chunks[1], app),
-    }
-
-    if app.config.model_and_effort_overlay().is_some() {
-        render_model_and_effort_overlay(frame, frame_area, app);
-    } else if app.config.output_style_overlay().is_some() {
-        render_output_style_overlay(frame, frame_area, app);
-    } else if app.config.language_overlay().is_some() {
-        render_language_overlay(frame, frame_area, app);
-    } else if app.config.session_rename_overlay().is_some() {
-        render_session_rename_overlay(frame, frame_area, app);
-    } else if app.config.installed_plugin_actions_overlay().is_some() {
-        render_installed_plugin_actions_overlay(frame, frame_area, app);
-    } else if app.config.plugin_install_overlay().is_some() {
-        render_plugin_install_overlay(frame, frame_area, app);
-    } else if app.config.marketplace_actions_overlay().is_some() {
-        render_marketplace_actions_overlay(frame, frame_area, app);
-    } else if app.config.add_marketplace_overlay().is_some() {
-        render_add_marketplace_overlay(frame, frame_area, app);
-    } else if app.config.mcp_details_overlay().is_some() {
-        mcp::render_details_overlay(frame, frame_area, app);
-    } else if app.config.mcp_callback_url_overlay().is_some() {
-        mcp::render_callback_url_overlay(frame, frame_area, app);
-    } else if app.config.mcp_auth_redirect_overlay().is_some() {
-        mcp::render_auth_redirect_overlay(frame, frame_area, app);
-    } else if app.config.mcp_elicitation_overlay().is_some() {
-        mcp::render_elicitation_overlay(frame, frame_area, app);
     }
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
@@ -110,6 +80,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
         chunks[3],
     );
+
+    render_active_overlay(frame, frame_area, app);
 }
 
 fn config_help_text(app: &App) -> String {
@@ -166,6 +138,36 @@ fn config_help_text(app: &App) -> String {
     }
 }
 
+fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &App) {
+    if app.config.model_and_effort_overlay().is_some() {
+        render_model_and_effort_overlay(frame, frame_area, app);
+    } else if app.config.output_style_overlay().is_some() {
+        render_output_style_overlay(frame, frame_area, app);
+    } else if app.config.language_overlay().is_some() {
+        render_language_overlay(frame, frame_area, app);
+    } else if app.config.session_rename_overlay().is_some() {
+        render_session_rename_overlay(frame, frame_area, app);
+    } else if app.config.installed_plugin_actions_overlay().is_some() {
+        render_installed_plugin_actions_overlay(frame, frame_area, app);
+    } else if app.config.plugin_install_overlay().is_some() {
+        render_plugin_install_overlay(frame, frame_area, app);
+    } else if app.config.marketplace_actions_overlay().is_some() {
+        render_marketplace_actions_overlay(frame, frame_area, app);
+    } else if app.config.add_marketplace_overlay().is_some() {
+        render_add_marketplace_overlay(frame, frame_area, app);
+    } else if app.config.mcp_details_overlay().is_some() {
+        mcp::render_details_overlay(frame, frame_area, app);
+    } else if app.config.mcp_callback_url_overlay().is_some() {
+        mcp::render_callback_url_overlay(frame, frame_area, app);
+    } else if app.config.mcp_auth_redirect_overlay().is_some() {
+        mcp::render_auth_redirect_overlay(frame, frame_area, app);
+    } else if app.config.mcp_elicitation_overlay().is_some() {
+        mcp::render_elicitation_overlay(frame, frame_area, app);
+    } else if app.config.confirmation_overlay().is_some() {
+        render_confirmation_overlay(frame, frame_area, app);
+    }
+}
+
 fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
     let Some(overlay) = app.config.model_and_effort_overlay() else {
         return;
@@ -186,6 +188,7 @@ fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Model and Thinking Effort",
             subtitle: None,
             help: Some("Tab switches model/effort | Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let model_lines = model_overlay_lines(app);
@@ -310,10 +313,15 @@ fn render_output_style_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Preferred output style",
             subtitle: Some("This changes how Claude Code communicates with you"),
             help: Some("Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
+    let scroll =
+        output_style_overlay_scroll(app, rendered.body_area.height, rendered.body_area.width);
     frame.render_widget(
-        Paragraph::new(output_style_overlay_lines(app)).wrap(Wrap { trim: false }),
+        Paragraph::new(output_style_overlay_lines(app))
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
         rendered.body_area,
     );
 }
@@ -338,6 +346,7 @@ fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Language",
             subtitle: Some("Free-text prompt language for Claude sessions"),
             help: Some("Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -384,6 +393,7 @@ fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Rename session",
             subtitle: Some("Set a custom title for the current session"),
             help: Some("Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -427,6 +437,7 @@ fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &
             title: "Installed plugin",
             subtitle: None,
             help: Some("Up/Down select | Enter run | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -447,17 +458,18 @@ fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &
         ))),
         sections[0],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            overlay.description.clone(),
-            Style::default().fg(theme::DIM),
-        )))
-        .wrap(Wrap { trim: false }),
+    render_clipped_plain_text(
+        frame,
         sections[1],
+        &overlay.description,
+        Style::default().fg(theme::DIM),
     );
     shared_render_overlay_separator(frame, sections[2]);
+    let action_scroll = action_overlay_scroll(overlay.selected_index, sections[3].height);
     frame.render_widget(
-        Paragraph::new(installed_plugin_action_overlay_lines(app)).wrap(Wrap { trim: false }),
+        Paragraph::new(installed_plugin_action_overlay_lines(app))
+            .scroll((action_scroll, 0))
+            .wrap(Wrap { trim: false }),
         sections[3],
     );
 }
@@ -482,6 +494,7 @@ fn render_plugin_install_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Install plugin",
             subtitle: None,
             help: Some("Up/Down select | Enter run | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -502,17 +515,18 @@ fn render_plugin_install_overlay(frame: &mut Frame, area: Rect, app: &App) {
         ))),
         sections[0],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            overlay.description.clone(),
-            Style::default().fg(theme::DIM),
-        )))
-        .wrap(Wrap { trim: false }),
+    render_clipped_plain_text(
+        frame,
         sections[1],
+        &overlay.description,
+        Style::default().fg(theme::DIM),
     );
     shared_render_overlay_separator(frame, sections[2]);
+    let action_scroll = action_overlay_scroll(overlay.selected_index, sections[3].height);
     frame.render_widget(
-        Paragraph::new(plugin_install_overlay_lines(app)).wrap(Wrap { trim: false }),
+        Paragraph::new(plugin_install_overlay_lines(app))
+            .scroll((action_scroll, 0))
+            .wrap(Wrap { trim: false }),
         sections[3],
     );
 }
@@ -537,6 +551,7 @@ fn render_marketplace_actions_overlay(frame: &mut Frame, area: Rect, app: &App) 
             title: "Marketplace",
             subtitle: None,
             help: Some("Up/Down select | Enter run | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -557,17 +572,18 @@ fn render_marketplace_actions_overlay(frame: &mut Frame, area: Rect, app: &App) 
         ))),
         sections[0],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            overlay.description.clone(),
-            Style::default().fg(theme::DIM),
-        )))
-        .wrap(Wrap { trim: false }),
+    render_clipped_plain_text(
+        frame,
         sections[1],
+        &overlay.description,
+        Style::default().fg(theme::DIM),
     );
     shared_render_overlay_separator(frame, sections[2]);
+    let action_scroll = action_overlay_scroll(overlay.selected_index, sections[3].height);
     frame.render_widget(
-        Paragraph::new(marketplace_action_overlay_lines(app)).wrap(Wrap { trim: false }),
+        Paragraph::new(marketplace_action_overlay_lines(app))
+            .scroll((action_scroll, 0))
+            .wrap(Wrap { trim: false }),
         sections[3],
     );
 }
@@ -592,6 +608,7 @@ fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: "Add Marketplace",
             subtitle: None,
             help: Some("Enter add | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let sections = Layout::default()
@@ -623,6 +640,68 @@ fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
         overlay.cursor,
         "owner/repo or URL",
     );
+}
+
+fn render_confirmation_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.confirmation_overlay() else {
+        return;
+    };
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 56,
+            min_height: 9,
+            width_percent: 64,
+            height_percent: 42,
+            preferred_height: 12,
+            fullscreen_below: Some((56, 14)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: overlay.title.as_str(),
+            subtitle: None,
+            help: Some("Up/Down select | Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
+        },
+    );
+    debug_assert!(rendered.rect.width > 0);
+    debug_assert!(rendered.message_area.height <= 1);
+    debug_assert!(rendered.help_area.height <= 1);
+    let body_lines = vec![
+        Line::from(Span::styled(overlay.body.clone(), Style::default().fg(Color::White))),
+        Line::default(),
+    ];
+    let body_height = u16::try_from(
+        wrapped_text_height(Text::from(body_lines.clone()), rendered.body_area.width)
+            .min(usize::from(rendered.body_area.height)),
+    )
+    .unwrap_or(rendered.body_area.height);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(body_height), Constraint::Min(1)])
+        .split(rendered.body_area);
+    frame.render_widget(Paragraph::new(body_lines).wrap(Wrap { trim: false }), sections[0]);
+    frame.render_widget(
+        Paragraph::new(confirmation_overlay_lines(overlay)).wrap(Wrap { trim: false }),
+        sections[1],
+    );
+}
+
+fn confirmation_overlay_lines(
+    overlay: &crate::app::config::ConfirmationOverlayState,
+) -> Vec<Line<'static>> {
+    [overlay.cancel_label.as_str(), overlay.confirm_label.as_str()]
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let selected = index == overlay.selected_index;
+            Line::from(Span::styled(
+                format!("{} {label}", if selected { ">" } else { " " }),
+                overlay_line_style(selected, true),
+            ))
+        })
+        .collect()
 }
 
 fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
@@ -706,6 +785,124 @@ fn marketplace_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+fn output_style_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
+    let Some(overlay) = app.config.output_style_overlay() else {
+        return 0;
+    };
+    if viewport_height == 0 || viewport_width == 0 {
+        return 0;
+    }
+    let selected_index =
+        OutputStyle::ALL.iter().position(|style| *style == overlay.selected).unwrap_or(0);
+    let selected_start = OutputStyle::ALL
+        .iter()
+        .take(selected_index)
+        .enumerate()
+        .map(|(index, style)| {
+            output_style_option_height(*style, index + 1 == OutputStyle::ALL.len(), viewport_width)
+        })
+        .sum::<usize>();
+    let selected_height = output_style_option_height(
+        OutputStyle::ALL[selected_index],
+        selected_index + 1 == OutputStyle::ALL.len(),
+        viewport_width,
+    );
+    selected_scroll(selected_start, selected_height, viewport_height)
+}
+
+fn output_style_option_height(style: OutputStyle, is_last: bool, viewport_width: u16) -> usize {
+    let lines = vec![
+        Line::from(format!("  {}", style.label())),
+        Line::from(Span::styled(
+            format!("   {}", style.description()),
+            Style::default().fg(theme::DIM),
+        )),
+    ];
+    wrapped_text_height(Text::from(lines), viewport_width) + usize::from(!is_last)
+}
+
+fn action_overlay_scroll(selected_index: usize, viewport_height: u16) -> u16 {
+    selected_scroll(selected_index.saturating_mul(2), 1, viewport_height)
+}
+
+fn render_clipped_plain_text(frame: &mut Frame, area: Rect, text: &str, style: Style) {
+    let lines = clipped_plain_text_lines(text, area.width, area.height, style);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn clipped_plain_text_lines(
+    text: &str,
+    viewport_width: u16,
+    viewport_height: u16,
+    style: Style,
+) -> Vec<Line<'static>> {
+    if viewport_width == 0 || viewport_height == 0 {
+        return Vec::new();
+    }
+    let wrapped = wrap_plain_text(text, viewport_width);
+    let max_height = usize::from(viewport_height);
+    let clipped = wrapped.len() > max_height;
+    let mut visible = wrapped.into_iter().take(max_height).collect::<Vec<_>>();
+    if clipped && let Some(last) = visible.last_mut() {
+        *last = line_with_overflow_indicator(last, viewport_width);
+    }
+    visible.into_iter().map(|line| Line::from(Span::styled(line, style))).collect()
+}
+
+fn wrap_plain_text(text: &str, viewport_width: u16) -> Vec<String> {
+    let width = usize::from(viewport_width.max(1));
+    let mut lines = Vec::new();
+    for raw_line in text.lines() {
+        if raw_line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        let mut current_width = 0usize;
+        for ch in raw_line.chars() {
+            let ch_width = char_width(ch);
+            if current_width > 0 && current_width.saturating_add(ch_width) > width {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            current.push(ch);
+            current_width = current_width.saturating_add(ch_width);
+        }
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn line_with_overflow_indicator(line: &str, viewport_width: u16) -> String {
+    const INDICATOR: &str = "...";
+    let width = usize::from(viewport_width.max(1));
+    if width <= INDICATOR.len() {
+        return INDICATOR.chars().take(width).collect();
+    }
+    let target_width = width.saturating_sub(INDICATOR.len() + 1);
+    let mut out = String::new();
+    let mut out_width = 0usize;
+    for ch in line.chars() {
+        let ch_width = char_width(ch);
+        if out_width.saturating_add(ch_width) > target_width {
+            break;
+        }
+        out.push(ch);
+        out_width = out_width.saturating_add(ch_width);
+    }
+    out.push(' ');
+    out.push_str(INDICATOR);
+    out
+}
+
+fn char_width(ch: char) -> usize {
+    UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
 fn model_and_effort_section_heights(inner_height: u16) -> (u16, u16) {
     const CHROME_HEIGHT: u16 = 3;
     const DEFAULT_EFFORT_HEIGHT: u16 = 8;
@@ -746,13 +943,7 @@ fn model_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) ->
         selected_index + 1 == options.len(),
         viewport_width,
     );
-    let viewport_height = usize::from(viewport_height);
-
-    if selected_start + selected_height <= viewport_height {
-        0
-    } else {
-        u16::try_from(selected_start + selected_height - viewport_height).unwrap_or(u16::MAX)
-    }
+    selected_scroll(selected_start, selected_height, viewport_height)
 }
 
 fn effort_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
@@ -779,13 +970,7 @@ fn effort_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -
         selected_index + 1 == levels.len(),
         viewport_width,
     );
-    let viewport_height = usize::from(viewport_height);
-
-    if selected_start + selected_height <= viewport_height {
-        0
-    } else {
-        u16::try_from(selected_start + selected_height - viewport_height).unwrap_or(u16::MAX)
-    }
+    selected_scroll(selected_start, selected_height, viewport_height)
 }
 
 fn effort_overlay_option_height(level: EffortLevel, is_last: bool, viewport_width: u16) -> usize {
@@ -928,19 +1113,7 @@ fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
         spans.push(Span::styled(tab.title().to_owned(), style));
     }
 
-    let line = Line::from(spans);
-    let content_width = u16::try_from(line.width()).unwrap_or(area.width).min(area.width);
-    let header_area = centered_line_area(area, content_width);
-    frame.render_widget(Paragraph::new(line), header_area);
-}
-
-fn centered_line_area(area: Rect, content_width: u16) -> Rect {
-    if content_width >= area.width {
-        return area;
-    }
-
-    let offset = area.width.saturating_sub(content_width) / 2;
-    Rect { x: area.x + offset, y: area.y, width: content_width, height: area.height }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 #[cfg(test)]
@@ -963,6 +1136,47 @@ mod tests {
     use ratatui::style::Style;
     use ratatui::text::{Line, Span, Text};
     use ratatui::widgets::{Paragraph, Wrap};
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn buffer_lines(buffer: &Buffer) -> Vec<String> {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect()
+    }
+
+    fn render_config_text(width: u16, height: u16, mut app: App) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn render_config_lines(width: u16, height: u16, mut app: App) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                super::render(frame, &mut app);
+            })
+            .expect("draw");
+        buffer_lines(terminal.backend().buffer())
+    }
 
     fn rendered_model_option_height(
         option: &crate::app::config::OverlayModelOption,
@@ -1274,6 +1488,92 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("Language must be at least 2 characters."));
+    }
+
+    #[test]
+    fn config_header_is_left_aligned_without_outer_border() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+
+        let rendered = render_config_lines(80, 24, app);
+
+        assert!(rendered[0].trim().is_empty());
+        assert!(rendered[1].starts_with("  Settings"));
+        assert!(!rendered[0].contains("Config"));
+        assert!(!rendered[0].contains('┌'));
+    }
+
+    #[test]
+    fn large_terminal_overlay_is_centered_not_fullscreen() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
+            draft: "German".to_owned(),
+            cursor: 6,
+        }));
+
+        let rendered = render_config_lines(120, 30, app);
+        let (row_index, column_index) = rendered
+            .iter()
+            .enumerate()
+            .find_map(|(row_index, line)| {
+                line.find("Language").map(|column_index| (row_index, column_index))
+            })
+            .expect("language overlay title");
+
+        assert!(row_index > 0);
+        assert!(column_index > 0);
+    }
+
+    #[test]
+    fn small_terminal_overlay_covers_footer_status() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.status_message = Some("BACKGROUND FOOTER STATUS".to_owned());
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
+            crate::app::config::ConfirmationOverlayState {
+                title: "Tiny Confirm".to_owned(),
+                body: "Keep the dialog readable on a tiny terminal.".to_owned(),
+                confirm_label: "Run".to_owned(),
+                cancel_label: "Cancel".to_owned(),
+                selected_index: 0,
+                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
+                previous: Box::new(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
+                    selected: OutputStyle::Default,
+                })),
+            },
+        ));
+
+        let rendered = render_config_text(40, 8, app);
+
+        assert!(rendered.contains("Tiny Confirm"));
+        assert!(rendered.contains("Up/Down select"));
+        assert!(!rendered.contains("BACKGROUND FOOTER STATUS"));
+    }
+
+    #[test]
+    fn very_short_terminal_overlay_keeps_title_body_and_help_visible() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
+            crate::app::config::ConfirmationOverlayState {
+                title: "Confirm".to_owned(),
+                body: "Proceed?".to_owned(),
+                confirm_label: "Proceed".to_owned(),
+                cancel_label: "Cancel".to_owned(),
+                selected_index: 0,
+                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
+                previous: Box::new(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
+                    selected: OutputStyle::Default,
+                })),
+            },
+        ));
+
+        let rendered = render_config_text(32, 6, app);
+
+        assert!(rendered.contains("Confirm"));
+        assert!(rendered.contains("Proceed?"));
+        assert!(rendered.contains("Up/Down select"));
     }
 
     #[test]
@@ -1849,6 +2149,33 @@ mod tests {
     }
 
     #[test]
+    fn long_plugin_description_clips_with_indicator_without_hiding_actions() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
+            crate::app::config::InstalledPluginActionOverlayState {
+                plugin_id: "frontend-design@claude-plugins-official".to_owned(),
+                title: "Frontend Design From Claude Plugins Official".to_owned(),
+                description: "A very long plugin description that keeps going across many words and should be clipped before it can overwrite the action rows below the description area.".to_owned(),
+                scope: "user".to_owned(),
+                project_path: None,
+                selected_index: 2,
+                actions: vec![
+                    crate::app::config::InstalledPluginActionKind::Disable,
+                    crate::app::config::InstalledPluginActionKind::Update,
+                    crate::app::config::InstalledPluginActionKind::Uninstall,
+                ],
+            },
+        ));
+
+        let rendered = render_config_text(56, 14, app);
+
+        assert!(rendered.contains("..."));
+        assert!(rendered.contains("> Uninstall"));
+    }
+
+    #[test]
     fn plugin_install_overlay_renders_title_description_and_actions() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
@@ -1971,6 +2298,23 @@ mod tests {
     }
 
     #[test]
+    fn long_marketplace_source_keeps_cursor_suffix_visible() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        let draft =
+            "https://example.com/some/really/long/path/to/custom-marketplace.json".to_owned();
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
+            crate::app::config::AddMarketplaceOverlayState { cursor: draft.chars().count(), draft },
+        ));
+
+        let rendered = render_config_text(64, 18, app);
+
+        assert!(rendered.contains('<'));
+        assert!(rendered.contains("marketplace.json"));
+    }
+
+    #[test]
     fn mcp_details_overlay_renders_selected_server_details() {
         use std::collections::BTreeMap;
 
@@ -2035,6 +2379,27 @@ mod tests {
         assert!(rendered.contains("Reconnect server"));
         assert!(rendered.contains("Disable server"));
         assert!(rendered.contains("Enter run"));
+    }
+
+    #[test]
+    fn mcp_overlay_message_renders_inside_overlay() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.active_tab = crate::app::ConfigTab::Mcp;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpCallbackUrl(
+            crate::app::config::McpCallbackUrlOverlayState {
+                server_name: "filesystem".to_owned(),
+                draft: String::new(),
+                cursor: 0,
+            },
+        ));
+        app.config.set_overlay_error("Callback URL cannot be empty");
+        app.config.last_error = Some("BACKGROUND ERROR".to_owned());
+
+        let rendered = render_config_text(80, 16, app);
+
+        assert!(rendered.contains("Callback URL cannot be empty"));
+        assert!(!rendered.contains("BACKGROUND ERROR"));
     }
 
     #[test]

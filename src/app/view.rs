@@ -64,7 +64,7 @@ fn clear_transient_view_state(app: &mut App) {
     app.slash = None;
     app.subagent = None;
     if app.surface_mode == SurfaceMode::Fullscreen(FullscreenView::Config) {
-        app.config.overlay = None;
+        app.config.clear_overlay();
     }
     app.release_focus_target(crate::app::FocusTarget::Mention);
     app.paste_burst.on_non_char_key(Instant::now());

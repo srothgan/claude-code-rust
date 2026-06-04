@@ -3,9 +3,9 @@ mod cli;
 use crate::agent::events::ClientEvent;
 use crate::app::App;
 use crate::app::config::{
-    AddMarketplaceOverlayState, ConfigOverlayState, InstalledPluginActionKind,
-    InstalledPluginActionOverlayState, MarketplaceActionKind, MarketplaceActionsOverlayState,
-    PluginInstallActionKind, PluginInstallOverlayState,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, ConfirmationOverlayState,
+    InstalledPluginActionKind, InstalledPluginActionOverlayState, MarketplaceActionKind,
+    MarketplaceActionsOverlayState, PluginInstallActionKind, PluginInstallOverlayState,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -455,7 +455,7 @@ pub(crate) fn display_label(raw: &str) -> String {
 
 pub(crate) fn handle_installed_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_installed_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_installed_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_installed_overlay_action(app),
@@ -465,7 +465,7 @@ pub(crate) fn handle_installed_overlay_key(app: &mut App, key: KeyEvent) {
 
 pub(crate) fn handle_plugin_install_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_plugin_install_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_plugin_install_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_plugin_install_action(app),
@@ -475,7 +475,7 @@ pub(crate) fn handle_plugin_install_overlay_key(app: &mut App, key: KeyEvent) {
 
 pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_marketplace_action(app),
@@ -486,7 +486,7 @@ pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
 pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_add_marketplace_cursor_left(app);
         }
@@ -523,8 +523,8 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
     let title = display_label(&entry.id);
     let description = installed_overlay_description(app, &entry);
     let actions = installed_overlay_actions(&entry);
-    app.config.overlay =
-        Some(ConfigOverlayState::InstalledPluginActions(InstalledPluginActionOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::InstalledPluginActions(
+        InstalledPluginActionOverlayState {
             plugin_id: entry.id,
             title,
             description,
@@ -532,7 +532,8 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
             project_path: entry.project_path,
             selected_index: 0,
             actions,
-        }));
+        },
+    ));
     true
 }
 
@@ -542,8 +543,8 @@ fn open_plugin_install_overlay(app: &mut App) -> bool {
         return false;
     };
 
-    app.config.overlay =
-        Some(ConfigOverlayState::PluginInstallActions(PluginInstallOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::PluginInstallActions(
+        PluginInstallOverlayState {
             plugin_id: entry.plugin_id,
             title: display_label(&entry.name),
             description: entry
@@ -555,7 +556,8 @@ fn open_plugin_install_overlay(app: &mut App) -> bool {
                 PluginInstallActionKind::Project,
                 PluginInstallActionKind::Local,
             ],
-        }));
+        },
+    ));
     true
 }
 
@@ -565,22 +567,22 @@ fn open_marketplace_actions_overlay(app: &mut App) -> bool {
         return false;
     };
 
-    app.config.overlay =
-        Some(ConfigOverlayState::MarketplaceActions(MarketplaceActionsOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::MarketplaceActions(
+        MarketplaceActionsOverlayState {
             name: entry.name.clone(),
             title: display_label(&entry.name),
             description: marketplace_overlay_description(&entry),
             selected_index: 0,
             actions: vec![MarketplaceActionKind::Update, MarketplaceActionKind::Remove],
-        }));
+        },
+    ));
     true
 }
 
 fn open_add_marketplace_overlay(app: &mut App) -> bool {
-    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(
+    app.config.replace_overlay(ConfigOverlayState::AddMarketplace(
         AddMarketplaceOverlayState::from_text_input(String::new(), 0),
     ));
-    app.config.last_error = None;
     true
 }
 
@@ -643,16 +645,39 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
         return;
     };
 
+    if action == InstalledPluginActionKind::Uninstall {
+        open_installed_plugin_uninstall_confirmation(app, overlay);
+        return;
+    }
+
+    execute_installed_plugin_action(app, overlay, action);
+}
+
+pub(crate) fn execute_confirmed_installed_plugin_action(
+    app: &mut App,
+    action: InstalledPluginActionKind,
+) {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay().cloned() else {
+        return;
+    };
+    execute_installed_plugin_action(app, overlay, action);
+}
+
+fn execute_installed_plugin_action(
+    app: &mut App,
+    overlay: InstalledPluginActionOverlayState,
+    action: InstalledPluginActionKind,
+) {
     let (cwd_raw, args, status_message) = installed_action_command(app, &overlay, action);
 
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -688,7 +713,7 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     };
 
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
@@ -712,7 +737,7 @@ fn execute_selected_plugin_install_action(app: &mut App) {
         }
     };
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -747,8 +772,28 @@ fn execute_selected_marketplace_action(app: &mut App) {
         return;
     };
 
+    if action == MarketplaceActionKind::Remove {
+        open_marketplace_remove_confirmation(app, overlay);
+        return;
+    }
+
+    execute_marketplace_action(app, overlay, action);
+}
+
+pub(crate) fn execute_confirmed_marketplace_action(app: &mut App, action: MarketplaceActionKind) {
+    let Some(overlay) = app.config.marketplace_actions_overlay().cloned() else {
+        return;
+    };
+    execute_marketplace_action(app, overlay, action);
+}
+
+fn execute_marketplace_action(
+    app: &mut App,
+    overlay: MarketplaceActionsOverlayState,
+    action: MarketplaceActionKind,
+) {
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for marketplace action".to_owned());
         return;
@@ -757,7 +802,7 @@ fn execute_selected_marketplace_action(app: &mut App) {
     let args = marketplace_action_command(&overlay, action);
     let status_message = marketplace_action_status_message(&overlay.title, action);
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -784,18 +829,77 @@ fn execute_selected_marketplace_action(app: &mut App) {
     });
 }
 
+fn open_installed_plugin_uninstall_confirmation(
+    app: &mut App,
+    overlay: InstalledPluginActionOverlayState,
+) {
+    let title = format!("Uninstall {}", overlay.title);
+    let scope = overlay.scope.clone();
+    let plugin_id = overlay.plugin_id.clone();
+    let body = match overlay.project_path.as_deref() {
+        Some(project_path) => format!(
+            "Uninstall plugin {plugin_id} from {scope} scope for {project_path}? This removes the plugin registration from that scope."
+        ),
+        None => format!(
+            "Uninstall plugin {plugin_id} from {scope} scope? This removes the plugin registration from that scope."
+        ),
+    };
+    open_confirmation_overlay(
+        app,
+        ConfigOverlayState::InstalledPluginActions(overlay),
+        ConfirmationAction::InstalledPluginUninstall,
+        title,
+        body,
+        "Uninstall",
+    );
+}
+
+fn open_marketplace_remove_confirmation(app: &mut App, overlay: MarketplaceActionsOverlayState) {
+    let title = format!("Remove {}", overlay.title);
+    let marketplace_name = overlay.name.clone();
+    let body = format!(
+        "Remove marketplace {marketplace_name} from user configuration? Plugins already installed from it remain installed."
+    );
+    open_confirmation_overlay(
+        app,
+        ConfigOverlayState::MarketplaceActions(overlay),
+        ConfirmationAction::MarketplaceRemove,
+        title,
+        body,
+        "Remove",
+    );
+}
+
+fn open_confirmation_overlay(
+    app: &mut App,
+    previous: ConfigOverlayState,
+    action: ConfirmationAction,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    confirm_label: impl Into<String>,
+) {
+    app.config.replace_overlay(ConfigOverlayState::Confirmation(ConfirmationOverlayState {
+        title: title.into(),
+        body: body.into(),
+        confirm_label: confirm_label.into(),
+        cancel_label: "Cancel".to_owned(),
+        selected_index: 0,
+        action,
+        previous: Box::new(previous),
+    }));
+}
+
 fn confirm_add_marketplace_overlay(app: &mut App) {
     let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
         return;
     };
     let source = overlay.draft.trim().to_owned();
     if source.is_empty() {
-        app.config.last_error = Some("Marketplace source cannot be empty".to_owned());
-        app.config.status_message = None;
+        app.config.set_overlay_error("Marketplace source cannot be empty");
         return;
     }
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for marketplace action".to_owned());
         return;
@@ -810,7 +914,7 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
         "user".to_owned(),
     ];
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(format!("Adding marketplace {source}..."));
     app.plugins.loading = true;

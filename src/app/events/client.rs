@@ -284,7 +284,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                             Some(format!("{} authenticated successfully.", server.name));
                         app.config.last_error = None;
                     }
-                    app.config.overlay = None;
+                    app.config.clear_overlay();
                 }
             }
             tracing::info!(

@@ -1,7 +1,7 @@
 use super::input::render_text_input_field;
 use super::overlay::{
     OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,
-    render_overlay_shell,
+    render_overlay_shell, selected_scroll,
 };
 use super::theme;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
@@ -83,6 +83,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
             title: overlay.server_name.as_str(),
             subtitle: None,
             help: Some("Up/Down select | Enter run | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
 
@@ -92,7 +93,11 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
+    let action_height = action_area_height(
+        action_lines.clone(),
+        rendered.body_area.width,
+        rendered.body_area.height,
+    );
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
@@ -101,7 +106,12 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     let body = server.map_or_else(server_missing_lines, server_detail_lines);
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), sections[0]);
     render_overlay_separator(frame, sections[1]);
-    frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
+    let action_scroll =
+        selected_scroll(2usize.saturating_add(overlay.selected_index), 1, sections[2].height);
+    frame.render_widget(
+        Paragraph::new(action_lines).scroll((action_scroll, 0)).wrap(Wrap { trim: false }),
+        sections[2],
+    );
 }
 
 pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -124,6 +134,7 @@ pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &A
             title: "Submit callback URL",
             subtitle: Some(overlay.server_name.as_str()),
             help: Some("Enter submit | Esc back"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
     let header_lines = vec![
@@ -186,9 +197,14 @@ pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &Ap
             title: "MCP authentication",
             subtitle: Some(overlay.request.server_name.as_str()),
             help: Some("Up/Down select | Enter respond | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
-    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
+    let action_height = action_area_height(
+        action_lines.clone(),
+        rendered.body_area.width,
+        rendered.body_area.height,
+    );
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
@@ -198,7 +214,15 @@ pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &Ap
         sections[0],
     );
     render_overlay_separator(frame, sections[1]);
-    frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
+    let action_scroll = selected_scroll(
+        2usize.saturating_add(overlay.selected_index.saturating_mul(2)),
+        1,
+        sections[2].height,
+    );
+    frame.render_widget(
+        Paragraph::new(action_lines).scroll((action_scroll, 0)).wrap(Wrap { trim: false }),
+        sections[2],
+    );
 }
 
 pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -222,9 +246,14 @@ pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &
             title: "MCP authentication",
             subtitle: Some(overlay.redirect.server_name.as_str()),
             help: Some("Up/Down select | Enter run | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
         },
     );
-    let action_height = wrapped_height(Text::from(action_lines.clone()), rendered.body_area.width);
+    let action_height = action_area_height(
+        action_lines.clone(),
+        rendered.body_area.width,
+        rendered.body_area.height,
+    );
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
@@ -234,7 +263,15 @@ pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &
         sections[0],
     );
     render_overlay_separator(frame, sections[1]);
-    frame.render_widget(Paragraph::new(action_lines).wrap(Wrap { trim: false }), sections[2]);
+    let action_scroll = selected_scroll(
+        2usize.saturating_add(overlay.selected_index.saturating_mul(2)),
+        1,
+        sections[2].height,
+    );
+    frame.render_widget(
+        Paragraph::new(action_lines).scroll((action_scroll, 0)).wrap(Wrap { trim: false }),
+        sections[2],
+    );
 }
 
 fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
@@ -245,6 +282,11 @@ fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut state = ListState::default().with_selected(Some(app.config.mcp_selected_server_index));
     frame.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
+}
+
+fn action_area_height(lines: Vec<Line<'static>>, viewport_width: u16, body_height: u16) -> u16 {
+    let desired = wrapped_height(Text::from(lines), viewport_width);
+    desired.min(body_height.saturating_sub(2).max(1))
 }
 
 fn summary_lines(app: &App) -> Vec<Line<'static>> {

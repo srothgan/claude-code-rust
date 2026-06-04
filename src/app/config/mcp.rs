@@ -463,11 +463,10 @@ pub(crate) fn open_mcp_server_details(
                 })
                 .unwrap_or(0)
         });
-    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
         server_name,
         selected_index,
     }));
-    app.config.last_error = None;
 }
 
 #[must_use]
@@ -532,13 +531,12 @@ pub(crate) fn present_mcp_elicitation_request(
         } else {
             (false, None)
         };
-    app.config.overlay = Some(ConfigOverlayState::McpElicitation(McpElicitationOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::McpElicitation(McpElicitationOverlayState {
         request,
         selected_index: 0,
         browser_opened,
         browser_open_error,
     }));
-    app.config.last_error = None;
     tracing::info!(
         target: crate::logging::targets::APP_PERMISSION,
         event_name = "elicitation_request_presented",
@@ -565,13 +563,12 @@ pub(crate) fn present_mcp_auth_redirect(
         Ok(()) => (true, None),
         Err(error) => (false, Some(error)),
     };
-    app.config.overlay = Some(ConfigOverlayState::McpAuthRedirect(McpAuthRedirectOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::McpAuthRedirect(McpAuthRedirectOverlayState {
         redirect,
         selected_index: 0,
         browser_opened,
         browser_open_error,
     }));
-    app.config.last_error = None;
     tracing::info!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "mcp_auth_redirect_presented",
@@ -596,7 +593,7 @@ pub(crate) fn handle_mcp_elicitation_completed(
     if should_clear {
         app.mcp.pending_elicitation = None;
         if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
-            app.config.overlay = None;
+            app.config.clear_overlay();
         }
         refresh_mcp_snapshot(app);
         tracing::info!(
@@ -616,8 +613,12 @@ pub(crate) fn handle_mcp_operation_error(
     app.mcp.in_flight = false;
     let formatted = format_mcp_operation_error(error);
     app.mcp.last_error = Some(formatted.clone());
-    app.config.last_error = Some(formatted);
-    app.config.status_message = None;
+    if app.config.overlay.is_some() {
+        app.config.set_overlay_error(formatted);
+    } else {
+        app.config.last_error = Some(formatted);
+        app.config.status_message = None;
+    }
     tracing::error!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "mcp_operation_error_applied",
