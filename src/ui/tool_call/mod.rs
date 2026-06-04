@@ -373,6 +373,17 @@ mod tests {
     }
 
     #[test]
+    fn standard_title_uses_generic_icon_for_unknown_tools() {
+        let tc =
+            test_tool_call("tc-unknown", "UnknownFutureTool", model::ToolCallStatus::Completed);
+
+        let rendered =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+
+        assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{25cb} "));
+    }
+
+    #[test]
     fn bash_title_does_not_wrap_for_long_title() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),

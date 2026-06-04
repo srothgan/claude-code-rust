@@ -50,14 +50,17 @@ pub(super) fn render_tool_call_title(
         status_icon(tc.status, spinner_frame)
     };
     let (kind_icon, kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
-
-    let mut title_spans = vec![
-        Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
+    let kind_icon_span = if let Some((task_marker, task_marker_style)) = tasks::title_marker(tc) {
+        Span::styled(format!("{task_marker} "), task_marker_style)
+    } else {
         Span::styled(
             format!("{kind_icon} "),
             Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
-        ),
-    ];
+        )
+    };
+
+    let mut title_spans =
+        vec![Span::styled(format!("  {icon} "), Style::default().fg(icon_color)), kind_icon_span];
     if tc.is_execute_tool() {
         title_spans.push(Span::styled(
             format!("{kind_name} "),

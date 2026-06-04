@@ -13,6 +13,9 @@ use ratatui::text::{Line, Span};
 use super::errors::render_failed_tool_text_content;
 
 const TASK_OMISSION_MARKER: &str = "...";
+const TASK_MARKER_PENDING: &str = "\u{25a1}";
+const TASK_MARKER_IN_PROGRESS: &str = "\u{25a3}";
+const TASK_MARKER_COMPLETED: &str = "\u{25a0}";
 
 pub(super) fn is_state_tool(tc: &ToolCallInfo) -> bool {
     matches!(tc.sdk_tool_name.as_str(), "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList")
@@ -30,8 +33,19 @@ pub(super) fn update_deletes_task(tc: &ToolCallInfo) -> bool {
     if tc.sdk_tool_name != "TaskUpdate" {
         return false;
     }
-    tc.raw_input.as_ref().and_then(|input| input.get("status")).and_then(serde_json::Value::as_str)
-        == Some("deleted")
+    task_update_status(tc) == Some("deleted")
+}
+
+pub(super) fn title_marker(tc: &ToolCallInfo) -> Option<(&'static str, Style)> {
+    match tc.sdk_tool_name.as_str() {
+        "TaskCreate" | "TaskGet" | "TaskList" => Some(task_marker(model::TaskStatus::Pending)),
+        "TaskUpdate" => Some(match task_update_status(tc) {
+            Some("running" | "in_progress") => task_marker(model::TaskStatus::InProgress),
+            Some("completed") => task_marker(model::TaskStatus::Completed),
+            _ => task_marker(model::TaskStatus::Pending),
+        }),
+        _ => None,
+    }
 }
 
 pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
@@ -133,13 +147,13 @@ fn render_text_line(line: &str) -> Line<'static> {
     if line == TASK_OMISSION_MARKER {
         return omission_line();
     }
-    if let Some(subject) = line.strip_prefix("\u{25a0} ") {
+    if let Some(subject) = strip_task_marker_prefix(line, TASK_MARKER_COMPLETED) {
         return render_task_line(subject, "", model::TaskStatus::Completed);
     }
-    if let Some(subject) = line.strip_prefix("\u{25a3} ") {
+    if let Some(subject) = strip_task_marker_prefix(line, TASK_MARKER_IN_PROGRESS) {
         return render_task_line(subject, "", model::TaskStatus::InProgress);
     }
-    if let Some(subject) = line.strip_prefix("\u{25a1} ") {
+    if let Some(subject) = strip_task_marker_prefix(line, TASK_MARKER_PENDING) {
         return render_task_line(subject, "", model::TaskStatus::Pending);
     }
     if line.starts_with("Deleted task") {
@@ -168,6 +182,14 @@ fn status_label(status: &str) -> String {
         "deleted" => "Deleted".to_owned(),
         other => other.to_owned(),
     }
+}
+
+fn task_update_status(tc: &ToolCallInfo) -> Option<&str> {
+    tc.raw_input.as_ref().and_then(|input| input.get("status")).and_then(serde_json::Value::as_str)
+}
+
+fn strip_task_marker_prefix<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    line.strip_prefix(marker)?.strip_prefix(' ')
 }
 
 fn json_string<'a>(
@@ -208,22 +230,16 @@ fn deleted_task_line(text: &str) -> Line<'static> {
 }
 
 fn render_task_line(subject: &str, active_form: &str, status: model::TaskStatus) -> Line<'static> {
-    let (marker, marker_style, text, text_style) = match status {
-        model::TaskStatus::Completed => (
-            "\u{25a0}",
-            Style::default().fg(theme::DIM),
-            subject,
-            Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
-        ),
+    let (marker, marker_style) = task_marker(status);
+    let (text, text_style) = match status {
+        model::TaskStatus::Completed => {
+            (subject, Style::default().fg(theme::DIM).add_modifier(Modifier::DIM))
+        }
         model::TaskStatus::InProgress => (
-            "\u{25a3}",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             if active_form.is_empty() { subject } else { active_form },
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
-        model::TaskStatus::Pending => {
-            ("\u{25a1}", Style::default().fg(theme::DIM), subject, Style::default().fg(Color::Gray))
-        }
+        model::TaskStatus::Pending => (subject, Style::default().fg(Color::Gray)),
     };
 
     Line::from(vec![
@@ -231,6 +247,17 @@ fn render_task_line(subject: &str, active_form: &str, status: model::TaskStatus)
         Span::raw(" "),
         Span::styled(text.to_owned(), text_style),
     ])
+}
+
+fn task_marker(status: model::TaskStatus) -> (&'static str, Style) {
+    match status {
+        model::TaskStatus::Completed => (TASK_MARKER_COMPLETED, Style::default().fg(theme::DIM)),
+        model::TaskStatus::InProgress => (
+            TASK_MARKER_IN_PROGRESS,
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        model::TaskStatus::Pending => (TASK_MARKER_PENDING, Style::default().fg(theme::DIM)),
+    }
 }
 
 fn omission_line() -> Line<'static> {
@@ -286,6 +313,70 @@ mod tests {
             .collect()
     }
 
+    fn task_tool_call_title(tc: &ToolCallInfo) -> Line<'static> {
+        super::super::standard::render_tool_call_title(
+            tc,
+            super::super::ToolCallRenderContext::default(),
+            80,
+            0,
+        )
+    }
+
+    fn task_title_marker_span<'a>(line: &'a Line<'static>) -> &'a Span<'static> {
+        line.spans.get(1).expect("task title marker span")
+    }
+
+    #[test]
+    fn create_title_uses_pending_task_marker() {
+        let mut tc = task_tool_call(
+            "TaskCreate",
+            json!({ "subject": "Run checks", "description": "Validate the branch" }),
+            None,
+        );
+        tc.title = "Create task #1: Run checks".to_owned();
+
+        let title = task_tool_call_title(&tc);
+        let marker = task_title_marker_span(&title);
+        let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
+        assert_eq!(marker.style.fg, Some(theme::DIM));
+        assert!(!text.contains('\u{25cc}'));
+    }
+
+    #[test]
+    fn in_progress_update_title_uses_active_task_marker() {
+        let mut tc = task_tool_call(
+            "TaskUpdate",
+            json!({ "taskId": "task-1", "status": "in_progress" }),
+            None,
+        );
+        tc.title = "Start task #1: Run checks".to_owned();
+
+        let title = task_tool_call_title(&tc);
+        let marker = task_title_marker_span(&title);
+
+        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_IN_PROGRESS} "));
+        assert_eq!(marker.style.fg, Some(theme::RUST_ORANGE));
+        assert_eq!(marker.style.add_modifier, Modifier::BOLD);
+    }
+
+    #[test]
+    fn completed_update_title_uses_completed_task_marker() {
+        let mut tc = task_tool_call(
+            "TaskUpdate",
+            json!({ "taskId": "task-1", "status": "completed" }),
+            None,
+        );
+        tc.title = "Complete task #1: Run checks".to_owned();
+
+        let title = task_tool_call_title(&tc);
+        let marker = task_title_marker_span(&title);
+
+        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_COMPLETED} "));
+        assert_eq!(marker.style.fg, Some(theme::DIM));
+    }
+
     #[test]
     fn create_body_renders_structured_fields() {
         let tc = task_tool_call(
@@ -339,6 +430,9 @@ mod tests {
         );
         assert!(title.spans.first().is_some_and(|span| span.content.contains(theme::ICON_FAILED)));
         assert_eq!(title.spans.first().and_then(|span| span.style.fg), Some(theme::STATUS_ERROR));
+        let marker = task_title_marker_span(&title);
+        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
+        assert_eq!(marker.style.fg, Some(theme::DIM));
 
         let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
         assert!(rendered.iter().any(|line| line.contains("Deleted task")));

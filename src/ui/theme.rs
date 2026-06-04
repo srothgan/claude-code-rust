@@ -43,10 +43,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LS" => ("\u{2315}", "LS"),
         "Bash" => ("\u{27e9}", "Bash"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
-        "TaskCreate" => ("\u{25cc}", "TaskCreate"),
-        "TaskUpdate" => ("\u{25cc}", "TaskUpdate"),
-        "TaskGet" => ("\u{25cc}", "TaskGet"),
-        "TaskList" => ("\u{25cc}", "TaskList"),
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" => ("\u{25a1}", "Task"),
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
@@ -64,5 +61,17 @@ mod tests {
     fn task_and_agent_share_subagent_label_and_icon() {
         assert_eq!(tool_name_label("Task"), ("\u{25c7}", "Subagent"));
         assert_eq!(tool_name_label("Agent"), ("\u{25c7}", "Subagent"));
+    }
+
+    #[test]
+    fn sdk_task_state_tools_use_neutral_task_label() {
+        for sdk_tool_name in ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"] {
+            assert_eq!(tool_name_label(sdk_tool_name), ("\u{25a1}", "Task"));
+        }
+    }
+
+    #[test]
+    fn unknown_tools_use_generic_fallback() {
+        assert_eq!(tool_name_label("UnknownFutureTool"), ("\u{25cb}", "Tool"));
     }
 }
