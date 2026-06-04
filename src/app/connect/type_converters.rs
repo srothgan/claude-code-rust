@@ -283,9 +283,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
             Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
         }
-        types::SessionUpdate::Plan { entries } => Some(model::SessionUpdate::Plan(
-            model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
-        )),
+        types::SessionUpdate::TaskStateUpdate { update: task_update } => {
+            Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
+        }
         types::SessionUpdate::AvailableCommandsUpdate { commands, source, generation } => {
             Some(model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(
                 commands, source, generation,
@@ -662,15 +662,10 @@ pub(super) fn convert_tool_call_update_fields(
 fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
-    model::ToolOutputMetadata::new()
-        .bash(output_metadata.bash.map(|bash| {
-            model::BashOutputMetadata::new()
-                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-        }))
-        .todo_write(output_metadata.todo_write.map(|todo_write| {
-            model::TodoWriteOutputMetadata::new()
-                .verification_nudge_needed(todo_write.verification_nudge_needed)
-        }))
+    model::ToolOutputMetadata::new().bash(output_metadata.bash.map(|bash| {
+        model::BashOutputMetadata::new()
+            .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
+    }))
 }
 
 fn convert_permission_display(
@@ -744,13 +739,46 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     }
 }
 
-pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
-    let status = match entry.status.as_str() {
-        "in_progress" => model::PlanEntryStatus::InProgress,
-        "completed" => model::PlanEntryStatus::Completed,
-        _ => model::PlanEntryStatus::Pending,
-    };
-    model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
+fn convert_task_status(status: types::TaskStatus) -> model::TaskStatus {
+    match status {
+        types::TaskStatus::Pending => model::TaskStatus::Pending,
+        types::TaskStatus::InProgress => model::TaskStatus::InProgress,
+        types::TaskStatus::Completed => model::TaskStatus::Completed,
+    }
+}
+
+fn convert_task_update_source(source: types::TaskUpdateSource) -> model::TaskUpdateSource {
+    match source {
+        types::TaskUpdateSource::Create => model::TaskUpdateSource::Create,
+        types::TaskUpdateSource::Update => model::TaskUpdateSource::Update,
+        types::TaskUpdateSource::Get => model::TaskUpdateSource::Get,
+        types::TaskUpdateSource::List => model::TaskUpdateSource::List,
+        types::TaskUpdateSource::Lifecycle => model::TaskUpdateSource::Lifecycle,
+    }
+}
+
+fn convert_task_item(task: types::TaskItem) -> model::TaskItem {
+    model::TaskItem {
+        task_id: task.task_id,
+        subject: task.subject,
+        description: task.description,
+        active_form: task.active_form,
+        status: convert_task_status(task.status),
+        owner: task.owner,
+        blocks: task.blocks,
+        blocked_by: task.blocked_by,
+        metadata: task.metadata,
+        source_tool_call_id: task.source_tool_call_id,
+    }
+}
+
+fn convert_task_state_update(update: types::TaskStateUpdate) -> model::TaskStateUpdate {
+    model::TaskStateUpdate {
+        source: convert_task_update_source(update.source),
+        tasks: update.tasks.into_iter().map(convert_task_item).collect(),
+        removed_task_ids: update.removed_task_ids,
+        is_complete_snapshot: update.is_complete_snapshot,
+    }
 }
 
 pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
@@ -956,6 +984,44 @@ mod tests {
     }
 
     #[test]
+    fn map_session_update_converts_task_state_update() {
+        let update: types::SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "task_state_update",
+            "source": "task_update",
+            "tasks": [
+                {
+                    "task_id": "task-1",
+                    "subject": "Run checks",
+                    "description": "Validate the branch",
+                    "active_form": "Running checks",
+                    "status": "in_progress",
+                    "owner": "agent",
+                    "blocks": ["task-2"],
+                    "blocked_by": ["task-0"],
+                    "metadata": { "phase": "6A" },
+                    "source_tool_call_id": "tool-1"
+                }
+            ],
+            "removed_task_ids": ["task-old"],
+            "is_complete_snapshot": false
+        }))
+        .expect("task state update should deserialize");
+
+        let mapped = map_session_update(update).expect("task state update should map");
+        let model::SessionUpdate::TaskStateUpdate(update) = mapped else {
+            panic!("expected task state update");
+        };
+
+        assert_eq!(update.source, model::TaskUpdateSource::Update);
+        assert_eq!(update.removed_task_ids, vec!["task-old"]);
+        assert!(!update.is_complete_snapshot);
+        assert_eq!(update.tasks.len(), 1);
+        assert_eq!(update.tasks[0].task_id, "task-1");
+        assert_eq!(update.tasks[0].status, model::TaskStatus::InProgress);
+        assert_eq!(update.tasks[0].metadata, Some(serde_json::json!({ "phase": "6A" })));
+    }
+
+    #[test]
     fn map_permission_request_preserves_display_metadata() {
         let (request, tool_call_id) = map_permission_request(
             "session-1",
@@ -1084,24 +1150,15 @@ mod tests {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
-                todo_write: Some(types::TodoWriteOutputMetadata {
-                    verification_nudge_needed: Some(true),
-                }),
             }),
             ..types::ToolCallUpdateFields::default()
         });
 
         assert_eq!(
             fields.output_metadata,
-            Some(
-                model::ToolOutputMetadata::new()
-                    .bash(Some(
-                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
-                    ))
-                    .todo_write(Some(
-                        model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
-                    )),
-            )
+            Some(model::ToolOutputMetadata::new().bash(Some(
+                model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+            )))
         );
     }
 

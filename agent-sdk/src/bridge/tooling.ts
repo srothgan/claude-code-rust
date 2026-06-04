@@ -1,6 +1,13 @@
 ﻿import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
+import {
+  isTaskToolName,
+  taskToolResultText,
+  taskToolTitle,
+  taskUpdateSucceeded,
+  type TaskTitleContext,
+} from "./tasks.js";
 
 export const TOOL_RESULT_TYPES = new Set([
   "tool_result",
@@ -45,7 +52,10 @@ export function normalizeToolKind(name: string): string {
       return "search";
     case "WebFetch":
       return "fetch";
-    case "TodoWrite":
+    case "TaskCreate":
+    case "TaskUpdate":
+    case "TaskGet":
+    case "TaskList":
       return "other";
     case "Task":
     case "Agent":
@@ -57,7 +67,11 @@ export function normalizeToolKind(name: string): string {
   }
 }
 
-export function toolTitle(name: string, input: Record<string, unknown>): string {
+export function toolTitle(
+  name: string,
+  input: Record<string, unknown>,
+  context: TaskTitleContext = {},
+): string {
   if (name === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
     return command || "Terminal";
@@ -86,6 +100,10 @@ export function toolTitle(name: string, input: Record<string, unknown>): string 
     if (query) {
       return `WebSearch ${query}`;
     }
+  }
+  const taskTitle = taskToolTitle(name, input, context);
+  if (taskTitle) {
+    return taskTitle;
   }
   if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
     return `${name} ${input.file_path}`;
@@ -134,10 +152,11 @@ export function createToolCall(
   name: string,
   input: Record<string, unknown>,
   parentToolUseId: string | null = null,
+  titleContext: TaskTitleContext = {},
 ): ToolCall {
   return {
     tool_call_id: toolUseId,
-    title: toolTitle(name, input),
+    title: toolTitle(name, input, titleContext),
     kind: normalizeToolKind(name),
     status: "pending",
     content: editDiffContent(name, input),
@@ -304,16 +323,6 @@ function extractToolOutputMetadata(
       }
     }
     return undefined;
-  }
-
-  if (toolName === "TodoWrite") {
-    for (const candidate of candidates) {
-      if (typeof candidate.verificationNudgeNeeded === "boolean") {
-        return {
-          todo_write: { verification_nudge_needed: candidate.verificationNudgeNeeded },
-        };
-      }
-    }
   }
 
   return undefined;
@@ -635,6 +644,7 @@ export function buildToolResultFields(
   rawContent: unknown,
   base?: ToolCall,
   rawResult?: unknown,
+  context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
@@ -655,12 +665,26 @@ export function buildToolResultFields(
   const rawOutput = bashResultRecord
     ? buildBashDisplayOutput(bashResultRecord)
     : normalizedRawOutput || JSON.stringify(rawContent);
-  if (rawOutput) {
+  if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
     fields.raw_output = rawOutput;
   }
   const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;
+  }
+
+  if (!isError && isTaskToolName(toolName)) {
+    if (toolName === "TaskUpdate" && taskUpdateSucceeded(rawResult, rawContent) === false) {
+      fields.status = "failed";
+    }
+    const taskOutput = taskToolResultText(toolName, rawResult, rawContent);
+    if (taskOutput) {
+      fields.content = [{ type: "content", content: { type: "text", text: taskOutput } }];
+      return fields;
+    }
+    if (toolName === "TaskCreate" || toolName === "TaskUpdate") {
+      return fields;
+    }
   }
 
   if (!isError && toolName === "Write") {

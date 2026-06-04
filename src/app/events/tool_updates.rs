@@ -7,7 +7,6 @@ use super::tool_calls::{
     parent_tool_use_id_from_meta, sdk_tool_name_from_meta, tool_scope_name,
 };
 use crate::agent::model;
-use crate::app::todos::{parse_todos_if_present, set_todos};
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
@@ -45,7 +44,8 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
-    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, &id_str, tcu);
+    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
+    crate::app::tasks::refresh_task_tool_displays(app);
     if let Some(mi) = update_outcome.layout_dirty_idx {
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -59,9 +59,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         &update_outcome,
     );
     log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
-    if let Some(todos) = update_outcome.pending_todos {
-        set_todos(app, todos);
-    }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
     }
@@ -94,20 +91,16 @@ fn apply_tool_scope_status_update(
 struct ToolCallUpdateApplyOutcome {
     changed: bool,
     layout_dirty_idx: Option<usize>,
-    pending_todos: Option<Vec<super::super::TodoItem>>,
 }
 
 fn apply_tool_call_update_to_indexed_block(
     app: &mut App,
     mi: usize,
     bi: usize,
-    id_str: &str,
     tcu: &model::ToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
-    let mut out =
-        ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None, pending_todos: None };
+    let mut out = ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None };
     let terminals = std::rc::Rc::clone(&app.terminals);
-    let session_id = current_session_id(app);
     let mut terminal_subscription: Option<String> = None;
     let mut detach_terminal = false;
 
@@ -130,12 +123,6 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
-        out.pending_todos = extract_todo_updates_from_tool_call_update(
-            id_str,
-            &session_id,
-            tc,
-            tcu.fields.raw_input.as_ref(),
-        );
         detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
@@ -318,44 +305,6 @@ fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
 
     tc.terminal_id = None;
     true
-}
-
-fn extract_todo_updates_from_tool_call_update(
-    id_str: &str,
-    session_id: &str,
-    tc: &ToolCallInfo,
-    raw_input: Option<&serde_json::Value>,
-) -> Option<Vec<super::super::TodoItem>> {
-    if tc.sdk_tool_name != "TodoWrite" {
-        return None;
-    }
-    let raw_input = raw_input?;
-    if let Some(todos) = parse_todos_if_present(raw_input) {
-        tracing::info!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_plan_synchronized",
-            message = "todo plan synchronized from tool update",
-            outcome = "success",
-            session_id = %session_id,
-            tool_call_id = %id_str,
-            count = todos.len(),
-            size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-            tool_name = "TodoWrite",
-            todo_count = todos.len(),
-        );
-        return Some(todos);
-    }
-    tracing::debug!(
-        target: crate::logging::targets::APP_TOOL,
-        event_name = "tool_plan_sync_skipped",
-        message = "todo plan sync skipped for tool update",
-        outcome = "skipped",
-        session_id = %session_id,
-        tool_call_id = %id_str,
-        size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-        tool_name = "TodoWrite",
-    );
-    None
 }
 
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {

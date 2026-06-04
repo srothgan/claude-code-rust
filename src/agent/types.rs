@@ -205,11 +205,6 @@ pub struct ToolLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
 }
@@ -217,7 +212,6 @@ pub struct BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -252,11 +246,48 @@ pub enum ToolCallContent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskUpdateSource {
+    #[serde(rename = "task_create")]
+    Create,
+    #[serde(rename = "task_update")]
+    Update,
+    #[serde(rename = "task_get")]
+    Get,
+    #[serde(rename = "task_list")]
+    List,
+    #[serde(rename = "task_lifecycle")]
+    Lifecycle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub status: String,
-    pub active_form: String,
+pub struct TaskItem {
+    pub task_id: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub active_form: Option<String>,
+    pub status: TaskStatus,
+    pub owner: Option<String>,
+    pub blocks: Vec<String>,
+    pub blocked_by: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub source_tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStateUpdate {
+    pub source: TaskUpdateSource,
+    pub tasks: Vec<TaskItem>,
+    pub removed_task_ids: Vec<String>,
+    pub is_complete_snapshot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -277,8 +308,9 @@ pub enum SessionUpdate {
     ToolCallUpdate {
         tool_call_update: ToolCallUpdate,
     },
-    Plan {
-        entries: Vec<PlanEntry>,
+    TaskStateUpdate {
+        #[serde(flatten)]
+        update: TaskStateUpdate,
     },
     AvailableCommandsUpdate {
         commands: Vec<AvailableCommand>,

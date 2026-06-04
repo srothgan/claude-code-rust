@@ -27,6 +27,7 @@ import type {
   QuestionOutcome,
   SessionLaunchSettings,
   SessionUpdate,
+  TaskItem,
   ToolCall,
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
@@ -137,6 +138,8 @@ export type SessionState = {
   connectEvent: ConnectEventKind;
   connectRequestId?: string;
   toolCalls: Map<string, ToolCall>;
+  tasksById: Map<string, TaskItem>;
+  taskOrder: string[];
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
@@ -544,6 +547,8 @@ export async function createSession(params: {
     connectEvent: params.connectEvent,
     connectRequestId: params.requestId,
     toolCalls: new Map<string, ToolCall>(),
+    tasksById: new Map<string, TaskItem>(),
+    taskOrder: [],
     taskToolUseIds: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     pendingQuestions: new Map<string, PendingQuestion>(),

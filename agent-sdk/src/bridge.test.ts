@@ -59,7 +59,7 @@ import {
   shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
 import { classifyTurnErrorKind } from "./bridge/error_classification.js";
-import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
+import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
 
@@ -89,6 +89,8 @@ function makeSessionState(): SessionState {
     connected: true,
     connectEvent: "connected",
     toolCalls: new Map(),
+    tasksById: new Map(),
+    taskOrder: [],
     taskToolUseIds: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
@@ -226,14 +228,16 @@ function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
   (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
     chunk: unknown,
   ): boolean => {
-    if (typeof chunk === "string") {
-      writes.push(chunk);
-    } else if (Buffer.isBuffer(chunk)) {
-      writes.push(chunk.toString("utf8"));
-    } else {
-      writes.push(String(chunk));
+    const text = Buffer.isBuffer(chunk)
+      ? chunk.toString("utf8")
+      : typeof chunk === "string"
+        ? chunk
+        : String(chunk);
+    if (text.trimStart().startsWith("{")) {
+      writes.push(text);
+      return true;
     }
-    return true;
+    return originalWrite.call(process.stdout, chunk as never);
   };
 
   try {
@@ -262,14 +266,16 @@ async function captureBridgeEventsAsync(
   (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
     chunk: unknown,
   ): boolean => {
-    if (typeof chunk === "string") {
-      writes.push(chunk);
-    } else if (Buffer.isBuffer(chunk)) {
-      writes.push(chunk.toString("utf8"));
-    } else {
-      writes.push(String(chunk));
+    const text = Buffer.isBuffer(chunk)
+      ? chunk.toString("utf8")
+      : typeof chunk === "string"
+        ? chunk
+        : String(chunk);
+    if (text.trimStart().startsWith("{")) {
+      writes.push(text);
+      return true;
     }
-    return true;
+    return originalWrite.call(process.stdout, chunk as never);
   };
 
   try {
@@ -1342,7 +1348,496 @@ test("handleTaskSystemMessage merges task metadata patches into the linked task 
   });
 });
 
-test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
+test("TaskCreate output emits task state and links lifecycle task id", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-create", "TaskCreate", {
+      subject: "Audit state",
+      description: "Check task reducer",
+      activeForm: "Auditing state",
+      metadata: { phase: "6A" },
+    });
+    emitToolResultUpdate(session, "tool-create", false, {
+      task: { id: "task-1", subject: "Audit state" },
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "tool_call"), true);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-create";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_create",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Audit state",
+        description: "Check task reducer",
+        active_form: "Auditing state",
+        status: "pending",
+        blocks: [],
+        blocked_by: [],
+        metadata: { phase: "6A" },
+        source_tool_call_id: "tool-create",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.taskToolUseIds.get("task-1"), "tool-create");
+});
+
+test("TaskCreate transcript toolUseResult object emits typed task state", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-create-transcript",
+            name: "TaskCreate",
+            input: {
+              subject: "Scaffold Next.js app",
+              description: "Run create-next-app",
+              activeForm: "Scaffolding Next.js app",
+            },
+          },
+        ],
+      },
+      uuid: "message-task-create",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-create-transcript",
+            content: "Task #1 created successfully: Scaffold Next.js app",
+          },
+        ],
+      },
+      toolUseResult: { task: { id: "1", subject: "Scaffold Next.js app" } },
+      uuid: "message-task-create-result",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-create-transcript";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_create",
+    tasks: [
+      {
+        task_id: "1",
+        subject: "Scaffold Next.js app",
+        description: "Run create-next-app",
+        active_form: "Scaffolding Next.js app",
+        status: "pending",
+        blocks: [],
+        blocked_by: [],
+        source_tool_call_id: "tool-create-transcript",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TodoWrite tool use remains generic and emits no plan or task state", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-todo",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                {
+                  content: "Legacy todo",
+                  status: "in_progress",
+                  activeForm: "Working legacy todo",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      uuid: "message-todo",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "tool_call"), true);
+  assert.equal(updates.some((update) => update.type === "plan"), false);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(session.tasksById.size, 0);
+});
+
+test("TaskUpdate success patches one task by task id", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Old",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-update", "TaskUpdate", {
+      taskId: "task-1",
+      subject: "New",
+      status: "in_progress",
+      addBlocks: ["task-2"],
+      metadata: { mode: "patch" },
+    });
+    emitToolResultUpdate(session, "tool-update", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["subject", "status", "addBlocks", "metadata"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-update";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  const taskUpdate = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "New",
+        status: "in_progress",
+        blocks: ["task-2"],
+        blocked_by: [],
+        metadata: { mode: "patch" },
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TaskUpdate title uses known subject when input only has task id", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app via create-next-app CLI",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-update-title", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+  });
+
+  const toolCall = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "tool_call")?.tool_call as Record<string, unknown> | undefined;
+  assert.equal(toolCall?.title, "Update task: Scaffold Next.js app via create-next-app CLI");
+});
+
+test("TaskUpdate in-progress result leaves activity rendering to app task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app via create-next-app CLI",
+    active_form: "Scaffolding Next.js app",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-activity", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+    emitToolResultUpdate(session, "tool-activity", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-activity";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.equal(Object.hasOwn(fields ?? {}, "content"), false);
+  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Scaffold Next.js app via create-next-app CLI",
+        active_form: "Scaffolding Next.js app",
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TaskUpdate in-progress result omits activity when none is known", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-no-activity", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+    emitToolResultUpdate(session, "tool-no-activity", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const result = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => {
+      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      return toolCallUpdate?.tool_call_id === "tool-no-activity";
+    })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+});
+
+test("TaskUpdate deleted removes task without persisting deleted status", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Delete me",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-delete", "TaskUpdate", {
+      taskId: "task-1",
+      status: "deleted",
+    });
+    emitToolResultUpdate(session, "tool-delete", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-delete";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [],
+    removed_task_ids: ["task-1"],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.tasksById.has("task-1"), false);
+});
+
+test("failed TaskUpdate output renders failure but does not mutate task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Stable",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-failed-update", "TaskUpdate", {
+      taskId: "task-1",
+      status: "completed",
+    });
+    emitToolResultUpdate(session, "tool-failed-update", false, {
+      success: false,
+      taskId: "task-1",
+      updatedFields: [],
+      error: "Task missing",
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-failed-update";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  assert.equal((toolResult?.fields as Record<string, unknown> | undefined)?.status, "failed");
+  assert.equal(session.tasksById.get("task-1")?.status, "pending");
+});
+
+test("TaskList complete snapshot preserves richer retained fields", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Existing",
+    description: "Keep this",
+    active_form: "Working",
+    status: "in_progress",
+    blocks: ["task-9"],
+    blocked_by: [],
+  });
+  session.tasksById.set("task-2", {
+    task_id: "task-2",
+    subject: "Removed",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1", "task-2");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-list", "TaskList", {});
+    emitToolResultUpdate(session, "tool-list", false, {
+      tasks: [
+        {
+          id: "task-1",
+          subject: "Listed",
+          status: "completed",
+          owner: "agent",
+          blockedBy: ["task-3"],
+        },
+      ],
+    });
+  });
+
+  const taskUpdate = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_list",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Listed",
+        description: "Keep this",
+        active_form: "Working",
+        status: "completed",
+        owner: "agent",
+        blocks: ["task-9"],
+        blocked_by: ["task-3"],
+      },
+    ],
+    removed_task_ids: ["task-2"],
+    is_complete_snapshot: true,
+  });
+});
+
+test("TaskGet null emits removal or confirmed absence", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Maybe gone",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-get", "TaskGet", { taskId: "task-1" });
+    emitToolResultUpdate(session, "tool-get", false, { task: null });
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update as Record<string, unknown>).find((update) => update.type === "task_state_update"),
+    {
+      type: "task_state_update",
+      source: "task_get",
+      tasks: [],
+      removed_task_ids: ["task-1"],
+      is_complete_snapshot: false,
+    },
+  );
+  assert.equal(session.tasksById.has("task-1"), false);
+});
+
+test("handleTaskSystemMessage emits task state for unlinked task_updated messages", () => {
   const session = makeSessionState();
 
   const events = captureBridgeEvents(() => {
@@ -1355,7 +1850,24 @@ test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
     });
   });
 
-  assert.equal(events.length, 0);
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-missing",
+          subject: "This should not be emitted",
+          description: "This should not be emitted",
+          status: "in_progress",
+          blocks: [],
+          blocked_by: [],
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  ]);
 });
 
 test("handleSdkMessage emits MCP snapshot from init status payload", () => {
@@ -1644,7 +2156,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
-  assert.equal(normalizeToolKind("TodoWrite"), "other");
+  assert.equal(normalizeToolKind("TodoWrite"), normalizeToolKind("FutureUnknownTool"));
 });
 
 test("parseFastModeState accepts known values and rejects unknown values", () => {
@@ -2183,6 +2695,28 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
         locations: [],
         meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
       },
+    },
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-1",
+          subject: "Validate the branch",
+          description: "Run checks",
+          status: "in_progress",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            request_id: "request-1",
+            subagent_type: "tester",
+            task_description: "Validate the branch",
+          },
+          source_tool_call_id: "tool-1",
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
     },
     {
       type: "tool_call_update",
@@ -3333,7 +3867,7 @@ test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
   assert.equal(fields.title, "planner");
 });
 
-test("buildToolResultFields extracts TodoWrite verification metadata from structured results", () => {
+test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {
   const base = createToolCall("tc-todo", "TodoWrite", {
     todos: [{ content: "Verify changes", status: "pending", activeForm: "Verifying changes" }],
   });
@@ -3350,11 +3884,7 @@ test("buildToolResultFields extracts TodoWrite verification metadata from struct
     },
   );
 
-  assert.deepEqual(fields.output_metadata, {
-    todo_write: {
-      verification_nudge_needed: true,
-    },
-  });
+  assert.equal(fields.output_metadata, undefined);
 });
 
 test("mapAvailableModels preserves optional fast and auto mode metadata", () => {

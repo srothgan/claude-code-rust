@@ -541,24 +541,6 @@ impl ToolCallUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-impl TodoWriteOutputMetadata {
-    #[must_use]
-    pub fn new() -> Self {
-        Self { verification_nudge_needed: None }
-    }
-
-    #[must_use]
-    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
-        self.verification_nudge_needed = verification_nudge_needed;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
 }
@@ -582,7 +564,6 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -656,57 +637,121 @@ impl ToolOutputMetadata {
         self.bash = bash;
         self
     }
-
-    #[must_use]
-    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
-        self.todo_write = todo_write;
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlanEntryPriority {
-    High,
-    Medium,
-    Low,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanEntryStatus {
+pub enum TaskStatus {
     Pending,
     InProgress,
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub priority: PlanEntryPriority,
-    pub status: PlanEntryStatus,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskUpdateSource {
+    #[serde(rename = "task_create")]
+    Create,
+    #[serde(rename = "task_update")]
+    Update,
+    #[serde(rename = "task_get")]
+    Get,
+    #[serde(rename = "task_list")]
+    List,
+    #[serde(rename = "task_lifecycle")]
+    Lifecycle,
 }
 
-impl PlanEntry {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskItem {
+    pub task_id: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub active_form: Option<String>,
+    pub status: TaskStatus,
+    pub owner: Option<String>,
+    pub blocks: Vec<String>,
+    pub blocked_by: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub source_tool_call_id: Option<String>,
+}
+
+impl TaskItem {
     #[must_use]
-    pub fn new(
-        content: impl Into<String>,
-        priority: PlanEntryPriority,
-        status: PlanEntryStatus,
-    ) -> Self {
-        Self { content: content.into(), priority, status }
+    pub fn new(task_id: impl Into<String>, subject: impl Into<String>, status: TaskStatus) -> Self {
+        Self {
+            task_id: task_id.into(),
+            subject: subject.into(),
+            description: None,
+            active_form: None,
+            status,
+            owner: None,
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
+            metadata: None,
+            source_tool_call_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn active_form(mut self, active_form: impl Into<String>) -> Self {
+        self.active_form = Some(active_form.into());
+        self
+    }
+
+    #[must_use]
+    pub fn blocks(mut self, blocks: Vec<String>) -> Self {
+        self.blocks = blocks;
+        self
+    }
+
+    #[must_use]
+    pub fn blocked_by(mut self, blocked_by: Vec<String>) -> Self {
+        self.blocked_by = blocked_by;
+        self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Plan {
-    pub entries: Vec<PlanEntry>,
+pub struct TaskStateUpdate {
+    pub source: TaskUpdateSource,
+    pub tasks: Vec<TaskItem>,
+    pub removed_task_ids: Vec<String>,
+    pub is_complete_snapshot: bool,
 }
 
-impl Plan {
+impl TaskStateUpdate {
     #[must_use]
-    pub fn new(entries: Vec<PlanEntry>) -> Self {
-        Self { entries }
+    pub fn new(source: TaskUpdateSource) -> Self {
+        Self {
+            source,
+            tasks: Vec::new(),
+            removed_task_ids: Vec::new(),
+            is_complete_snapshot: false,
+        }
+    }
+
+    #[must_use]
+    pub fn tasks(mut self, tasks: Vec<TaskItem>) -> Self {
+        self.tasks = tasks;
+        self
+    }
+
+    #[must_use]
+    pub fn removed_task_ids(mut self, removed_task_ids: Vec<String>) -> Self {
+        self.removed_task_ids = removed_task_ids;
+        self
+    }
+
+    #[must_use]
+    pub const fn complete_snapshot(mut self, is_complete_snapshot: bool) -> Self {
+        self.is_complete_snapshot = is_complete_snapshot;
+        self
     }
 }
 
@@ -1207,7 +1252,7 @@ pub enum SessionUpdate {
     AgentThoughtChunk(ContentChunk),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
-    Plan(Plan),
+    TaskStateUpdate(TaskStateUpdate),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
     ModeStateUpdate(crate::app::ModeState),

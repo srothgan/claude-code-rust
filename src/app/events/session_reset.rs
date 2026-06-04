@@ -78,7 +78,7 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.pending_interaction_ids.clear();
     app.clear_tool_scope_tracking();
     app.tool_call_index.clear();
-    app.todos.clear();
+    app.tasks.clear();
     app.focus = super::super::FocusManager::default();
     app.available_commands.clear();
     app.available_agents.clear();

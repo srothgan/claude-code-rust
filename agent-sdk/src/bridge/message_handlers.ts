@@ -24,7 +24,6 @@ import {
 import {
   emitToolCall,
   emitToolCallUpdate,
-  emitPlanIfTodoWrite,
   emitToolResultUpdate,
   finalizeOpenToolCalls,
   emitToolProgressUpdate,
@@ -36,6 +35,7 @@ import {
   taskUpdatedFields,
   type ToolCorrelationMetadata,
 } from "./tool_calls.js";
+import { applyTaskLifecycleState } from "./tasks.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import {
@@ -263,6 +263,7 @@ export function handleTaskSystemMessage(
     });
   }
   if (!toolUseId) {
+    applyTaskLifecycleState(session, subtype, msg);
     if (subtype === "task_updated" && taskId) {
       bridgeLogger.debug({
         target: LOG_TARGETS.APP_TOOL,
@@ -283,6 +284,7 @@ export function handleTaskSystemMessage(
     }
     return true;
   }
+  applyTaskLifecycleState(session, subtype, msg);
   if (toolCall.status === "pending") {
     emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
   }
@@ -468,7 +470,6 @@ export function handleContentBlock(
       return;
     }
     logContentBlockLinkage(session, blockType, toolUseId, name, linkage);
-    emitPlanIfTodoWrite(session, name, input);
     emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null, linkage?.metadata);
     return;
   }
@@ -558,15 +559,26 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
   }
 }
 
-export function handleUserToolResultBlocks(session: SessionState, message: Record<string, unknown>): void {
+function messageToolUseResult(message: Record<string, unknown>): unknown {
+  if (Object.hasOwn(message, "toolUseResult")) {
+    return message.toolUseResult;
+  }
+  if (Object.hasOwn(message, "tool_use_result")) {
+    return message.tool_use_result;
+  }
+  return undefined;
+}
+
+export function handleUserToolResultBlocks(session: SessionState, message: Record<string, unknown>): boolean {
   const messageObject =
     message.message && typeof message.message === "object"
       ? (message.message as Record<string, unknown>)
       : null;
   if (!messageObject) {
-    return;
+    return false;
   }
   const content = Array.isArray(messageObject.content) ? messageObject.content : [];
+  let handled = false;
   for (const block of content) {
     if (!block || typeof block !== "object") {
       continue;
@@ -576,9 +588,28 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
     if (TOOL_RESULT_TYPES.has(blockType)) {
       const parentToolUseId =
         typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
-      handleContentBlock(session, blockRecord, { source: "user", parentToolUseId });
+      const toolUseId = typeof blockRecord.tool_use_id === "string" ? blockRecord.tool_use_id : "";
+      if (!toolUseId) {
+        continue;
+      }
+      handled = true;
+      if (isHiddenToolResult(session, toolUseId, blockType)) {
+        continue;
+      }
+      logContentBlockLinkage(session, blockType, toolUseId, undefined, {
+        source: "user",
+        parentToolUseId,
+      });
+      emitToolResultUpdate(
+        session,
+        toolUseId,
+        Boolean(blockRecord.is_error),
+        blockRecord.content,
+        messageToolUseResult(message) ?? blockRecord,
+      );
     }
   }
+  return handled;
 }
 
 export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
@@ -1066,15 +1097,16 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "user") {
-    handleUserToolResultBlocks(session, msg);
+    const handledBlocks = handleUserToolResultBlocks(session, msg);
 
     const toolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
-    if (toolUseId && "tool_use_result" in msg) {
+    const rawToolUseResult = messageToolUseResult(msg);
+    if (!handledBlocks && toolUseId && rawToolUseResult !== undefined) {
       if (session.hiddenToolUseIds.has(toolUseId)) {
         return;
       }
-      const parsed = unwrapToolUseResult(msg.tool_use_result);
-      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, msg.tool_use_result);
+      const parsed = unwrapToolUseResult(rawToolUseResult);
+      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, rawToolUseResult);
     }
     return;
   }

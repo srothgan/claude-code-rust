@@ -22,7 +22,7 @@ use crate::app::keys::CMD_MOD;
 #[cfg(test)]
 use crate::app::keys::WORD_NAV_MOD;
 use crate::app::keys::{KeyOutcome, RuntimeCommand, reclaim_input_from_inline_prompt_if_needed};
-use crate::app::todos::apply_plan_todos;
+use crate::app::tasks::apply_task_state_update;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
@@ -248,6 +248,18 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             tool_updates::handle_tool_call_update_session(app, &tcu);
         }
+        model::SessionUpdate::TaskStateUpdate(update) => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_state_update_applied",
+                message = "task state update applied",
+                outcome = "success",
+                task_count = update.tasks.len(),
+                removed_task_count = update.removed_task_ids.len(),
+                complete_snapshot = update.is_complete_snapshot,
+            );
+            apply_task_state_update(app, update);
+        }
         model::SessionUpdate::UserMessageChunk(_) => {}
         model::SessionUpdate::AgentThoughtChunk(chunk) => {
             let chunk_chars = match &chunk.content {
@@ -262,16 +274,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 chunk_chars,
             );
             app.status = AppStatus::Thinking;
-        }
-        model::SessionUpdate::Plan(plan) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "plan_update_applied",
-                message = "plan update applied",
-                outcome = "success",
-                todo_count = plan.entries.len(),
-            );
-            apply_plan_todos(app, &plan);
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!(
@@ -548,8 +550,8 @@ mod tests {
     use crate::app::{
         BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
         FullscreenView, InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason,
-        SurfaceMode, TerminalLifecycleState, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-        ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+        SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+        UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
@@ -581,6 +583,21 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+        }
+    }
+
+    fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
+        model::TaskItem {
+            task_id: id.to_owned(),
+            subject: subject.to_owned(),
+            description: None,
+            active_form: None,
+            status,
+            owner: None,
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
+            metadata: None,
+            source_tool_call_id: None,
         }
     }
 
@@ -1253,31 +1270,9 @@ mod tests {
     }
 
     #[test]
-    fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
+    fn todowrite_tool_call_does_not_mutate_task_state() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Existing todo".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
-
-        let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
-            .kind(model::ToolKind::Other)
-            .raw_input(serde_json::json!({}))
-            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
-        );
-
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Existing todo");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
-    }
-
-    #[test]
-    fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
-        let mut app = make_test_app();
+        app.tasks.push(task_item("task-1", "Existing task", model::TaskStatus::InProgress));
         let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
             .kind(model::ToolKind::Other)
             .raw_input(serde_json::json!({
@@ -1288,8 +1283,6 @@ mod tests {
             &mut app,
             ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
         );
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
 
         let update = model::ToolCallUpdate::new(
             "tc-todo-update",
@@ -1300,9 +1293,10 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
         );
 
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].task_id, "task-1");
+        assert_eq!(app.tasks[0].subject, "Existing task");
+        assert_eq!(app.tasks[0].status, model::TaskStatus::InProgress);
     }
 
     #[test]
@@ -1495,7 +1489,7 @@ mod tests {
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-        assert!(app.todos.is_empty());
+        assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(!app.cancelled_turn_pending_hint);
         assert!(matches!(app.status, AppStatus::Ready));
@@ -2055,11 +2049,7 @@ mod tests {
         app.status = AppStatus::Running;
         app.files_accessed = 9;
         app.pending_interaction_ids.push("perm-1".into());
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
+        app.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
@@ -2096,7 +2086,7 @@ mod tests {
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
-        assert!(app.todos.is_empty());
+        assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(app.mcp.servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
@@ -4333,27 +4323,6 @@ mod tests {
     }
 
     #[test]
-    fn permission_focus_ignores_ctrl_t_as_todo_shortcut() {
-        let mut app = make_test_app();
-        app.pending_interaction_ids.push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert!(app.input.is_empty());
-        assert_eq!(app.todos.len(), 1);
-    }
-
-    #[test]
     fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
         let mut app = make_test_app();
         let mut response_rx = attach_pending_permission(
@@ -5234,23 +5203,6 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert_eq!(app.input.text(), "Write focused tests");
-        assert!(app.prompt_suggestion.is_none());
-    }
-
-    #[test]
-    fn prompt_suggestion_tab_accepts_even_with_todos_present() {
-        let mut app = make_test_app();
-        app.prompt_suggestion = Some("Write focused tests".to_owned());
-        app.todos.push(TodoItem {
-            content: "todo".to_owned(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
         assert_eq!(app.input.text(), "Write focused tests");
         assert!(app.prompt_suggestion.is_none());
     }

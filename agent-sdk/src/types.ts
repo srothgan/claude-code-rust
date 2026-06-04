@@ -134,17 +134,12 @@ export type ToolCallContent =
       blob_saved_to?: string;
     };
 
-export interface TodoWriteOutputMetadata {
-  verification_nudge_needed?: boolean;
-}
-
 export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
 }
 
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
-  todo_write?: TodoWriteOutputMetadata;
 }
 
 export interface TaskMetadata {
@@ -194,10 +189,32 @@ export interface ToolCallUpdate {
   fields: ToolCallUpdateFields;
 }
 
-export interface PlanEntry {
-  content: string;
-  status: string;
-  active_form: string;
+export type TaskStatus = "pending" | "in_progress" | "completed";
+export type TaskUpdateSource =
+  | "task_create"
+  | "task_update"
+  | "task_get"
+  | "task_list"
+  | "task_lifecycle";
+
+export interface TaskItem {
+  task_id: string;
+  subject: string;
+  description?: string;
+  active_form?: string;
+  status: TaskStatus;
+  owner?: string;
+  blocks: string[];
+  blocked_by: string[];
+  metadata?: Json;
+  source_tool_call_id?: string;
+}
+
+export interface TaskStateUpdate {
+  source: TaskUpdateSource;
+  tasks: TaskItem[];
+  removed_task_ids: string[];
+  is_complete_snapshot: boolean;
 }
 
 export type SessionUpdate =
@@ -206,7 +223,7 @@ export type SessionUpdate =
   | { type: "agent_thought_chunk"; content: ContentBlock }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
-  | { type: "plan"; entries: PlanEntry[] }
+  | ({ type: "task_state_update" } & TaskStateUpdate)
   | {
       type: "available_commands_update";
       commands: AvailableCommand[];

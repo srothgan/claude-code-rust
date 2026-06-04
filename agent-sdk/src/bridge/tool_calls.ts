@@ -1,7 +1,9 @@
-import type { PlanEntry, TaskMetadata, ToolCall, ToolCallUpdateFields } from "../types.js";
+import type { TaskMetadata, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { asRecordOrNull } from "./shared.js";
+import { applyTaskToolResult } from "./tasks.js";
 import { buildToolResultFields, createToolCall } from "./tooling.js";
 
 type ToolUpdateKind =
@@ -273,6 +275,21 @@ function emitInitialToolCall(
   emitSessionUpdate(session.sessionId, { type: "tool_call", tool_call: toolCall });
 }
 
+function taskTitleContext(
+  session: SessionState,
+  name: string,
+  input: Record<string, unknown>,
+): { taskSubject?: string } {
+  if (name !== "TaskUpdate") {
+    return {};
+  }
+  const taskId = typeof input.taskId === "string" ? input.taskId : "";
+  const task = taskId ? session.tasksById.get(taskId) : undefined;
+  return {
+    ...(task?.subject ? { taskSubject: task.subject } : {}),
+  };
+}
+
 export function emitToolCallUpdate(
   session: SessionState,
   toolUseId: string,
@@ -300,7 +317,13 @@ export function emitToolCall(
 ): void {
   const existing = session.toolCalls.get(toolUseId);
   const resolvedParentToolUseId = parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
-  const toolCall = createToolCall(toolUseId, name, input, resolvedParentToolUseId);
+  const toolCall = createToolCall(
+    toolUseId,
+    name,
+    input,
+    resolvedParentToolUseId,
+    taskTitleContext(session, name, input),
+  );
   applyToolCorrelationMetadata(toolCall, metadata);
   const status: ToolCall["status"] = "in_progress";
   toolCall.status = status;
@@ -335,38 +358,26 @@ export function ensureToolCallVisible(
   if (existing) {
     const existingParentToolUseId = parentToolUseIdFromMeta(existing.meta);
     if (parentToolUseId && existingParentToolUseId !== parentToolUseId) {
-      const refreshed = createToolCall(toolUseId, toolName, input, parentToolUseId);
+      const refreshed = createToolCall(
+        toolUseId,
+        toolName,
+        input,
+        parentToolUseId,
+        taskTitleContext(session, toolName, input),
+      );
       emitToolCallUpdate(session, toolUseId, { meta: refreshed.meta }, "refresh");
     }
     return existing;
   }
-  const toolCall = createToolCall(toolUseId, toolName, input, parentToolUseId);
+  const toolCall = createToolCall(
+    toolUseId,
+    toolName,
+    input,
+    parentToolUseId,
+    taskTitleContext(session, toolName, input),
+  );
   emitInitialToolCall(session, toolCall);
   return toolCall;
-}
-
-export function emitPlanIfTodoWrite(session: SessionState, name: string, input: Record<string, unknown>): void {
-  if (name !== "TodoWrite" || !Array.isArray(input.todos)) {
-    return;
-  }
-  const entries: PlanEntry[] = input.todos
-    .map((todo) => {
-      if (!todo || typeof todo !== "object") {
-        return null;
-      }
-      const todoObj = todo as Record<string, unknown>;
-      const content = typeof todoObj.content === "string" ? todoObj.content : "";
-      const status = typeof todoObj.status === "string" ? todoObj.status : "pending";
-      if (!content) {
-        return null;
-      }
-      return { content, status, active_form: status };
-    })
-    .filter((entry): entry is PlanEntry => entry !== null);
-
-  if (entries.length > 0) {
-    emitSessionUpdate(session.sessionId, { type: "plan", entries });
-  }
 }
 
 export function emitToolResultUpdate(
@@ -376,8 +387,16 @@ export function emitToolResultUpdate(
   rawContent: unknown,
   rawResult: unknown = rawContent,
 ): void {
-  const fields = buildToolResultFields(isError, rawContent, session.toolCalls.get(toolUseId), rawResult);
+  const base = session.toolCalls.get(toolUseId);
+  const fields = buildToolResultFields(
+    isError,
+    rawContent,
+    base,
+    rawResult,
+    taskTitleContext(session, toolNameFromMeta(base?.meta) ?? "", asRecordOrNull(base?.raw_input) ?? {}),
+  );
   emitToolCallUpdate(session, toolUseId, fields, "result");
+  applyTaskToolResult(session, toolUseId, isError, rawContent, rawResult);
 }
 
 export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {

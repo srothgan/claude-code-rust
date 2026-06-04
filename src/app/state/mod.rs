@@ -30,8 +30,8 @@ pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    TodoItem, TodoStatus, ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow,
+    ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow,
 };
 
 use crate::agent::events::ClientEvent;
@@ -202,8 +202,8 @@ pub struct App {
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `lookup_tool_call()`, `index_tool_call()`.
     pub tool_call_index: HashMap<String, (usize, usize)>,
-    /// Current todo list from Claude's `TodoWrite` tool calls.
-    pub todos: Vec<TodoItem>,
+    /// Current SDK task state from `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`.
+    pub tasks: Vec<model::TaskItem>,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Resolved keyboard bindings used by chat-surface dispatch.
@@ -861,7 +861,7 @@ impl App {
             tool_call_scopes: HashMap::default(),
             terminals: std::rc::Rc::default(),
             tool_call_index: HashMap::default(),
-            todos: Vec::new(),
+            tasks: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
             available_commands: Vec::new(),

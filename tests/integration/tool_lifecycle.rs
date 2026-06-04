@@ -337,7 +337,7 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
 }
 
 #[tokio::test]
-async fn todowrite_via_update_raw_input_parses_todos() {
+async fn todowrite_update_raw_input_does_not_mutate_task_state() {
     let mut app = test_app();
 
     // Create a tool call, initially without TodoWrite meta
@@ -345,7 +345,7 @@ async fn todowrite_via_update_raw_input_parses_todos() {
         model::ToolCall::new("tc-todo-up", "TodoWrite").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    // Update sets sdk_tool_name + raw_input with todos
+    // Update sets sdk_tool_name + raw_input with legacy todos.
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
     let raw = serde_json::json!({"todos": [
@@ -358,8 +358,9 @@ async fn todowrite_via_update_raw_input_parses_todos() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    assert_eq!(app.todos.len(), 1);
-    assert_eq!(app.todos[0].content, "Step 1");
+    assert!(app.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
+    let tc = tool_call_block(&app, "tc-todo-up");
+    assert_eq!(tc.sdk_tool_name, "TodoWrite");
 }
 
 #[tokio::test]
