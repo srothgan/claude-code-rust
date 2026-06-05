@@ -19,12 +19,17 @@ const TASK_MARKER_IN_PROGRESS: &str = "\u{25a3}";
 const TASK_MARKER_COMPLETED: &str = "\u{25a0}";
 
 pub(super) fn is_state_tool(tc: &ToolCallInfo) -> bool {
-    matches!(tc.sdk_tool_name.as_str(), "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList")
+    matches!(
+        tc.sdk_tool_name.as_str(),
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop"
+    )
 }
 
 pub(super) fn has_structured_body(tc: &ToolCallInfo) -> bool {
     match tc.sdk_tool_name.as_str() {
-        "TaskCreate" | "TaskUpdate" | "TaskGet" => tc.raw_input.is_some() || !tc.content.is_empty(),
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskOutput" | "TaskStop" => {
+            tc.raw_input.is_some() || !tc.content.is_empty()
+        }
         "TaskList" => !tc.content.is_empty(),
         _ => false,
     }
@@ -39,7 +44,9 @@ pub(super) fn update_deletes_task(tc: &ToolCallInfo) -> bool {
 
 pub(super) fn title_marker(tc: &ToolCallInfo) -> Option<(&'static str, Style)> {
     match tc.sdk_tool_name.as_str() {
-        "TaskCreate" | "TaskGet" | "TaskList" => Some(task_marker(model::TaskStatus::Pending)),
+        "TaskCreate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
+            Some(task_marker(model::TaskStatus::Pending))
+        }
         "TaskUpdate" => Some(match task_update_status(tc) {
             Some("running" | "in_progress") => task_marker(model::TaskStatus::InProgress),
             Some("completed") => task_marker(model::TaskStatus::Completed),
@@ -55,6 +62,8 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>
         "TaskUpdate" => render_update_content(tc),
         "TaskGet" => render_get_content(tc),
         "TaskList" => Vec::new(),
+        "TaskOutput" => render_output_content(tc),
+        "TaskStop" => render_stop_content(tc),
         _ => return None,
     };
 
@@ -115,6 +124,36 @@ fn render_get_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     fields::render_fields(task_fields)
 }
 
+fn render_output_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let mut task_fields = Vec::new();
+    if let Some(input) = input {
+        if let Some(task_id) = json_string(input, "task_id") {
+            task_fields.push(ToolField::new("Task ID", task_id));
+        }
+        if let Some(block) = json_bool(input, "block") {
+            task_fields.push(ToolField::new("Block", boolean_label(block)));
+        }
+        if let Some(timeout) = json_i64(input, "timeout") {
+            task_fields.push(ToolField::new("Timeout", format!("{timeout}ms")));
+        }
+    }
+    fields::render_fields(task_fields)
+}
+
+fn render_stop_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let mut task_fields = Vec::new();
+    if let Some(input) = input {
+        if let Some(task_id) = json_string(input, "task_id") {
+            task_fields.push(ToolField::new("Task ID", task_id));
+        } else if let Some(shell_id) = json_string(input, "shell_id") {
+            task_fields.push(ToolField::new("Shell ID", shell_id));
+        }
+    }
+    fields::render_fields(task_fields)
+}
+
 fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for content in &tc.content {
@@ -140,11 +179,11 @@ fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static
             .lines()
             .map(str::trim_end)
             .filter(|line| !line.trim().is_empty())
-            .map(render_text_line),
+            .map(|line| render_text_line(tc, line)),
     );
 }
 
-fn render_text_line(line: &str) -> Line<'static> {
+fn render_text_line(tc: &ToolCallInfo, line: &str) -> Line<'static> {
     if line == TASK_OMISSION_MARKER {
         return omission_line();
     }
@@ -166,10 +205,16 @@ fn render_text_line(line: &str) -> Line<'static> {
     if let Some((label, value)) = line.split_once(':') {
         let label = match label {
             "Task ID" => "Task ID",
+            "Task type" => "Task type",
             "Fields" => "Fields",
             "Status" => "Status",
             "Blocked by" => "Blocked by",
             "Activity" => "Activity",
+            "Message" => "Message",
+            "Command" => "Command",
+            _ if uses_dynamic_field_labels(tc) && is_safe_dynamic_label(label) => {
+                return fields::render_dynamic_field(label.trim(), value.trim_start());
+            }
             _ => return Line::from(Span::raw(line.to_owned())),
         };
         let value = value.trim_start();
@@ -179,6 +224,22 @@ fn render_text_line(line: &str) -> Line<'static> {
         return fields::render_field(label, value);
     }
     Line::from(Span::raw(line.to_owned()))
+}
+
+fn uses_dynamic_field_labels(tc: &ToolCallInfo) -> bool {
+    tc.sdk_tool_name == "TaskOutput"
+}
+
+fn is_safe_dynamic_label(label: &str) -> bool {
+    let label = label.trim();
+    !label.is_empty()
+        && label.len() <= 48
+        && label.chars().any(char::is_alphabetic)
+        && label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == ' ')
+}
+
+fn boolean_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn status_label(status: &str) -> String {
@@ -206,6 +267,14 @@ fn json_string<'a>(
     object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
 }
 
+fn json_bool(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<bool> {
+    object.get(key).and_then(serde_json::Value::as_bool)
+}
+
+fn json_i64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<i64> {
+    object.get(key).and_then(serde_json::Value::as_i64)
+}
+
 fn json_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
     Some(
         value?
@@ -223,10 +292,7 @@ fn compact_json(value: &serde_json::Value) -> Option<String> {
 }
 
 fn deleted_task_line(text: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
-    ))
+    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
 }
 
 fn render_task_line(subject: &str, active_form: &str, status: model::TaskStatus) -> Line<'static> {
@@ -414,7 +480,41 @@ mod tests {
     }
 
     #[test]
-    fn deleted_update_uses_red_x_without_failed_status() {
+    fn output_body_renders_input_fields_and_output_text() {
+        let tc = task_tool_call(
+            "TaskOutput",
+            json!({ "task_id": "task-1", "block": true, "timeout": 1000 }),
+            Some("Retrieval status: not ready\nTask type: local bash\nStatus: running"),
+        );
+
+        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+
+        assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
+        assert!(rendered.iter().any(|line| line.contains("Block: yes")));
+        assert!(rendered.iter().any(|line| line.contains("Timeout: 1000ms")));
+        assert!(rendered.iter().any(|line| line.contains("Retrieval status: not ready")));
+        assert!(rendered.iter().any(|line| line.contains("Task type: local bash")));
+        assert!(rendered.iter().any(|line| line.contains("Status: In Progress")));
+    }
+
+    #[test]
+    fn stop_body_renders_input_and_structured_output_fields() {
+        let tc = task_tool_call(
+            "TaskStop",
+            json!({ "task_id": "task-1" }),
+            Some("Message: Stopped task\nTask ID: task-1\nTask type: bash\nCommand: npm run watch"),
+        );
+
+        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+
+        assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
+        assert!(rendered.iter().any(|line| line.contains("Message: Stopped task")));
+        assert!(rendered.iter().any(|line| line.contains("Task type: bash")));
+        assert!(rendered.iter().any(|line| line.contains("Command: npm run watch")));
+    }
+
+    #[test]
+    fn deleted_update_uses_completed_status_icon() {
         let tc = task_tool_call(
             "TaskUpdate",
             json!({ "taskId": "task-1", "status": "deleted" }),
@@ -428,14 +528,22 @@ mod tests {
             80,
             0,
         );
-        assert!(title.spans.first().is_some_and(|span| span.content.contains(theme::ICON_FAILED)));
-        assert_eq!(title.spans.first().and_then(|span| span.style.fg), Some(theme::STATUS_ERROR));
+        assert!(
+            title.spans.first().is_some_and(|span| span.content.contains(theme::ICON_COMPLETED))
+        );
         let marker = task_title_marker_span(&title);
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
         assert_eq!(marker.style.fg, Some(theme::DIM));
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
-        assert!(rendered.iter().any(|line| line.contains("Deleted task")));
+        let body = super::super::standard::render_tool_call_body(&tc, 80);
+        assert!(rendered_line_texts(&body).iter().any(|line| line.contains("Deleted task")));
+        let deleted = body
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("Deleted task")));
+        assert_eq!(
+            deleted.and_then(|line| line.spans.first()).and_then(|span| span.style.fg),
+            Some(theme::DIM)
+        );
     }
 
     #[test]

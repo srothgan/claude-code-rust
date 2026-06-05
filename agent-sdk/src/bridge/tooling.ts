@@ -68,6 +68,8 @@ export function normalizeToolKind(name: string): string {
     case "TaskUpdate":
     case "TaskGet":
     case "TaskList":
+    case "TaskOutput":
+    case "TaskStop":
     case "CronCreate":
     case "CronDelete":
     case "CronList":
@@ -1539,12 +1541,12 @@ export function buildToolResultFields(
     if (toolName === "TaskUpdate" && taskUpdateSucceeded(rawResult, rawContent) === false) {
       fields.status = "failed";
     }
-    const taskOutput = taskToolResultText(toolName, rawResult, rawContent);
+    const taskOutput = taskToolResultText(toolName, rawResult, rawContent, base?.raw_input);
     if (taskOutput) {
       fields.content = [{ type: "content", content: { type: "text", text: taskOutput } }];
       return fields;
     }
-    if (toolName === "TaskCreate" || toolName === "TaskUpdate") {
+    if (toolName === "TaskCreate" || toolName === "TaskUpdate" || toolName === "TaskOutput" || toolName === "TaskStop") {
       return fields;
     }
   }

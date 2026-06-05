@@ -34,6 +34,17 @@ pub(super) fn render_field<'a>(
     render_field_line(ToolField::new(value_label, value))
 }
 
+pub(super) fn render_dynamic_field<'a>(
+    value_label: impl Into<String>,
+    value: impl Into<Cow<'a, str>>,
+) -> Line<'static> {
+    let value_label = value_label.into();
+    Line::from(vec![
+        Span::styled(format!("{value_label}: "), Style::default().fg(theme::DIM)),
+        Span::raw(value.into().into_owned()),
+    ])
+}
+
 pub(super) fn render_multiline_field<'a>(
     value_label: &'static str,
     value: impl Into<Cow<'a, str>>,

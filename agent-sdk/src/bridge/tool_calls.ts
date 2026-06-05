@@ -280,11 +280,22 @@ function taskTitleContext(
   name: string,
   input: Record<string, unknown>,
 ): { taskSubject?: string } {
-  if (name !== "TaskUpdate") {
+  const taskId =
+    name === "TaskUpdate"
+      ? typeof input.taskId === "string"
+        ? input.taskId
+        : ""
+      : name === "TaskOutput" || name === "TaskStop"
+        ? typeof input.task_id === "string"
+          ? input.task_id
+          : typeof input.shell_id === "string"
+            ? input.shell_id
+            : ""
+        : "";
+  if (!taskId) {
     return {};
   }
-  const taskId = typeof input.taskId === "string" ? input.taskId : "";
-  const task = taskId ? session.tasksById.get(taskId) : undefined;
+  const task = session.tasksById.get(taskId);
   return {
     ...(task?.subject ? { taskSubject: task.subject } : {}),
   };

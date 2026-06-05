@@ -1587,6 +1587,183 @@ test("TaskUpdate title uses known subject when input only has task id", () => {
   assert.equal(toolCall?.title, "Update task: Scaffold Next.js app via create-next-app CLI");
 });
 
+test("TaskOutput renders structured fields and deduplicates XML content without mutating task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-output", "TaskOutput", {
+      task_id: "task-1",
+      block: true,
+      timeout: 1000,
+    });
+    emitToolResultUpdate(
+      session,
+      "tool-output",
+      false,
+      "<retrieval_status>not_ready</retrieval_status>\n\n<task_id>task-1</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>running</status>",
+      {
+        retrieval_status: "not_ready",
+        task: {
+          task_id: "task-1",
+          task_type: "local_bash",
+          status: "running",
+          description: "Run a ticking loop in the background",
+          output: "",
+          exitCode: null,
+        },
+      },
+    );
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(toolCall?.kind, "other");
+  assert.equal(toolCall?.title, "Task output: Watch build");
+
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-output";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Retrieval status: not ready\nTask type: local bash\nStatus: running\nDescription: Run a ticking loop in the background",
+      },
+    },
+  ]);
+  const text = (((fields?.content as Array<Record<string, unknown>> | undefined)?.[0]?.content as
+    | Record<string, unknown>
+    | undefined)?.text ?? "") as string;
+  assert.equal(text.includes("<retrieval_status>"), false);
+  assert.equal(text.includes("Task ID: task-1"), false);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(session.tasksById.get("task-1")?.status, "in_progress");
+});
+
+test("TaskOutput parses XML leaf fields when structured result is unavailable", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-output-xml", "TaskOutput", {
+      task_id: "task-xml",
+      block: false,
+      timeout: 4000,
+    });
+    emitToolResultUpdate(
+      session,
+      "tool-output-xml",
+      false,
+      "<retrieval_status>not_ready</retrieval_status>\n\n<task_id>task-xml</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>running</status>",
+    );
+  });
+
+  const result = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => {
+      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      return toolCallUpdate?.tool_call_id === "tool-output-xml";
+    })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Retrieval status: not ready\nTask type: local bash\nStatus: running",
+      },
+    },
+  ]);
+});
+
+test("TaskStop renders structured output and marks the task terminal", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+  session.taskToolUseIds.set("task-1", "tool-agent");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-stop", "TaskStop", {
+      task_id: "task-1",
+    });
+    emitToolResultUpdate(session, "tool-stop", false, {
+      message: "Stopped task",
+      task_id: "task-1",
+      task_type: "bash",
+      command: "npm run watch",
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(toolCall?.kind, "other");
+  assert.equal(toolCall?.title, "Stop task: Watch build");
+
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-stop";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Message: Stopped task\nTask ID: task-1\nTask type: bash\nCommand: npm run watch",
+      },
+    },
+  ]);
+
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Watch build",
+        status: "completed",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          terminal_status: "stopped",
+          task_type: "bash",
+          command: "npm run watch",
+        },
+        source_tool_call_id: "tool-agent",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.taskToolUseIds.has("task-1"), false);
+});
+
 test("TaskUpdate in-progress result leaves activity rendering to app task state", () => {
   const session = makeSessionState();
   session.tasksById.set("task-1", {
@@ -1862,6 +2039,51 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
           status: "in_progress",
           blocks: [],
           blocked_by: [],
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  ]);
+});
+
+test("handleTaskSystemMessage maps stopped notifications to terminal task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-1",
+      status: "stopped",
+      output_file: "C:/tmp/task-1.txt",
+      summary: "Stopped background watch",
+    });
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-1",
+          subject: "Watch build",
+          description: "Stopped background watch",
+          status: "completed",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            output_file: "C:/tmp/task-1.txt",
+            summary: "Stopped background watch",
+            terminal_status: "stopped",
+          },
         },
       ],
       removed_task_ids: [],
@@ -2162,6 +2384,8 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("PushNotification"), "other");
   assert.equal(normalizeToolKind("RemoteTrigger"), "other");
   assert.equal(normalizeToolKind("REPL"), "other");
+  assert.equal(normalizeToolKind("TaskOutput"), "other");
+  assert.equal(normalizeToolKind("TaskStop"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");

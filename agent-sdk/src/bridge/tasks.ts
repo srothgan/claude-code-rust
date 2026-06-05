@@ -16,7 +16,14 @@ type TaskPatch = {
   source_tool_call_id?: string;
 };
 
-const TASK_TOOL_NAMES = new Set(["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"]);
+const TASK_TOOL_NAMES = new Set([
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+]);
 
 export type TaskTitleContext = {
   taskSubject?: string;
@@ -47,6 +54,16 @@ export function taskToolTitle(
   }
   if (name === "TaskList") {
     return "List tasks";
+  }
+  if (name === "TaskOutput") {
+    const taskId = nonEmptyString(input.task_id) ?? "";
+    const label = context.taskSubject || taskId;
+    return label ? `Task output: ${label}` : "Task output";
+  }
+  if (name === "TaskStop") {
+    const taskId = nonEmptyString(input.task_id) ?? nonEmptyString(input.shell_id) ?? "";
+    const label = context.taskSubject || taskId;
+    return label ? `Stop task: ${label}` : "Stop task";
   }
   return undefined;
 }
@@ -104,6 +121,21 @@ function normalizeTaskStatus(value: unknown): TaskStatus | undefined {
     case "in_progress":
       return "in_progress";
     case "completed":
+      return "completed";
+    default:
+      return undefined;
+  }
+}
+
+function normalizeLifecycleTaskStatus(value: unknown): TaskStatus | undefined {
+  const status = normalizeTaskStatus(value);
+  if (status) {
+    return status;
+  }
+  switch (value) {
+    case "failed":
+    case "killed":
+    case "stopped":
       return "completed";
     default:
       return undefined;
@@ -190,6 +222,100 @@ function resultCandidates(rawResult: unknown, rawContent: unknown): Record<strin
   return records;
 }
 
+function normalizeFieldKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
+}
+
+function humanizeFieldLabel(key: string): string {
+  const spaced = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!spaced) {
+    return "";
+  }
+  return spaced
+    .split(/\s+/)
+    .map((word, index) => {
+      if (word === "id") {
+        return "ID";
+      }
+      return index === 0 ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : word;
+    })
+    .join(" ");
+}
+
+function displayScalarValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/u.test(trimmed) ? trimmed.replace(/_/g, " ") : trimmed;
+  }
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${value}`;
+  }
+  return undefined;
+}
+
+function decodeXmlText(value: string): string {
+  return value.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|amp|lt|gt|quot|apos);/g, (match, dec, hex) => {
+    if (typeof dec === "string" && dec.length > 0) {
+      const codePoint = Number.parseInt(dec, 10);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : match;
+    }
+    if (typeof hex === "string" && hex.length > 0) {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : match;
+    }
+    switch (match) {
+      case "&amp;":
+        return "&";
+      case "&lt;":
+        return "<";
+      case "&gt;":
+        return ">";
+      case "&quot;":
+        return "\"";
+      case "&apos;":
+        return "'";
+      default:
+        return match;
+    }
+  });
+}
+
+function xmlLeafFields(text: string): Array<[string, string]> {
+  const fields: Array<[string, string]> = [];
+  if (text.length > 20_000 || !text.includes("<")) {
+    return fields;
+  }
+  const pattern = /<([A-Za-z][\w.-]{0,79})>([\s\S]*?)<\/\1>/gu;
+  for (const match of text.matchAll(pattern)) {
+    if (fields.length >= 100) {
+      break;
+    }
+    const [, key, rawValue] = match;
+    if (!key || rawValue === undefined || /<[A-Za-z][\w.-]{0,79}[\s>]/u.test(rawValue)) {
+      continue;
+    }
+    const value = decodeXmlText(rawValue).trim();
+    if (value) {
+      fields.push([key, value]);
+    }
+  }
+  return fields;
+}
+
 function firstTaskRecord(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
   for (const candidate of candidates) {
     const nestedTask = asRecordOrNull(candidate.task);
@@ -219,6 +345,77 @@ function firstTaskUpdateOutput(
 
 function firstTaskListOutput(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
   return candidates.find((candidate) => Array.isArray(candidate.tasks));
+}
+
+function firstTaskStopOutput(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
+  return candidates.find(
+    (candidate) =>
+      typeof candidate.message === "string" &&
+      typeof candidate.task_id === "string" &&
+      typeof candidate.task_type === "string",
+  );
+}
+
+function taskOutputResultText(
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: unknown,
+): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const input = asRecordOrNull(rawInput);
+
+  const markSeen = (key: string, value: string): void => {
+    seen.add(`${normalizeFieldKey(key)}\0${value}`);
+  };
+  const pushField = (key: string, value: unknown): void => {
+    const label = humanizeFieldLabel(key);
+    const displayValue = displayScalarValue(value);
+    if (!label || displayValue === undefined) {
+      return;
+    }
+    const seenKey = `${normalizeFieldKey(key)}\0${displayValue}`;
+    if (seen.has(seenKey)) {
+      return;
+    }
+    seen.add(seenKey);
+    lines.push(`${label}: ${displayValue}`);
+  };
+
+  const inputTaskId = displayScalarValue(input?.task_id);
+  if (inputTaskId) {
+    markSeen("task_id", inputTaskId);
+  }
+
+  const candidates = resultCandidates(rawResult, undefined);
+  for (const candidate of candidates) {
+    if (Object.hasOwn(candidate, "retrieval_status")) {
+      pushField("retrieval_status", candidate.retrieval_status);
+    }
+    const task = asRecordOrNull(candidate.task);
+    if (task) {
+      for (const [key, value] of Object.entries(task)) {
+        pushField(key, value);
+      }
+    }
+    if (
+      !task &&
+      (Object.hasOwn(candidate, "task_id") ||
+        Object.hasOwn(candidate, "task_type") ||
+        Object.hasOwn(candidate, "status"))
+    ) {
+      for (const [key, value] of Object.entries(candidate)) {
+        pushField(key, value);
+      }
+    }
+  }
+
+  const rawText = extractText(rawContent);
+  for (const [key, value] of xmlLeafFields(rawText)) {
+    pushField(key, value);
+  }
+
+  return lines.join("\n") || rawText.trim() || extractText(rawResult).trim();
 }
 
 function upsertTask(session: SessionState, patch: TaskPatch): TaskItem {
@@ -505,6 +702,7 @@ export function taskToolResultText(
   toolName: string,
   rawResult: unknown,
   rawContent: unknown,
+  rawInput?: unknown,
 ): string {
   const candidates = resultCandidates(rawResult, rawContent);
 
@@ -556,6 +754,27 @@ export function taskToolResultText(
       .filter((entry): entry is Record<string, unknown> => Boolean(entry))
       .map(taskRecordLine);
     return lines.length > 0 ? taskListWindow(lines).join("\n") : "No tasks";
+  }
+
+  if (toolName === "TaskOutput") {
+    return taskOutputResultText(rawResult, rawContent, rawInput);
+  }
+
+  if (toolName === "TaskStop") {
+    const output = firstTaskStopOutput(candidates);
+    if (!output) {
+      return "";
+    }
+    const lines = [
+      `Message: ${output.message}`,
+      `Task ID: ${output.task_id}`,
+      `Task type: ${output.task_type}`,
+    ];
+    const command = nonEmptyString(output.command);
+    if (command) {
+      lines.push(`Command: ${command}`);
+    }
+    return lines.join("\n");
   }
 
   return "";
@@ -647,12 +866,45 @@ export function applyTaskToolResult(
       .filter((patch): patch is TaskPatch => Boolean(patch));
     const snapshot = replaceTaskSnapshot(session, patches);
     emitTaskStateUpdate(session, "task_list", snapshot.tasks, snapshot.removedTaskIds, true);
+    return;
+  }
+
+  if (toolName === "TaskOutput") {
+    return;
+  }
+
+  if (toolName === "TaskStop") {
+    const output = firstTaskStopOutput(candidates);
+    if (!output) {
+      return;
+    }
+    const taskId = nonEmptyString(output.task_id);
+    if (!taskId) {
+      return;
+    }
+    const existing = session.tasksById.get(taskId);
+    const sourceToolCallId = existing?.source_tool_call_id ?? session.taskToolUseIds.get(taskId);
+    const metadata = mergeMetadata(existing?.metadata, {
+      terminal_status: "stopped",
+      task_type: output.task_type as Json,
+      ...(typeof output.command === "string" ? { command: output.command } : {}),
+    });
+    emitTaskStateUpdate(session, "task_lifecycle", [
+      upsertTask(session, {
+        task_id: taskId,
+        subject: existing?.subject ?? nonEmptyString(output.command) ?? nonEmptyString(output.task_type) ?? taskId,
+        status: "completed",
+        metadata,
+        source_tool_call_id: sourceToolCallId,
+      }),
+    ]);
+    session.taskToolUseIds.delete(taskId);
   }
 }
 
 function lifecycleTaskStatus(subtype: string, msg: Record<string, unknown>): TaskStatus | undefined {
   const patch = asRecordOrNull(msg.patch);
-  const explicit = normalizeTaskStatus(msg.status) ?? normalizeTaskStatus(patch?.status);
+  const explicit = normalizeLifecycleTaskStatus(msg.status) ?? normalizeLifecycleTaskStatus(patch?.status);
   if (explicit) {
     return explicit;
   }
@@ -681,11 +933,22 @@ function lifecycleMetadata(msg: Record<string, unknown>): Record<string, Json> |
     "request_id",
     "subagent_type",
     "task_description",
+    "output_file",
+    "summary",
     "end_time",
     "total_paused_ms",
   ]) {
     copyValue(msg, key);
     copyValue(patch, key);
+  }
+  const terminalStatus = nonEmptyString(msg.status) ?? nonEmptyString(patch?.status);
+  if (
+    terminalStatus === "completed" ||
+    terminalStatus === "failed" ||
+    terminalStatus === "killed" ||
+    terminalStatus === "stopped"
+  ) {
+    metadata.terminal_status = terminalStatus;
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }

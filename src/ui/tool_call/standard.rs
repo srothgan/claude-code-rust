@@ -43,13 +43,7 @@ pub(super) fn render_tool_call_title(
     width: u16,
     spinner_frame: usize,
 ) -> Line<'static> {
-    let (icon, icon_color) = if tasks::update_deletes_task(tc)
-        && matches!(tc.status, model::ToolCallStatus::Completed)
-    {
-        (theme::ICON_FAILED, theme::STATUS_ERROR)
-    } else {
-        status_icon(tc.status, spinner_frame)
-    };
+    let (icon, icon_color) = status_icon(tc.status, spinner_frame);
     let (kind_icon, kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
     let kind_icon_span = if let Some((task_marker, task_marker_style)) = tasks::title_marker(tc) {
         Span::styled(format!("{task_marker} "), task_marker_style)

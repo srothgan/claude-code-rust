@@ -43,7 +43,9 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LS" => ("\u{2315}", "LS"),
         "Bash" => ("\u{27e9}", "Bash"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
-        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" => ("\u{25a1}", "Task"),
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
+            ("\u{25a1}", "Task")
+        }
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
         "EnterPlanMode" => ("\u{2299}", "EnterPlanMode"),
@@ -72,7 +74,9 @@ mod tests {
 
     #[test]
     fn sdk_task_state_tools_use_neutral_task_label() {
-        for sdk_tool_name in ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"] {
+        for sdk_tool_name in
+            ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop"]
+        {
             assert_eq!(tool_name_label(sdk_tool_name), ("\u{25a1}", "Task"));
         }
     }
