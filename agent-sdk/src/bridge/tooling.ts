@@ -23,6 +23,7 @@ export const TOOL_RESULT_TYPES = new Set([
 const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
 const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
 const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
+const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -68,6 +69,7 @@ export function normalizeToolKind(name: string): string {
     case "CronDelete":
     case "CronList":
     case "ScheduleWakeup":
+    case "PushNotification":
     case "EnterWorktree":
     case "ExitWorktree":
       return "other";
@@ -123,6 +125,9 @@ export function toolTitle(
     return name;
   }
   if (name === SCHEDULE_WAKEUP_TOOL_NAME) {
+    return name;
+  }
+  if (name === PUSH_NOTIFICATION_TOOL_NAME) {
     return name;
   }
   if (name === "EnterWorktree") {
@@ -1081,7 +1086,7 @@ function cronResultText(
   return undefined;
 }
 
-function formatWakeupDuration(seconds: number): string {
+function formatDurationSeconds(seconds: number): string {
   const rounded = Math.max(0, Math.trunc(seconds));
   const hours = Math.floor(rounded / 3600);
   const minutes = Math.floor((rounded % 3600) / 60);
@@ -1099,7 +1104,7 @@ function formatWakeupDuration(seconds: number): string {
   return parts.join(" ");
 }
 
-function formatWakeupTimestamp(epochMs: number): string | undefined {
+function formatLocalTimestamp(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) {
     return undefined;
   }
@@ -1114,6 +1119,15 @@ function formatWakeupTimestamp(epochMs: number): string | undefined {
   const minute = date.getMinutes().toString().padStart(2, "0");
   const second = date.getSeconds().toString().padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:${minute}:${second} local`;
+}
+
+function formatIsoTimestamp(value: unknown): string | undefined {
+  const raw = nonEmptyString(value);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? formatLocalTimestamp(parsed) : raw;
 }
 
 function scheduleWakeupResultText(
@@ -1133,11 +1147,11 @@ function scheduleWakeupResultText(
   for (const candidate of candidates) {
     const scheduledFor =
       typeof candidate.scheduledFor === "number"
-        ? formatWakeupTimestamp(candidate.scheduledFor)
+        ? formatLocalTimestamp(candidate.scheduledFor)
         : undefined;
     const clampedDelaySeconds =
       typeof candidate.clampedDelaySeconds === "number"
-        ? formatWakeupDuration(candidate.clampedDelaySeconds)
+        ? formatDurationSeconds(candidate.clampedDelaySeconds)
         : undefined;
     if (!scheduledFor || !clampedDelaySeconds || typeof candidate.wasClamped !== "boolean") {
       continue;
@@ -1147,6 +1161,73 @@ function scheduleWakeupResultText(
       `Actual delay: ${clampedDelaySeconds}`,
       `Clamped: ${booleanLabel(candidate.wasClamped)}`,
     ].join("\n");
+  }
+
+  return undefined;
+}
+
+function pushNotificationDisabledReason(value: unknown): string | undefined {
+  switch (value) {
+    case "config_off":
+      return "notifications disabled";
+    case "user_present":
+      return "user present";
+    case "no_transport":
+      return "no notification transport";
+    default:
+      return undefined;
+  }
+}
+
+function pushNotificationResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: Json | undefined,
+): string | undefined {
+  if (toolName !== PUSH_NOTIFICATION_TOOL_NAME) {
+    return undefined;
+  }
+
+  const inputMessage = nonEmptyString(asRecordOrNull(rawInput)?.message);
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const isStructuredPushOutput =
+      "message" in candidate ||
+      "pushSent" in candidate ||
+      "localSent" in candidate ||
+      "disabledReason" in candidate ||
+      "idleSec" in candidate ||
+      "hasFocus" in candidate ||
+      "sentAt" in candidate;
+    if (!isStructuredPushOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    const outputMessage = nonEmptyString(candidate.message);
+    if (outputMessage && outputMessage !== inputMessage) {
+      lines.push(`Result: ${outputMessage}`);
+    }
+    pushBooleanField(lines, "Push sent", candidate.pushSent);
+    pushBooleanField(lines, "Local sent", candidate.localSent);
+    const disabledReason = pushNotificationDisabledReason(candidate.disabledReason);
+    if (disabledReason) {
+      lines.push(`Disabled reason: ${disabledReason}`);
+    }
+    if (typeof candidate.idleSec === "number" && Number.isFinite(candidate.idleSec)) {
+      lines.push(`Idle time: ${formatDurationSeconds(candidate.idleSec)}`);
+    }
+    pushBooleanField(lines, "App focused", candidate.hasFocus);
+    const sentAt = formatIsoTimestamp(candidate.sentAt);
+    if (sentAt) {
+      lines.push(`Sent at: ${sentAt}`);
+    }
+    return lines.join("\n");
   }
 
   return undefined;
@@ -1200,6 +1281,16 @@ export function buildToolResultFields(
     fields.raw_output = scheduleWakeupOutput;
     fields.content = [
       { type: "content", content: { type: "text", text: scheduleWakeupOutput } },
+    ];
+    return fields;
+  }
+  const pushNotificationOutput = !isError
+    ? pushNotificationResultText(toolName, rawResult, rawContent, base?.raw_input)
+    : undefined;
+  if (pushNotificationOutput !== undefined) {
+    fields.raw_output = pushNotificationOutput;
+    fields.content = [
+      { type: "content", content: { type: "text", text: pushNotificationOutput } },
     ];
     return fields;
   }

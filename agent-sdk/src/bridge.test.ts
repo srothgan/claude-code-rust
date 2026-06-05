@@ -2159,6 +2159,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("CronDelete"), "other");
   assert.equal(normalizeToolKind("CronList"), "other");
   assert.equal(normalizeToolKind("ScheduleWakeup"), "other");
+  assert.equal(normalizeToolKind("PushNotification"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
@@ -3002,6 +3003,16 @@ test("createToolCall maps ScheduleWakeup to other kind with stable title", () =>
 
   assert.equal(toolCall.kind, "other");
   assert.equal(toolCall.title, "ScheduleWakeup");
+});
+
+test("createToolCall maps PushNotification to other kind with stable title", () => {
+  const toolCall = createToolCall("tc-push-notification", "PushNotification", {
+    message: "Build finished",
+    status: "proactive",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "PushNotification");
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -4160,6 +4171,70 @@ test("buildToolResultFields parses ScheduleWakeup transcript JSON", () => {
 
   assert.match(fields.raw_output ?? "", /Actual delay: 1h\nClamped: no$/);
   assert.equal(fields.raw_output?.includes('"scheduledFor"'), false);
+});
+
+test("buildToolResultFields renders PushNotification output as structured text", () => {
+  const base = createToolCall("tc-push-notification", "PushNotification", {
+    message: "Build finished",
+    status: "proactive",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      message: "Build finished",
+      pushSent: false,
+      localSent: true,
+      disabledReason: "config_off",
+      idleSec: 90,
+      hasFocus: false,
+      sentAt: "2026-06-05T12:34:56.000Z",
+    },
+    base,
+  );
+
+  assert.match(
+    fields.raw_output ?? "",
+    /^Push sent: no\nLocal sent: yes\nDisabled reason: notifications disabled\nIdle time: 1m 30s\nApp focused: no\nSent at: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local$/,
+  );
+  assert.equal(fields.raw_output?.includes("Result:"), false);
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses PushNotification transcript JSON", () => {
+  const base = createToolCall("tc-push-notification-history", "PushNotification", {
+    message: "Deploy completed",
+    status: "proactive",
+  });
+  const transcriptJson = JSON.stringify({
+    message: "Notification queued",
+    pushSent: true,
+    localSent: false,
+    disabledReason: "no_transport",
+    idleSec: 3600,
+    hasFocus: true,
+    sentAt: "not an iso timestamp",
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-push-notification-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
+  );
+  assert.equal(fields.raw_output?.includes('"pushSent"'), false);
 });
 
 test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {

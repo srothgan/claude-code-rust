@@ -20,8 +20,8 @@ use super::errors::{
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
     TOOL_BODY_MAX_LINES, ToolCallRenderContext, cron, execute, markdown_inline_spans,
-    schedule_wakeup, status_icon, tasks, tool_display_title, tool_output_badge_spans,
-    truncate_spans_to_width, worktree,
+    push_notification, schedule_wakeup, status_icon, tasks, tool_display_title,
+    tool_output_badge_spans, truncate_spans_to_width, worktree,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -109,6 +109,11 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     }
     if schedule_wakeup::is_schedule_wakeup_tool(tc) {
         return schedule_wakeup::has_structured_body(tc)
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+    if push_notification::is_push_notification_tool(tc) {
+        return push_notification::has_structured_body(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some();
     }
@@ -291,6 +296,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         && let Some(schedule_wakeup_lines) = schedule_wakeup::render_tool_content(tc)
     {
         return schedule_wakeup_lines;
+    }
+    if push_notification::is_push_notification_tool(tc)
+        && let Some(push_notification_lines) = push_notification::render_tool_content(tc)
+    {
+        return push_notification_lines;
     }
 
     if tc.is_execute_tool() {
