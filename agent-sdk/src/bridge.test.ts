@@ -2155,6 +2155,9 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Move"), "move");
   assert.equal(normalizeToolKind("EnterWorktree"), "other");
   assert.equal(normalizeToolKind("ExitWorktree"), "other");
+  assert.equal(normalizeToolKind("CronCreate"), "other");
+  assert.equal(normalizeToolKind("CronDelete"), "other");
+  assert.equal(normalizeToolKind("CronList"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
@@ -2975,6 +2978,18 @@ test("createToolCall builds worktree titles from input rules", () => {
   });
   assert.equal(exit.kind, "other");
   assert.equal(exit.title, "ExitWorktree");
+});
+
+test("createToolCall maps cron tools to other kind with stable titles", () => {
+  for (const toolName of ["CronCreate", "CronDelete", "CronList"]) {
+    const toolCall = createToolCall(`tc-${toolName}`, toolName, {
+      cron: "30 9 * * 1",
+      prompt: "Send weekly status",
+      id: "schedule-1",
+    });
+    assert.equal(toolCall.kind, "other");
+    assert.equal(toolCall.title, toolName);
+  }
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -3945,6 +3960,139 @@ test("buildToolResultFields renders worktree location without raw JSON", () => {
       content: { type: "text", text: "Path: C:\\repo\\.worktrees\\feature-auth" },
     },
   ]);
+});
+
+test("buildToolResultFields renders cron outputs as structured text without raw JSON", () => {
+  const createBase = createToolCall("tc-cron-create", "CronCreate", {
+    cron: "30 9 * * 1",
+    prompt: "Send weekly status",
+  });
+  const createFields = buildToolResultFields(
+    false,
+    {
+      id: "schedule-1",
+      humanSchedule: "every Monday at 09:30",
+      recurring: true,
+      durable: false,
+    },
+    createBase,
+  );
+  assert.equal(
+    createFields.raw_output,
+    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+  );
+  assert.deepEqual(createFields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+      },
+    },
+  ]);
+  assert.equal(createFields.raw_output?.includes("{"), false);
+
+  const deleteBase = createToolCall("tc-cron-delete", "CronDelete", { id: "schedule-1" });
+  const deleteFields = buildToolResultFields(false, { id: "schedule-1" }, deleteBase);
+  assert.equal(deleteFields.raw_output, "Schedule ID: schedule-1");
+
+  const listBase = createToolCall("tc-cron-list", "CronList", {});
+  const listFields = buildToolResultFields(false, { jobs: [] }, listBase);
+  assert.equal(listFields.raw_output, "Jobs: none");
+
+  const singleListFields = buildToolResultFields(
+    false,
+    {
+      jobs: [
+        {
+          id: "schedule-2",
+          cron: "7 * * * *",
+          humanSchedule: "Every hour at :07",
+          prompt: "Send hourly tick",
+          recurring: true,
+          durable: false,
+        },
+      ],
+    },
+    listBase,
+  );
+  assert.equal(
+    singleListFields.raw_output,
+    "Schedule ID: schedule-2\nCron: 7 * * * *\nSchedule: Every hour at minute 07\nPrompt: Send hourly tick\nRecurring: yes\nDurable: no",
+  );
+});
+
+test("buildToolResultFields preserves full CronList prompt from transcript JSON", () => {
+  const base = createToolCall("tc-cron-list-history", "CronList", {});
+  const fullPrompt = `Review the branch and write a status update. ${"Keep every detail. ".repeat(80)}END`;
+  const transcriptJson = JSON.stringify({
+    jobs: [
+      {
+        id: "schedule-long",
+        cron: "*/5 * * * *",
+        humanSchedule: "every 5 minutes",
+        prompt: fullPrompt,
+        recurring: false,
+        durable: true,
+      },
+    ],
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-cron-list-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output?.includes(fullPrompt), true);
+  assert.equal(fields.raw_output?.includes("END"), true);
+  assert.equal(fields.raw_output?.includes('"jobs"'), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: `Schedule ID: schedule-long\nCron: */5 * * * *\nSchedule: Every 5 minutes\nPrompt: ${fullPrompt}\nRecurring: no\nDurable: yes`,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders readable cron schedule text from common cron expressions", () => {
+  const base = createToolCall("tc-cron-readable", "CronList", {});
+  const fields = buildToolResultFields(false, {
+    jobs: [
+      { id: "every-minute", cron: "* * * * *", prompt: "minute", recurring: true },
+      { id: "every-five-minutes", cron: "*/5 * * * *", prompt: "minutes", recurring: true },
+      {
+        id: "hourly-minute",
+        cron: "7 * * * *",
+        humanSchedule: "Every hour at :07",
+        prompt: "hourly",
+        recurring: true,
+      },
+      { id: "every-two-hours", cron: "0 */2 * * *", prompt: "hours", recurring: true },
+      { id: "daily", cron: "30 9 * * *", prompt: "daily", recurring: true },
+      { id: "weekly", cron: "30 9 * * 1", prompt: "weekly", recurring: true },
+      { id: "monthly", cron: "30 9 15 * *", prompt: "monthly", recurring: true },
+      { id: "yearly", cron: "30 9 15 6 *", prompt: "yearly", recurring: true },
+      { id: "complex", cron: "0 9 1 * 1", prompt: "complex", recurring: true },
+    ],
+  }, base);
+
+  assert.equal(fields.raw_output?.includes("Cron: 7 * * * *"), false);
+  assert.equal(fields.raw_output?.includes("Recurring:"), false);
+  assert.equal(fields.raw_output?.includes("Durable:"), false);
+  assert.equal(fields.raw_output?.includes("Schedule: Every minute"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every 5 minutes"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every hour at minute 07"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every 2 hours on the hour"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every day at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every Monday at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every month on day 15 at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every June 15 at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Cron: 0 9 1 * 1"), true);
+  assert.equal(fields.raw_output?.split("__cron_list_job_divider__").length, 9);
 });
 
 test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {

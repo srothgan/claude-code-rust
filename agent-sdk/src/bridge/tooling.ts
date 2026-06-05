@@ -20,6 +20,13 @@ export const TOOL_RESULT_TYPES = new Set([
   "mcp_tool_result",
 ]);
 
+const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
+const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
+
+function isCronToolName(name: string): boolean {
+  return CRON_TOOL_NAMES.has(name);
+}
+
 export function isToolSearchToolName(name: string): boolean {
   const normalized = name.replace(/[\s_-]+/g, "").toLowerCase();
   return normalized === "toolsearch" || normalized === "toolsearchtool";
@@ -56,6 +63,9 @@ export function normalizeToolKind(name: string): string {
     case "TaskUpdate":
     case "TaskGet":
     case "TaskList":
+    case "CronCreate":
+    case "CronDelete":
+    case "CronList":
     case "EnterWorktree":
     case "ExitWorktree":
       return "other";
@@ -106,6 +116,9 @@ export function toolTitle(
   const taskTitle = taskToolTitle(name, input, context);
   if (taskTitle) {
     return taskTitle;
+  }
+  if (isCronToolName(name)) {
+    return name;
   }
   if (name === "EnterWorktree") {
     const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
@@ -680,12 +693,395 @@ function worktreeResultFields(
   return undefined;
 }
 
+function booleanLabel(value: boolean): string {
+  return value ? "yes" : "no";
+}
+
+function pushBooleanField(lines: string[], label: string, value: unknown): void {
+  if (typeof value === "boolean") {
+    lines.push(`${label}: ${booleanLabel(value)}`);
+  }
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+const CRON_MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const CRON_WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+const CRON_MONTH_ALIASES = new Map(
+  ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"].map(
+    (name, index) => [name, index + 1],
+  ),
+);
+
+const CRON_WEEKDAY_ALIASES = new Map(
+  ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((name, index) => [name, index]),
+);
+
+type CronField =
+  | { kind: "any"; raw: string }
+  | { kind: "single"; raw: string; value: number }
+  | { kind: "step"; raw: string; step: number }
+  | { kind: "list"; raw: string; values: number[] }
+  | { kind: "range"; raw: string; start: number; end: number }
+  | { kind: "unsupported"; raw: string };
+
+function parseCronValue(
+  value: string,
+  min: number,
+  max: number,
+  aliases?: Map<string, number>,
+): number | undefined {
+  const normalized = value.trim().toUpperCase();
+  const aliased = aliases?.get(normalized);
+  const parsed = aliased ?? Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseCronField(
+  rawField: string,
+  min: number,
+  max: number,
+  aliases?: Map<string, number>,
+): CronField {
+  const raw = rawField.trim();
+  if (raw === "*") {
+    return { kind: "any", raw };
+  }
+  const stepMatch = raw.match(/^\*\/(\d+)$/);
+  if (stepMatch) {
+    const step = Number(stepMatch[1]);
+    return Number.isInteger(step) && step > 0 ? { kind: "step", raw, step } : { kind: "unsupported", raw };
+  }
+  if (raw.includes(",")) {
+    const values = raw
+      .split(",")
+      .map((part) => parseCronValue(part, min, max, aliases))
+      .filter((value): value is number => value !== undefined);
+    return values.length === raw.split(",").length ? { kind: "list", raw, values } : { kind: "unsupported", raw };
+  }
+  const rangeMatch = raw.match(/^([^/-]+)-([^/-]+)$/);
+  if (rangeMatch) {
+    const start = parseCronValue(rangeMatch[1], min, max, aliases);
+    const end = parseCronValue(rangeMatch[2], min, max, aliases);
+    return start !== undefined && end !== undefined && start <= end
+      ? { kind: "range", raw, start, end }
+      : { kind: "unsupported", raw };
+  }
+  const value = parseCronValue(raw, min, max, aliases);
+  return value !== undefined ? { kind: "single", raw, value } : { kind: "unsupported", raw };
+}
+
+function isCronAny(field: CronField): boolean {
+  return field.kind === "any";
+}
+
+function isCronUnsupported(...fields: CronField[]): boolean {
+  return fields.some((field) => field.kind === "unsupported");
+}
+
+function padCronNumber(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function cronTime(hour: CronField, minute: CronField): string | undefined {
+  if (hour.kind !== "single" || minute.kind !== "single") {
+    return undefined;
+  }
+  return `${padCronNumber(hour.value)}:${padCronNumber(minute.value)}`;
+}
+
+function pluralUnit(value: number, unit: string): string {
+  return value === 1 ? unit : `${unit}s`;
+}
+
+function joinEnglishList(values: string[]): string {
+  if (values.length <= 2) {
+    return values.join(" and ");
+  }
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+}
+
+function weekdayName(value: number): string | undefined {
+  const normalized = value === 7 ? 0 : value;
+  return CRON_WEEKDAY_NAMES[normalized];
+}
+
+function weekdayDescription(field: CronField): string | undefined {
+  if (field.kind === "single") {
+    return weekdayName(field.value);
+  }
+  if (field.kind === "range" && field.start === 1 && field.end === 5) {
+    return "weekday";
+  }
+  if (field.kind === "range" && field.start === 0 && field.end === 6) {
+    return "day";
+  }
+  if (field.kind === "list") {
+    const normalized = [...new Set(field.values.map((value) => (value === 7 ? 0 : value)))].sort(
+      (left, right) => left - right,
+    );
+    if (normalized.length === 2 && normalized[0] === 0 && normalized[1] === 6) {
+      return "weekend day";
+    }
+    const names = normalized.map(weekdayName);
+    return names.every((name): name is string => name !== undefined) ? joinEnglishList(names) : undefined;
+  }
+  return undefined;
+}
+
+function monthName(value: number): string | undefined {
+  return CRON_MONTH_NAMES[value - 1];
+}
+
+function hourlyScheduleText(minute: CronField): string | undefined {
+  if (minute.kind !== "single") {
+    return undefined;
+  }
+  return minute.value === 0 ? "Every hour on the hour" : `Every hour at minute ${padCronNumber(minute.value)}`;
+}
+
+function cronScheduleFromExpression(cron: string): string | undefined {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return undefined;
+  }
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = [
+    parseCronField(parts[0], 0, 59),
+    parseCronField(parts[1], 0, 23),
+    parseCronField(parts[2], 1, 31),
+    parseCronField(parts[3], 1, 12, CRON_MONTH_ALIASES),
+    parseCronField(parts[4], 0, 7, CRON_WEEKDAY_ALIASES),
+  ];
+  if (isCronUnsupported(minute, hour, dayOfMonth, month, dayOfWeek)) {
+    return undefined;
+  }
+
+  const everyDay = isCronAny(dayOfMonth) && isCronAny(month) && isCronAny(dayOfWeek);
+  if (everyDay && minute.kind === "any" && hour.kind === "any") {
+    return "Every minute";
+  }
+  if (everyDay && minute.kind === "step" && hour.kind === "any") {
+    return `Every ${minute.step} ${pluralUnit(minute.step, "minute")}`;
+  }
+  if (everyDay && minute.kind === "single" && hour.kind === "any") {
+    return hourlyScheduleText(minute);
+  }
+  if (everyDay && minute.kind === "single" && hour.kind === "step") {
+    const suffix = minute.value === 0 ? "on the hour" : `at minute ${padCronNumber(minute.value)}`;
+    return `Every ${hour.step} ${pluralUnit(hour.step, "hour")} ${suffix}`;
+  }
+
+  const time = cronTime(hour, minute);
+  if (!time) {
+    return undefined;
+  }
+
+  if (everyDay) {
+    return `Every day at ${time}`;
+  }
+
+  if (isCronAny(dayOfMonth) && isCronAny(month) && !isCronAny(dayOfWeek)) {
+    const weekday = weekdayDescription(dayOfWeek);
+    return weekday ? `Every ${weekday} at ${time}` : undefined;
+  }
+
+  if (isCronAny(month) && isCronAny(dayOfWeek)) {
+    if (dayOfMonth.kind === "single") {
+      return `Every month on day ${dayOfMonth.value} at ${time}`;
+    }
+    if (dayOfMonth.kind === "step") {
+      return `Every ${dayOfMonth.step} ${pluralUnit(dayOfMonth.step, "day")} at ${time}`;
+    }
+  }
+
+  if (dayOfMonth.kind === "single" && isCronAny(dayOfWeek)) {
+    if (month.kind === "single") {
+      const monthLabel = monthName(month.value);
+      return monthLabel ? `Every ${monthLabel} ${dayOfMonth.value} at ${time}` : undefined;
+    }
+    if (month.kind === "step") {
+      return `Every ${month.step} ${pluralUnit(month.step, "month")} on day ${dayOfMonth.value} at ${time}`;
+    }
+  }
+
+  if (isCronAny(dayOfMonth) && month.kind === "single" && isCronAny(dayOfWeek)) {
+    const monthLabel = monthName(month.value);
+    return monthLabel ? `Every day in ${monthLabel} at ${time}` : undefined;
+  }
+
+  return undefined;
+}
+
+function normalizeHumanSchedule(value: unknown): string | undefined {
+  const text = nonEmptyString(value);
+  if (!text) {
+    return undefined;
+  }
+  const hourlyMinute = text.match(/^Every hour at :(\d{1,2})$/i);
+  if (hourlyMinute) {
+    const minute = Number(hourlyMinute[1]);
+    if (Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      return hourlyScheduleText({ kind: "single", raw: hourlyMinute[1], value: minute });
+    }
+  }
+  return text;
+}
+
+function readableCronSchedule(cron: unknown, humanSchedule: unknown): string | undefined {
+  const cronText = nonEmptyString(cron);
+  if (cronText) {
+    const derived = cronScheduleFromExpression(cronText);
+    if (derived) {
+      return derived;
+    }
+  }
+  return normalizeHumanSchedule(humanSchedule);
+}
+
+function cronCreateResultText(
+  candidate: Record<string, unknown>,
+  rawInput: Json | undefined,
+): string | undefined {
+  const input = asRecordOrNull(rawInput);
+  const schedule = readableCronSchedule(input?.cron, candidate.humanSchedule);
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.recurring !== "boolean" ||
+    !schedule
+  ) {
+    return undefined;
+  }
+
+  const lines = [
+    `Schedule ID: ${candidate.id}`,
+    `Schedule: ${schedule}`,
+    `Recurring: ${booleanLabel(candidate.recurring)}`,
+  ];
+  pushBooleanField(lines, "Durable", candidate.durable);
+  return lines.join("\n");
+}
+
+function cronDeleteResultText(candidate: Record<string, unknown>): string | undefined {
+  return typeof candidate.id === "string" ? `Schedule ID: ${candidate.id}` : undefined;
+}
+
+function cronListResultText(candidate: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(candidate.jobs)) {
+    return undefined;
+  }
+  const jobs = candidate.jobs.map(asRecordOrNull).filter((job): job is Record<string, unknown> => job !== null);
+  if (jobs.length === 0) {
+    return "Jobs: none";
+  }
+
+  const lines: string[] = [];
+  if (jobs.length === 1) {
+    const [job] = jobs;
+    if (typeof job.id === "string") {
+      lines.push(`Schedule ID: ${job.id}`);
+    }
+    if (typeof job.cron === "string" && job.cron.trim()) {
+      lines.push(`Cron: ${job.cron.trim()}`);
+    }
+    const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+    if (schedule) {
+      lines.push(`Schedule: ${schedule}`);
+    }
+    if (typeof job.prompt === "string") {
+      lines.push(`Prompt: ${job.prompt}`);
+    }
+    pushBooleanField(lines, "Recurring", job.recurring);
+    pushBooleanField(lines, "Durable", job.durable);
+  }
+
+  if (jobs.length > 1) {
+    for (const [index, job] of jobs.entries()) {
+      if (typeof job.id === "string") {
+        lines.push(`Schedule ID: ${job.id}`);
+      }
+      const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+      if (schedule) {
+        lines.push(`Schedule: ${schedule}`);
+      } else if (typeof job.cron === "string" && job.cron.trim()) {
+        lines.push(`Cron: ${job.cron.trim()}`);
+      }
+      if (typeof job.prompt === "string") {
+        lines.push(`Prompt: ${job.prompt}`);
+      }
+      if (index < jobs.length - 1) {
+        lines.push(CRON_LIST_DIVIDER);
+      }
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "Jobs: none";
+}
+
+function cronResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: Json | undefined,
+): string | undefined {
+  if (!isCronToolName(toolName)) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const output =
+      toolName === "CronCreate"
+        ? cronCreateResultText(candidate, rawInput)
+        : toolName === "CronDelete"
+          ? cronDeleteResultText(candidate)
+          : cronListResultText(candidate);
+    if (output !== undefined) {
+      return output;
+    }
+  }
+
+  return undefined;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
   base?: ToolCall,
   rawResult?: unknown,
-  context: TaskTitleContext = {},
+  _context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
@@ -711,6 +1107,14 @@ export function buildToolResultFields(
         { type: "content", content: { type: "text", text: worktreeOutput.output } },
       ];
     }
+    return fields;
+  }
+  const cronOutput = !isError
+    ? cronResultText(toolName, rawResult, rawContent, base?.raw_input)
+    : undefined;
+  if (cronOutput !== undefined) {
+    fields.raw_output = cronOutput;
+    fields.content = [{ type: "content", content: { type: "text", text: cronOutput } }];
     return fields;
   }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;

@@ -19,8 +19,8 @@ use super::errors::{
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, status_icon, tasks,
-    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, worktree,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, cron, execute, markdown_inline_spans, status_icon,
+    tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width, worktree,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -98,6 +98,11 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     }
     if worktree::is_worktree_tool(tc) {
         return worktree::has_structured_body(tc)
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+    if cron::is_cron_tool(tc) {
+        return cron::has_structured_body(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some();
     }
@@ -270,6 +275,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         && let Some(worktree_lines) = worktree::render_tool_content(tc)
     {
         return worktree_lines;
+    }
+    if cron::is_cron_tool(tc)
+        && let Some(cron_lines) = cron::render_tool_content(tc)
+    {
+        return cron_lines;
     }
 
     if tc.is_execute_tool() {

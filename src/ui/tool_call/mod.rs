@@ -9,6 +9,7 @@
 //! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
+mod cron;
 mod errors;
 mod execute;
 mod fields;

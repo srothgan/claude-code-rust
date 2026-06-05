@@ -48,6 +48,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "WebSearch" => ("\u{2295}", "WebSearch"),
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
         "Config" => ("\u{2299}", "Config"),
+        "CronCreate" | "CronDelete" | "CronList" => ("\u{25f7}", "Cron"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
@@ -75,6 +76,13 @@ mod tests {
     fn worktree_tools_use_worktree_labels_and_icon() {
         assert_eq!(tool_name_label("EnterWorktree"), ("\u{21c4}", "EnterWorktree"));
         assert_eq!(tool_name_label("ExitWorktree"), ("\u{21c4}", "ExitWorktree"));
+    }
+
+    #[test]
+    fn cron_tools_use_cron_labels_and_icon() {
+        for sdk_tool_name in ["CronCreate", "CronDelete", "CronList"] {
+            assert_eq!(tool_name_label(sdk_tool_name), ("\u{25f7}", "Cron"));
+        }
     }
 
     #[test]
