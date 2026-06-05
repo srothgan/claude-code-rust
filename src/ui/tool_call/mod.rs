@@ -14,6 +14,7 @@ mod errors;
 mod execute;
 mod fields;
 mod interactions;
+mod schedule_wakeup;
 mod standard;
 mod tasks;
 mod worktree;

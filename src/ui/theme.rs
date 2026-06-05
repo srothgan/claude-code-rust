@@ -49,6 +49,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
         "Config" => ("\u{2299}", "Config"),
         "CronCreate" | "CronDelete" | "CronList" => ("\u{25f7}", "Cron"),
+        "ScheduleWakeup" => ("\u{25f7}", "Wakeup"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
@@ -83,6 +84,11 @@ mod tests {
         for sdk_tool_name in ["CronCreate", "CronDelete", "CronList"] {
             assert_eq!(tool_name_label(sdk_tool_name), ("\u{25f7}", "Cron"));
         }
+    }
+
+    #[test]
+    fn schedule_wakeup_tool_uses_wakeup_label_and_icon() {
+        assert_eq!(tool_name_label("ScheduleWakeup"), ("\u{25f7}", "Wakeup"));
     }
 
     #[test]

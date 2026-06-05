@@ -2158,6 +2158,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("CronCreate"), "other");
   assert.equal(normalizeToolKind("CronDelete"), "other");
   assert.equal(normalizeToolKind("CronList"), "other");
+  assert.equal(normalizeToolKind("ScheduleWakeup"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
@@ -2990,6 +2991,17 @@ test("createToolCall maps cron tools to other kind with stable titles", () => {
     assert.equal(toolCall.kind, "other");
     assert.equal(toolCall.title, toolName);
   }
+});
+
+test("createToolCall maps ScheduleWakeup to other kind with stable title", () => {
+  const toolCall = createToolCall("tc-wakeup", "ScheduleWakeup", {
+    delaySeconds: 90,
+    reason: "Poll again after warmup",
+    prompt: "/loop check status",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "ScheduleWakeup");
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -4093,6 +4105,61 @@ test("buildToolResultFields renders readable cron schedule text from common cron
   assert.equal(fields.raw_output?.includes("Schedule: Every June 15 at 09:30"), true);
   assert.equal(fields.raw_output?.includes("Cron: 0 9 1 * 1"), true);
   assert.equal(fields.raw_output?.split("__cron_list_job_divider__").length, 9);
+});
+
+test("buildToolResultFields renders ScheduleWakeup output as structured text", () => {
+  const base = createToolCall("tc-wakeup", "ScheduleWakeup", {
+    delaySeconds: 30,
+    reason: "Retry after runtime clamp",
+    prompt: "/loop keep checking",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      scheduledFor: 1_779_990_000_000,
+      clampedDelaySeconds: 90,
+      wasClamped: true,
+    },
+    base,
+  );
+
+  assert.match(
+    fields.raw_output ?? "",
+    /^Scheduled for: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local\nActual delay: 1m 30s\nClamped: yes$/,
+  );
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.equal(fields.raw_output?.includes("1779990000000"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses ScheduleWakeup transcript JSON", () => {
+  const base = createToolCall("tc-wakeup-history", "ScheduleWakeup", {
+    delaySeconds: 3600,
+    reason: "Wake at the next loop interval",
+    prompt: "/loop continue",
+  });
+  const transcriptJson = JSON.stringify({
+    scheduledFor: 1_779_990_000_000,
+    clampedDelaySeconds: 3600,
+    wasClamped: false,
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-wakeup-history",
+    content: transcriptJson,
+  });
+
+  assert.match(fields.raw_output ?? "", /Actual delay: 1h\nClamped: no$/);
+  assert.equal(fields.raw_output?.includes('"scheduledFor"'), false);
 });
 
 test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {

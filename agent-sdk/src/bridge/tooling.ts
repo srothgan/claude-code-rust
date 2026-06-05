@@ -22,6 +22,7 @@ export const TOOL_RESULT_TYPES = new Set([
 
 const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
 const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
+const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -66,6 +67,7 @@ export function normalizeToolKind(name: string): string {
     case "CronCreate":
     case "CronDelete":
     case "CronList":
+    case "ScheduleWakeup":
     case "EnterWorktree":
     case "ExitWorktree":
       return "other";
@@ -118,6 +120,9 @@ export function toolTitle(
     return taskTitle;
   }
   if (isCronToolName(name)) {
+    return name;
+  }
+  if (name === SCHEDULE_WAKEUP_TOOL_NAME) {
     return name;
   }
   if (name === "EnterWorktree") {
@@ -1076,6 +1081,77 @@ function cronResultText(
   return undefined;
 }
 
+function formatWakeupDuration(seconds: number): string {
+  const rounded = Math.max(0, Math.trunc(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const remainingSeconds = rounded % 60;
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  if (remainingSeconds > 0 || parts.length === 0) {
+    parts.push(`${remainingSeconds}s`);
+  }
+  return parts.join(" ");
+}
+
+function formatWakeupTimestamp(epochMs: number): string | undefined {
+  if (!Number.isFinite(epochMs)) {
+    return undefined;
+  }
+  const date = new Date(epochMs);
+  if (!Number.isFinite(date.getTime())) {
+    return undefined;
+  }
+  const year = date.getFullYear().toString().padStart(4, "0");
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const day = date.getDate().toString().padStart(2, "0");
+  const hour = date.getHours().toString().padStart(2, "0");
+  const minute = date.getMinutes().toString().padStart(2, "0");
+  const second = date.getSeconds().toString().padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second} local`;
+}
+
+function scheduleWakeupResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const scheduledFor =
+      typeof candidate.scheduledFor === "number"
+        ? formatWakeupTimestamp(candidate.scheduledFor)
+        : undefined;
+    const clampedDelaySeconds =
+      typeof candidate.clampedDelaySeconds === "number"
+        ? formatWakeupDuration(candidate.clampedDelaySeconds)
+        : undefined;
+    if (!scheduledFor || !clampedDelaySeconds || typeof candidate.wasClamped !== "boolean") {
+      continue;
+    }
+    return [
+      `Scheduled for: ${scheduledFor}`,
+      `Actual delay: ${clampedDelaySeconds}`,
+      `Clamped: ${booleanLabel(candidate.wasClamped)}`,
+    ].join("\n");
+  }
+
+  return undefined;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -1115,6 +1191,16 @@ export function buildToolResultFields(
   if (cronOutput !== undefined) {
     fields.raw_output = cronOutput;
     fields.content = [{ type: "content", content: { type: "text", text: cronOutput } }];
+    return fields;
+  }
+  const scheduleWakeupOutput = !isError
+    ? scheduleWakeupResultText(toolName, rawResult, rawContent)
+    : undefined;
+  if (scheduleWakeupOutput !== undefined) {
+    fields.raw_output = scheduleWakeupOutput;
+    fields.content = [
+      { type: "content", content: { type: "text", text: scheduleWakeupOutput } },
+    ];
     return fields;
   }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
