@@ -2160,6 +2160,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("CronList"), "other");
   assert.equal(normalizeToolKind("ScheduleWakeup"), "other");
   assert.equal(normalizeToolKind("PushNotification"), "other");
+  assert.equal(normalizeToolKind("RemoteTrigger"), "other");
   assert.equal(normalizeToolKind("REPL"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
@@ -3015,6 +3016,25 @@ test("createToolCall maps PushNotification to other kind with stable title", () 
 
   assert.equal(toolCall.kind, "other");
   assert.equal(toolCall.title, "PushNotification");
+});
+
+test("createToolCall maps RemoteTrigger to other kind and action title", () => {
+  const toolCall = createToolCall("tc-remote-trigger", "RemoteTrigger", {
+    action: " run ",
+    trigger_id: "deploy-prod",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "RemoteTrigger: run");
+});
+
+test("createToolCall uses RemoteTrigger fallback title without action", () => {
+  const toolCall = createToolCall("tc-remote-trigger-fallback", "RemoteTrigger", {
+    trigger_id: "deploy-prod",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "RemoteTrigger");
 });
 
 test("createToolCall maps REPL to other kind and code title", () => {
@@ -4264,6 +4284,93 @@ test("buildToolResultFields parses PushNotification transcript JSON", () => {
     "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
   );
   assert.equal(fields.raw_output?.includes('"pushSent"'), false);
+});
+
+test("buildToolResultFields renders RemoteTrigger summary without raw JSON", () => {
+  const base = createToolCall("tc-remote-trigger", "RemoteTrigger", {
+    action: "run",
+    trigger_id: "deploy-prod",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 200,
+      json: '{\n  "ok": true,\n  "run_id": "run-1"\n}',
+      summary: "Trigger completed",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "Status: 200\nSummary: Trigger completed");
+  assert.equal(fields.raw_output?.includes("run_id"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Status: 200\nSummary: Trigger completed",
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders RemoteTrigger response when summary is absent", () => {
+  const base = createToolCall("tc-remote-trigger-response", "RemoteTrigger", {
+    action: "get",
+    trigger_id: "deploy-prod",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 200,
+      json: '{\n  "ok": true,\n  "trigger_id": "deploy-prod"\n}',
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, 'Status: 200\nResponse: {"ok":true,"trigger_id":"deploy-prod"}');
+  assert.equal(fields.raw_output?.includes('"json"'), false);
+});
+
+test("buildToolResultFields marks RemoteTrigger 4xx output failed", () => {
+  const base = createToolCall("tc-remote-trigger-error", "RemoteTrigger", {
+    action: "run",
+    trigger_id: "missing-trigger",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 404,
+      json: '{"error":"not_found"}',
+      summary: "Trigger not found",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Status: 404\nSummary: Trigger not found");
+});
+
+test("buildToolResultFields parses RemoteTrigger transcript JSON", () => {
+  const base = createToolCall("tc-remote-trigger-history", "RemoteTrigger", {
+    action: "get",
+    trigger_id: "deploy-prod",
+  });
+  const transcriptJson = JSON.stringify({
+    status: 200,
+    json: '{\n  "enabled": true,\n  "name": "Deploy prod"\n}',
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-remote-trigger-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output, 'Status: 200\nResponse: {"enabled":true,"name":"Deploy prod"}');
+  assert.equal(fields.raw_output?.includes('"json"'), false);
 });
 
 test("buildToolResultFields renders REPL output as structured text without raw JSON", () => {

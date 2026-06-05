@@ -52,6 +52,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "CronCreate" | "CronDelete" | "CronList" => ("\u{25f7}", "Cron"),
         "ScheduleWakeup" => ("\u{25f7}", "Wakeup"),
         "PushNotification" => ("!", "Notify"),
+        "RemoteTrigger" => ("\u{21c4}", "Remote"),
         "REPL" => ("\u{03bb}", "REPL"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
@@ -97,6 +98,11 @@ mod tests {
     #[test]
     fn push_notification_tool_uses_notify_label_and_icon() {
         assert_eq!(tool_name_label("PushNotification"), ("!", "Notify"));
+    }
+
+    #[test]
+    fn remote_trigger_tool_uses_remote_label_and_icon() {
+        assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21c4}", "Remote"));
     }
 
     #[test]

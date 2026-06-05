@@ -20,8 +20,8 @@ use super::errors::{
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
     TOOL_BODY_MAX_LINES, ToolCallRenderContext, cron, execute, markdown_inline_spans,
-    push_notification, repl, schedule_wakeup, status_icon, tasks, tool_display_title,
-    tool_output_badge_spans, truncate_spans_to_width, worktree,
+    push_notification, remote_trigger, repl, schedule_wakeup, status_icon, tasks,
+    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, worktree,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -114,6 +114,11 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     }
     if push_notification::is_push_notification_tool(tc) {
         return push_notification::has_structured_body(tc)
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+    if remote_trigger::is_remote_trigger_tool(tc) {
+        return remote_trigger::has_structured_body(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some();
     }
@@ -306,6 +311,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         && let Some(push_notification_lines) = push_notification::render_tool_content(tc)
     {
         return push_notification_lines;
+    }
+    if remote_trigger::is_remote_trigger_tool(tc)
+        && let Some(remote_trigger_lines) = remote_trigger::render_tool_content(tc)
+    {
+        return remote_trigger_lines;
     }
     if repl::is_repl_tool(tc)
         && let Some(repl_lines) = repl::render_tool_content(tc)

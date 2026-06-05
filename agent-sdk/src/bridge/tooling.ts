@@ -24,6 +24,7 @@ const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
 const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
 const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
 const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
+const REMOTE_TRIGGER_TOOL_NAME = "RemoteTrigger";
 const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
 const REPL_TOOL_NAME = "REPL";
 
@@ -72,6 +73,7 @@ export function normalizeToolKind(name: string): string {
     case "CronList":
     case "ScheduleWakeup":
     case "PushNotification":
+    case "RemoteTrigger":
     case "EnterWorktree":
     case "ExitWorktree":
     case "REPL":
@@ -133,6 +135,10 @@ export function toolTitle(
   }
   if (name === PUSH_NOTIFICATION_TOOL_NAME) {
     return name;
+  }
+  if (name === REMOTE_TRIGGER_TOOL_NAME) {
+    const action = typeof input.action === "string" ? input.action.trim() : "";
+    return action ? `${REMOTE_TRIGGER_TOOL_NAME}: ${action}` : REMOTE_TRIGGER_TOOL_NAME;
   }
   if (name === ENTER_PLAN_MODE_TOOL_NAME) {
     return name;
@@ -1265,6 +1271,54 @@ function compactJson(value: unknown): string | undefined {
   }
 }
 
+function compactParsedJsonString(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(JSON.parse(trimmed));
+  } catch {
+    return trimmed;
+  }
+}
+
+function remoteTriggerResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string; failed: boolean } | undefined {
+  if (toolName !== REMOTE_TRIGGER_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate.status !== "number" || typeof candidate.json !== "string") {
+      continue;
+    }
+
+    const lines = [`Status: ${candidate.status}`];
+    const summary = nonEmptyString(candidate.summary);
+    if (summary) {
+      lines.push(`Summary: ${summary}`);
+    } else {
+      const response = compactParsedJsonString(candidate.json);
+      if (response) {
+        lines.push(`Response: ${response}`);
+      }
+    }
+
+    return { output: lines.join("\n"), failed: candidate.status >= 400 };
+  }
+
+  return undefined;
+}
+
 function hasConcreteReplField(record: Record<string, unknown>): boolean {
   return (
     "code" in record ||
@@ -1440,6 +1494,19 @@ export function buildToolResultFields(
     !isError &&
     enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
   ) {
+    return fields;
+  }
+  const remoteTriggerOutput = remoteTriggerResultFields(toolName, rawResult, rawContent);
+  if (remoteTriggerOutput !== undefined) {
+    if (remoteTriggerOutput.failed) {
+      fields.status = "failed";
+    }
+    if (remoteTriggerOutput.output) {
+      fields.raw_output = remoteTriggerOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: remoteTriggerOutput.output } },
+      ];
+    }
     return fields;
   }
   const replOutput = replResultFields(toolName, rawResult, rawContent);
