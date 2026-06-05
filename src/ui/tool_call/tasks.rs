@@ -11,6 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::errors::render_failed_tool_text_content;
+use super::fields::{self, ToolField};
 
 const TASK_OMISSION_MARKER: &str = "...";
 const TASK_MARKER_PENDING: &str = "\u{25a1}";
@@ -71,47 +72,47 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>
 
 fn render_create_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
-    let mut lines = Vec::new();
+    let mut task_fields = Vec::new();
 
     if let Some(description) = input.and_then(|input| json_string(input, "description")) {
-        lines.push(field_line("Description", description));
+        task_fields.push(ToolField::new("Description", description));
     }
     if let Some(metadata) = input.and_then(|input| input.get("metadata")).and_then(compact_json) {
-        lines.push(field_line("Metadata", &metadata));
+        task_fields.push(ToolField::new("Metadata", metadata));
     }
-    lines
+    fields::render_fields(task_fields)
 }
 
 fn render_update_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
-    let mut lines = Vec::new();
+    let mut task_fields = Vec::new();
 
     if let Some(input) = input {
         for (key, label) in [("description", "Description"), ("owner", "Owner")] {
             if let Some(value) = json_string(input, key) {
-                lines.push(field_line(label, value));
+                task_fields.push(ToolField::new(label, value));
             }
         }
         if let Some(blocks) = json_string_array(input.get("addBlocks")) {
-            lines.push(field_line("Blocks", &blocks.join(", ")));
+            task_fields.push(ToolField::new("Blocks", blocks.join(", ")));
         }
         if let Some(blocked_by) = json_string_array(input.get("addBlockedBy")) {
-            lines.push(field_line("Blocked by", &blocked_by.join(", ")));
+            task_fields.push(ToolField::new("Blocked by", blocked_by.join(", ")));
         }
         if let Some(metadata) = input.get("metadata").and_then(compact_json) {
-            lines.push(field_line("Metadata", &metadata));
+            task_fields.push(ToolField::new("Metadata", metadata));
         }
     }
-    lines
+    fields::render_fields(task_fields)
 }
 
 fn render_get_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
-    let mut lines = Vec::new();
+    let mut task_fields = Vec::new();
     if let Some(task_id) = input.and_then(|input| json_string(input, "taskId")) {
-        lines.push(field_line("Task ID", task_id));
+        task_fields.push(ToolField::new("Task ID", task_id));
     }
-    lines
+    fields::render_fields(task_fields)
 }
 
 fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
@@ -162,14 +163,20 @@ fn render_text_line(line: &str) -> Line<'static> {
     if matches!(line, "Task not found" | "No tasks") {
         return Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::DIM)));
     }
-    if let Some((label, value)) = line.split_once(':')
-        && matches!(label, "Task ID" | "Fields" | "Status" | "Blocked by" | "Activity")
-    {
+    if let Some((label, value)) = line.split_once(':') {
+        let label = match label {
+            "Task ID" => "Task ID",
+            "Fields" => "Fields",
+            "Status" => "Status",
+            "Blocked by" => "Blocked by",
+            "Activity" => "Activity",
+            _ => return Line::from(Span::raw(line.to_owned())),
+        };
         let value = value.trim_start();
         if label == "Status" {
-            return field_line(label, &status_label(value));
+            return fields::render_field(label, status_label(value));
         }
-        return field_line(label, value);
+        return fields::render_field(label, value);
     }
     Line::from(Span::raw(line.to_owned()))
 }
@@ -213,13 +220,6 @@ fn json_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
 
 fn compact_json(value: &serde_json::Value) -> Option<String> {
     serde_json::to_string(value).ok().filter(|value| !value.is_empty())
-}
-
-fn field_line(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(theme::DIM)),
-        Span::raw(value.to_owned()),
-    ])
 }
 
 fn deleted_task_line(text: &str) -> Line<'static> {

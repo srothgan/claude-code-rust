@@ -2153,6 +2153,8 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Bash"), "execute");
   assert.equal(normalizeToolKind("Delete"), "delete");
   assert.equal(normalizeToolKind("Move"), "move");
+  assert.equal(normalizeToolKind("EnterWorktree"), "other");
+  assert.equal(normalizeToolKind("ExitWorktree"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
@@ -2954,6 +2956,25 @@ test("createToolCall includes glob and webfetch context in title", () => {
 
   const fetch = createToolCall("tc-f", "WebFetch", { url: "https://example.com" });
   assert.equal(fetch.title, "WebFetch https://example.com");
+});
+
+test("createToolCall builds worktree titles from input rules", () => {
+  const namedEnter = createToolCall("tc-enter-name", "EnterWorktree", { name: "feature-auth" });
+  assert.equal(namedEnter.kind, "other");
+  assert.equal(namedEnter.title, "feature-auth");
+
+  const pathEnter = createToolCall("tc-enter-path", "EnterWorktree", {
+    path: "C:\\repo\\.worktrees\\feature-auth",
+  });
+  assert.equal(pathEnter.kind, "other");
+  assert.equal(pathEnter.title, "EnterWorktree");
+
+  const exit = createToolCall("tc-exit", "ExitWorktree", {
+    action: "remove",
+    discard_changes: true,
+  });
+  assert.equal(exit.kind, "other");
+  assert.equal(exit.title, "ExitWorktree");
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -3865,6 +3886,65 @@ test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
   );
 
   assert.equal(fields.title, "planner");
+});
+
+test("buildToolResultFields leaves worktree title unchanged on completed output", () => {
+  const enterBase = createToolCall("tc-enter", "EnterWorktree", { name: "feature-auth" });
+  const enterFields = buildToolResultFields(
+    false,
+    {
+      message: "Entered worktree feature-auth",
+      worktreeBranch: "feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    enterBase,
+  );
+  assert.equal(enterFields.title, undefined);
+
+  const exitBase = createToolCall("tc-exit", "ExitWorktree", { action: "keep" });
+  const exitFields = buildToolResultFields(
+    false,
+    {
+      message: "Exited worktree feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    exitBase,
+  );
+  assert.equal(exitFields.title, undefined);
+});
+
+test("buildToolResultFields renders worktree location without raw JSON", () => {
+  const enterBase = createToolCall("tc-enter", "EnterWorktree", { name: "feature-auth" });
+  const enterFields = buildToolResultFields(
+    false,
+    {
+      message: "Entered worktree feature-auth",
+      worktreeBranch: "feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    enterBase,
+  );
+  assert.equal(enterFields.raw_output, "Branch: feature-auth");
+  assert.deepEqual(enterFields.content, [
+    { type: "content", content: { type: "text", text: "Branch: feature-auth" } },
+  ]);
+
+  const exitBase = createToolCall("tc-exit", "ExitWorktree", { action: "keep" });
+  const exitFields = buildToolResultFields(
+    false,
+    {
+      message: "Exited worktree feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    exitBase,
+  );
+  assert.equal(exitFields.raw_output, "Path: C:\\repo\\.worktrees\\feature-auth");
+  assert.deepEqual(exitFields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Path: C:\\repo\\.worktrees\\feature-auth" },
+    },
+  ]);
 });
 
 test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {

@@ -56,6 +56,8 @@ export function normalizeToolKind(name: string): string {
     case "TaskUpdate":
     case "TaskGet":
     case "TaskList":
+    case "EnterWorktree":
+    case "ExitWorktree":
       return "other";
     case "Task":
     case "Agent":
@@ -104,6 +106,13 @@ export function toolTitle(
   const taskTitle = taskToolTitle(name, input, context);
   if (taskTitle) {
     return taskTitle;
+  }
+  if (name === "EnterWorktree") {
+    const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
+    return worktreeName || "EnterWorktree";
+  }
+  if (name === "ExitWorktree") {
+    return "ExitWorktree";
   }
   if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
     return `${name} ${input.file_path}`;
@@ -639,6 +648,38 @@ function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown): str
   return "";
 }
 
+function worktreeResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string } | undefined {
+  if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const branch =
+      typeof candidate.worktreeBranch === "string" ? candidate.worktreeBranch.trim() : "";
+    const path = typeof candidate.worktreePath === "string" ? candidate.worktreePath.trim() : "";
+    const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
+    const isStructuredWorktreeOutput =
+      "message" in candidate ||
+      "worktreeBranch" in candidate ||
+      "worktreePath" in candidate ||
+      "originalCwd" in candidate;
+    if (output || isStructuredWorktreeOutput) {
+      return output ? { output } : {};
+    }
+  }
+
+  return undefined;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -659,6 +700,18 @@ export function buildToolResultFields(
   const agentTitle = !isError && toolName === "Agent" ? agentTitleFromAgentOutput(rawResult, rawContent) : "";
   if (agentTitle) {
     fields.title = agentTitle;
+  }
+  const worktreeOutput = !isError
+    ? worktreeResultFields(toolName, rawResult, rawContent)
+    : undefined;
+  if (worktreeOutput) {
+    if (worktreeOutput.output) {
+      fields.raw_output = worktreeOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: worktreeOutput.output } },
+      ];
+    }
+    return fields;
   }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
   const normalizedRawOutput = normalizeToolResultText(rawContent, isError);

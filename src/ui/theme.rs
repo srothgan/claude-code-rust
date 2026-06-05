@@ -49,6 +49,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
         "Config" => ("\u{2299}", "Config"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
     }
 }
@@ -68,6 +69,12 @@ mod tests {
         for sdk_tool_name in ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"] {
             assert_eq!(tool_name_label(sdk_tool_name), ("\u{25a1}", "Task"));
         }
+    }
+
+    #[test]
+    fn worktree_tools_use_worktree_labels_and_icon() {
+        assert_eq!(tool_name_label("EnterWorktree"), ("\u{21c4}", "EnterWorktree"));
+        assert_eq!(tool_name_label("ExitWorktree"), ("\u{21c4}", "ExitWorktree"));
     }
 
     #[test]

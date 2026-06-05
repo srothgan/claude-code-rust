@@ -11,9 +11,11 @@
 
 mod errors;
 mod execute;
+mod fields;
 mod interactions;
 mod standard;
 mod tasks;
+mod worktree;
 
 use std::borrow::Cow;
 
