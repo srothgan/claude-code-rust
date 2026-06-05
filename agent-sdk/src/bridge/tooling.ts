@@ -25,6 +25,7 @@ const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
 const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
 const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
 const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
+const REPL_TOOL_NAME = "REPL";
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -73,6 +74,7 @@ export function normalizeToolKind(name: string): string {
     case "PushNotification":
     case "EnterWorktree":
     case "ExitWorktree":
+    case "REPL":
       return "other";
     case "Task":
     case "Agent":
@@ -134,6 +136,10 @@ export function toolTitle(
   }
   if (name === ENTER_PLAN_MODE_TOOL_NAME) {
     return name;
+  }
+  if (name === REPL_TOOL_NAME) {
+    const code = typeof input.code === "string" ? input.code.trim() : "";
+    return code ? `REPL: ${code}` : REPL_TOOL_NAME;
   }
   if (name === "EnterWorktree") {
     const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
@@ -1238,6 +1244,114 @@ function pushNotificationResultText(
   return undefined;
 }
 
+function compactJson(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.trim() ? value : undefined;
+  }
+  if (Array.isArray(value) && value.length === 0) {
+    return undefined;
+  }
+  const record = asRecordOrNull(value);
+  if (record && Object.keys(record).length === 0) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasConcreteReplField(record: Record<string, unknown>): boolean {
+  return (
+    "code" in record ||
+    "error" in record ||
+    "stdout" in record ||
+    "stderr" in record ||
+    "registeredTools" in record ||
+    "images" in record ||
+    "documents" in record
+  );
+}
+
+function isReplWrapperRecord(record: Record<string, unknown>): boolean {
+  const nestedResult = asRecordOrNull(record.result);
+  return Boolean(nestedResult && hasConcreteReplField(nestedResult));
+}
+
+function isReplOutputRecord(record: Record<string, unknown>): boolean {
+  if (isReplWrapperRecord(record)) {
+    return false;
+  }
+  return hasConcreteReplField(record) || "result" in record;
+}
+
+function replResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string; failed: boolean } | undefined {
+  if (toolName !== REPL_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (!isReplOutputRecord(candidate)) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    let failed = false;
+    if ("error" in candidate) {
+      failed = true;
+      const error = compactJson(candidate.error);
+      if (error) {
+        lines.push(`Error: ${error}`);
+      }
+    }
+
+    const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
+    if (stdout) {
+      lines.push(`Stdout: ${stdout}`);
+    }
+    const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
+    if (stderr) {
+      lines.push(`Stderr: ${stderr}`);
+    }
+    const result = compactJson(candidate.result);
+    if (result) {
+      lines.push(`Result: ${result}`);
+    }
+
+    if (Array.isArray(candidate.registeredTools)) {
+      const registeredTools = candidate.registeredTools.filter(
+        (tool): tool is string => typeof tool === "string" && tool.trim().length > 0,
+      );
+      if (registeredTools.length > 0) {
+        lines.push(`Registered tools: ${registeredTools.join(", ")}`);
+      }
+    }
+    if (Array.isArray(candidate.images) && candidate.images.length > 0) {
+      lines.push(`Images: ${candidate.images.length}`);
+    }
+    if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
+      lines.push(`Documents: ${candidate.documents.length}`);
+    }
+
+    return { output: lines.length > 0 ? lines.join("\n") : undefined, failed };
+  }
+
+  return undefined;
+}
+
 function enterPlanModeStructuredOutputHandled(
   toolName: string,
   rawResult: unknown,
@@ -1326,6 +1440,19 @@ export function buildToolResultFields(
     !isError &&
     enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
   ) {
+    return fields;
+  }
+  const replOutput = replResultFields(toolName, rawResult, rawContent);
+  if (replOutput !== undefined) {
+    if (replOutput.failed) {
+      fields.status = "failed";
+    }
+    if (replOutput.output) {
+      fields.raw_output = replOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: replOutput.output } },
+      ];
+    }
     return fields;
   }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;

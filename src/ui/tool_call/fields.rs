@@ -34,6 +34,27 @@ pub(super) fn render_field<'a>(
     render_field_line(ToolField::new(value_label, value))
 }
 
+pub(super) fn render_multiline_field<'a>(
+    value_label: &'static str,
+    value: impl Into<Cow<'a, str>>,
+) -> Vec<Line<'static>> {
+    let value = value.into().into_owned();
+    let mut value_lines = value.lines();
+    let Some(first) = value_lines.next() else {
+        return vec![render_field(value_label, "")];
+    };
+
+    let continuation_prefix = " ".repeat(value_label.len().saturating_add(2));
+    let mut lines = vec![render_field(value_label, first.to_owned())];
+    lines.extend(value_lines.map(|line| {
+        Line::from(vec![
+            Span::styled(continuation_prefix.clone(), Style::default().fg(theme::DIM)),
+            Span::raw(line.to_owned()),
+        ])
+    }));
+    lines
+}
+
 fn render_field_line(field: ToolField<'_>) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{}: ", field.label), Style::default().fg(theme::DIM)),

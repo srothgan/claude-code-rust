@@ -2160,6 +2160,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("CronList"), "other");
   assert.equal(normalizeToolKind("ScheduleWakeup"), "other");
   assert.equal(normalizeToolKind("PushNotification"), "other");
+  assert.equal(normalizeToolKind("REPL"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
@@ -3014,6 +3015,26 @@ test("createToolCall maps PushNotification to other kind with stable title", () 
 
   assert.equal(toolCall.kind, "other");
   assert.equal(toolCall.title, "PushNotification");
+});
+
+test("createToolCall maps REPL to other kind and code title", () => {
+  const toolCall = createToolCall("tc-repl", "REPL", {
+    code: "  await inspectState()  ",
+    description: "Inspect runtime state",
+    timeout: 45_000,
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "REPL: await inspectState()");
+});
+
+test("createToolCall uses REPL fallback title instead of description", () => {
+  const toolCall = createToolCall("tc-repl-fallback", "REPL", {
+    description: "Inspect runtime state",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "REPL");
 });
 
 test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
@@ -4243,6 +4264,97 @@ test("buildToolResultFields parses PushNotification transcript JSON", () => {
     "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
   );
   assert.equal(fields.raw_output?.includes('"pushSent"'), false);
+});
+
+test("buildToolResultFields renders REPL output as structured text without raw JSON", () => {
+  const base = createToolCall("tc-repl", "REPL", {
+    code: "await main()",
+    description: "Run main function",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      code: "await main()",
+      stdout: "done",
+      stderr: "warning",
+      result: { ok: true },
+      registeredTools: ["fetchDocs", "parse"],
+      images: [
+        { base64: "image-one-base64", mediaType: "image/png" },
+        { base64: "image-two-base64", mediaType: "image/png" },
+      ],
+      documents: [{ base64: "document-base64" }],
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(
+    fields.raw_output,
+    "Stdout: done\nStderr: warning\nResult: {\"ok\":true}\nRegistered tools: fetchDocs, parse\nImages: 2\nDocuments: 1",
+  );
+  assert.equal(fields.raw_output?.includes("await main()"), false);
+  assert.equal(fields.raw_output?.includes("image-one-base64"), false);
+  assert.equal(fields.raw_output?.includes("document-base64"), false);
+  assert.equal(fields.raw_output?.includes("{\"code\""), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields marks REPL error output failed", () => {
+  const base = createToolCall("tc-repl-error", "REPL", {
+    code: "throw new Error('boom')",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      code: "throw new Error('boom')",
+      error: "boom",
+      stdout: "",
+      stderr: "stack trace",
+      result: {},
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Error: boom\nStderr: stack trace");
+});
+
+test("buildToolResultFields parses REPL transcript JSON", () => {
+  const base = createToolCall("tc-repl-history", "REPL", {
+    code: "await load()",
+  });
+  const transcriptJson = JSON.stringify({
+    code: "await load()",
+    stdout: "loaded",
+    stderr: "",
+    result: { count: 2 },
+    registeredTools: ["lookup"],
+    images: [{ base64: "hidden-image", mediaType: "image/png" }],
+    documents: [{ base64: "hidden-document" }, { base64: "hidden-document-2" }],
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-repl-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Stdout: loaded\nResult: {\"count\":2}\nRegistered tools: lookup\nImages: 1\nDocuments: 2",
+  );
+  assert.equal(fields.raw_output?.includes('"code"'), false);
+  assert.equal(fields.raw_output?.includes("hidden-image"), false);
+  assert.equal(fields.raw_output?.includes("hidden-document"), false);
 });
 
 test("buildToolResultFields suppresses EnterPlanMode structured output body", () => {

@@ -15,6 +15,7 @@ mod execute;
 mod fields;
 mod interactions;
 mod push_notification;
+mod repl;
 mod schedule_wakeup;
 mod standard;
 mod tasks;
