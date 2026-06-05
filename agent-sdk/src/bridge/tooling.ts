@@ -24,6 +24,7 @@ const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
 const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
 const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
 const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
+const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -76,6 +77,7 @@ export function normalizeToolKind(name: string): string {
     case "Task":
     case "Agent":
       return "think";
+    case "EnterPlanMode":
     case "ExitPlanMode":
       return "switch_mode";
     default:
@@ -128,6 +130,9 @@ export function toolTitle(
     return name;
   }
   if (name === PUSH_NOTIFICATION_TOOL_NAME) {
+    return name;
+  }
+  if (name === ENTER_PLAN_MODE_TOOL_NAME) {
     return name;
   }
   if (name === "EnterWorktree") {
@@ -1233,6 +1238,29 @@ function pushNotificationResultText(
   return undefined;
 }
 
+function enterPlanModeStructuredOutputHandled(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): boolean {
+  if (toolName !== ENTER_PLAN_MODE_TOOL_NAME) {
+    return false;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate.message === "string") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -1292,6 +1320,12 @@ export function buildToolResultFields(
     fields.content = [
       { type: "content", content: { type: "text", text: pushNotificationOutput } },
     ];
+    return fields;
+  }
+  if (
+    !isError &&
+    enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
+  ) {
     return fields;
   }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;

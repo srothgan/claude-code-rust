@@ -46,6 +46,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" => ("\u{25a1}", "Task"),
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
+        "EnterPlanMode" => ("\u{2299}", "EnterPlanMode"),
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
         "Config" => ("\u{2299}", "Config"),
         "CronCreate" | "CronDelete" | "CronList" => ("\u{25f7}", "Cron"),
@@ -95,6 +96,12 @@ mod tests {
     #[test]
     fn push_notification_tool_uses_notify_label_and_icon() {
         assert_eq!(tool_name_label("PushNotification"), ("!", "Notify"));
+    }
+
+    #[test]
+    fn plan_mode_tools_use_plan_mode_labels_and_icon() {
+        assert_eq!(tool_name_label("EnterPlanMode"), ("\u{2299}", "EnterPlanMode"));
+        assert_eq!(tool_name_label("ExitPlanMode"), ("\u{2299}", "ExitPlanMode"));
     }
 
     #[test]

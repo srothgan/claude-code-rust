@@ -2162,6 +2162,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("PushNotification"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
+  assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("TodoWrite"), normalizeToolKind("FutureUnknownTool"));
 });
@@ -3013,6 +3014,13 @@ test("createToolCall maps PushNotification to other kind with stable title", () 
 
   assert.equal(toolCall.kind, "other");
   assert.equal(toolCall.title, "PushNotification");
+});
+
+test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
+  const toolCall = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
+
+  assert.equal(toolCall.kind, "switch_mode");
+  assert.equal(toolCall.title, "EnterPlanMode");
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -4235,6 +4243,30 @@ test("buildToolResultFields parses PushNotification transcript JSON", () => {
     "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
   );
   assert.equal(fields.raw_output?.includes('"pushSent"'), false);
+});
+
+test("buildToolResultFields suppresses EnterPlanMode structured output body", () => {
+  const base = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
+  const fields = buildToolResultFields(false, { message: "Plan mode entered" }, base);
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, undefined);
+  assert.equal(fields.content, undefined);
+});
+
+test("buildToolResultFields suppresses EnterPlanMode transcript JSON body", () => {
+  const base = createToolCall("tc-enter-plan-mode-history", "EnterPlanMode", {});
+  const transcriptJson = JSON.stringify({ message: "Entered plan mode" });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-enter-plan-mode-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, undefined);
+  assert.equal(fields.content, undefined);
 });
 
 test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {
