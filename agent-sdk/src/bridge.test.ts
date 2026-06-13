@@ -52,6 +52,7 @@ import {
   permissionModeFailureLooksUnsupported,
   refreshSupportedModesForSession,
 } from "./bridge/commands.js";
+import { handleMcpSetServersCommand } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
   handleUserDialogResponse,
@@ -564,6 +565,98 @@ test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
       ),
     /tools is only supported for http and sse MCP servers/,
   );
+});
+
+test("handleMcpSetServersCommand emits SDK result", async () => {
+  const session = makeSessionState();
+  let receivedServers: unknown;
+  session.query = {
+    setMcpServers: async (servers: unknown) => {
+      receivedServers = servers;
+      return {
+        added: ["docs"],
+        removed: ["plugin:Notion:notion"],
+        errors: { docs: "connection failed" },
+      };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpSetServersCommand(
+      session,
+      {
+        command: "mcp_set_servers",
+        session_id: "session-1",
+        servers: {
+          docs: {
+            type: "http",
+            url: "https://example.test/mcp",
+            always_load: true,
+          },
+        },
+      },
+      "req-mcp-set",
+    );
+  });
+
+  assert.deepEqual(receivedServers, {
+    docs: {
+      type: "http",
+      url: "https://example.test/mcp",
+      alwaysLoad: true,
+    },
+  });
+  assert.deepEqual(events, [
+    {
+      request_id: "req-mcp-set",
+      event: "mcp_set_servers_result",
+      session_id: "session-1",
+      result: {
+        added: ["docs"],
+        removed: ["plugin:Notion:notion"],
+        errors: { docs: "connection failed" },
+      },
+    },
+  ]);
+});
+
+test("handleMcpSetServersCommand emits MCP operation error on failure", async () => {
+  const session = makeSessionState();
+  session.query = {
+    setMcpServers: async () => {
+      throw new Error("dynamic update failed");
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpSetServersCommand(
+      session,
+      {
+        command: "mcp_set_servers",
+        session_id: "session-1",
+        servers: {},
+      },
+      "req-mcp-set",
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "req-mcp-set",
+      event: "mcp_operation_error",
+      session_id: "session-1",
+      error: {
+        operation: "set-servers",
+        message: "dynamic update failed",
+      },
+    },
+    {
+      request_id: "req-mcp-set",
+      event: "slash_error",
+      session_id: "session-1",
+      message: "failed to set MCP servers: dynamic update failed",
+    },
+  ]);
 });
 
 test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {

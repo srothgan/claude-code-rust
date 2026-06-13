@@ -3,6 +3,7 @@
 
 pub(crate) mod auth;
 mod cache_policy;
+pub(crate) mod claude_cli;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;

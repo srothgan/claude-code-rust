@@ -338,7 +338,7 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
                 status_color(server.status),
             ),
             Span::styled(" ", Style::default()),
-            badge_span(server.scope.as_deref().unwrap_or("session"), Color::White, Color::DarkGray),
+            badge_span(scope_label(server.scope.as_deref()), Color::White, Color::DarkGray),
             Span::styled(" ", Style::default()),
             badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
         ]),
@@ -359,7 +359,7 @@ fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
             if matches!(server.status, McpServerConnectionStatus::Disabled) { "No" } else { "Yes" },
             Color::White,
         ),
-        detail_kv("Scope", server.scope.as_deref().unwrap_or("session"), Color::White),
+        detail_kv("Scope", scope_label(server.scope.as_deref()), Color::White),
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
         detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
     ];
@@ -737,6 +737,10 @@ fn status_label(status: McpServerConnectionStatus) -> &'static str {
         McpServerConnectionStatus::Pending => "pending",
         McpServerConnectionStatus::Disabled => "disabled",
     }
+}
+
+fn scope_label(scope: Option<&str>) -> &str {
+    scope.filter(|value| !value.trim().is_empty()).unwrap_or("unspecified")
 }
 
 fn transport_label(config: Option<&McpServerStatusConfig>) -> &'static str {

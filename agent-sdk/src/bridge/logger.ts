@@ -163,6 +163,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "elicitation_complete":
     case "mcp_auth_redirect":
     case "mcp_operation_error":
+    case "mcp_set_servers_result":
     case "turn_complete":
     case "turn_error":
     case "slash_error":
@@ -218,6 +219,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "status_snapshot":
     case "context_usage":
     case "runtime_reload_completed":
+    case "mcp_set_servers_result":
     case "mcp_snapshot":
       return "debug";
   }

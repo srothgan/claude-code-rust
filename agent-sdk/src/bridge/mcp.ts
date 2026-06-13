@@ -1,4 +1,4 @@
-import type { BridgeCommand, McpServerStatus } from "../types.js";
+import type { BridgeCommand, McpSetServersResult, McpServerStatus } from "../types.js";
 import { emitMcpOperationError, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
@@ -64,6 +64,28 @@ function logMcpFailure(
 
 function queryWithMcpAuth(session: SessionState): QueryWithMcpAuth {
   return session.query as QueryWithMcpAuth;
+}
+
+function mapMcpSetServersResult(result: unknown): McpSetServersResult {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { added: [], removed: [], errors: {} };
+  }
+  const record = result as Record<string, unknown>;
+  const added = Array.isArray(record.added)
+    ? record.added.filter((value): value is string => typeof value === "string")
+    : [];
+  const removed = Array.isArray(record.removed)
+    ? record.removed.filter((value): value is string => typeof value === "string")
+    : [];
+  const errors =
+    record.errors && typeof record.errors === "object" && !Array.isArray(record.errors)
+      ? Object.fromEntries(
+          Object.entries(record.errors as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  return { added, removed, errors };
 }
 
 async function callMcpAuthMethod(
@@ -366,13 +388,28 @@ export async function handleMcpSetServersCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await session.query.setMcpServers(bridgeMcpServersToSdk(command.servers));
+    const result = mapMcpSetServersResult(
+      await session.query.setMcpServers(bridgeMcpServersToSdk(command.servers)),
+    );
     logMcpSuccess(
       "mcp_servers_set_completed",
       "MCP server configuration updated",
       command.session_id,
       requestId,
-      { server_count: Object.keys(command.servers).length },
+      {
+        server_count: Object.keys(command.servers).length,
+        added_count: result.added.length,
+        removed_count: result.removed.length,
+        error_count: Object.keys(result.errors).length,
+      },
+    );
+    writeEvent(
+      {
+        event: "mcp_set_servers_result",
+        session_id: command.session_id,
+        result,
+      },
+      requestId,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -383,6 +420,11 @@ export async function handleMcpSetServersCommand(
       message,
       requestId,
       { server_count: Object.keys(command.servers).length },
+    );
+    emitMcpOperationError(
+      command.session_id,
+      { operation: "set-servers", message },
+      requestId,
     );
     slashError(command.session_id, `failed to set MCP servers: ${message}`, requestId);
   }

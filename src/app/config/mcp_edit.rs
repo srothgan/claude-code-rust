@@ -6,8 +6,9 @@ use super::edit::{
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
     available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, is_mcp_action_available,
-    open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
-    send_mcp_elicitation_response, set_mcp_server_enabled, submit_mcp_oauth_callback_url,
+    mcp_config_removal_scope, open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
+    remove_mcp_server_from_config, send_mcp_elicitation_response, set_mcp_server_enabled,
+    submit_mcp_oauth_callback_url,
 };
 use super::{ConfigOverlayState, ConfirmationAction, ConfirmationOverlayState};
 use crate::app::App;
@@ -96,6 +97,11 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
         return;
     }
 
+    if action.mcp_config_scope().is_some() {
+        open_mcp_remove_confirmation(app, overlay, action);
+        return;
+    }
+
     execute_mcp_server_action(app, &overlay.server_name, action);
 }
 
@@ -127,6 +133,15 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
         McpServerActionKind::Disable => {
             set_mcp_server_enabled(app, server_name, false);
         }
+        McpServerActionKind::RemoveUserConfig
+        | McpServerActionKind::RemoveLocalConfig
+        | McpServerActionKind::RemoveProjectConfig
+        | McpServerActionKind::RemoveDynamicConfig => {
+            let Some(scope) = action.mcp_config_scope() else {
+                return;
+            };
+            remove_mcp_server_from_config(app, server_name, scope);
+        }
     }
 
     app.config.clear_overlay();
@@ -143,6 +158,35 @@ fn open_mcp_clear_auth_confirmation(app: &mut App, overlay: super::mcp::McpDetai
         cancel_label: "Cancel".to_owned(),
         selected_index: 0,
         action: ConfirmationAction::McpClearAuth,
+        previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
+    }));
+}
+
+fn open_mcp_remove_confirmation(
+    app: &mut App,
+    overlay: super::mcp::McpDetailsOverlayState,
+    action: McpServerActionKind,
+) {
+    let Some(server) = app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
+    else {
+        app.config.clear_overlay();
+        return;
+    };
+    let Some(_scope) = action.mcp_config_scope().filter(|scope| {
+        mcp_config_removal_scope(server).is_some_and(|server_scope| server_scope == *scope)
+    }) else {
+        app.config.set_overlay_error("This MCP server cannot be removed from live config.");
+        return;
+    };
+
+    let server_name = overlay.server_name.clone();
+    app.config.replace_overlay(ConfigOverlayState::Confirmation(ConfirmationOverlayState {
+        title: format!("Remove MCP server {server_name}"),
+        body: format!("Remove MCP server {server_name}? This cannot be reversed."),
+        confirm_label: "Remove".to_owned(),
+        cancel_label: "Cancel".to_owned(),
+        selected_index: 0,
+        action: ConfirmationAction::McpRemoveConfig,
         previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
     }));
 }

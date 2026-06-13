@@ -722,6 +722,7 @@ export type BridgeEvent =
   | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
   | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
   | { event: "mcp_operation_error"; session_id: string; error: McpOperationError }
+  | { event: "mcp_set_servers_result"; session_id: string; result: McpSetServersResult }
   | { event: "turn_complete"; session_id: string; terminal_reason?: TerminalReason }
   | {
       event: "turn_error";

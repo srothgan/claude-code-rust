@@ -314,6 +314,10 @@ pub enum BridgeEvent {
         session_id: String,
         error: types::McpOperationError,
     },
+    McpSetServersResult {
+        session_id: String,
+        result: types::McpSetServersResult,
+    },
     TurnComplete {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -387,6 +391,7 @@ impl BridgeEvent {
             Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
+            Self::McpSetServersResult { .. } => "mcp_set_servers_result",
             Self::TurnComplete { .. } => "turn_complete",
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
@@ -413,6 +418,7 @@ impl BridgeEvent {
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
+            | Self::McpSetServersResult { session_id, .. }
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
@@ -445,6 +451,7 @@ impl BridgeEvent {
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
+            | Self::McpSetServersResult { .. }
             | Self::TurnComplete { .. }
             | Self::TurnError { .. }
             | Self::SlashError { .. }
@@ -620,6 +627,42 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn mcp_set_servers_result_event_deserializes() {
+        let json = serde_json::json!({
+            "request_id": "req-mcp-set",
+            "event": "mcp_set_servers_result",
+            "session_id": "session-1",
+            "result": {
+                "added": ["docs"],
+                "removed": ["plugin:Notion:notion"],
+                "errors": {
+                    "docs": "connection failed"
+                }
+            }
+        });
+
+        let decoded: EventEnvelope = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            decoded,
+            EventEnvelope {
+                request_id: Some("req-mcp-set".to_owned()),
+                event: BridgeEvent::McpSetServersResult {
+                    session_id: "session-1".to_owned(),
+                    result: types::McpSetServersResult {
+                        added: vec!["docs".to_owned()],
+                        removed: vec!["plugin:Notion:notion".to_owned()],
+                        errors: BTreeMap::from([(
+                            "docs".to_owned(),
+                            "connection failed".to_owned()
+                        )]),
+                    },
+                },
+            }
+        );
     }
 
     #[test]

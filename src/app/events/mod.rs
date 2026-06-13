@@ -1818,6 +1818,7 @@ mod tests {
             scope: None,
             tools: Vec::new(),
         });
+        app.mcp.removed_config_servers.insert(("user".to_owned(), "supabase".to_owned()));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -1830,6 +1831,7 @@ mod tests {
         );
         assert!(app.mcp.in_flight);
         assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp.removed_config_servers.is_empty());
     }
 
     #[test]
@@ -2217,6 +2219,7 @@ mod tests {
         assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp.removed_config_servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
         assert_eq!(app.cwd, "/replacement");
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
@@ -2424,6 +2427,44 @@ mod tests {
 
         assert_eq!(app.mcp.servers.len(), 1);
         assert_eq!(app.mcp.servers[0].name, "current");
+    }
+
+    #[test]
+    fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(("user".to_owned(), "notion".to_owned()));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![
+                    crate::agent::model::McpServerStatus {
+                        name: "notion".into(),
+                        status: crate::agent::model::McpServerConnectionStatus::Connected,
+                        server_info: None,
+                        error: None,
+                        config: None,
+                        scope: Some("user".into()),
+                        tools: Vec::new(),
+                    },
+                    crate::agent::model::McpServerStatus {
+                        name: "fff".into(),
+                        status: crate::agent::model::McpServerConnectionStatus::Connected,
+                        server_info: None,
+                        error: None,
+                        config: None,
+                        scope: Some("user".into()),
+                        tools: Vec::new(),
+                    },
+                ],
+                error: None,
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
     }
 
     #[test]

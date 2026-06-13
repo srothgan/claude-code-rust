@@ -40,6 +40,17 @@ pub enum ClientEvent {
     McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
     McpOperationError { error: crate::agent::types::McpOperationError },
+    /// Dynamic MCP server replacement completed through the SDK.
+    McpSetServersResult { session_id: String, result: crate::agent::types::McpSetServersResult },
+    /// Claude CLI removed an MCP server from a persisted config scope.
+    McpConfigRemoveSucceeded {
+        cwd_raw: String,
+        server_name: String,
+        scope: String,
+        claude_path: PathBuf,
+    },
+    /// Claude CLI failed to remove an MCP server from persisted config.
+    McpConfigRemoveFailed { cwd_raw: String, server_name: String, scope: String, message: String },
     /// A prompt turn completed successfully.
     TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
     /// `cancel` notification was accepted by the bridge.

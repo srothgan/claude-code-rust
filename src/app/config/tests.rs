@@ -1,5 +1,7 @@
 use super::*;
-use crate::agent::model::{AvailableModel, EffortLevel};
+use crate::agent::model::{
+    AvailableModel, EffortLevel, McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig,
+};
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -55,6 +57,22 @@ fn app_with_status_connection()
         first_prompt: Some("First prompt".to_owned()),
     }];
     (app, rx)
+}
+
+fn connected_mcp_server_status(
+    name: &str,
+    scope: &str,
+    config: Option<McpServerStatusConfig>,
+) -> McpServerStatus {
+    McpServerStatus {
+        name: name.to_owned(),
+        status: McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config,
+        scope: Some(scope.to_owned()),
+        tools: Vec::new(),
+    }
 }
 
 fn read_json_file(path: &Path) -> Value {
@@ -1527,6 +1545,392 @@ fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
     let restored = app.config.mcp_details_overlay().expect("restored mcp details overlay");
     assert_eq!(restored.server_name, "filesystem");
     assert_eq!(restored.selected_index, 1);
+}
+
+#[test]
+fn user_mcp_server_offers_matching_config_remove_action() {
+    let server = crate::agent::model::McpServerStatus {
+        name: "filesystem".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("user".to_owned()),
+        tools: Vec::new(),
+    };
+
+    let actions = available_mcp_actions(&server);
+
+    assert!(actions.contains(&super::mcp::McpServerActionKind::RemoveUserConfig));
+    assert_eq!(super::mcp::McpServerActionKind::RemoveUserConfig.label(), "Remove");
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveLocalConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveProjectConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    assert!(super::mcp::is_mcp_action_available(
+        &server,
+        super::mcp::McpServerActionKind::RemoveUserConfig
+    ));
+}
+
+#[test]
+fn dynamic_mcp_server_offers_matching_config_remove_action() {
+    let server = crate::agent::model::McpServerStatus {
+        name: "plugin:Notion:notion".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: Some(crate::agent::model::McpServerStatusConfig::Http {
+            url: "https://mcp.notion.com/mcp".to_owned(),
+            headers: std::collections::BTreeMap::new(),
+            timeout: None,
+            tools: Vec::new(),
+            always_load: None,
+        }),
+        scope: Some("dynamic".to_owned()),
+        tools: Vec::new(),
+    };
+
+    let actions = available_mcp_actions(&server);
+
+    assert!(actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    assert_eq!(super::mcp::McpServerActionKind::RemoveDynamicConfig.label(), "Remove");
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveUserConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveLocalConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveProjectConfig));
+    assert!(super::mcp::is_mcp_action_available(
+        &server,
+        super::mcp::McpServerActionKind::RemoveDynamicConfig
+    ));
+}
+
+#[test]
+fn mcp_config_remove_requires_confirmation_with_exact_scope() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.mcp.servers = vec![crate::agent::model::McpServerStatus {
+        name: "filesystem".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("user".to_owned()),
+        tools: Vec::new(),
+    }];
+    let remove_index = available_mcp_actions(&app.mcp.servers[0])
+        .iter()
+        .position(|action| *action == super::mcp::McpServerActionKind::RemoveUserConfig)
+        .expect("remove action");
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "filesystem".to_owned(),
+        selected_index: remove_index,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::McpRemoveConfig);
+    assert_eq!(confirmation.confirm_label, "Remove");
+    assert_eq!(confirmation.body, "Remove MCP server filesystem? This cannot be reversed.");
+}
+
+#[test]
+fn non_config_mcp_server_does_not_offer_remove_action() {
+    let server = crate::agent::model::McpServerStatus {
+        name: "claude.ai Google Drive".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Disabled,
+        server_info: None,
+        error: None,
+        config: Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy {
+            url: "https://mcp-proxy.anthropic.com/v1/mcp/server".to_owned(),
+            id: "mcpsrv_test".to_owned(),
+            timeout: None,
+        }),
+        scope: Some("claudeai".to_owned()),
+        tools: Vec::new(),
+    };
+
+    let actions = available_mcp_actions(&server);
+
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveUserConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveLocalConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveProjectConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+}
+
+#[test]
+fn mcp_config_remove_success_reloads_runtime_and_refreshes_snapshot() {
+    let (_dir, mut app) = open_settings_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.mcp.servers = vec![
+        crate::agent::model::McpServerStatus {
+            name: "filesystem".to_owned(),
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: Some("user".to_owned()),
+            tools: Vec::new(),
+        },
+        crate::agent::model::McpServerStatus {
+            name: "other".to_owned(),
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: Some("user".to_owned()),
+            tools: Vec::new(),
+        },
+    ];
+
+    super::mcp::apply_mcp_config_remove_success(
+        &mut app,
+        "filesystem",
+        "user",
+        PathBuf::from("C:\\tools\\claude.exe"),
+    );
+
+    assert_eq!(app.mcp.claude_path, Some(PathBuf::from("C:\\tools\\claude.exe")));
+    assert!(app.mcp.removed_config_servers.contains(&("user".to_owned(), "filesystem".to_owned())));
+    assert_eq!(
+        app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+        vec!["other"]
+    );
+    assert_eq!(
+        app.config.status_message.as_deref(),
+        Some("Removed MCP server filesystem from user config.")
+    );
+    let envelope = rx.try_recv().expect("runtime reload command");
+    assert_eq!(
+        envelope.command,
+        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned() }
+    );
+    let envelope = rx.try_recv().expect("mcp snapshot command");
+    assert_eq!(
+        envelope.command,
+        BridgeCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
+    );
+    assert!(app.mcp.in_flight);
+}
+
+#[test]
+fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_servers() {
+    let (_dir, mut app) = open_settings_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    let mut keep_headers = BTreeMap::new();
+    keep_headers.insert("Authorization".to_owned(), "Bearer token".to_owned());
+    app.mcp.servers = vec![
+        connected_mcp_server_status(
+            "plugin:Notion:notion",
+            "dynamic",
+            Some(crate::agent::model::McpServerStatusConfig::Http {
+                url: "https://mcp.notion.com/mcp".to_owned(),
+                headers: std::collections::BTreeMap::new(),
+                timeout: None,
+                tools: Vec::new(),
+                always_load: None,
+            }),
+        ),
+        connected_mcp_server_status(
+            "keep-dynamic",
+            "dynamic",
+            Some(crate::agent::model::McpServerStatusConfig::Http {
+                url: "https://example.test/mcp".to_owned(),
+                headers: keep_headers.clone(),
+                timeout: Some(5_000),
+                tools: vec![crate::agent::model::McpServerToolPolicy {
+                    name: "search".to_owned(),
+                    permission_policy: Some(
+                        crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                    ),
+                    org_max_permission: Some(crate::agent::model::McpServerOrgMaxPermission::Ask),
+                }],
+                always_load: Some(true),
+            }),
+        ),
+        connected_mcp_server_status("fff", "user", None),
+    ];
+
+    super::mcp::remove_mcp_server_from_config(
+        &mut app,
+        "plugin:Notion:notion",
+        super::mcp::McpConfigScope::Dynamic,
+    );
+
+    let envelope = rx.try_recv().expect("mcp set servers command");
+    let BridgeCommand::McpSetServers { session_id, servers } = envelope.command else {
+        panic!("expected mcp_set_servers");
+    };
+    assert_eq!(session_id, "session-1");
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers.get("keep-dynamic"),
+        Some(&crate::agent::types::McpServerConfig::Http {
+            url: "https://example.test/mcp".to_owned(),
+            headers: keep_headers,
+            tools: vec![crate::agent::types::McpServerToolPolicy {
+                name: "search".to_owned(),
+                permission_policy: Some(crate::agent::types::McpServerToolPermissionPolicy::Ask),
+                org_max_permission: Some(crate::agent::types::McpServerOrgMaxPermission::Ask),
+            }],
+            timeout: Some(5_000),
+            always_load: Some(true),
+        })
+    );
+    assert_eq!(app.mcp.pending_dynamic_config_removal.as_deref(), Some("plugin:Notion:notion"));
+    assert_eq!(
+        app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+        vec!["plugin:Notion:notion", "keep-dynamic", "fff"]
+    );
+    assert!(rx.try_recv().is_err());
+
+    super::mcp::handle_mcp_set_servers_result(
+        &mut app,
+        &crate::agent::types::McpSetServersResult {
+            removed: vec!["plugin:Notion:notion".to_owned()],
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        app.mcp
+            .removed_config_servers
+            .contains(&("dynamic".to_owned(), "plugin:notion:notion".to_owned()))
+    );
+    assert_eq!(
+        app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+        vec!["keep-dynamic", "fff"]
+    );
+    assert_eq!(
+        app.config.status_message.as_deref(),
+        Some("Removed MCP server plugin:Notion:notion from dynamic config.")
+    );
+    assert!(matches!(
+        rx.try_recv().expect("mcp snapshot command").command,
+        BridgeCommand::GetMcpSnapshot { .. }
+    ));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
+    let (_dir, mut app) = open_settings_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.mcp.servers = vec![connected_mcp_server_status(
+        "plugin:Notion:notion",
+        "dynamic",
+        Some(crate::agent::model::McpServerStatusConfig::Http {
+            url: "https://mcp.notion.com/mcp".to_owned(),
+            headers: BTreeMap::new(),
+            timeout: None,
+            tools: Vec::new(),
+            always_load: None,
+        }),
+    )];
+
+    super::mcp::remove_mcp_server_from_config(
+        &mut app,
+        "plugin:Notion:notion",
+        super::mcp::McpConfigScope::Dynamic,
+    );
+    assert!(matches!(
+        rx.try_recv().expect("mcp set servers command").command,
+        BridgeCommand::McpSetServers { .. }
+    ));
+
+    super::mcp::handle_mcp_operation_error(
+        &mut app,
+        &crate::agent::types::McpOperationError {
+            server_name: None,
+            operation: "set-servers".to_owned(),
+            message: "dynamic update failed".to_owned(),
+        },
+    );
+
+    assert!(app.mcp.pending_dynamic_config_removal.is_none());
+    assert!(app.mcp.removed_config_servers.is_empty());
+    assert!(!app.mcp.in_flight);
+    assert_eq!(
+        app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+        vec!["plugin:Notion:notion"]
+    );
+    let message = app.mcp.last_error.as_deref().expect("last MCP error");
+    assert!(
+        message.contains("Failed to remove MCP server plugin:Notion:notion from dynamic config")
+    );
+    assert!(message.contains("dynamic update failed"));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn dynamic_mcp_config_remove_refuses_to_drop_unrepresentable_dynamic_servers() {
+    let (_dir, mut app) = open_settings_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.mcp.servers = vec![
+        connected_mcp_server_status(
+            "plugin:Notion:notion",
+            "dynamic",
+            Some(crate::agent::model::McpServerStatusConfig::Http {
+                url: "https://mcp.notion.com/mcp".to_owned(),
+                headers: BTreeMap::new(),
+                timeout: None,
+                tools: Vec::new(),
+                always_load: None,
+            }),
+        ),
+        connected_mcp_server_status(
+            "in-process",
+            "dynamic",
+            Some(crate::agent::model::McpServerStatusConfig::Sdk { name: "sdk-server".to_owned() }),
+        ),
+    ];
+
+    super::mcp::remove_mcp_server_from_config(
+        &mut app,
+        "plugin:Notion:notion",
+        super::mcp::McpConfigScope::Dynamic,
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(!app.mcp.in_flight);
+    assert!(app.mcp.removed_config_servers.is_empty());
+    assert_eq!(
+        app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+        vec!["plugin:Notion:notion", "in-process"]
+    );
+    let message = app.mcp.last_error.as_deref().expect("last MCP error");
+    assert!(
+        message.contains("Failed to remove MCP server plugin:Notion:notion from dynamic config")
+    );
+    assert!(
+        message.contains(
+            "Cannot safely preserve dynamic MCP server in-process because SDK-server instances cannot be represented by the Rust bridge"
+        )
+    );
+}
+
+#[test]
+fn mcp_config_remove_failure_surfaces_overlay_error() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.mcp.in_flight = true;
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "filesystem".to_owned(),
+        selected_index: 0,
+    }));
+
+    super::mcp::apply_mcp_config_remove_failure(&mut app, "filesystem", "user", "boom");
+
+    assert!(!app.mcp.in_flight);
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert!(message.text.contains("Failed to remove MCP server filesystem from user config"));
 }
 
 #[test]

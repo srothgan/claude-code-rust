@@ -81,6 +81,36 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::McpOperationError { error } => {
             crate::app::config::handle_mcp_operation_error(app, &error);
         }
+        ClientEvent::McpSetServersResult { session_id, result } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
+            crate::app::config::handle_mcp_set_servers_result(app, &result);
+        }
+        ClientEvent::McpConfigRemoveSucceeded { cwd_raw, server_name, scope, claude_path } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
+            crate::app::config::apply_mcp_config_remove_success(
+                app,
+                &server_name,
+                &scope,
+                claude_path,
+            );
+        }
+        ClientEvent::McpConfigRemoveFailed { cwd_raw, server_name, scope, message } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
+            crate::app::config::apply_mcp_config_remove_failure(
+                app,
+                &server_name,
+                &scope,
+                &message,
+            );
+        }
         ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }
@@ -247,7 +277,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
-        ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
+        ClientEvent::McpSnapshotReceived { session_id, mut servers, error } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
@@ -261,6 +291,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 );
                 return;
             }
+            crate::app::config::filter_removed_config_mcp_servers(app, &mut servers);
             let server_count = servers.len();
             let error_present = error.is_some();
             let server_diagnostics = mcp_server_diagnostic_summaries(&servers);

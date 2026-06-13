@@ -141,6 +141,9 @@ pub struct McpState {
     pub servers: Vec<model::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
+    pub claude_path: Option<std::path::PathBuf>,
+    pub removed_config_servers: std::collections::BTreeSet<(String, String)>,
+    pub pending_dynamic_config_removal: Option<String>,
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
 }
 

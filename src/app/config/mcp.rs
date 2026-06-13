@@ -1,7 +1,9 @@
 use super::{ConfigOverlayState, ConfigState, ConfigTab};
+use crate::agent::{events::ClientEvent, model, types};
 use crate::app::App;
 use crate::app::view::{self, FullscreenView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum McpServerActionKind {
@@ -11,6 +13,10 @@ pub(crate) enum McpServerActionKind {
     Reconnect,
     Enable,
     Disable,
+    RemoveUserConfig,
+    RemoveLocalConfig,
+    RemoveProjectConfig,
+    RemoveDynamicConfig,
 }
 
 impl McpServerActionKind {
@@ -23,7 +29,70 @@ impl McpServerActionKind {
             Self::Reconnect => "Reconnect server",
             Self::Enable => "Enable server",
             Self::Disable => "Disable server",
+            Self::RemoveUserConfig
+            | Self::RemoveLocalConfig
+            | Self::RemoveProjectConfig
+            | Self::RemoveDynamicConfig => "Remove",
         }
+    }
+
+    #[must_use]
+    pub const fn mcp_config_scope(self) -> Option<McpConfigScope> {
+        match self {
+            Self::RemoveUserConfig => Some(McpConfigScope::User),
+            Self::RemoveLocalConfig => Some(McpConfigScope::Local),
+            Self::RemoveProjectConfig => Some(McpConfigScope::Project),
+            Self::RemoveDynamicConfig => Some(McpConfigScope::Dynamic),
+            Self::RefreshSnapshot
+            | Self::Authenticate
+            | Self::ClearAuth
+            | Self::Reconnect
+            | Self::Enable
+            | Self::Disable => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpConfigScope {
+    Local,
+    User,
+    Project,
+    Dynamic,
+}
+
+impl McpConfigScope {
+    #[must_use]
+    pub const fn cli_arg(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Dynamic => "dynamic",
+        }
+    }
+
+    #[must_use]
+    pub fn from_status_scope(scope: &str) -> Option<Self> {
+        match scope.trim() {
+            scope if scope.eq_ignore_ascii_case("user") => Some(Self::User),
+            scope if scope.eq_ignore_ascii_case("local") => Some(Self::Local),
+            scope if scope.eq_ignore_ascii_case("project") => Some(Self::Project),
+            scope if scope.eq_ignore_ascii_case("dynamic") => Some(Self::Dynamic),
+            _ => None,
+        }
+    }
+}
+
+#[must_use]
+pub(crate) const fn remove_action_for_mcp_config_scope(
+    scope: McpConfigScope,
+) -> McpServerActionKind {
+    match scope {
+        McpConfigScope::User => McpServerActionKind::RemoveUserConfig,
+        McpConfigScope::Local => McpServerActionKind::RemoveLocalConfig,
+        McpConfigScope::Project => McpServerActionKind::RemoveProjectConfig,
+        McpConfigScope::Dynamic => McpServerActionKind::RemoveDynamicConfig,
     }
 }
 
@@ -338,6 +407,390 @@ pub(crate) fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
     }
 }
 
+pub(crate) fn remove_mcp_server_from_config(
+    app: &mut App,
+    server_name: &str,
+    scope: McpConfigScope,
+) {
+    if scope == McpConfigScope::Dynamic {
+        remove_dynamic_mcp_server_from_config(app, server_name);
+        return;
+    }
+    remove_persisted_mcp_server_from_config(app, server_name, scope);
+}
+
+fn remove_persisted_mcp_server_from_config(
+    app: &mut App,
+    server_name: &str,
+    scope: McpConfigScope,
+) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let cwd_raw = app.cwd_raw.clone();
+    let cached_claude_path = app.mcp.claude_path.clone();
+    let server_name = server_name.to_owned();
+    let scope_name = scope.cli_arg().to_owned();
+    let args = vec![
+        "mcp".to_owned(),
+        "remove".to_owned(),
+        "--scope".to_owned(),
+        scope_name.clone(),
+        server_name.clone(),
+    ];
+    let event_tx = app.event_tx.clone();
+
+    app.mcp.in_flight = true;
+    app.mcp.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message =
+        Some(format!("Removing MCP server {server_name} from {scope_name} config..."));
+
+    tokio::task::spawn_local(async move {
+        match crate::app::claude_cli::run_command_task(cwd_raw.clone(), cached_claude_path, args)
+            .await
+        {
+            Ok(claude_path) => {
+                let _ = event_tx.send(ClientEvent::McpConfigRemoveSucceeded {
+                    cwd_raw,
+                    server_name,
+                    scope: scope_name,
+                    claude_path,
+                });
+            }
+            Err(message) => {
+                let _ = event_tx.send(ClientEvent::McpConfigRemoveFailed {
+                    cwd_raw,
+                    server_name,
+                    scope: scope_name,
+                    message,
+                });
+            }
+        }
+    });
+}
+
+fn remove_dynamic_mcp_server_from_config(app: &mut App, server_name: &str) {
+    if app.mcp.pending_dynamic_config_removal.is_some() {
+        let formatted = format!(
+            "Failed to remove MCP server {server_name} from dynamic config: Another dynamic MCP removal is still in progress."
+        );
+        app.mcp.last_error = Some(formatted.clone());
+        app.config.last_error = Some(formatted);
+        app.config.status_message = None;
+        return;
+    }
+    let Some(conn) = app.conn.clone() else {
+        apply_mcp_config_remove_failure(
+            app,
+            server_name,
+            McpConfigScope::Dynamic.cli_arg(),
+            "No active bridge connection.",
+        );
+        return;
+    };
+    let Some(session_id) = app.session_id.as_ref().map(ToString::to_string) else {
+        apply_mcp_config_remove_failure(
+            app,
+            server_name,
+            McpConfigScope::Dynamic.cli_arg(),
+            "No active session.",
+        );
+        return;
+    };
+    let remaining_servers = match dynamic_mcp_servers_without(app, server_name) {
+        Ok(servers) => servers,
+        Err(message) => {
+            apply_mcp_config_remove_failure(
+                app,
+                server_name,
+                McpConfigScope::Dynamic.cli_arg(),
+                &message,
+            );
+            return;
+        }
+    };
+
+    app.mcp.in_flight = true;
+    app.mcp.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message =
+        Some(format!("Removing MCP server {server_name} from dynamic config..."));
+    app.mcp.pending_dynamic_config_removal = Some(server_name.to_owned());
+
+    match conn.set_mcp_servers(session_id.clone(), remaining_servers) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_dynamic_remove_requested",
+                message = "dynamic MCP removal requested",
+                outcome = "start",
+                session_id = %session_id,
+                server_name = %server_name,
+            );
+        }
+        Err(error) => {
+            app.mcp.pending_dynamic_config_removal = None;
+            tracing::warn!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_dynamic_remove_request_failed",
+                message = "failed to request dynamic MCP removal",
+                outcome = "failure",
+                session_id = %session_id,
+                server_name = %server_name,
+                error_message = %error,
+            );
+            apply_mcp_config_remove_failure(
+                app,
+                server_name,
+                McpConfigScope::Dynamic.cli_arg(),
+                &error.to_string(),
+            );
+        }
+    }
+}
+
+fn dynamic_mcp_servers_without(
+    app: &App,
+    server_name: &str,
+) -> Result<BTreeMap<String, types::McpServerConfig>, String> {
+    let removed_key = normalized_removed_config_key(McpConfigScope::Dynamic.cli_arg(), server_name);
+    let mut found_removed_server = false;
+    let mut servers = BTreeMap::new();
+
+    for server in app
+        .mcp
+        .servers
+        .iter()
+        .filter(|server| mcp_config_removal_scope(server) == Some(McpConfigScope::Dynamic))
+    {
+        if mcp_server_matches_removed_key(server, &removed_key) {
+            found_removed_server = true;
+            continue;
+        }
+        let config = dynamic_mcp_server_config_for_set_servers(server)?;
+        servers.insert(server.name.clone(), config);
+    }
+
+    if !found_removed_server {
+        return Err(format!("MCP server {server_name} is no longer present in dynamic config."));
+    }
+
+    Ok(servers)
+}
+
+fn dynamic_mcp_server_config_for_set_servers(
+    server: &model::McpServerStatus,
+) -> Result<types::McpServerConfig, String> {
+    let Some(config) = server.config.as_ref() else {
+        return Err(format!(
+            "Cannot safely preserve dynamic MCP server {} because the SDK snapshot did not include its config.",
+            server.name
+        ));
+    };
+
+    match config {
+        model::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
+            Ok(types::McpServerConfig::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+                env: env.clone(),
+                timeout: *timeout,
+                always_load: *always_load,
+            })
+        }
+        model::McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load } => {
+            Ok(types::McpServerConfig::Sse {
+                url: url.clone(),
+                headers: headers.clone(),
+                tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
+                timeout: *timeout,
+                always_load: *always_load,
+            })
+        }
+        model::McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
+            Ok(types::McpServerConfig::Http {
+                url: url.clone(),
+                headers: headers.clone(),
+                tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
+                timeout: *timeout,
+                always_load: *always_load,
+            })
+        }
+        model::McpServerStatusConfig::Sdk { .. } => Err(format!(
+            "Cannot safely preserve dynamic MCP server {} because SDK-server instances cannot be represented by the Rust bridge.",
+            server.name
+        )),
+        model::McpServerStatusConfig::ClaudeaiProxy { .. } => Err(format!(
+            "Cannot safely preserve dynamic MCP server {} because Claude.ai proxy servers are not dynamic SDK configs.",
+            server.name
+        )),
+        model::McpServerStatusConfig::Unknown { raw_type } => Err(format!(
+            "Cannot safely preserve dynamic MCP server {} because its config type {raw_type} is unknown.",
+            server.name
+        )),
+    }
+}
+
+fn dynamic_mcp_tool_policy_for_set_servers(
+    policy: &model::McpServerToolPolicy,
+) -> types::McpServerToolPolicy {
+    types::McpServerToolPolicy {
+        name: policy.name.clone(),
+        permission_policy: policy
+            .permission_policy
+            .map(dynamic_mcp_tool_permission_policy_for_set_servers),
+        org_max_permission: policy
+            .org_max_permission
+            .map(dynamic_mcp_org_permission_for_set_servers),
+    }
+}
+
+const fn dynamic_mcp_tool_permission_policy_for_set_servers(
+    policy: model::McpServerToolPermissionPolicy,
+) -> types::McpServerToolPermissionPolicy {
+    match policy {
+        model::McpServerToolPermissionPolicy::Allow => types::McpServerToolPermissionPolicy::Allow,
+        model::McpServerToolPermissionPolicy::Ask => types::McpServerToolPermissionPolicy::Ask,
+        model::McpServerToolPermissionPolicy::Deny => types::McpServerToolPermissionPolicy::Deny,
+    }
+}
+
+const fn dynamic_mcp_org_permission_for_set_servers(
+    permission: model::McpServerOrgMaxPermission,
+) -> types::McpServerOrgMaxPermission {
+    match permission {
+        model::McpServerOrgMaxPermission::Allow => types::McpServerOrgMaxPermission::Allow,
+        model::McpServerOrgMaxPermission::Ask => types::McpServerOrgMaxPermission::Ask,
+        model::McpServerOrgMaxPermission::Blocked => types::McpServerOrgMaxPermission::Blocked,
+    }
+}
+
+pub(crate) fn apply_mcp_config_remove_success(
+    app: &mut App,
+    server_name: &str,
+    scope: &str,
+    claude_path: std::path::PathBuf,
+) {
+    let scope_name = McpConfigScope::from_status_scope(scope)
+        .map_or_else(|| normalize_mcp_config_scope_key(scope), |scope| scope.cli_arg().to_owned());
+    app.mcp.claude_path = Some(claude_path);
+    apply_mcp_config_remove_success_state(app, server_name, &scope_name);
+    crate::app::session_runtime::request_runtime_reload(app);
+    request_mcp_snapshot(app);
+}
+
+fn apply_mcp_dynamic_config_remove_success(app: &mut App, server_name: &str) {
+    apply_mcp_config_remove_success_state(app, server_name, McpConfigScope::Dynamic.cli_arg());
+    request_mcp_snapshot(app);
+}
+
+pub(crate) fn handle_mcp_set_servers_result(app: &mut App, result: &types::McpSetServersResult) {
+    let Some(server_name) = app.mcp.pending_dynamic_config_removal.take() else {
+        return;
+    };
+    if let Some((_, message)) =
+        result.errors.iter().find(|(name, _)| name.eq_ignore_ascii_case(&server_name))
+    {
+        apply_mcp_config_remove_failure(
+            app,
+            &server_name,
+            McpConfigScope::Dynamic.cli_arg(),
+            message,
+        );
+        return;
+    }
+
+    tracing::info!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "mcp_dynamic_remove_completed",
+        message = "dynamic MCP removal completed",
+        outcome = "success",
+        server_name = %server_name,
+        added_count = result.added.len(),
+        removed_count = result.removed.len(),
+        error_count = result.errors.len(),
+    );
+    apply_mcp_dynamic_config_remove_success(app, &server_name);
+}
+
+fn apply_mcp_config_remove_success_state(app: &mut App, server_name: &str, scope_name: &str) {
+    remember_removed_config_mcp_server(app, scope_name, server_name);
+    remove_matching_mcp_server_from_snapshot(app, scope_name, server_name);
+    app.config.mcp_selected_server_index =
+        app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
+    app.mcp.last_error = None;
+    app.config.last_error = None;
+    app.config.status_message =
+        Some(format!("Removed MCP server {server_name} from {scope_name} config."));
+}
+
+fn remember_removed_config_mcp_server(app: &mut App, scope: &str, server_name: &str) {
+    app.mcp.removed_config_servers.insert(normalized_removed_config_key(scope, server_name));
+}
+
+fn remove_matching_mcp_server_from_snapshot(app: &mut App, scope: &str, server_name: &str) {
+    let removed_key = normalized_removed_config_key(scope, server_name);
+    app.mcp.servers.retain(|server| !mcp_server_matches_removed_key(server, &removed_key));
+}
+
+pub(crate) fn filter_removed_config_mcp_servers(
+    app: &App,
+    servers: &mut Vec<crate::agent::model::McpServerStatus>,
+) {
+    if app.mcp.removed_config_servers.is_empty() {
+        return;
+    }
+    servers.retain(|server| !is_removed_config_mcp_server_suppressed(app, server));
+}
+
+fn is_removed_config_mcp_server_suppressed(
+    app: &App,
+    server: &crate::agent::model::McpServerStatus,
+) -> bool {
+    app.mcp
+        .removed_config_servers
+        .iter()
+        .any(|removed_key| mcp_server_matches_removed_key(server, removed_key))
+}
+
+fn mcp_server_matches_removed_key(
+    server: &crate::agent::model::McpServerStatus,
+    removed_key: &(String, String),
+) -> bool {
+    server
+        .scope
+        .as_deref()
+        .is_some_and(|scope| normalized_removed_config_key(scope, &server.name) == *removed_key)
+}
+
+fn normalized_removed_config_key(scope: &str, server_name: &str) -> (String, String) {
+    (normalize_mcp_config_scope_key(scope), server_name.to_ascii_lowercase())
+}
+
+fn normalize_mcp_config_scope_key(scope: &str) -> String {
+    scope.trim().to_ascii_lowercase()
+}
+
+pub(crate) fn apply_mcp_config_remove_failure(
+    app: &mut App,
+    server_name: &str,
+    scope: &str,
+    message: &str,
+) {
+    app.mcp.in_flight = false;
+    let formatted =
+        format!("Failed to remove MCP server {server_name} from {scope} config: {message}");
+    app.mcp.last_error = Some(formatted.clone());
+    app.config.last_error = Some(formatted.clone());
+    app.config.status_message = None;
+    if app.config.overlay.is_some() {
+        app.config.set_overlay_error(formatted);
+    } else {
+        app.config.last_error = Some(formatted);
+    }
+}
+
 pub(crate) fn submit_mcp_oauth_callback_url(
     app: &mut App,
     server_name: &str,
@@ -470,6 +923,13 @@ pub(crate) fn open_mcp_server_details(
 }
 
 #[must_use]
+pub(crate) fn mcp_config_removal_scope(
+    server: &crate::agent::model::McpServerStatus,
+) -> Option<McpConfigScope> {
+    server.scope.as_deref().and_then(McpConfigScope::from_status_scope)
+}
+
+#[must_use]
 pub(crate) fn available_mcp_actions(
     server: &crate::agent::model::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
@@ -489,6 +949,9 @@ pub(crate) fn available_mcp_actions(
         actions.push(McpServerActionKind::Reconnect);
         actions.push(McpServerActionKind::Disable);
     }
+    if let Some(scope) = mcp_config_removal_scope(server) {
+        actions.push(remove_action_for_mcp_config_scope(scope));
+    }
     actions
 }
 
@@ -497,13 +960,23 @@ pub(crate) fn is_mcp_action_available(
     server: &crate::agent::model::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
-    !matches!(
-        (action, server.config.as_ref()),
-        (
-            McpServerActionKind::Authenticate,
+    match action {
+        McpServerActionKind::Authenticate => !matches!(
+            server.config.as_ref(),
             Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy { .. })
-        )
-    )
+        ),
+        McpServerActionKind::RemoveUserConfig
+        | McpServerActionKind::RemoveLocalConfig
+        | McpServerActionKind::RemoveProjectConfig
+        | McpServerActionKind::RemoveDynamicConfig => {
+            action.mcp_config_scope() == mcp_config_removal_scope(server)
+        }
+        McpServerActionKind::RefreshSnapshot
+        | McpServerActionKind::ClearAuth
+        | McpServerActionKind::Reconnect
+        | McpServerActionKind::Enable
+        | McpServerActionKind::Disable => true,
+    }
 }
 
 pub(crate) fn present_mcp_elicitation_request(
@@ -610,6 +1083,18 @@ pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
     error: &crate::agent::types::McpOperationError,
 ) {
+    if error.operation == "set-servers"
+        && let Some(server_name) = app.mcp.pending_dynamic_config_removal.take()
+    {
+        apply_mcp_config_remove_failure(
+            app,
+            &server_name,
+            McpConfigScope::Dynamic.cli_arg(),
+            &error.message,
+        );
+        return;
+    }
+
     app.mcp.in_flight = false;
     let formatted = format_mcp_operation_error(error);
     app.mcp.last_error = Some(formatted.clone());
@@ -635,6 +1120,7 @@ fn format_mcp_operation_error(error: &crate::agent::types::McpOperationError) ->
         "authenticate" => "authenticate",
         "clear-auth" => "clear auth for",
         "reconnect" => "reconnect",
+        "set-servers" => "update dynamic config for",
         "toggle" => "update",
         "submit-callback-url" => "submit callback URL for",
         other => other,

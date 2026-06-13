@@ -95,6 +95,9 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::McpOperationError { error, .. } => {
             let _ = event_tx.send(ClientEvent::McpOperationError { error });
         }
+        crate::agent::wire::BridgeEvent::McpSetServersResult { session_id, result } => {
+            let _ = event_tx.send(ClientEvent::McpSetServersResult { session_id, result });
+        }
         crate::agent::wire::BridgeEvent::TurnComplete { terminal_reason, .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
         }

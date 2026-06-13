@@ -20,9 +20,10 @@ pub(crate) use edit::{
 };
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-    McpElicitationOverlayState, available_mcp_actions, handle_mcp_elicitation_completed,
-    handle_mcp_operation_error, is_mcp_action_available, present_mcp_auth_redirect,
-    present_mcp_elicitation_request, refresh_mcp_snapshot,
+    McpElicitationOverlayState, apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
+    available_mcp_actions, filter_removed_config_mcp_servers, handle_mcp_elicitation_completed,
+    handle_mcp_operation_error, handle_mcp_set_servers_result, is_mcp_action_available,
+    present_mcp_auth_redirect, present_mcp_elicitation_request, refresh_mcp_snapshot,
 };
 pub(crate) use resolve::language_input_validation_message;
 use resolve::resolve_setting_document;
@@ -814,6 +815,7 @@ pub enum ConfirmationAction {
     InstalledPluginUninstall,
     MarketplaceRemove,
     McpClearAuth,
+    McpRemoveConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
