@@ -5305,3 +5305,54 @@ test("attachRequestUserDialogInterceptor preserves non-dialog control requests",
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.request.subtype, "can_use_tool");
 });
+
+test("attachRequestUserDialogInterceptor delegates replayed pending permission requests", async () => {
+  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
+  const fakeQuery = {
+    async processControlRequest(
+      request: { request_id: string; request: Record<string, unknown> },
+      _signal: AbortSignal,
+    ): Promise<Record<string, unknown>> {
+      calls.push(request);
+      return { ok: true };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const replayedPendingPermission = {
+    request_id: "pending-permission-1",
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      input: {
+        file_path: "C:/work/file.txt",
+        content: "hello",
+      },
+      permission_suggestions: [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Write" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ],
+      blocked_path: "C:/work/file.txt",
+      title: "Write file",
+      display_name: "Write",
+      description: "Create or overwrite a file",
+      tool_use_id: "tool-pending-1",
+    },
+  };
+
+  attachRequestUserDialogInterceptor(fakeQuery, () => "session-test");
+  const result = await (
+    fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
+      processControlRequest: (
+        request: { request_id: string; request: Record<string, unknown> },
+        signal: AbortSignal,
+      ) => Promise<Record<string, unknown> | undefined>;
+    }
+  ).processControlRequest(replayedPendingPermission, new AbortController().signal);
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [replayedPendingPermission]);
+});
