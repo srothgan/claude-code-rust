@@ -39,11 +39,16 @@ pub enum ClientEvent {
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnError {
+        message: String,
+        api_error_status: Option<u16>,
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
         message: String,
         class: TurnErrorClass,
+        api_error_status: Option<u16>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
     /// Background connection completed successfully.
@@ -89,13 +94,13 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: crate::agent::types::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: model::AccountInfo },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
-        servers: Vec<crate::agent::types::McpServerStatus>,
+        servers: Vec<model::McpServerStatus>,
         error: Option<String>,
     },
     /// Usage refresh task started.

@@ -1,9 +1,8 @@
 use super::theme;
 use crate::app::App;
 use crate::app::plugins::{
-    PluginCapability, PluginsViewTab, display_label, filtered_installed,
-    filtered_marketplace_plugins, ordered_installed, relevant_installed_count, search_enabled,
-    visible_marketplaces,
+    PluginCapability, PluginsViewTab, display_label, filtered_marketplace_plugins,
+    ordered_installed, search_enabled, visible_marketplaces,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -98,7 +97,7 @@ fn tab_header_line(app: &App) -> Line<'static> {
         .flat_map(|(index, tab)| {
             let active = tab == app.plugins.active_tab;
             let count = match tab {
-                PluginsViewTab::Installed => filtered_installed(&app.plugins).len(),
+                PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
                 PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
                 PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
             };
@@ -192,23 +191,12 @@ fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> Rende
             lines
         })
         .collect::<Vec<_>>();
-    let relevant_count = relevant_installed_count(&app.plugins, &app.cwd_raw);
-    let divider_after = if relevant_count > 0 && relevant_count < blocks.len() {
-        Some(relevant_count.saturating_sub(1))
-    } else {
-        None
-    };
-    let top_label = divider_after.map(|_| section_label_line("Available here"));
-    let divider = divider_line(viewport_width, "Installed elsewhere");
 
-    RenderedList::from_blocks_with_sections(
+    RenderedList::from_blocks(
         &blocks,
         app.plugins.installed_selected_index,
         viewport_width,
         viewport_height,
-        top_label,
-        divider_after,
-        &divider,
     )
 }
 
@@ -367,50 +355,6 @@ impl RenderedList {
 
         Self { lines, scroll: selected_scroll(selected_start, selected_height, viewport_height) }
     }
-
-    fn from_blocks_with_sections(
-        blocks: &[Vec<Line<'static>>],
-        selected_index: usize,
-        viewport_width: u16,
-        viewport_height: u16,
-        top_label: Option<Line<'static>>,
-        divider_after: Option<usize>,
-        divider: &Line<'static>,
-    ) -> Self {
-        let mut lines = Vec::new();
-        let mut selected_start = 0usize;
-        let mut selected_height = 1usize;
-        let mut offset = 0usize;
-        let divider_height = visual_line_height(divider, viewport_width).saturating_add(1);
-        let top_label_height = top_label
-            .as_ref()
-            .map_or(0, |line| visual_line_height(line, viewport_width).saturating_add(1));
-
-        if let Some(label) = top_label {
-            lines.push(label);
-            lines.push(Line::default());
-            offset = offset.saturating_add(top_label_height);
-        }
-
-        for (index, block) in blocks.iter().enumerate() {
-            let block_height = visual_block_height(block, viewport_width).saturating_add(1);
-            if index == selected_index {
-                selected_start = offset;
-                selected_height = block_height;
-            }
-            lines.extend(block.iter().cloned());
-            lines.push(Line::default());
-            offset = offset.saturating_add(block_height);
-
-            if divider_after == Some(index) {
-                lines.push(divider.clone());
-                lines.push(Line::default());
-                offset = offset.saturating_add(divider_height);
-            }
-        }
-
-        Self { lines, scroll: selected_scroll(selected_start, selected_height, viewport_height) }
-    }
 }
 
 fn selected_scroll(selected_start: usize, selected_height: usize, viewport_height: u16) -> u16 {
@@ -436,33 +380,11 @@ fn visual_line_height(line: &Line<'static>, viewport_width: u16) -> usize {
     visual_width.div_ceil(width)
 }
 
-fn section_label_line(text: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-    ))
-}
-
 fn capability_badge_colors(capability: PluginCapability) -> (Color, Color) {
     match capability {
         PluginCapability::Skill => (Color::White, Color::Rgb(64, 64, 64)),
         PluginCapability::Mcp => (Color::White, Color::Rgb(34, 92, 124)),
     }
-}
-
-fn divider_line(viewport_width: u16, label: &str) -> Line<'static> {
-    let min_width = usize::from(viewport_width.max(20));
-    let label_text = format!(" {label} ");
-    let label_width = UnicodeWidthStr::width(label_text.as_str());
-    let fill_width = min_width.saturating_sub(label_width).max(4);
-    let left_width = fill_width / 2;
-    let right_width = fill_width.saturating_sub(left_width);
-
-    Line::from(vec![
-        Span::styled("─".repeat(left_width), Style::default().fg(theme::DIM)),
-        Span::styled(label_text, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled("─".repeat(right_width), Style::default().fg(theme::DIM)),
-    ])
 }
 
 #[cfg(test)]

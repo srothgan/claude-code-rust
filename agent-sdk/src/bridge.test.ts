@@ -12,8 +12,13 @@ import {
   buildSessionListOptions,
   buildToolResultFields,
   createToolCall,
+  applySessionAgent,
+  applySessionEffort,
+  emitAgentConfigOptionUpdate,
+  emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
+  mapSdkAccountInfo,
   mapAvailableAgents,
   mapAvailableModels,
   mapSessionMessagesToUpdates,
@@ -25,6 +30,9 @@ import {
   parseFastModeState,
   parseRuntimeSessionState,
   parseRateLimitStatus,
+  bridgeMcpConfigToSdk,
+  mapMcpServerStatus,
+  mapMcpServerStatusConfig,
   normalizeSettingsParseError,
   normalizeToolKind,
   parseCommandEnvelope,
@@ -34,8 +42,10 @@ import {
   staleMcpAuthCandidates,
   resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
+  updateAvailableCommands,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import {
   availableModesForSession,
   buildModeState,
@@ -50,7 +60,9 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
-import { emitToolProgressUpdate } from "./bridge/tool_calls.js";
+import { classifyTurnErrorKind } from "./bridge/error_classification.js";
+import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
+import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
 
@@ -80,7 +92,10 @@ function makeSessionState(): SessionState {
     connected: true,
     connectEvent: "connected",
     toolCalls: new Map(),
+    tasksById: new Map(),
+    taskOrder: [],
     taskToolUseIds: new Map(),
+    taskIdsByToolUseId: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
     pendingElicitations: new Map(),
@@ -217,14 +232,16 @@ function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
   (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
     chunk: unknown,
   ): boolean => {
-    if (typeof chunk === "string") {
-      writes.push(chunk);
-    } else if (Buffer.isBuffer(chunk)) {
-      writes.push(chunk.toString("utf8"));
-    } else {
-      writes.push(String(chunk));
+    const text = Buffer.isBuffer(chunk)
+      ? chunk.toString("utf8")
+      : typeof chunk === "string"
+        ? chunk
+        : String(chunk);
+    if (text.trimStart().startsWith("{")) {
+      writes.push(text);
+      return true;
     }
-    return true;
+    return originalWrite.call(process.stdout, chunk as never);
   };
 
   try {
@@ -253,14 +270,16 @@ async function captureBridgeEventsAsync(
   (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
     chunk: unknown,
   ): boolean => {
-    if (typeof chunk === "string") {
-      writes.push(chunk);
-    } else if (Buffer.isBuffer(chunk)) {
-      writes.push(chunk.toString("utf8"));
-    } else {
-      writes.push(String(chunk));
+    const text = Buffer.isBuffer(chunk)
+      ? chunk.toString("utf8")
+      : typeof chunk === "string"
+        ? chunk
+        : String(chunk);
+    if (text.trimStart().startsWith("{")) {
+      writes.push(text);
+      return true;
     }
-    return true;
+    return originalWrite.call(process.stdout, chunk as never);
   };
 
   try {
@@ -411,6 +430,14 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
           headers: {
             "X-Test": "1",
           },
+          timeout: 5000,
+          always_load: true,
+          tools: [
+            {
+              name: "search",
+              permission_policy: "always_ask",
+            },
+          ],
         },
       },
     }),
@@ -429,8 +456,131 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
       headers: {
         "X-Test": "1",
       },
+      timeout: 5000,
+      always_load: true,
+      tools: [
+        {
+          name: "search",
+          permission_policy: "always_ask",
+        },
+      ],
     },
   });
+});
+
+test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: { bad: { type: "http", url: "https://mcp.example.com", timeout: 999 } },
+        }),
+      ),
+    /mcp_set_servers\.servers\.bad\.timeout must be an integer >= 1000/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: { bad: { type: "http", url: "https://mcp.example.com", always_load: "yes" } },
+        }),
+      ),
+    /mcp_set_servers\.servers\.bad\.always_load must be a boolean/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "http",
+              url: "https://mcp.example.com",
+              tools: [{ name: "read", permission_policy: "sometimes" }],
+            },
+          },
+        }),
+      ),
+    /permission_policy must be one of always_allow, always_ask, always_deny/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "stdio",
+              command: "npx",
+              tools: [{ name: "read", permission_policy: "always_allow" }],
+            },
+          },
+        }),
+      ),
+    /tools is only supported for http and sse MCP servers/,
+  );
+});
+
+test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
+  assert.deepEqual(
+    bridgeMcpConfigToSdk({
+      type: "sse",
+      url: "https://mcp.example.com/sse",
+      timeout: 2500,
+      always_load: true,
+      tools: [{ name: "search", permission_policy: "always_allow" }],
+    }),
+    {
+      type: "sse",
+      url: "https://mcp.example.com/sse",
+      timeout: 2500,
+      alwaysLoad: true,
+      tools: [{ name: "search", permission_policy: "always_allow" }],
+    },
+  );
+});
+
+test("mapMcpServerStatus preserves latest MCP status config fields", () => {
+  const mapped = mapMcpServerStatus({
+    name: "notion",
+    status: "connected",
+    config: {
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer token" },
+      timeout: 5000,
+      alwaysLoad: true,
+      tools: [{ name: "search", permission_policy: "always_deny" }],
+    },
+    tools: [],
+  });
+
+  assert.deepEqual(mapped.config, {
+    type: "http",
+    url: "https://mcp.notion.com/mcp",
+    headers: { Authorization: "Bearer token" },
+    timeout: 5000,
+    always_load: true,
+    tools: [{ name: "search", permission_policy: "always_deny" }],
+  });
+});
+
+test("mapMcpServerStatusConfig maps unknown config types without throwing", () => {
+  const mapped = mapMcpServerStatusConfig({
+    type: "future-transport",
+    url: "future://server",
+  } as unknown as NonNullable<import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]>);
+
+  assert.deepEqual(mapped, { type: "unknown", raw_type: "future-transport" });
 });
 
 test("parseCommandEnvelope validates reload_plugins command", () => {
@@ -593,6 +743,8 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
   });
+  const _systemPrompt: NonNullable<Options["systemPrompt"]> = options.systemPrompt;
+  assert.ok(_systemPrompt);
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
   assert.equal("allowDangerouslySkipPermissions" in options, false);
@@ -732,6 +884,57 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
     append: BRIDGE_RUNTIME_GUARD_PROMPT,
   });
   assert.equal("agentProgressSummaries" in options, false);
+});
+
+test("buildQueryOptions forwards SDK-provided spawn env without passing top-level env", async () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {},
+    provisionalSessionId: "session-spawn-env",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-spawn-env",
+  });
+
+  assert.equal("env" in options, false);
+
+  const previousParentOnly = process.env.PHASE10_PARENT_ONLY;
+  process.env.PHASE10_PARENT_ONLY = "must-not-leak";
+  try {
+    const child = options.spawnClaudeCodeProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null}))",
+      ],
+      cwd: process.cwd(),
+      env: { PHASE10_ENV_CHECK: "forwarded" },
+      signal: new AbortController().signal,
+    });
+
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code) => resolve(code));
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null });
+  } finally {
+    if (previousParentOnly === undefined) {
+      delete process.env.PHASE10_PARENT_ONLY;
+    } else {
+      process.env.PHASE10_PARENT_ONLY = previousParentOnly;
+    }
+  }
 });
 
 test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
@@ -901,6 +1104,10 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
             content: { type: "text", text: "Found the auth bug and prepared the fix" },
           },
         ],
+        task_metadata: {
+          summary: "Found the auth bug and prepared the fix",
+          terminal_status: "completed",
+        },
       },
     },
   });
@@ -1161,6 +1368,7 @@ test("handleTaskSystemMessage uses task_updated terminal error text when descrip
         task_metadata: {
           error: "Task stopped by parent agent",
           end_time: 1234,
+          terminal_status: "killed",
           total_paused_ms: 250,
         },
       },
@@ -1200,7 +1408,792 @@ test("handleTaskSystemMessage merges task metadata patches into the linked task 
   });
 });
 
-test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
+test("Monitor launch links task id and accepts task lifecycle updates", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-monitor", "Monitor", {
+      description: "watch deploy logs",
+      timeout_ms: 30000,
+      persistent: false,
+      command: "tail -f deploy.log",
+    });
+    emitToolResultUpdate(session, "tool-monitor", false, {
+      taskId: "monitor-1",
+      timeoutMs: 30000,
+      persistent: false,
+    });
+  });
+
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "monitor-1",
+      patch: {
+        status: "running",
+        description: "Monitor observed deploy log output",
+        is_backgrounded: true,
+      },
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-monitor");
+  assert.equal(toolCall?.status, "in_progress");
+  assert.equal(toolCall?.raw_output, "Monitor observed deploy log output");
+  assert.equal(toolCall?.task_metadata?.is_backgrounded, true);
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+});
+
+test("Monitor launch stays in progress after successful assistant turn until final lifecycle notification", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-monitor", "Monitor", {
+      description: "watch deploy logs",
+      timeout_ms: 30000,
+      persistent: false,
+      command: "tail -f deploy.log",
+    });
+    emitToolResultUpdate(session, "tool-monitor", false, {
+      taskId: "monitor-1",
+      timeoutMs: 30000,
+      persistent: false,
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+    });
+  });
+
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "monitor-1",
+      tool_use_id: "tool-monitor",
+      status: "completed",
+      output_file: "C:/tmp/monitor-1.output",
+      summary: "Monitor completed",
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-monitor");
+  assert.equal(toolCall?.status, "completed");
+  assert.equal(toolCall?.raw_output, "Monitor completed");
+  assert.equal(toolCall?.task_metadata?.output_file, "C:/tmp/monitor-1.output");
+  assert.equal(session.taskToolUseIds.has("monitor-1"), false);
+  assert.equal(session.taskIdsByToolUseId.has("tool-monitor"), false);
+});
+
+test("Workflow task notifications finish the linked root tool", () => {
+  for (const [sdkStatus, expectedStatus] of [
+    ["completed", "completed"],
+    ["stopped", "killed"],
+    ["failed", "failed"],
+  ] as const) {
+    const session = makeSessionState();
+    captureBridgeEvents(() => {
+      emitToolCall(session, `tool-workflow-${sdkStatus}`, "Workflow", {
+        name: "spec",
+      });
+      emitToolResultUpdate(session, `tool-workflow-${sdkStatus}`, false, {
+        status: "async_launched",
+        taskId: `workflow-${sdkStatus}`,
+        runId: `run-${sdkStatus}`,
+      });
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: `workflow-${sdkStatus}`,
+        status: sdkStatus,
+        output_file: `C:/tmp/workflow-${sdkStatus}.output`,
+        summary: `Workflow ${sdkStatus}`,
+      });
+    });
+
+    const toolCall = session.toolCalls.get(`tool-workflow-${sdkStatus}`);
+    assert.equal(toolCall?.status, expectedStatus);
+    assert.equal(toolCall?.raw_output, `Workflow ${sdkStatus}`);
+    assert.equal(toolCall?.task_metadata?.output_file, `C:/tmp/workflow-${sdkStatus}.output`);
+    assert.equal(toolCall?.task_metadata?.summary, `Workflow ${sdkStatus}`);
+    assert.equal(toolCall?.task_metadata?.terminal_status, sdkStatus);
+    assert.equal(session.taskToolUseIds.has(`workflow-${sdkStatus}`), false);
+    assert.equal(session.taskIdsByToolUseId.has(`tool-workflow-${sdkStatus}`), false);
+  }
+});
+
+test("TaskCreate output emits task state and links lifecycle task id", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-create", "TaskCreate", {
+      subject: "Audit state",
+      description: "Check task reducer",
+      activeForm: "Auditing state",
+      metadata: { phase: "6A" },
+    });
+    emitToolResultUpdate(session, "tool-create", false, {
+      task: { id: "task-1", subject: "Audit state" },
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "tool_call"), true);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-create";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_create",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Audit state",
+        description: "Check task reducer",
+        active_form: "Auditing state",
+        status: "pending",
+        blocks: [],
+        blocked_by: [],
+        metadata: { phase: "6A" },
+        source_tool_call_id: "tool-create",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.taskToolUseIds.get("task-1"), "tool-create");
+});
+
+test("TaskCreate transcript toolUseResult object emits typed task state", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-create-transcript",
+            name: "TaskCreate",
+            input: {
+              subject: "Scaffold Next.js app",
+              description: "Run create-next-app",
+              activeForm: "Scaffolding Next.js app",
+            },
+          },
+        ],
+      },
+      uuid: "message-task-create",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-create-transcript",
+            content: "Task #1 created successfully: Scaffold Next.js app",
+          },
+        ],
+      },
+      toolUseResult: { task: { id: "1", subject: "Scaffold Next.js app" } },
+      uuid: "message-task-create-result",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-create-transcript";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_create",
+    tasks: [
+      {
+        task_id: "1",
+        subject: "Scaffold Next.js app",
+        description: "Run create-next-app",
+        active_form: "Scaffolding Next.js app",
+        status: "pending",
+        blocks: [],
+        blocked_by: [],
+        source_tool_call_id: "tool-create-transcript",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TodoWrite tool use remains generic and emits no plan or task state", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-todo",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                {
+                  content: "Legacy todo",
+                  status: "in_progress",
+                  activeForm: "Working legacy todo",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      uuid: "message-todo",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "tool_call"), true);
+  assert.equal(updates.some((update) => update.type === "plan"), false);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(session.tasksById.size, 0);
+});
+
+test("TaskUpdate success patches one task by task id", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Old",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-update", "TaskUpdate", {
+      taskId: "task-1",
+      subject: "New",
+      status: "in_progress",
+      addBlocks: ["task-2"],
+      metadata: { mode: "patch" },
+    });
+    emitToolResultUpdate(session, "tool-update", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["subject", "status", "addBlocks", "metadata"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-update";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+
+  const taskUpdate = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "New",
+        status: "in_progress",
+        blocks: ["task-2"],
+        blocked_by: [],
+        metadata: { mode: "patch" },
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TaskUpdate title uses known subject when input only has task id", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app via create-next-app CLI",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-update-title", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+  });
+
+  const toolCall = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "tool_call")?.tool_call as Record<string, unknown> | undefined;
+  assert.equal(toolCall?.title, "Update task: Scaffold Next.js app via create-next-app CLI");
+});
+
+test("TaskOutput renders structured fields and deduplicates XML content without mutating task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-output", "TaskOutput", {
+      task_id: "task-1",
+      block: true,
+      timeout: 1000,
+    });
+    emitToolResultUpdate(
+      session,
+      "tool-output",
+      false,
+      "<retrieval_status>not_ready</retrieval_status>\n\n<task_id>task-1</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>running</status>",
+      {
+        retrieval_status: "not_ready",
+        task: {
+          task_id: "task-1",
+          task_type: "local_bash",
+          status: "running",
+          description: "Run a ticking loop in the background",
+          output: "",
+          exitCode: null,
+        },
+      },
+    );
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(toolCall?.kind, "other");
+  assert.equal(toolCall?.title, "Task output: Watch build");
+
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-output";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Retrieval status: not ready\nTask type: local bash\nStatus: running\nDescription: Run a ticking loop in the background",
+      },
+    },
+  ]);
+  const text = (((fields?.content as Array<Record<string, unknown>> | undefined)?.[0]?.content as
+    | Record<string, unknown>
+    | undefined)?.text ?? "") as string;
+  assert.equal(text.includes("<retrieval_status>"), false);
+  assert.equal(text.includes("Task ID: task-1"), false);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(session.tasksById.get("task-1")?.status, "in_progress");
+});
+
+test("TaskOutput parses XML leaf fields when structured result is unavailable", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-output-xml", "TaskOutput", {
+      task_id: "task-xml",
+      block: false,
+      timeout: 4000,
+    });
+    emitToolResultUpdate(
+      session,
+      "tool-output-xml",
+      false,
+      "<retrieval_status>not_ready</retrieval_status>\n\n<task_id>task-xml</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>running</status>",
+    );
+  });
+
+  const result = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => {
+      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      return toolCallUpdate?.tool_call_id === "tool-output-xml";
+    })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Retrieval status: not ready\nTask type: local bash\nStatus: running",
+      },
+    },
+  ]);
+});
+
+test("TaskStop renders structured output and marks the task terminal", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+  linkTaskToolUse(session, "task-1", "tool-agent");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-stop", "TaskStop", {
+      task_id: "task-1",
+    });
+    emitToolResultUpdate(session, "tool-stop", false, {
+      message: "Stopped task",
+      task_id: "task-1",
+      task_type: "bash",
+      command: "npm run watch",
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(toolCall?.kind, "other");
+  assert.equal(toolCall?.title, "Stop task: Watch build");
+
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-stop";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.deepEqual(fields?.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Message: Stopped task\nTask ID: task-1\nTask type: bash\nCommand: npm run watch",
+      },
+    },
+  ]);
+
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Watch build",
+        status: "completed",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          terminal_status: "stopped",
+          task_type: "bash",
+          command: "npm run watch",
+        },
+        source_tool_call_id: "tool-agent",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.taskToolUseIds.has("task-1"), false);
+});
+
+test("TaskUpdate in-progress result leaves activity rendering to app task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app via create-next-app CLI",
+    active_form: "Scaffolding Next.js app",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-activity", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+    emitToolResultUpdate(session, "tool-activity", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-activity";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+  assert.equal(Object.hasOwn(fields ?? {}, "content"), false);
+  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Scaffold Next.js app via create-next-app CLI",
+        active_form: "Scaffolding Next.js app",
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
+test("TaskUpdate in-progress result omits activity when none is known", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Scaffold Next.js app",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-no-activity", "TaskUpdate", {
+      taskId: "task-1",
+      status: "in_progress",
+    });
+    emitToolResultUpdate(session, "tool-no-activity", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const result = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => {
+      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      return toolCallUpdate?.tool_call_id === "tool-no-activity";
+    })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(Object.hasOwn(fields ?? {}, "content"), false);
+  assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
+});
+
+test("TaskUpdate deleted removes task without persisting deleted status", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Delete me",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-delete", "TaskUpdate", {
+      taskId: "task-1",
+      status: "deleted",
+    });
+    emitToolResultUpdate(session, "tool-delete", false, {
+      success: true,
+      taskId: "task-1",
+      updatedFields: ["status"],
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-delete";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  assert.equal(resultFields?.status, "completed");
+  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
+  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
+    type: "task_state_update",
+    source: "task_update",
+    tasks: [],
+    removed_task_ids: ["task-1"],
+    is_complete_snapshot: false,
+  });
+  assert.equal(session.tasksById.has("task-1"), false);
+});
+
+test("failed TaskUpdate output renders failure but does not mutate task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Stable",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-failed-update", "TaskUpdate", {
+      taskId: "task-1",
+      status: "completed",
+    });
+    emitToolResultUpdate(session, "tool-failed-update", false, {
+      success: false,
+      taskId: "task-1",
+      updatedFields: [],
+      error: "Task missing",
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  const toolResult = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-failed-update";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  assert.equal((toolResult?.fields as Record<string, unknown> | undefined)?.status, "failed");
+  assert.equal(session.tasksById.get("task-1")?.status, "pending");
+});
+
+test("TaskList complete snapshot preserves richer retained fields", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Existing",
+    description: "Keep this",
+    active_form: "Working",
+    status: "in_progress",
+    blocks: ["task-9"],
+    blocked_by: [],
+  });
+  session.tasksById.set("task-2", {
+    task_id: "task-2",
+    subject: "Removed",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1", "task-2");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-list", "TaskList", {});
+    emitToolResultUpdate(session, "tool-list", false, {
+      tasks: [
+        {
+          id: "task-1",
+          subject: "Listed",
+          status: "completed",
+          owner: "agent",
+          blockedBy: ["task-3"],
+        },
+      ],
+    });
+  });
+
+  const taskUpdate = events
+    .map((event) => event.update as Record<string, unknown>)
+    .find((update) => update.type === "task_state_update");
+  assert.deepEqual(taskUpdate, {
+    type: "task_state_update",
+    source: "task_list",
+    tasks: [
+      {
+        task_id: "task-1",
+        subject: "Listed",
+        description: "Keep this",
+        active_form: "Working",
+        status: "completed",
+        owner: "agent",
+        blocks: ["task-9"],
+        blocked_by: ["task-3"],
+      },
+    ],
+    removed_task_ids: ["task-2"],
+    is_complete_snapshot: true,
+  });
+});
+
+test("TaskGet null emits removal or confirmed absence", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Maybe gone",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-get", "TaskGet", { taskId: "task-1" });
+    emitToolResultUpdate(session, "tool-get", false, { task: null });
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update as Record<string, unknown>).find((update) => update.type === "task_state_update"),
+    {
+      type: "task_state_update",
+      source: "task_get",
+      tasks: [],
+      removed_task_ids: ["task-1"],
+      is_complete_snapshot: false,
+    },
+  );
+  assert.equal(session.tasksById.has("task-1"), false);
+});
+
+test("handleTaskSystemMessage emits task state for unlinked task_updated messages", () => {
   const session = makeSessionState();
 
   const events = captureBridgeEvents(() => {
@@ -1213,7 +2206,119 @@ test("handleTaskSystemMessage skips unlinked task_updated messages", () => {
     });
   });
 
-  assert.equal(events.length, 0);
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-missing",
+          subject: "This should not be emitted",
+          description: "This should not be emitted",
+          status: "in_progress",
+          blocks: [],
+          blocked_by: [],
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  ]);
+});
+
+test("handleTaskSystemMessage maps stopped notifications to terminal task state", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-1", {
+    task_id: "task-1",
+    subject: "Watch build",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.taskOrder.push("task-1");
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-1",
+      status: "stopped",
+      output_file: "C:/tmp/task-1.txt",
+      summary: "Stopped background watch",
+    });
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-1",
+          subject: "Watch build",
+          description: "Stopped background watch",
+          status: "completed",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            output_file: "C:/tmp/task-1.txt",
+            summary: "Stopped background watch",
+            terminal_status: "stopped",
+          },
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  ]);
+});
+
+test("handleSdkMessage emits MCP snapshot from init status payload", () => {
+  const session = makeSessionState();
+  session.query = {
+    supportedCommands: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: "session-1",
+      model: "sonnet",
+      mcp_servers: [
+        {
+          name: "docs",
+          status: "pending",
+          config: {
+            type: "stdio",
+            command: "npx",
+            args: ["-y", "@anthropic-ai/mcp-docs"],
+            timeout: 3000,
+            alwaysLoad: true,
+          },
+          tools: [],
+        },
+      ],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const snapshot = events.find((event) => event.event === "mcp_snapshot");
+  assert.deepEqual(snapshot, {
+    event: "mcp_snapshot",
+    session_id: "session-1",
+    servers: [
+      {
+        name: "docs",
+        status: "pending",
+        config: {
+          type: "stdio",
+          command: "npx",
+          args: ["-y", "@anthropic-ai/mcp-docs"],
+          timeout: 3000,
+          always_load: true,
+        },
+        tools: [],
+      },
+    ],
+  });
 });
 
 test("emitToolProgressUpdate does not reopen completed tools", () => {
@@ -1449,10 +2554,24 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Bash"), "execute");
   assert.equal(normalizeToolKind("Delete"), "delete");
   assert.equal(normalizeToolKind("Move"), "move");
+  assert.equal(normalizeToolKind("EnterWorktree"), "other");
+  assert.equal(normalizeToolKind("ExitWorktree"), "other");
+  assert.equal(normalizeToolKind("CronCreate"), "other");
+  assert.equal(normalizeToolKind("CronDelete"), "other");
+  assert.equal(normalizeToolKind("CronList"), "other");
+  assert.equal(normalizeToolKind("ScheduleWakeup"), "other");
+  assert.equal(normalizeToolKind("PushNotification"), "other");
+  assert.equal(normalizeToolKind("RemoteTrigger"), "other");
+  assert.equal(normalizeToolKind("REPL"), "other");
+  assert.equal(normalizeToolKind("Monitor"), "other");
+  assert.equal(normalizeToolKind("Workflow"), "other");
+  assert.equal(normalizeToolKind("TaskOutput"), "other");
+  assert.equal(normalizeToolKind("TaskStop"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
+  assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
-  assert.equal(normalizeToolKind("TodoWrite"), "other");
+  assert.equal(normalizeToolKind("TodoWrite"), normalizeToolKind("FutureUnknownTool"));
 });
 
 test("parseFastModeState accepts known values and rejects unknown values", () => {
@@ -1537,6 +2656,29 @@ test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
       error: "server_error",
     },
   );
+  for (const error of [
+    "model_not_found",
+    "oauth_org_not_allowed",
+    "overloaded",
+  ] as const) {
+    assert.deepEqual(
+      buildApiRetryUpdate({
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1500,
+        error_status: 529,
+        error,
+      }),
+      {
+        type: "api_retry_update",
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1500,
+        error_status: 529,
+        error,
+      },
+    );
+  }
 
   assert.deepEqual(
     buildApiRetryUpdate({
@@ -1633,6 +2775,13 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
       uuid: "message-3",
       session_id: "session-1",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: "requesting",
+      uuid: "message-4",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
   assert.deepEqual(
@@ -1648,8 +2797,520 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
         error: "server_error",
       },
       { type: "runtime_session_state_update", state: "idle" },
+      { type: "session_status_update", status: "requesting" },
     ],
   );
+});
+
+test("classifyTurnErrorKind prefers SDK assistant error codes", () => {
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "model_not_found"), "model_unavailable");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "oauth_org_not_allowed"), "account_access");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "overloaded"), "transient_service");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "server_error"), "transient_service");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "authentication_failed"), "auth_required");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "billing_error"), "plan_limit");
+  assert.equal(classifyTurnErrorKind("error_during_execution", [], "rate_limit"), "plan_limit");
+});
+
+test("handleSdkMessage replaces available commands from commands_changed", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [
+        { name: "/one", description: "First command", argumentHint: "<value>" },
+        { name: "/two", description: undefined, argumentHint: undefined },
+      ],
+      uuid: "message-commands",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "available_commands_update",
+      commands: [
+        { name: "/one", description: "First command", input_hint: "<value>" },
+        { name: "/two", description: "" },
+      ],
+      source: "commands_changed",
+      generation: 1,
+    },
+  ]);
+});
+
+test("handleSdkMessage accepts empty commands_changed replacement list", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      commands: [],
+      uuid: "message-commands-empty",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "available_commands_update",
+      commands: [],
+      source: "commands_changed",
+      generation: 1,
+    },
+  ]);
+});
+
+test("available command registry blocks stale supportedCommands after dynamic updates", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    assert.equal(
+      updateAvailableCommands(session, "session_result_commands", [
+        { name: "base", description: "Base command" },
+      ]),
+      true,
+    );
+    assert.equal(
+      updateAvailableCommands(session, "commands_changed", [
+        { name: "base", description: "Base command" },
+        { name: "project-plugin", description: "Project plugin command" },
+      ]),
+      true,
+    );
+    assert.equal(
+      updateAvailableCommands(session, "supportedCommands", [
+        { name: "base", description: "Base command" },
+      ]),
+      false,
+    );
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [{ name: "base", description: "Base command" }],
+        source: "session_result_commands",
+        generation: 1,
+      },
+      {
+        type: "available_commands_update",
+        commands: [
+          { name: "base", description: "Base command" },
+          { name: "project-plugin", description: "Project plugin command" },
+        ],
+        source: "commands_changed",
+        generation: 2,
+      },
+    ],
+  );
+  assert.equal(session.availableCommands?.generation, 2);
+  assert.equal(session.availableCommands?.source, "commands_changed");
+  assert.deepEqual(
+    session.availableCommands?.commands.map((command) => command.name),
+    ["base", "project-plugin"],
+  );
+});
+
+test("available command registry lets authoritative snapshots remove commands", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    updateAvailableCommands(session, "reload_plugins", [
+      { name: "base", description: "Base command" },
+      { name: "removed-plugin", description: "Removed plugin command" },
+    ]);
+    updateAvailableCommands(session, "commands_changed", [
+      { name: "base", description: "Base command" },
+    ]);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [
+          { name: "base", description: "Base command" },
+          { name: "removed-plugin", description: "Removed plugin command" },
+        ],
+        source: "reload_plugins",
+        generation: 1,
+      },
+      {
+        type: "available_commands_update",
+        commands: [{ name: "base", description: "Base command" }],
+        source: "commands_changed",
+        generation: 2,
+      },
+    ],
+  );
+});
+
+test("handleSdkMessage emits system notices for notifications and plugin failures", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "notification",
+      key: "sync",
+      text: "Sync completed",
+      priority: "low",
+      uuid: "message-notification",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "plugin_install",
+      status: "failed",
+      name: "acme",
+      error: "download failed",
+      uuid: "message-plugin",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Sync completed" },
+    { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
+  ]);
+});
+
+test("handleSdkMessage treats mirror errors as log-only diagnostics", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "mirror_error",
+      error: "append timed out",
+      key: { projectKey: "project", sessionId: "session-1", subpath: "subagents/agent-1" },
+      uuid: "message-mirror",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage keeps log-only system messages non-emitting", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "plugin_install",
+      status: "completed",
+      uuid: "message-plugin-complete",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "permission_denied",
+      tool_name: "Bash",
+      tool_use_id: "tool-1",
+      message: "denied",
+      uuid: "message-permission",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "memory_recall",
+      mode: "select",
+      memories: [],
+      uuid: "message-memory",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "thinking_tokens",
+      estimated_tokens: 120,
+      estimated_tokens_delta: 20,
+      uuid: "message-thinking",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage accepts auto-continuation message origin without user output", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "continue" }] },
+      parent_tool_use_id: null,
+      origin: { kind: "auto-continuation" },
+      uuid: "message-auto-continuation",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage preserves assistant correlation metadata on tool calls", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test" } }],
+      },
+      parent_tool_use_id: null,
+      request_id: "request-1",
+      subagent_type: "code-review",
+      task_description: "Review the bridge",
+      uuid: "message-assistant",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => (event.update as Record<string, unknown>).tool_call),
+    [
+      {
+        tool_call_id: "tool-1",
+        title: "npm test",
+        kind: "execute",
+        status: "in_progress",
+        content: [],
+        raw_input: { command: "npm test" },
+        locations: [],
+        meta: {
+          claudeCode: {
+            toolName: "Bash",
+            parentToolUseId: null,
+            requestId: "request-1",
+            subagentType: "code-review",
+            taskDescription: "Review the bridge",
+          },
+        },
+      },
+    ],
+  );
+});
+
+test("handleTaskSystemMessage preserves task correlation metadata", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Run checks",
+      request_id: "request-1",
+      subagent_type: "tester",
+      task_description: "Validate the branch",
+    });
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "tool_call",
+      tool_call: {
+        tool_call_id: "tool-1",
+        title: "Agent",
+        kind: "think",
+        status: "pending",
+        content: [],
+        raw_input: {},
+        locations: [],
+        meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+      },
+    },
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-1",
+          subject: "Validate the branch",
+          description: "Run checks",
+          status: "in_progress",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            request_id: "request-1",
+            subagent_type: "tester",
+            task_description: "Validate the branch",
+          },
+          source_tool_call_id: "tool-1",
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-1",
+        fields: {
+          status: "in_progress",
+        },
+      },
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-1",
+        fields: {
+          status: "in_progress",
+          raw_output: "Run checks",
+          content: [{ type: "content", content: { type: "text", text: "Run checks" } }],
+          task_metadata: {
+            request_id: "request-1",
+            subagent_type: "tester",
+            task_description: "Validate the branch",
+          },
+        },
+      },
+    },
+  ]);
+});
+
+test("parseCommandEnvelope validates set_effort command", () => {
+  for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+    const parsed = parseCommandEnvelope(
+      JSON.stringify({
+        request_id: "req-effort",
+        command: "set_effort",
+        session_id: "session-1",
+        effort,
+      }),
+    );
+    assert.equal(parsed.requestId, "req-effort");
+    assert.equal(parsed.command.command, "set_effort");
+    if (parsed.command.command !== "set_effort") {
+      throw new Error("unexpected command variant");
+    }
+    assert.equal(parsed.command.session_id, "session-1");
+    assert.equal(parsed.command.effort, effort);
+  }
+});
+
+test("parseCommandEnvelope rejects unsupported set_effort values", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "set_effort",
+          session_id: "session-1",
+          effort: "banana",
+        }),
+      ),
+    /set_effort\.effort must be one of low, medium, high, xhigh, max/,
+  );
+});
+
+test("parseCommandEnvelope validates set_agent command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-agent",
+      command: "set_agent",
+      session_id: "session-1",
+      agent: "reviewer",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-agent");
+  assert.equal(parsed.command.command, "set_agent");
+  if (parsed.command.command !== "set_agent") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-1");
+  assert.equal(parsed.command.agent, "reviewer");
+});
+
+test("parseCommandEnvelope validates set_agent reset", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "set_agent",
+      session_id: "session-1",
+      agent: null,
+    }),
+  );
+
+  assert.equal(parsed.command.command, "set_agent");
+  if (parsed.command.command !== "set_agent") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.agent, null);
+});
+
+test("parseCommandEnvelope rejects invalid set_agent values", () => {
+  for (const agent of [undefined, "", "   ", 42, {}, []]) {
+    assert.throws(
+      () =>
+        parseCommandEnvelope(
+          JSON.stringify({
+            command: "set_agent",
+            session_id: "session-1",
+            ...(agent !== undefined ? { agent } : {}),
+          }),
+        ),
+      /set_agent\.agent must be a non-empty string or null/,
+    );
+  }
+});
+
+test("applySessionEffort uses live flag settings for xhigh and max", async () => {
+  const calls: unknown[] = [];
+  const query = {
+    async applyFlagSettings(settings: unknown): Promise<void> {
+      calls.push(settings);
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await applySessionEffort(query, "xhigh");
+  await applySessionEffort(query, "max");
+
+  assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
+});
+
+test("applySessionAgent uses live flag settings for agent switch and reset", async () => {
+  const calls: unknown[] = [];
+  const query = {
+    async applyFlagSettings(settings: unknown): Promise<void> {
+      calls.push(settings);
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await applySessionAgent(query, "reviewer");
+  await applySessionAgent(query, null);
+
+  assert.deepEqual(calls, [{ agent: "reviewer" }, { agent: null }]);
+});
+
+test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
+  const events = captureBridgeEvents(() => {
+    emitEffortConfigOptionUpdate("session-1", "max");
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "config_option_update",
+      option_id: "effortLevel",
+      value: "max",
+    },
+  });
+});
+
+test("emitAgentConfigOptionUpdate publishes agent config option", () => {
+  const events = captureBridgeEvents(() => {
+    emitAgentConfigOptionUpdate("session-1", null);
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "config_option_update",
+      option_id: "agent",
+      value: null,
+    },
+  });
 });
 
 test("shouldEmitStartupAuthRequiredForAccount keeps legacy first-party behavior", () => {
@@ -1679,11 +3340,33 @@ test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for extern
     "bedrock",
     "vertex",
     "foundry",
+    "gateway",
     "anthropicAws",
     "mantle",
   ] as const) {
     assert.equal(shouldEmitStartupAuthRequiredForAccount({ apiProvider }), false);
   }
+});
+
+test("mapSdkAccountInfo normalizes SDK account metadata through one bridge DTO", () => {
+  assert.deepEqual(
+    mapSdkAccountInfo({
+      email: " user@example.com ",
+      organization: " org-1 ",
+      subscriptionType: " Claude Max ",
+      tokenSource: " oauth ",
+      apiKeySource: " user ",
+      apiProvider: "gateway",
+    }),
+    {
+      email: "user@example.com",
+      organization: "org-1",
+      subscription_type: "Claude Max",
+      token_source: "oauth",
+      api_key_source: "user",
+      api_provider: "gateway",
+    },
+  );
 });
 
 test("handleSdkMessage emits settings parse errors from defensive payloads", () => {
@@ -1774,6 +3457,131 @@ test("createToolCall includes glob and webfetch context in title", () => {
 
   const fetch = createToolCall("tc-f", "WebFetch", { url: "https://example.com" });
   assert.equal(fetch.title, "WebFetch https://example.com");
+});
+
+test("createToolCall builds worktree titles from input rules", () => {
+  const namedEnter = createToolCall("tc-enter-name", "EnterWorktree", { name: "feature-auth" });
+  assert.equal(namedEnter.kind, "other");
+  assert.equal(namedEnter.title, "feature-auth");
+
+  const pathEnter = createToolCall("tc-enter-path", "EnterWorktree", {
+    path: "C:\\repo\\.worktrees\\feature-auth",
+  });
+  assert.equal(pathEnter.kind, "other");
+  assert.equal(pathEnter.title, "EnterWorktree");
+
+  const exit = createToolCall("tc-exit", "ExitWorktree", {
+    action: "remove",
+    discard_changes: true,
+  });
+  assert.equal(exit.kind, "other");
+  assert.equal(exit.title, "ExitWorktree");
+});
+
+test("createToolCall maps cron tools to other kind with stable titles", () => {
+  for (const toolName of ["CronCreate", "CronDelete", "CronList"]) {
+    const toolCall = createToolCall(`tc-${toolName}`, toolName, {
+      cron: "30 9 * * 1",
+      prompt: "Send weekly status",
+      id: "schedule-1",
+    });
+    assert.equal(toolCall.kind, "other");
+    assert.equal(toolCall.title, toolName);
+  }
+});
+
+test("createToolCall maps ScheduleWakeup to other kind with stable title", () => {
+  const toolCall = createToolCall("tc-wakeup", "ScheduleWakeup", {
+    delaySeconds: 90,
+    reason: "Poll again after warmup",
+    prompt: "/loop check status",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "ScheduleWakeup");
+});
+
+test("createToolCall maps PushNotification to other kind with stable title", () => {
+  const toolCall = createToolCall("tc-push-notification", "PushNotification", {
+    message: "Build finished",
+    status: "proactive",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "PushNotification");
+});
+
+test("createToolCall maps RemoteTrigger to other kind and action title", () => {
+  const toolCall = createToolCall("tc-remote-trigger", "RemoteTrigger", {
+    action: " run ",
+    trigger_id: "deploy-prod",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "RemoteTrigger: run");
+});
+
+test("createToolCall uses RemoteTrigger fallback title without action", () => {
+  const toolCall = createToolCall("tc-remote-trigger-fallback", "RemoteTrigger", {
+    trigger_id: "deploy-prod",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "RemoteTrigger");
+});
+
+test("createToolCall maps REPL to other kind and code title", () => {
+  const toolCall = createToolCall("tc-repl", "REPL", {
+    code: "  await inspectState()  ",
+    description: "Inspect runtime state",
+    timeout: 45_000,
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "REPL: await inspectState()");
+});
+
+test("createToolCall uses REPL fallback title instead of description", () => {
+  const toolCall = createToolCall("tc-repl-fallback", "REPL", {
+    description: "Inspect runtime state",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "REPL");
+});
+
+test("createToolCall maps Monitor to other kind and description title", () => {
+  const toolCall = createToolCall("tc-monitor", "Monitor", {
+    description: "watch deploy logs",
+    timeout_ms: 30000,
+    persistent: false,
+    command: "tail -f deploy.log",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "Monitor: watch deploy logs");
+});
+
+test("createToolCall maps Workflow to other kind and name title", () => {
+  const namedWorkflow = createToolCall("tc-workflow", "Workflow", {
+    name: "spec",
+    args: { topic: "rendering" },
+  });
+  const fallbackWorkflow = createToolCall("tc-workflow-fallback", "Workflow", {
+    script: "export const meta = { name: 'inline', description: 'Run', phases: [] };",
+  });
+
+  assert.equal(namedWorkflow.kind, "other");
+  assert.equal(namedWorkflow.title, "Workflow: spec");
+  assert.equal(fallbackWorkflow.kind, "other");
+  assert.equal(fallbackWorkflow.title, "Workflow");
+});
+
+test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
+  const toolCall = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
+
+  assert.equal(toolCall.kind, "switch_mode");
+  assert.equal(toolCall.title, "EnterPlanMode");
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -2259,7 +4067,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.146");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.161");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -2482,6 +4290,60 @@ test("handleResultMessage emits terminal reason on turn errors", () => {
   });
 });
 
+test("handleResultMessage emits typed turn error classifications for SDK assistant errors", () => {
+  const cases = [
+    ["model_not_found", "model_unavailable"],
+    ["oauth_org_not_allowed", "account_access"],
+    ["overloaded", "transient_service"],
+  ] as const;
+
+  for (const [assistantError, errorKind] of cases) {
+    const session = makeSessionState();
+    session.lastAssistantError = assistantError;
+
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: [`failed with ${assistantError}`],
+      });
+    });
+
+    assert.deepEqual(events.at(-1), {
+      event: "turn_error",
+      session_id: "session-1",
+      message: `failed with ${assistantError}`,
+      error_kind: errorKind,
+      sdk_result_subtype: "error_during_execution",
+      assistant_error: assistantError,
+    });
+  }
+});
+
+test("handleResultMessage preserves result api error status", () => {
+  const session = makeSessionState();
+  session.lastAssistantError = "overloaded";
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["service overloaded"],
+      api_error_status: 529,
+    });
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "turn_error",
+    session_id: "session-1",
+    message: "service overloaded",
+    error_kind: "transient_service",
+    sdk_result_subtype: "error_during_execution",
+    assistant_error: "overloaded",
+    api_error_status: 529,
+  });
+});
+
 test("mapSessionMessagesToUpdates ignores unsupported records", () => {
   const updates = mapSessionMessagesToUpdates([
     {
@@ -2633,7 +4495,620 @@ test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
   assert.equal(fields.title, "planner");
 });
 
-test("buildToolResultFields extracts TodoWrite verification metadata from structured results", () => {
+test("buildToolResultFields leaves worktree title unchanged on completed output", () => {
+  const enterBase = createToolCall("tc-enter", "EnterWorktree", { name: "feature-auth" });
+  const enterFields = buildToolResultFields(
+    false,
+    {
+      message: "Entered worktree feature-auth",
+      worktreeBranch: "feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    enterBase,
+  );
+  assert.equal(enterFields.title, undefined);
+
+  const exitBase = createToolCall("tc-exit", "ExitWorktree", { action: "keep" });
+  const exitFields = buildToolResultFields(
+    false,
+    {
+      message: "Exited worktree feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    exitBase,
+  );
+  assert.equal(exitFields.title, undefined);
+});
+
+test("buildToolResultFields renders worktree location without raw JSON", () => {
+  const enterBase = createToolCall("tc-enter", "EnterWorktree", { name: "feature-auth" });
+  const enterFields = buildToolResultFields(
+    false,
+    {
+      message: "Entered worktree feature-auth",
+      worktreeBranch: "feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    enterBase,
+  );
+  assert.equal(enterFields.raw_output, "Branch: feature-auth");
+  assert.deepEqual(enterFields.content, [
+    { type: "content", content: { type: "text", text: "Branch: feature-auth" } },
+  ]);
+
+  const exitBase = createToolCall("tc-exit", "ExitWorktree", { action: "keep" });
+  const exitFields = buildToolResultFields(
+    false,
+    {
+      message: "Exited worktree feature-auth",
+      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
+    },
+    exitBase,
+  );
+  assert.equal(exitFields.raw_output, "Path: C:\\repo\\.worktrees\\feature-auth");
+  assert.deepEqual(exitFields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Path: C:\\repo\\.worktrees\\feature-auth" },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders cron outputs as structured text without raw JSON", () => {
+  const createBase = createToolCall("tc-cron-create", "CronCreate", {
+    cron: "30 9 * * 1",
+    prompt: "Send weekly status",
+  });
+  const createFields = buildToolResultFields(
+    false,
+    {
+      id: "schedule-1",
+      humanSchedule: "every Monday at 09:30",
+      recurring: true,
+      durable: false,
+    },
+    createBase,
+  );
+  assert.equal(
+    createFields.raw_output,
+    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+  );
+  assert.deepEqual(createFields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+      },
+    },
+  ]);
+  assert.equal(createFields.raw_output?.includes("{"), false);
+
+  const deleteBase = createToolCall("tc-cron-delete", "CronDelete", { id: "schedule-1" });
+  const deleteFields = buildToolResultFields(false, { id: "schedule-1" }, deleteBase);
+  assert.equal(deleteFields.raw_output, "Schedule ID: schedule-1");
+
+  const listBase = createToolCall("tc-cron-list", "CronList", {});
+  const listFields = buildToolResultFields(false, { jobs: [] }, listBase);
+  assert.equal(listFields.raw_output, "Jobs: none");
+
+  const singleListFields = buildToolResultFields(
+    false,
+    {
+      jobs: [
+        {
+          id: "schedule-2",
+          cron: "7 * * * *",
+          humanSchedule: "Every hour at :07",
+          prompt: "Send hourly tick",
+          recurring: true,
+          durable: false,
+        },
+      ],
+    },
+    listBase,
+  );
+  assert.equal(
+    singleListFields.raw_output,
+    "Schedule ID: schedule-2\nCron: 7 * * * *\nSchedule: Every hour at minute 07\nPrompt: Send hourly tick\nRecurring: yes\nDurable: no",
+  );
+});
+
+test("buildToolResultFields preserves full CronList prompt from transcript JSON", () => {
+  const base = createToolCall("tc-cron-list-history", "CronList", {});
+  const fullPrompt = `Review the branch and write a status update. ${"Keep every detail. ".repeat(80)}END`;
+  const transcriptJson = JSON.stringify({
+    jobs: [
+      {
+        id: "schedule-long",
+        cron: "*/5 * * * *",
+        humanSchedule: "every 5 minutes",
+        prompt: fullPrompt,
+        recurring: false,
+        durable: true,
+      },
+    ],
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-cron-list-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output?.includes(fullPrompt), true);
+  assert.equal(fields.raw_output?.includes("END"), true);
+  assert.equal(fields.raw_output?.includes('"jobs"'), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: `Schedule ID: schedule-long\nCron: */5 * * * *\nSchedule: Every 5 minutes\nPrompt: ${fullPrompt}\nRecurring: no\nDurable: yes`,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders readable cron schedule text from common cron expressions", () => {
+  const base = createToolCall("tc-cron-readable", "CronList", {});
+  const fields = buildToolResultFields(false, {
+    jobs: [
+      { id: "every-minute", cron: "* * * * *", prompt: "minute", recurring: true },
+      { id: "every-five-minutes", cron: "*/5 * * * *", prompt: "minutes", recurring: true },
+      {
+        id: "hourly-minute",
+        cron: "7 * * * *",
+        humanSchedule: "Every hour at :07",
+        prompt: "hourly",
+        recurring: true,
+      },
+      { id: "every-two-hours", cron: "0 */2 * * *", prompt: "hours", recurring: true },
+      { id: "daily", cron: "30 9 * * *", prompt: "daily", recurring: true },
+      { id: "weekly", cron: "30 9 * * 1", prompt: "weekly", recurring: true },
+      { id: "monthly", cron: "30 9 15 * *", prompt: "monthly", recurring: true },
+      { id: "yearly", cron: "30 9 15 6 *", prompt: "yearly", recurring: true },
+      { id: "complex", cron: "0 9 1 * 1", prompt: "complex", recurring: true },
+    ],
+  }, base);
+
+  assert.equal(fields.raw_output?.includes("Cron: 7 * * * *"), false);
+  assert.equal(fields.raw_output?.includes("Recurring:"), false);
+  assert.equal(fields.raw_output?.includes("Durable:"), false);
+  assert.equal(fields.raw_output?.includes("Schedule: Every minute"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every 5 minutes"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every hour at minute 07"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every 2 hours on the hour"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every day at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every Monday at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every month on day 15 at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Schedule: Every June 15 at 09:30"), true);
+  assert.equal(fields.raw_output?.includes("Cron: 0 9 1 * 1"), true);
+  assert.equal(fields.raw_output?.split("__cron_list_job_divider__").length, 9);
+});
+
+test("buildToolResultFields renders ScheduleWakeup output as structured text", () => {
+  const base = createToolCall("tc-wakeup", "ScheduleWakeup", {
+    delaySeconds: 30,
+    reason: "Retry after runtime clamp",
+    prompt: "/loop keep checking",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      scheduledFor: 1_779_990_000_000,
+      clampedDelaySeconds: 90,
+      wasClamped: true,
+    },
+    base,
+  );
+
+  assert.match(
+    fields.raw_output ?? "",
+    /^Scheduled for: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local\nActual delay: 1m 30s\nClamped: yes$/,
+  );
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.equal(fields.raw_output?.includes("1779990000000"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses ScheduleWakeup transcript JSON", () => {
+  const base = createToolCall("tc-wakeup-history", "ScheduleWakeup", {
+    delaySeconds: 3600,
+    reason: "Wake at the next loop interval",
+    prompt: "/loop continue",
+  });
+  const transcriptJson = JSON.stringify({
+    scheduledFor: 1_779_990_000_000,
+    clampedDelaySeconds: 3600,
+    wasClamped: false,
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-wakeup-history",
+    content: transcriptJson,
+  });
+
+  assert.match(fields.raw_output ?? "", /Actual delay: 1h\nClamped: no$/);
+  assert.equal(fields.raw_output?.includes('"scheduledFor"'), false);
+});
+
+test("buildToolResultFields renders PushNotification output as structured text", () => {
+  const base = createToolCall("tc-push-notification", "PushNotification", {
+    message: "Build finished",
+    status: "proactive",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      message: "Build finished",
+      pushSent: false,
+      localSent: true,
+      disabledReason: "config_off",
+      idleSec: 90,
+      hasFocus: false,
+      sentAt: "2026-06-05T12:34:56.000Z",
+    },
+    base,
+  );
+
+  assert.match(
+    fields.raw_output ?? "",
+    /^Push sent: no\nLocal sent: yes\nDisabled reason: notifications disabled\nIdle time: 1m 30s\nApp focused: no\nSent at: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local$/,
+  );
+  assert.equal(fields.raw_output?.includes("Result:"), false);
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses PushNotification transcript JSON", () => {
+  const base = createToolCall("tc-push-notification-history", "PushNotification", {
+    message: "Deploy completed",
+    status: "proactive",
+  });
+  const transcriptJson = JSON.stringify({
+    message: "Notification queued",
+    pushSent: true,
+    localSent: false,
+    disabledReason: "no_transport",
+    idleSec: 3600,
+    hasFocus: true,
+    sentAt: "not an iso timestamp",
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-push-notification-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
+  );
+  assert.equal(fields.raw_output?.includes('"pushSent"'), false);
+});
+
+test("buildToolResultFields renders RemoteTrigger summary without raw JSON", () => {
+  const base = createToolCall("tc-remote-trigger", "RemoteTrigger", {
+    action: "run",
+    trigger_id: "deploy-prod",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 200,
+      json: '{\n  "ok": true,\n  "run_id": "run-1"\n}',
+      summary: "Trigger completed",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "Status: 200\nSummary: Trigger completed");
+  assert.equal(fields.raw_output?.includes("run_id"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Status: 200\nSummary: Trigger completed",
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders RemoteTrigger response when summary is absent", () => {
+  const base = createToolCall("tc-remote-trigger-response", "RemoteTrigger", {
+    action: "get",
+    trigger_id: "deploy-prod",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 200,
+      json: '{\n  "ok": true,\n  "trigger_id": "deploy-prod"\n}',
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, 'Status: 200\nResponse: {"ok":true,"trigger_id":"deploy-prod"}');
+  assert.equal(fields.raw_output?.includes('"json"'), false);
+});
+
+test("buildToolResultFields marks RemoteTrigger 4xx output failed", () => {
+  const base = createToolCall("tc-remote-trigger-error", "RemoteTrigger", {
+    action: "run",
+    trigger_id: "missing-trigger",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: 404,
+      json: '{"error":"not_found"}',
+      summary: "Trigger not found",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Status: 404\nSummary: Trigger not found");
+});
+
+test("buildToolResultFields parses RemoteTrigger transcript JSON", () => {
+  const base = createToolCall("tc-remote-trigger-history", "RemoteTrigger", {
+    action: "get",
+    trigger_id: "deploy-prod",
+  });
+  const transcriptJson = JSON.stringify({
+    status: 200,
+    json: '{\n  "enabled": true,\n  "name": "Deploy prod"\n}',
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-remote-trigger-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output, 'Status: 200\nResponse: {"enabled":true,"name":"Deploy prod"}');
+  assert.equal(fields.raw_output?.includes('"json"'), false);
+});
+
+test("buildToolResultFields renders REPL output as structured text without raw JSON", () => {
+  const base = createToolCall("tc-repl", "REPL", {
+    code: "await main()",
+    description: "Run main function",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      code: "await main()",
+      stdout: "done",
+      stderr: "warning",
+      result: { ok: true },
+      registeredTools: ["fetchDocs", "parse"],
+      images: [
+        { base64: "image-one-base64", mediaType: "image/png" },
+        { base64: "image-two-base64", mediaType: "image/png" },
+      ],
+      documents: [{ base64: "document-base64" }],
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(
+    fields.raw_output,
+    "Stdout: done\nStderr: warning\nResult: {\"ok\":true}\nRegistered tools: fetchDocs, parse\nImages: 2\nDocuments: 1",
+  );
+  assert.equal(fields.raw_output?.includes("await main()"), false);
+  assert.equal(fields.raw_output?.includes("image-one-base64"), false);
+  assert.equal(fields.raw_output?.includes("document-base64"), false);
+  assert.equal(fields.raw_output?.includes("{\"code\""), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields marks REPL error output failed", () => {
+  const base = createToolCall("tc-repl-error", "REPL", {
+    code: "throw new Error('boom')",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      code: "throw new Error('boom')",
+      error: "boom",
+      stdout: "",
+      stderr: "stack trace",
+      result: {},
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Error: boom\nStderr: stack trace");
+});
+
+test("buildToolResultFields parses REPL transcript JSON", () => {
+  const base = createToolCall("tc-repl-history", "REPL", {
+    code: "await load()",
+  });
+  const transcriptJson = JSON.stringify({
+    code: "await load()",
+    stdout: "loaded",
+    stderr: "",
+    result: { count: 2 },
+    registeredTools: ["lookup"],
+    images: [{ base64: "hidden-image", mediaType: "image/png" }],
+    documents: [{ base64: "hidden-document" }, { base64: "hidden-document-2" }],
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-repl-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Stdout: loaded\nResult: {\"count\":2}\nRegistered tools: lookup\nImages: 1\nDocuments: 2",
+  );
+  assert.equal(fields.raw_output?.includes('"code"'), false);
+  assert.equal(fields.raw_output?.includes("hidden-image"), false);
+  assert.equal(fields.raw_output?.includes("hidden-document"), false);
+});
+
+test("buildToolResultFields renders Monitor launch output as structured text", () => {
+  const base = createToolCall("tc-monitor", "Monitor", {
+    description: "watch deploy logs",
+    timeout_ms: 30000,
+    persistent: false,
+    command: "tail -f deploy.log",
+  });
+  const fields = buildToolResultFields(
+    false,
+    { taskId: "monitor-1", timeoutMs: 30000, persistent: false },
+    base,
+  );
+
+  assert.equal(fields.status, "in_progress");
+  assert.equal(fields.raw_output, "Task ID: monitor-1\nPersistent: no\nTimeout: 30s");
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders Workflow launch output as structured text", () => {
+  const base = createToolCall("tc-workflow", "Workflow", {
+    name: "spec",
+    args: { topic: "rendering" },
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: "async_launched",
+      taskId: "workflow-1",
+      runId: "run-1",
+      summary: "Workflow started",
+      transcriptDir: "C:/tmp/transcripts",
+      scriptPath: "C:/tmp/workflow.js",
+      warning: "branch diverged",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "in_progress");
+  assert.equal(
+    fields.raw_output,
+    "Status: async launched\nTask ID: workflow-1\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",
+  );
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.equal(fields.raw_output?.includes('"status"'), false);
+});
+
+test("buildToolResultFields marks Workflow output with error as failed", () => {
+  const base = createToolCall("tc-workflow-error", "Workflow", {
+    script: "bad workflow script",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: "async_launched",
+      taskId: "workflow-err",
+      error: "Syntax check failed",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(
+    fields.raw_output,
+    "Status: async launched\nTask ID: workflow-err\nError: Syntax check failed",
+  );
+  assert.equal(fields.raw_output?.includes("bad workflow script"), false);
+});
+
+test("buildToolResultFields parses Workflow transcript JSON", () => {
+  const base = createToolCall("tc-workflow-history", "Workflow", {
+    name: "remote-spec",
+  });
+  const transcriptJson = JSON.stringify({
+    status: "remote_launched",
+    taskId: "workflow-remote",
+    sessionUrl: "https://claude.ai/session/remote",
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-workflow-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Status: remote launched\nTask ID: workflow-remote\nSession URL: https://claude.ai/session/remote",
+  );
+  assert.equal(fields.raw_output?.includes('"taskId"'), false);
+});
+
+test("buildToolResultFields suppresses EnterPlanMode structured output body", () => {
+  const base = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
+  const fields = buildToolResultFields(false, { message: "Plan mode entered" }, base);
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, undefined);
+  assert.equal(fields.content, undefined);
+});
+
+test("buildToolResultFields suppresses EnterPlanMode transcript JSON body", () => {
+  const base = createToolCall("tc-enter-plan-mode-history", "EnterPlanMode", {});
+  const transcriptJson = JSON.stringify({ message: "Entered plan mode" });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-enter-plan-mode-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, undefined);
+  assert.equal(fields.content, undefined);
+});
+
+test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {
   const base = createToolCall("tc-todo", "TodoWrite", {
     todos: [{ content: "Verify changes", status: "pending", activeForm: "Verifying changes" }],
   });
@@ -2650,11 +5125,7 @@ test("buildToolResultFields extracts TodoWrite verification metadata from struct
     },
   );
 
-  assert.deepEqual(fields.output_metadata, {
-    todo_write: {
-      verification_nudge_needed: true,
-    },
-  });
+  assert.equal(fields.output_metadata, undefined);
 });
 
 test("mapAvailableModels preserves optional fast and auto mode metadata", () => {
@@ -2664,7 +5135,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
       displayName: "Claude Sonnet",
       description: "Balanced model",
       supportsEffort: true,
-      supportedEffortLevels: ["low", "medium", "high", "max"],
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsAdaptiveThinking: true,
       supportsFastMode: true,
       supportsAutoMode: false,
@@ -2683,7 +5154,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
       display_name: "Claude Sonnet",
       description: "Balanced model",
       supports_effort: true,
-      supported_effort_levels: ["low", "medium", "high"],
+      supported_effort_levels: ["low", "medium", "high", "xhigh", "max"],
       supports_adaptive_thinking: true,
       supports_fast_mode: true,
       supports_auto_mode: false,
@@ -2817,7 +5288,7 @@ test("emitCurrentModelUpdate can publish catalog-enriched current model metadata
     current_model: {
       resolved_id: "sonnet",
       display_name_short: "Sonnet",
-      display_name_long: "Sonnet",
+      display_name_long: "Claude Sonnet",
       catalog_id: "sonnet",
       supports_effort: true,
       supported_effort_levels: ["low", "medium", "high"],
@@ -2871,8 +5342,30 @@ test("resolveCurrentModel falls back to the requested model immediately after st
 
   assert.equal(currentModel.resolved_id, "sonnet");
   assert.equal(currentModel.display_name_short, "Sonnet");
-  assert.equal(currentModel.display_name_long, "Sonnet");
+  assert.equal(currentModel.display_name_long, "Claude Sonnet");
   assert.equal(currentModel.catalog_id, "sonnet");
+  assert.equal(currentModel.supports_effort, true);
+});
+
+test("resolveCurrentModel keeps runtime version in short display while using catalog capabilities", () => {
+  const session = makeSessionState();
+  session.model = "opus";
+  session.requestedModelId = "opus";
+  session.resolvedRuntimeModelId = "claude-opus-4-7-20260101";
+  session.availableModels = [
+    {
+      id: "opus",
+      display_name: "Opus",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high", "xhigh"],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.display_name_short, "Opus 4.7");
+  assert.equal(currentModel.display_name_long, "Opus");
+  assert.equal(currentModel.catalog_id, "opus");
   assert.equal(currentModel.supports_effort, true);
 });
 
@@ -2952,4 +5445,55 @@ test("attachRequestUserDialogInterceptor preserves non-dialog control requests",
   assert.deepEqual(result, { ok: true });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.request.subtype, "can_use_tool");
+});
+
+test("attachRequestUserDialogInterceptor delegates replayed pending permission requests", async () => {
+  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
+  const fakeQuery = {
+    async processControlRequest(
+      request: { request_id: string; request: Record<string, unknown> },
+      _signal: AbortSignal,
+    ): Promise<Record<string, unknown>> {
+      calls.push(request);
+      return { ok: true };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const replayedPendingPermission = {
+    request_id: "pending-permission-1",
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      input: {
+        file_path: "C:/work/file.txt",
+        content: "hello",
+      },
+      permission_suggestions: [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Write" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ],
+      blocked_path: "C:/work/file.txt",
+      title: "Write file",
+      display_name: "Write",
+      description: "Create or overwrite a file",
+      tool_use_id: "tool-pending-1",
+    },
+  };
+
+  attachRequestUserDialogInterceptor(fakeQuery, () => "session-test");
+  const result = await (
+    fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
+      processControlRequest: (
+        request: { request_id: string; request: Record<string, unknown> },
+        signal: AbortSignal,
+      ) => Promise<Record<string, unknown> | undefined>;
+    }
+  ).processControlRequest(replayedPendingPermission, new AbortController().signal);
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [replayedPendingPermission]);
 });

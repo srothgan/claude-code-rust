@@ -113,10 +113,10 @@ async fn full_turn_lifecycle_with_tool_calls() {
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
-// --- TodoWrite handling ---
+// --- Legacy TodoWrite generic handling ---
 
 #[tokio::test]
-async fn todowrite_tool_call_updates_todo_list() {
+async fn todowrite_tool_call_does_not_update_task_state() {
     let mut app = test_app();
 
     let raw_input = serde_json::json!({
@@ -135,62 +135,8 @@ async fn todowrite_tool_call_updates_todo_list() {
         .meta(meta);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    assert_eq!(app.todos.len(), 2);
-    assert_eq!(app.todos[0].content, "Fix bug");
-    assert_eq!(app.todos[1].content, "Write tests");
-}
-
-#[tokio::test]
-async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
-    let mut app = test_app();
-
-    let first = serde_json::json!({"todos": [
-        {"content": "Task A", "status": "in_progress", "activeForm": "Doing A"},
-        {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
-    ]});
-    let mut first_meta = serde_json::Map::new();
-    first_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let first_tc = model::ToolCall::new("todo-r1", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(first)
-        .meta(first_meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first_tc)),
-    );
-    assert_eq!(app.todos.len(), 2);
-
-    let replacement = serde_json::json!({"todos": [
-        {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
-    ]});
-    let mut replacement_meta = serde_json::Map::new();
-    replacement_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let replacement_tc = model::ToolCall::new("todo-r2", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(replacement)
-        .meta(replacement_meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(replacement_tc)),
-    );
-    assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
-    assert_eq!(app.todos[0].content, "Task C");
-
-    let completed = serde_json::json!({"todos": [
-        {"content": "Done task", "status": "completed", "activeForm": "Done"},
-    ]});
-    let mut completed_meta = serde_json::Map::new();
-    completed_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let completed_tc = model::ToolCall::new("todo-done", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(completed)
-        .meta(completed_meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(completed_tc)),
-    );
-
-    assert!(app.todos.is_empty(), "all-completed clears the list");
+    assert!(app.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
+    assert!(app.tool_call_index.contains_key("todo-1"));
 }
 
 // --- Error recovery ---
@@ -201,7 +147,11 @@ async fn error_then_new_turn_recovers() {
 
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "timeout".into(), terminal_reason: None },
+        ClientEvent::TurnError {
+            message: "timeout".into(),
+            api_error_status: None,
+            terminal_reason: None,
+        },
     );
     assert!(matches!(app.status, AppStatus::Error));
 
@@ -464,7 +414,11 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "crashed".into(), terminal_reason: None },
+        ClientEvent::TurnError {
+            message: "crashed".into(),
+            api_error_status: None,
+            terminal_reason: None,
+        },
     );
 
     assert!(matches!(app.status, AppStatus::Error));

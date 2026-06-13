@@ -9,6 +9,7 @@ import {
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "./types.js";
+import type { EffortLevel } from "./types.js";
 import {
   buildModeState,
   markModeUnavailableForSession,
@@ -43,6 +44,8 @@ import {
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
+import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available_commands.js";
+import { mapSdkAccountInfo } from "./bridge/account_metadata.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   handleMcpAuthenticateCommand,
@@ -71,6 +74,11 @@ export { looksLikeAuthRequired } from "./bridge/auth.js";
 export { parseCommandEnvelope } from "./bridge/commands.js";
 export { buildSessionListOptions } from "./bridge/events.js";
 export {
+  mapInitSlashCommands,
+  mapSdkSlashCommands,
+  updateAvailableCommands,
+} from "./bridge/available_commands.js";
+export {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
 } from "./bridge/permissions.js";
@@ -83,8 +91,19 @@ export { mapAvailableAgents } from "./bridge/agents.js";
 export {
   attachRequestUserDialogInterceptor,
   buildQueryOptions,
-  mapAvailableModels,
 } from "./bridge/session_lifecycle.js";
+export { mapAvailableModels } from "./bridge/model_metadata.js";
+export {
+  bridgeMcpConfigToSdk,
+  mapMcpServerStatus,
+  mapMcpServerStatusConfig,
+} from "./bridge/mcp_metadata.js";
+export {
+  apiProviderIsExternal,
+  isKnownApiProvider,
+  mapSdkAccountInfo,
+  shouldEmitStartupAuthRequiredForAccount,
+} from "./bridge/account_metadata.js";
 export {
   parseFastModeState,
   parseRateLimitStatus,
@@ -136,7 +155,40 @@ export async function generatePersistedSessionTitle(
   return title;
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.146";
+export async function applySessionEffort(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  effort: EffortLevel,
+): Promise<void> {
+  const settings = { effortLevel: effort } as Parameters<typeof query.applyFlagSettings>[0];
+  // applyFlagSettings controls live session settings; SDK Settings typings model persisted effort levels.
+  await query.applyFlagSettings(settings);
+}
+
+export async function applySessionAgent(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  agent: string | null,
+): Promise<void> {
+  const settings = { agent } as Parameters<typeof query.applyFlagSettings>[0];
+  await query.applyFlagSettings(settings);
+}
+
+export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLevel): void {
+  emitSessionUpdate(sessionId, {
+    type: "config_option_update",
+    option_id: "effortLevel",
+    value: effort,
+  });
+}
+
+export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | null): void {
+  emitSessionUpdate(sessionId, {
+    type: "config_option_update",
+    option_id: "agent",
+    value: agent,
+  });
+}
+
+const EXPECTED_AGENT_SDK_VERSION = "0.3.161";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -492,6 +544,38 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       return;
     }
 
+    case "set_effort": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await applySessionEffort(session.query, command.effort);
+        emitEffortConfigOptionUpdate(session.sessionId, command.effort);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set effort: ${message}`, requestId);
+      }
+      return;
+    }
+
+    case "set_agent": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await applySessionAgent(session.query, command.agent);
+        emitAgentConfigOptionUpdate(session.sessionId, command.agent);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set agent: ${message}`, requestId);
+      }
+      return;
+    }
+
     case "generate_session_title": {
       const session = sessionById(command.session_id);
       if (!session) {
@@ -558,14 +642,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           {
             event: "status_snapshot",
             session_id: session.sessionId,
-            account: {
-              email: account.email,
-              organization: account.organization,
-              subscription_type: account.subscriptionType,
-              token_source: account.tokenSource,
-              api_key_source: account.apiKeySource,
-              api_provider: account.apiProvider,
-            },
+            account: mapSdkAccountInfo(account),
           },
           requestId,
         );
@@ -656,17 +733,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       }
       try {
         const result = await session.query.reloadPlugins();
-        const commands = Array.isArray(result.commands)
-          ? result.commands.map((entry) => ({
-              name: entry.name,
-              description: entry.description ?? "",
-              input_hint: entry.argumentHint ?? undefined,
-            }))
-          : [];
-        emitSessionUpdate(session.sessionId, {
-          type: "available_commands_update",
-          commands,
-        });
+        updateAvailableCommands(session, "reload_plugins", mapSdkSlashCommands(result.commands));
         emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
         await handleMcpStatusCommand(session, requestId);
         emitRuntimeReloadCompleted(session.sessionId, requestId);

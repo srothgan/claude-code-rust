@@ -38,21 +38,6 @@ pub struct UpdateNoticeState {
     pub emitted_session_scope_epoch: Option<u64>,
 }
 
-/// A single todo item from Claude's `TodoWrite` tool call.
-#[derive(Debug, Clone)]
-pub struct TodoItem {
-    pub content: String,
-    pub status: TodoStatus,
-    pub active_form: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentSessionInfo {
     pub session_id: String,
@@ -153,7 +138,7 @@ pub struct SessionUsageState {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct McpState {
-    pub servers: Vec<crate::agent::types::McpServerStatus>,
+    pub servers: Vec<model::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,

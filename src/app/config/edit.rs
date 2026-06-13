@@ -1,6 +1,6 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DefaultPermissionMode,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DefaultPermissionMode,
     LanguageOverlayState, ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle,
     OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
     PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
@@ -136,7 +136,7 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
     match app.config.overlay.clone() {
         Some(ConfigOverlayState::ModelAndEffort(_)) => match (key.code, key.modifiers) {
             (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
             (KeyCode::Tab | KeyCode::Right | KeyCode::Left, KeyModifiers::NONE)
             | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
             (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
@@ -145,7 +145,7 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         },
         Some(ConfigOverlayState::OutputStyle(_)) => match (key.code, key.modifiers) {
             (KeyCode::Enter, KeyModifiers::NONE) => confirm_output_style_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
             (KeyCode::Up, KeyModifiers::NONE) => move_output_style_overlay_selection(app, -1),
             (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
             _ => {}
@@ -162,6 +162,7 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         Some(ConfigOverlayState::AddMarketplace(_)) => {
             crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
         }
+        Some(ConfigOverlayState::Confirmation(_)) => handle_confirmation_overlay_key(app, key),
         Some(
             ConfigOverlayState::McpDetails(_)
             | ConfigOverlayState::McpCallbackUrl(_)
@@ -200,9 +201,66 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             | ConfigOverlayState::McpDetails(_)
             | ConfigOverlayState::McpCallbackUrl(_)
             | ConfigOverlayState::McpAuthRedirect(_)
-            | ConfigOverlayState::McpElicitation(_),
+            | ConfigOverlayState::McpElicitation(_)
+            | ConfigOverlayState::Confirmation(_),
         )
         | None => false,
+    }
+}
+
+fn handle_confirmation_overlay_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => restore_confirmation_previous_overlay(app),
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_confirmation_overlay(app),
+        (KeyCode::Up | KeyCode::Down, KeyModifiers::NONE) => toggle_confirmation_selection(app),
+        _ => {}
+    }
+}
+
+fn toggle_confirmation_selection(app: &mut App) {
+    let Some(overlay) = app.config.confirmation_overlay_mut() else {
+        return;
+    };
+    overlay.selected_index = usize::from(overlay.selected_index == 0);
+}
+
+fn restore_confirmation_previous_overlay(app: &mut App) {
+    let Some(overlay) = app.config.confirmation_overlay().cloned() else {
+        return;
+    };
+    app.config.replace_overlay(*overlay.previous);
+}
+
+fn confirm_confirmation_overlay(app: &mut App) {
+    let Some(overlay) = app.config.confirmation_overlay().cloned() else {
+        return;
+    };
+    if overlay.selected_index == 0 {
+        app.config.replace_overlay(*overlay.previous);
+        return;
+    }
+
+    let action = overlay.action;
+    app.config.replace_overlay(*overlay.previous);
+    match action {
+        ConfirmationAction::InstalledPluginUninstall => {
+            crate::app::plugins::execute_confirmed_installed_plugin_action(
+                app,
+                super::InstalledPluginActionKind::Uninstall,
+            );
+        }
+        ConfirmationAction::MarketplaceRemove => {
+            crate::app::plugins::execute_confirmed_marketplace_action(
+                app,
+                super::MarketplaceActionKind::Remove,
+            );
+        }
+        ConfirmationAction::McpClearAuth => {
+            super::mcp_edit::execute_confirmed_mcp_server_action(
+                app,
+                super::mcp::McpServerActionKind::ClearAuth,
+            );
+        }
     }
 }
 
@@ -217,7 +275,15 @@ pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Ve
     model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
         Vec::new,
         |option| {
-            if option.supports_effort { option.supported_effort_levels } else { Vec::new() }
+            if option.supports_effort {
+                option
+                    .supported_effort_levels
+                    .into_iter()
+                    .filter(|level| level.is_persistable_setting())
+                    .collect()
+            } else {
+                Vec::new()
+            }
         },
     )
 }
@@ -246,7 +312,7 @@ pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
             supported_effort_levels: if model.supported_effort_levels.is_empty()
                 && model.supports_effort
             {
-                DEFAULT_EFFORT_LEVELS.to_vec()
+                EffortLevel::PERSISTABLE_SETTINGS.to_vec()
             } else {
                 model.supported_effort_levels.clone()
             },
@@ -269,8 +335,12 @@ where
 {
     let Some(path) = app.config.path_for(spec.file).cloned() else {
         let message = "Settings paths are not available".to_owned();
-        app.config.last_error = Some(message.clone());
-        app.config.status_message = None;
+        if app.config.overlay.is_some() {
+            app.config.set_overlay_error(message);
+        } else {
+            app.config.last_error = Some(message.clone());
+            app.config.status_message = None;
+        }
         return false;
     };
 
@@ -302,8 +372,12 @@ where
             true
         }
         Err(err) => {
-            app.config.last_error = Some(err);
-            app.config.status_message = None;
+            if app.config.overlay.is_some() {
+                app.config.set_overlay_error(err);
+            } else {
+                app.config.last_error = Some(err);
+                app.config.status_message = None;
+            }
             false
         }
     }
@@ -368,7 +442,7 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
         .unwrap_or_else(|| OPUS_MODEL_ALIAS_ID.to_owned());
     let current_effort = app.config.thinking_effort_effective();
     let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
-    app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
         focus,
         selected_model: current_model,
         selected_effort,
@@ -377,7 +451,7 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
 }
 
 fn open_output_style_overlay(app: &mut App) {
-    app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
         selected: app.config.output_style_effective(),
     }));
     app.config.last_error = None;
@@ -389,7 +463,7 @@ fn open_language_overlay(app: &mut App) {
         .flatten()
         .and_then(|value| normalized_language_value(&value))
         .unwrap_or_default();
-    app.config.overlay = Some(ConfigOverlayState::Language(text_input_overlay_state(
+    app.config.replace_overlay(ConfigOverlayState::Language(text_input_overlay_state(
         draft,
         LanguageOverlayState::from_text_input,
     )));
@@ -407,7 +481,7 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
         .find(|session| session.session_id == session_id)
         .and_then(|session| session.custom_title.clone())
         .unwrap_or_default();
-    app.config.overlay = Some(ConfigOverlayState::SessionRename(text_input_overlay_state(
+    app.config.replace_overlay(ConfigOverlayState::SessionRename(text_input_overlay_state(
         draft,
         SessionRenameOverlayState::from_text_input,
     )));
@@ -504,7 +578,7 @@ fn confirm_model_and_effort_overlay(app: &mut App) {
         return;
     };
     if persist_model_and_effort_change(app, &overlay.selected_model, overlay.selected_effort) {
-        app.config.overlay = None;
+        app.config.clear_overlay();
     }
 }
 
@@ -528,14 +602,14 @@ fn confirm_output_style_overlay(app: &mut App) {
     if persist_setting_change(app, spec, |document| {
         store::set_output_style(document, overlay.selected);
     }) {
-        app.config.overlay = None;
+        app.config.clear_overlay();
     }
 }
 
 fn handle_language_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_language_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_text_cursor_left(app.config.language_overlay_mut());
         }
@@ -570,8 +644,8 @@ fn confirm_language_overlay(app: &mut App) {
         return;
     };
     let normalized = normalized_language_value(&overlay.draft);
-    if normalized.as_deref().is_some_and(|value| language_input_validation_message(value).is_some())
-    {
+    if let Some(message) = normalized.as_deref().and_then(language_input_validation_message) {
+        app.config.set_overlay_error(message);
         return;
     }
 
@@ -579,14 +653,14 @@ fn confirm_language_overlay(app: &mut App) {
     if persist_setting_change(app, spec, |document| {
         store::set_language(document, normalized.as_deref());
     }) {
-        app.config.overlay = None;
+        app.config.clear_overlay();
     }
 }
 
 fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_session_rename_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_text_cursor_left(app.config.session_rename_overlay_mut());
         }
@@ -614,12 +688,11 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
 
 fn confirm_session_rename_overlay(app: &mut App) {
     let Some(session_id) = app.session_id.as_ref().map(std::string::ToString::to_string) else {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         return;
     };
     let Some(conn) = app.conn.clone() else {
-        app.config.last_error = Some("No active bridge connection".to_owned());
-        app.config.status_message = None;
+        app.config.set_overlay_error("No active bridge connection");
         return;
     };
     let Some(overlay) = app.config.session_rename_overlay().cloned() else {
@@ -636,7 +709,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
                     requested_title: requested_title.clone(),
                 },
             });
-            app.config.overlay = None;
+            app.config.clear_overlay();
             app.config.last_error = None;
             app.config.status_message = Some(if requested_title.is_some() {
                 "Renaming session...".to_owned()
@@ -645,22 +718,27 @@ fn confirm_session_rename_overlay(app: &mut App) {
             });
         }
         Err(err) => {
-            app.config.last_error = Some(format!("Failed to rename session: {err}"));
-            app.config.status_message = None;
+            app.config.set_overlay_error(format!("Failed to rename session: {err}"));
         }
     }
 }
 
 fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
     let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
-        app.config.last_error = Some("Settings paths are not available".to_owned());
-        app.config.status_message = None;
+        app.config.set_overlay_error("Settings paths are not available");
         return false;
     };
     let mut next_document = app.config.committed_settings_document.clone();
     store::set_model(&mut next_document, Some(model));
-    if model_supports_effort(app, model) {
-        store::set_thinking_effort_level(&mut next_document, effort);
+    if model_supports_effort(app, model)
+        && store::set_thinking_effort_level(&mut next_document, effort).is_err()
+    {
+        app.config.set_overlay_error(format!(
+            "{} cannot be saved as a default thinking effort. Use /effort {} for the active session.",
+            effort.label(),
+            effort.as_stored()
+        ));
+        return false;
     }
     match store::save(&path, &next_document) {
         Ok(()) => {
@@ -671,8 +749,7 @@ fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLev
             true
         }
         Err(err) => {
-            app.config.last_error = Some(err);
-            app.config.status_message = None;
+            app.config.set_overlay_error(err);
             false
         }
     }

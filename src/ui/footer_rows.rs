@@ -174,7 +174,7 @@ fn footer_model_badge(app: &App) -> Option<String> {
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
         badge.push('/');
-        badge.push_str(footer_effort_label(app.config.thinking_effort_effective()));
+        badge.push_str(footer_effort_label(app.session_thinking_effort_effective()));
     }
     Some(badge)
 }
@@ -184,6 +184,8 @@ const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
         model::EffortLevel::Low => "Low",
         model::EffortLevel::Medium => "Med",
         model::EffortLevel::High => "High",
+        model::EffortLevel::XHigh => "XHigh",
+        model::EffortLevel::Max => "Max",
     }
 }
 
@@ -358,7 +360,7 @@ fn mcp_needs_auth_count(app: &App) -> usize {
         .servers
         .iter()
         .filter(|server| {
-            matches!(server.status, crate::agent::types::McpServerConnectionStatus::NeedsAuth)
+            matches!(server.status, crate::agent::model::McpServerConnectionStatus::NeedsAuth)
         })
         .count()
 }
@@ -448,7 +450,7 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::{McpServerConnectionStatus, McpServerStatus};
+    use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
         ModeState, TerminalSnapshotMode, ToolCallInfo,

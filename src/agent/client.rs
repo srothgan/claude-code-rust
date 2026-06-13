@@ -389,6 +389,20 @@ impl AgentConnection {
         })
     }
 
+    pub fn set_effort(&self, session_id: String, effort: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetEffort { session_id, effort },
+        })
+    }
+
+    pub fn set_agent(&self, session_id: String, agent: Option<String>) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent { session_id, agent },
+        })
+    }
+
     pub fn generate_session_title(
         &self,
         session_id: String,
@@ -598,6 +612,54 @@ mod tests {
     }
 
     #[test]
+    fn set_effort_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_effort("session-1".to_owned(), "max".to_owned()).expect("set effort");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetEffort {
+                session_id: "session-1".to_owned(),
+                effort: "max".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn set_agent_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_agent("session-1".to_owned(), Some("reviewer".to_owned())).expect("set agent");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetAgent {
+                session_id: "session-1".to_owned(),
+                agent: Some("reviewer".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn set_agent_reset_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_agent("session-1".to_owned(), None).expect("reset agent");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetAgent { session_id: "session-1".to_owned(), agent: None }
+        );
+    }
+
+    #[test]
     fn get_mcp_snapshot_sends_bridge_command() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let conn = AgentConnection::new(tx);
@@ -685,6 +747,9 @@ mod tests {
             crate::agent::types::McpServerConfig::Http {
                 url: "https://mcp.notion.com/mcp".to_owned(),
                 headers: BTreeMap::new(),
+                tools: Vec::new(),
+                timeout: Some(5000),
+                always_load: Some(true),
             },
         )]);
 

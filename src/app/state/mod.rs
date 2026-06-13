@@ -30,8 +30,8 @@ pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    TodoItem, TodoStatus, ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow,
+    ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow,
 };
 
 use crate::agent::events::ClientEvent;
@@ -202,8 +202,8 @@ pub struct App {
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `lookup_tool_call()`, `index_tool_call()`.
     pub tool_call_index: HashMap<String, (usize, usize)>,
-    /// Current todo list from Claude's `TodoWrite` tool calls.
-    pub todos: Vec<TodoItem>,
+    /// Current SDK task state from `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`.
+    pub tasks: Vec<model::TaskItem>,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Resolved keyboard bindings used by chat-surface dispatch.
@@ -277,7 +277,7 @@ pub struct App {
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<crate::agent::types::AccountInfo>,
+    pub account_info: Option<model::AccountInfo>,
 
     /// Indexed terminal tool calls for per-frame terminal snapshot updates.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -326,6 +326,15 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
+    pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
+        self.config_options
+            .get("effortLevel")
+            .and_then(serde_json::Value::as_str)
+            .and_then(model::EffortLevel::from_stored)
+            .unwrap_or_else(|| self.config.thinking_effort_effective())
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -852,7 +861,7 @@ impl App {
             tool_call_scopes: HashMap::default(),
             terminals: std::rc::Rc::default(),
             tool_call_index: HashMap::default(),
-            todos: Vec::new(),
+            tasks: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
             available_commands: Vec::new(),
@@ -1467,7 +1476,7 @@ mod tests {
     }
 
     fn set_account_subscription(app: &mut App, subscription: &str) {
-        app.account_info = Some(crate::agent::types::AccountInfo {
+        app.account_info = Some(crate::agent::model::AccountInfo {
             subscription_type: Some(subscription.to_owned()),
             ..Default::default()
         });

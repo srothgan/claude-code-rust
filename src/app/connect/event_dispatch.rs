@@ -14,8 +14,8 @@ use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
-    convert_current_model, convert_mode_state, map_available_models, map_permission_request,
-    map_question_request, map_session_update,
+    convert_account_info, convert_current_model, convert_mode_state, map_available_models,
+    map_mcp_server_status, map_permission_request, map_question_request, map_session_update,
 };
 
 struct ConnectedEventData {
@@ -95,16 +95,25 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
         }
         crate::agent::wire::BridgeEvent::TurnError {
-            message, error_kind, terminal_reason, ..
+            message,
+            error_kind,
+            api_error_status,
+            terminal_reason,
+            ..
         } => {
             if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
                 let _ = event_tx.send(ClientEvent::TurnErrorClassified {
                     message,
                     class,
+                    api_error_status,
                     terminal_reason,
                 });
             } else {
-                let _ = event_tx.send(ClientEvent::TurnError { message, terminal_reason });
+                let _ = event_tx.send(ClientEvent::TurnError {
+                    message,
+                    api_error_status,
+                    terminal_reason,
+                });
             }
         }
         crate::agent::wire::BridgeEvent::SlashError { message, .. } => {
@@ -150,13 +159,20 @@ pub(super) fn handle_bridge_event(
         }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
         crate::agent::wire::BridgeEvent::StatusSnapshot { session_id, account } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
+            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
+                session_id,
+                account: convert_account_info(account),
+            });
         }
         crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
             let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
         }
         crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
+            let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
+                session_id,
+                servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                error,
+            });
         }
     }
 }

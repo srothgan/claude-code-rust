@@ -1,6 +1,13 @@
 ﻿import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
+import {
+  isTaskToolName,
+  taskToolResultText,
+  taskToolTitle,
+  taskUpdateSucceeded,
+  type TaskTitleContext,
+} from "./tasks.js";
 
 export const TOOL_RESULT_TYPES = new Set([
   "tool_result",
@@ -12,6 +19,20 @@ export const TOOL_RESULT_TYPES = new Set([
   "text_editor_code_execution_tool_result",
   "mcp_tool_result",
 ]);
+
+const CRON_TOOL_NAMES = new Set(["CronCreate", "CronDelete", "CronList"]);
+const CRON_LIST_DIVIDER = "__cron_list_job_divider__";
+const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
+const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
+const REMOTE_TRIGGER_TOOL_NAME = "RemoteTrigger";
+const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
+const REPL_TOOL_NAME = "REPL";
+const MONITOR_TOOL_NAME = "Monitor";
+const WORKFLOW_TOOL_NAME = "Workflow";
+
+function isCronToolName(name: string): boolean {
+  return CRON_TOOL_NAMES.has(name);
+}
 
 export function isToolSearchToolName(name: string): boolean {
   const normalized = name.replace(/[\s_-]+/g, "").toLowerCase();
@@ -45,11 +66,28 @@ export function normalizeToolKind(name: string): string {
       return "search";
     case "WebFetch":
       return "fetch";
-    case "TodoWrite":
+    case "TaskCreate":
+    case "TaskUpdate":
+    case "TaskGet":
+    case "TaskList":
+    case "TaskOutput":
+    case "TaskStop":
+    case "CronCreate":
+    case "CronDelete":
+    case "CronList":
+    case "ScheduleWakeup":
+    case "PushNotification":
+    case "RemoteTrigger":
+    case "EnterWorktree":
+    case "ExitWorktree":
+    case "REPL":
+    case "Monitor":
+    case "Workflow":
       return "other";
     case "Task":
     case "Agent":
       return "think";
+    case "EnterPlanMode":
     case "ExitPlanMode":
       return "switch_mode";
     default:
@@ -57,7 +95,11 @@ export function normalizeToolKind(name: string): string {
   }
 }
 
-export function toolTitle(name: string, input: Record<string, unknown>): string {
+export function toolTitle(
+  name: string,
+  input: Record<string, unknown>,
+  context: TaskTitleContext = {},
+): string {
   if (name === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
     return command || "Terminal";
@@ -86,6 +128,45 @@ export function toolTitle(name: string, input: Record<string, unknown>): string 
     if (query) {
       return `WebSearch ${query}`;
     }
+  }
+  const taskTitle = taskToolTitle(name, input, context);
+  if (taskTitle) {
+    return taskTitle;
+  }
+  if (isCronToolName(name)) {
+    return name;
+  }
+  if (name === SCHEDULE_WAKEUP_TOOL_NAME) {
+    return name;
+  }
+  if (name === PUSH_NOTIFICATION_TOOL_NAME) {
+    return name;
+  }
+  if (name === REMOTE_TRIGGER_TOOL_NAME) {
+    const action = typeof input.action === "string" ? input.action.trim() : "";
+    return action ? `${REMOTE_TRIGGER_TOOL_NAME}: ${action}` : REMOTE_TRIGGER_TOOL_NAME;
+  }
+  if (name === ENTER_PLAN_MODE_TOOL_NAME) {
+    return name;
+  }
+  if (name === REPL_TOOL_NAME) {
+    const code = typeof input.code === "string" ? input.code.trim() : "";
+    return code ? `REPL: ${code}` : REPL_TOOL_NAME;
+  }
+  if (name === MONITOR_TOOL_NAME) {
+    const description = nonEmptyString(input.description);
+    return description ? `${MONITOR_TOOL_NAME}: ${description}` : MONITOR_TOOL_NAME;
+  }
+  if (name === WORKFLOW_TOOL_NAME) {
+    const workflowName = nonEmptyString(input.name);
+    return workflowName ? `${WORKFLOW_TOOL_NAME}: ${workflowName}` : WORKFLOW_TOOL_NAME;
+  }
+  if (name === "EnterWorktree") {
+    const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
+    return worktreeName || "EnterWorktree";
+  }
+  if (name === "ExitWorktree") {
+    return "ExitWorktree";
   }
   if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
     return `${name} ${input.file_path}`;
@@ -134,10 +215,11 @@ export function createToolCall(
   name: string,
   input: Record<string, unknown>,
   parentToolUseId: string | null = null,
+  titleContext: TaskTitleContext = {},
 ): ToolCall {
   return {
     tool_call_id: toolUseId,
-    title: toolTitle(name, input),
+    title: toolTitle(name, input, titleContext),
     kind: normalizeToolKind(name),
     status: "pending",
     content: editDiffContent(name, input),
@@ -304,16 +386,6 @@ function extractToolOutputMetadata(
       }
     }
     return undefined;
-  }
-
-  if (toolName === "TodoWrite") {
-    for (const candidate of candidates) {
-      if (typeof candidate.verificationNudgeNeeded === "boolean") {
-        return {
-          todo_write: { verification_nudge_needed: candidate.verificationNudgeNeeded },
-        };
-      }
-    }
   }
 
   return undefined;
@@ -630,11 +702,930 @@ function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown): str
   return "";
 }
 
+function worktreeResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string } | undefined {
+  if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const branch =
+      typeof candidate.worktreeBranch === "string" ? candidate.worktreeBranch.trim() : "";
+    const path = typeof candidate.worktreePath === "string" ? candidate.worktreePath.trim() : "";
+    const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
+    const isStructuredWorktreeOutput =
+      "message" in candidate ||
+      "worktreeBranch" in candidate ||
+      "worktreePath" in candidate ||
+      "originalCwd" in candidate;
+    if (output || isStructuredWorktreeOutput) {
+      return output ? { output } : {};
+    }
+  }
+
+  return undefined;
+}
+
+function booleanLabel(value: boolean): string {
+  return value ? "yes" : "no";
+}
+
+function pushBooleanField(lines: string[], label: string, value: unknown): void {
+  if (typeof value === "boolean") {
+    lines.push(`${label}: ${booleanLabel(value)}`);
+  }
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+const CRON_MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const CRON_WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+const CRON_MONTH_ALIASES = new Map(
+  ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"].map(
+    (name, index) => [name, index + 1],
+  ),
+);
+
+const CRON_WEEKDAY_ALIASES = new Map(
+  ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((name, index) => [name, index]),
+);
+
+type CronField =
+  | { kind: "any"; raw: string }
+  | { kind: "single"; raw: string; value: number }
+  | { kind: "step"; raw: string; step: number }
+  | { kind: "list"; raw: string; values: number[] }
+  | { kind: "range"; raw: string; start: number; end: number }
+  | { kind: "unsupported"; raw: string };
+
+function parseCronValue(
+  value: string,
+  min: number,
+  max: number,
+  aliases?: Map<string, number>,
+): number | undefined {
+  const normalized = value.trim().toUpperCase();
+  const aliased = aliases?.get(normalized);
+  const parsed = aliased ?? Number(normalized);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseCronField(
+  rawField: string,
+  min: number,
+  max: number,
+  aliases?: Map<string, number>,
+): CronField {
+  const raw = rawField.trim();
+  if (raw === "*") {
+    return { kind: "any", raw };
+  }
+  const stepMatch = raw.match(/^\*\/(\d+)$/);
+  if (stepMatch) {
+    const step = Number(stepMatch[1]);
+    return Number.isInteger(step) && step > 0 ? { kind: "step", raw, step } : { kind: "unsupported", raw };
+  }
+  if (raw.includes(",")) {
+    const values = raw
+      .split(",")
+      .map((part) => parseCronValue(part, min, max, aliases))
+      .filter((value): value is number => value !== undefined);
+    return values.length === raw.split(",").length ? { kind: "list", raw, values } : { kind: "unsupported", raw };
+  }
+  const rangeMatch = raw.match(/^([^/-]+)-([^/-]+)$/);
+  if (rangeMatch) {
+    const start = parseCronValue(rangeMatch[1], min, max, aliases);
+    const end = parseCronValue(rangeMatch[2], min, max, aliases);
+    return start !== undefined && end !== undefined && start <= end
+      ? { kind: "range", raw, start, end }
+      : { kind: "unsupported", raw };
+  }
+  const value = parseCronValue(raw, min, max, aliases);
+  return value !== undefined ? { kind: "single", raw, value } : { kind: "unsupported", raw };
+}
+
+function isCronAny(field: CronField): boolean {
+  return field.kind === "any";
+}
+
+function isCronUnsupported(...fields: CronField[]): boolean {
+  return fields.some((field) => field.kind === "unsupported");
+}
+
+function padCronNumber(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function cronTime(hour: CronField, minute: CronField): string | undefined {
+  if (hour.kind !== "single" || minute.kind !== "single") {
+    return undefined;
+  }
+  return `${padCronNumber(hour.value)}:${padCronNumber(minute.value)}`;
+}
+
+function pluralUnit(value: number, unit: string): string {
+  return value === 1 ? unit : `${unit}s`;
+}
+
+function joinEnglishList(values: string[]): string {
+  if (values.length <= 2) {
+    return values.join(" and ");
+  }
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
+}
+
+function weekdayName(value: number): string | undefined {
+  const normalized = value === 7 ? 0 : value;
+  return CRON_WEEKDAY_NAMES[normalized];
+}
+
+function weekdayDescription(field: CronField): string | undefined {
+  if (field.kind === "single") {
+    return weekdayName(field.value);
+  }
+  if (field.kind === "range" && field.start === 1 && field.end === 5) {
+    return "weekday";
+  }
+  if (field.kind === "range" && field.start === 0 && field.end === 6) {
+    return "day";
+  }
+  if (field.kind === "list") {
+    const normalized = [...new Set(field.values.map((value) => (value === 7 ? 0 : value)))].sort(
+      (left, right) => left - right,
+    );
+    if (normalized.length === 2 && normalized[0] === 0 && normalized[1] === 6) {
+      return "weekend day";
+    }
+    const names = normalized.map(weekdayName);
+    return names.every((name): name is string => name !== undefined) ? joinEnglishList(names) : undefined;
+  }
+  return undefined;
+}
+
+function monthName(value: number): string | undefined {
+  return CRON_MONTH_NAMES[value - 1];
+}
+
+function hourlyScheduleText(minute: CronField): string | undefined {
+  if (minute.kind !== "single") {
+    return undefined;
+  }
+  return minute.value === 0 ? "Every hour on the hour" : `Every hour at minute ${padCronNumber(minute.value)}`;
+}
+
+function cronScheduleFromExpression(cron: string): string | undefined {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return undefined;
+  }
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = [
+    parseCronField(parts[0], 0, 59),
+    parseCronField(parts[1], 0, 23),
+    parseCronField(parts[2], 1, 31),
+    parseCronField(parts[3], 1, 12, CRON_MONTH_ALIASES),
+    parseCronField(parts[4], 0, 7, CRON_WEEKDAY_ALIASES),
+  ];
+  if (isCronUnsupported(minute, hour, dayOfMonth, month, dayOfWeek)) {
+    return undefined;
+  }
+
+  const everyDay = isCronAny(dayOfMonth) && isCronAny(month) && isCronAny(dayOfWeek);
+  if (everyDay && minute.kind === "any" && hour.kind === "any") {
+    return "Every minute";
+  }
+  if (everyDay && minute.kind === "step" && hour.kind === "any") {
+    return `Every ${minute.step} ${pluralUnit(minute.step, "minute")}`;
+  }
+  if (everyDay && minute.kind === "single" && hour.kind === "any") {
+    return hourlyScheduleText(minute);
+  }
+  if (everyDay && minute.kind === "single" && hour.kind === "step") {
+    const suffix = minute.value === 0 ? "on the hour" : `at minute ${padCronNumber(minute.value)}`;
+    return `Every ${hour.step} ${pluralUnit(hour.step, "hour")} ${suffix}`;
+  }
+
+  const time = cronTime(hour, minute);
+  if (!time) {
+    return undefined;
+  }
+
+  if (everyDay) {
+    return `Every day at ${time}`;
+  }
+
+  if (isCronAny(dayOfMonth) && isCronAny(month) && !isCronAny(dayOfWeek)) {
+    const weekday = weekdayDescription(dayOfWeek);
+    return weekday ? `Every ${weekday} at ${time}` : undefined;
+  }
+
+  if (isCronAny(month) && isCronAny(dayOfWeek)) {
+    if (dayOfMonth.kind === "single") {
+      return `Every month on day ${dayOfMonth.value} at ${time}`;
+    }
+    if (dayOfMonth.kind === "step") {
+      return `Every ${dayOfMonth.step} ${pluralUnit(dayOfMonth.step, "day")} at ${time}`;
+    }
+  }
+
+  if (dayOfMonth.kind === "single" && isCronAny(dayOfWeek)) {
+    if (month.kind === "single") {
+      const monthLabel = monthName(month.value);
+      return monthLabel ? `Every ${monthLabel} ${dayOfMonth.value} at ${time}` : undefined;
+    }
+    if (month.kind === "step") {
+      return `Every ${month.step} ${pluralUnit(month.step, "month")} on day ${dayOfMonth.value} at ${time}`;
+    }
+  }
+
+  if (isCronAny(dayOfMonth) && month.kind === "single" && isCronAny(dayOfWeek)) {
+    const monthLabel = monthName(month.value);
+    return monthLabel ? `Every day in ${monthLabel} at ${time}` : undefined;
+  }
+
+  return undefined;
+}
+
+function normalizeHumanSchedule(value: unknown): string | undefined {
+  const text = nonEmptyString(value);
+  if (!text) {
+    return undefined;
+  }
+  const hourlyMinute = text.match(/^Every hour at :(\d{1,2})$/i);
+  if (hourlyMinute) {
+    const minute = Number(hourlyMinute[1]);
+    if (Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      return hourlyScheduleText({ kind: "single", raw: hourlyMinute[1], value: minute });
+    }
+  }
+  return text;
+}
+
+function readableCronSchedule(cron: unknown, humanSchedule: unknown): string | undefined {
+  const cronText = nonEmptyString(cron);
+  if (cronText) {
+    const derived = cronScheduleFromExpression(cronText);
+    if (derived) {
+      return derived;
+    }
+  }
+  return normalizeHumanSchedule(humanSchedule);
+}
+
+function cronCreateResultText(
+  candidate: Record<string, unknown>,
+  rawInput: Json | undefined,
+): string | undefined {
+  const input = asRecordOrNull(rawInput);
+  const schedule = readableCronSchedule(input?.cron, candidate.humanSchedule);
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.recurring !== "boolean" ||
+    !schedule
+  ) {
+    return undefined;
+  }
+
+  const lines = [
+    `Schedule ID: ${candidate.id}`,
+    `Schedule: ${schedule}`,
+    `Recurring: ${booleanLabel(candidate.recurring)}`,
+  ];
+  pushBooleanField(lines, "Durable", candidate.durable);
+  return lines.join("\n");
+}
+
+function cronDeleteResultText(candidate: Record<string, unknown>): string | undefined {
+  return typeof candidate.id === "string" ? `Schedule ID: ${candidate.id}` : undefined;
+}
+
+function cronListResultText(candidate: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(candidate.jobs)) {
+    return undefined;
+  }
+  const jobs = candidate.jobs.map(asRecordOrNull).filter((job): job is Record<string, unknown> => job !== null);
+  if (jobs.length === 0) {
+    return "Jobs: none";
+  }
+
+  const lines: string[] = [];
+  if (jobs.length === 1) {
+    const [job] = jobs;
+    if (typeof job.id === "string") {
+      lines.push(`Schedule ID: ${job.id}`);
+    }
+    if (typeof job.cron === "string" && job.cron.trim()) {
+      lines.push(`Cron: ${job.cron.trim()}`);
+    }
+    const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+    if (schedule) {
+      lines.push(`Schedule: ${schedule}`);
+    }
+    if (typeof job.prompt === "string") {
+      lines.push(`Prompt: ${job.prompt}`);
+    }
+    pushBooleanField(lines, "Recurring", job.recurring);
+    pushBooleanField(lines, "Durable", job.durable);
+  }
+
+  if (jobs.length > 1) {
+    for (const [index, job] of jobs.entries()) {
+      if (typeof job.id === "string") {
+        lines.push(`Schedule ID: ${job.id}`);
+      }
+      const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+      if (schedule) {
+        lines.push(`Schedule: ${schedule}`);
+      } else if (typeof job.cron === "string" && job.cron.trim()) {
+        lines.push(`Cron: ${job.cron.trim()}`);
+      }
+      if (typeof job.prompt === "string") {
+        lines.push(`Prompt: ${job.prompt}`);
+      }
+      if (index < jobs.length - 1) {
+        lines.push(CRON_LIST_DIVIDER);
+      }
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "Jobs: none";
+}
+
+function cronResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: Json | undefined,
+): string | undefined {
+  if (!isCronToolName(toolName)) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const output =
+      toolName === "CronCreate"
+        ? cronCreateResultText(candidate, rawInput)
+        : toolName === "CronDelete"
+          ? cronDeleteResultText(candidate)
+          : cronListResultText(candidate);
+    if (output !== undefined) {
+      return output;
+    }
+  }
+
+  return undefined;
+}
+
+function formatDurationSeconds(seconds: number): string {
+  const rounded = Math.max(0, Math.trunc(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const remainingSeconds = rounded % 60;
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  if (remainingSeconds > 0 || parts.length === 0) {
+    parts.push(`${remainingSeconds}s`);
+  }
+  return parts.join(" ");
+}
+
+function formatDurationMilliseconds(milliseconds: number): string {
+  const rounded = Math.max(0, Math.trunc(milliseconds));
+  if (rounded < 1000) {
+    return `${rounded}ms`;
+  }
+  return formatDurationSeconds(rounded / 1000);
+}
+
+function formatLocalTimestamp(epochMs: number): string | undefined {
+  if (!Number.isFinite(epochMs)) {
+    return undefined;
+  }
+  const date = new Date(epochMs);
+  if (!Number.isFinite(date.getTime())) {
+    return undefined;
+  }
+  const year = date.getFullYear().toString().padStart(4, "0");
+  const month = (date.getMonth() + 1).toString().padStart(2, "0");
+  const day = date.getDate().toString().padStart(2, "0");
+  const hour = date.getHours().toString().padStart(2, "0");
+  const minute = date.getMinutes().toString().padStart(2, "0");
+  const second = date.getSeconds().toString().padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second} local`;
+}
+
+function formatIsoTimestamp(value: unknown): string | undefined {
+  const raw = nonEmptyString(value);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? formatLocalTimestamp(parsed) : raw;
+}
+
+function scheduleWakeupResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const scheduledFor =
+      typeof candidate.scheduledFor === "number"
+        ? formatLocalTimestamp(candidate.scheduledFor)
+        : undefined;
+    const clampedDelaySeconds =
+      typeof candidate.clampedDelaySeconds === "number"
+        ? formatDurationSeconds(candidate.clampedDelaySeconds)
+        : undefined;
+    if (!scheduledFor || !clampedDelaySeconds || typeof candidate.wasClamped !== "boolean") {
+      continue;
+    }
+    return [
+      `Scheduled for: ${scheduledFor}`,
+      `Actual delay: ${clampedDelaySeconds}`,
+      `Clamped: ${booleanLabel(candidate.wasClamped)}`,
+    ].join("\n");
+  }
+
+  return undefined;
+}
+
+function pushNotificationDisabledReason(value: unknown): string | undefined {
+  switch (value) {
+    case "config_off":
+      return "notifications disabled";
+    case "user_present":
+      return "user present";
+    case "no_transport":
+      return "no notification transport";
+    default:
+      return undefined;
+  }
+}
+
+function pushNotificationResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: Json | undefined,
+): string | undefined {
+  if (toolName !== PUSH_NOTIFICATION_TOOL_NAME) {
+    return undefined;
+  }
+
+  const inputMessage = nonEmptyString(asRecordOrNull(rawInput)?.message);
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    const isStructuredPushOutput =
+      "message" in candidate ||
+      "pushSent" in candidate ||
+      "localSent" in candidate ||
+      "disabledReason" in candidate ||
+      "idleSec" in candidate ||
+      "hasFocus" in candidate ||
+      "sentAt" in candidate;
+    if (!isStructuredPushOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    const outputMessage = nonEmptyString(candidate.message);
+    if (outputMessage && outputMessage !== inputMessage) {
+      lines.push(`Result: ${outputMessage}`);
+    }
+    pushBooleanField(lines, "Push sent", candidate.pushSent);
+    pushBooleanField(lines, "Local sent", candidate.localSent);
+    const disabledReason = pushNotificationDisabledReason(candidate.disabledReason);
+    if (disabledReason) {
+      lines.push(`Disabled reason: ${disabledReason}`);
+    }
+    if (typeof candidate.idleSec === "number" && Number.isFinite(candidate.idleSec)) {
+      lines.push(`Idle time: ${formatDurationSeconds(candidate.idleSec)}`);
+    }
+    pushBooleanField(lines, "App focused", candidate.hasFocus);
+    const sentAt = formatIsoTimestamp(candidate.sentAt);
+    if (sentAt) {
+      lines.push(`Sent at: ${sentAt}`);
+    }
+    return lines.join("\n");
+  }
+
+  return undefined;
+}
+
+function compactJson(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.trim() ? value : undefined;
+  }
+  if (Array.isArray(value) && value.length === 0) {
+    return undefined;
+  }
+  const record = asRecordOrNull(value);
+  if (record && Object.keys(record).length === 0) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function compactParsedJsonString(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(JSON.parse(trimmed));
+  } catch {
+    return trimmed;
+  }
+}
+
+function remoteTriggerResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string; failed: boolean } | undefined {
+  if (toolName !== REMOTE_TRIGGER_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate.status !== "number" || typeof candidate.json !== "string") {
+      continue;
+    }
+
+    const lines = [`Status: ${candidate.status}`];
+    const summary = nonEmptyString(candidate.summary);
+    if (summary) {
+      lines.push(`Summary: ${summary}`);
+    } else {
+      const response = compactParsedJsonString(candidate.json);
+      if (response) {
+        lines.push(`Response: ${response}`);
+      }
+    }
+
+    return { output: lines.join("\n"), failed: candidate.status >= 400 };
+  }
+
+  return undefined;
+}
+
+function hasConcreteReplField(record: Record<string, unknown>): boolean {
+  return (
+    "code" in record ||
+    "error" in record ||
+    "stdout" in record ||
+    "stderr" in record ||
+    "registeredTools" in record ||
+    "images" in record ||
+    "documents" in record
+  );
+}
+
+function isReplWrapperRecord(record: Record<string, unknown>): boolean {
+  const nestedResult = asRecordOrNull(record.result);
+  return Boolean(nestedResult && hasConcreteReplField(nestedResult));
+}
+
+function isReplOutputRecord(record: Record<string, unknown>): boolean {
+  if (isReplWrapperRecord(record)) {
+    return false;
+  }
+  return hasConcreteReplField(record) || "result" in record;
+}
+
+function replResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): { output?: string; failed: boolean } | undefined {
+  if (toolName !== REPL_TOOL_NAME) {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (!isReplOutputRecord(candidate)) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    let failed = false;
+    if ("error" in candidate) {
+      failed = true;
+      const error = compactJson(candidate.error);
+      if (error) {
+        lines.push(`Error: ${error}`);
+      }
+    }
+
+    const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
+    if (stdout) {
+      lines.push(`Stdout: ${stdout}`);
+    }
+    const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
+    if (stderr) {
+      lines.push(`Stderr: ${stderr}`);
+    }
+    const result = compactJson(candidate.result);
+    if (result) {
+      lines.push(`Result: ${result}`);
+    }
+
+    if (Array.isArray(candidate.registeredTools)) {
+      const registeredTools = candidate.registeredTools.filter(
+        (tool): tool is string => typeof tool === "string" && tool.trim().length > 0,
+      );
+      if (registeredTools.length > 0) {
+        lines.push(`Registered tools: ${registeredTools.join(", ")}`);
+      }
+    }
+    if (Array.isArray(candidate.images) && candidate.images.length > 0) {
+      lines.push(`Images: ${candidate.images.length}`);
+    }
+    if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
+      lines.push(`Documents: ${candidate.documents.length}`);
+    }
+
+    return { output: lines.length > 0 ? lines.join("\n") : undefined, failed };
+  }
+
+  return undefined;
+}
+
+type BackgroundLaunchResult = {
+  output?: string;
+  taskId?: string;
+  failed: boolean;
+  keepRunning: boolean;
+};
+
+function collectResultCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+  return candidates;
+}
+
+function monitorResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  if (toolName !== MONITOR_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const taskId = nonEmptyString(candidate.taskId);
+    const timeoutMs =
+      typeof candidate.timeoutMs === "number" && Number.isFinite(candidate.timeoutMs)
+        ? Math.max(0, Math.trunc(candidate.timeoutMs))
+        : undefined;
+    const persistent =
+      typeof candidate.persistent === "boolean"
+        ? candidate.persistent
+        : timeoutMs === 0
+          ? true
+          : timeoutMs !== undefined
+            ? false
+            : undefined;
+    const isStructuredMonitorOutput =
+      taskId !== undefined || timeoutMs !== undefined || persistent !== undefined;
+    if (!isStructuredMonitorOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    if (taskId) {
+      lines.push(`Task ID: ${taskId}`);
+    }
+    if (persistent !== undefined) {
+      lines.push(`Persistent: ${booleanLabel(persistent)}`);
+    }
+    if (timeoutMs !== undefined && persistent !== true) {
+      lines.push(`Timeout: ${formatDurationMilliseconds(timeoutMs)}`);
+    }
+    return {
+      output: lines.length > 0 ? lines.join("\n") : undefined,
+      taskId,
+      failed: false,
+      keepRunning: Boolean(taskId),
+    };
+  }
+
+  return undefined;
+}
+
+function workflowStatusLabel(value: unknown): string | undefined {
+  switch (value) {
+    case "async_launched":
+      return "async launched";
+    case "remote_launched":
+      return "remote launched";
+    default:
+      return nonEmptyString(value);
+  }
+}
+
+function workflowResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  if (toolName !== WORKFLOW_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const taskId = nonEmptyString(candidate.taskId);
+    const status = workflowStatusLabel(candidate.status);
+    const error = nonEmptyString(candidate.error);
+    const isStructuredWorkflowOutput =
+      status !== undefined ||
+      taskId !== undefined ||
+      "runId" in candidate ||
+      "summary" in candidate ||
+      "transcriptDir" in candidate ||
+      "scriptPath" in candidate ||
+      "sessionUrl" in candidate ||
+      "warning" in candidate ||
+      "error" in candidate;
+    if (!isStructuredWorkflowOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    if (status) {
+      lines.push(`Status: ${status}`);
+    }
+    if (taskId) {
+      lines.push(`Task ID: ${taskId}`);
+    }
+    const runId = nonEmptyString(candidate.runId);
+    if (runId) {
+      lines.push(`Run ID: ${runId}`);
+    }
+    const summary = nonEmptyString(candidate.summary);
+    if (summary) {
+      lines.push(`Summary: ${summary}`);
+    }
+    const transcriptDir = nonEmptyString(candidate.transcriptDir);
+    if (transcriptDir) {
+      lines.push(`Transcript dir: ${transcriptDir}`);
+    }
+    const scriptPath = nonEmptyString(candidate.scriptPath);
+    if (scriptPath) {
+      lines.push(`Script path: ${scriptPath}`);
+    }
+    const sessionUrl = nonEmptyString(candidate.sessionUrl);
+    if (sessionUrl) {
+      lines.push(`Session URL: ${sessionUrl}`);
+    }
+    const warning = nonEmptyString(candidate.warning);
+    if (warning) {
+      lines.push(`Warning: ${warning}`);
+    }
+    if (error) {
+      lines.push(`Error: ${error}`);
+    }
+
+    return {
+      output: lines.length > 0 ? lines.join("\n") : undefined,
+      taskId,
+      failed: Boolean(error),
+      keepRunning: Boolean(taskId && !error),
+    };
+  }
+
+  return undefined;
+}
+
+function backgroundLaunchResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  return (
+    monitorResultFields(toolName, rawResult, rawContent) ??
+    workflowResultFields(toolName, rawResult, rawContent)
+  );
+}
+
+export function backgroundToolLaunchTaskIdFromResult(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  const result = backgroundLaunchResultFields(toolName, rawResult, rawContent);
+  return result?.keepRunning ? result.taskId : undefined;
+}
+
+function enterPlanModeStructuredOutputHandled(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): boolean {
+  if (toolName !== ENTER_PLAN_MODE_TOOL_NAME) {
+    return false;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate.message === "string") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
   base?: ToolCall,
   rawResult?: unknown,
+  _context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
@@ -650,17 +1641,120 @@ export function buildToolResultFields(
   if (agentTitle) {
     fields.title = agentTitle;
   }
+  const worktreeOutput = !isError
+    ? worktreeResultFields(toolName, rawResult, rawContent)
+    : undefined;
+  if (worktreeOutput) {
+    if (worktreeOutput.output) {
+      fields.raw_output = worktreeOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: worktreeOutput.output } },
+      ];
+    }
+    return fields;
+  }
+  const cronOutput = !isError
+    ? cronResultText(toolName, rawResult, rawContent, base?.raw_input)
+    : undefined;
+  if (cronOutput !== undefined) {
+    fields.raw_output = cronOutput;
+    fields.content = [{ type: "content", content: { type: "text", text: cronOutput } }];
+    return fields;
+  }
+  const scheduleWakeupOutput = !isError
+    ? scheduleWakeupResultText(toolName, rawResult, rawContent)
+    : undefined;
+  if (scheduleWakeupOutput !== undefined) {
+    fields.raw_output = scheduleWakeupOutput;
+    fields.content = [
+      { type: "content", content: { type: "text", text: scheduleWakeupOutput } },
+    ];
+    return fields;
+  }
+  const pushNotificationOutput = !isError
+    ? pushNotificationResultText(toolName, rawResult, rawContent, base?.raw_input)
+    : undefined;
+  if (pushNotificationOutput !== undefined) {
+    fields.raw_output = pushNotificationOutput;
+    fields.content = [
+      { type: "content", content: { type: "text", text: pushNotificationOutput } },
+    ];
+    return fields;
+  }
+  if (
+    !isError &&
+    enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
+  ) {
+    return fields;
+  }
+  const remoteTriggerOutput = remoteTriggerResultFields(toolName, rawResult, rawContent);
+  if (remoteTriggerOutput !== undefined) {
+    if (remoteTriggerOutput.failed) {
+      fields.status = "failed";
+    }
+    if (remoteTriggerOutput.output) {
+      fields.raw_output = remoteTriggerOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: remoteTriggerOutput.output } },
+      ];
+    }
+    return fields;
+  }
+  const replOutput = replResultFields(toolName, rawResult, rawContent);
+  if (replOutput !== undefined) {
+    if (replOutput.failed) {
+      fields.status = "failed";
+    }
+    if (replOutput.output) {
+      fields.raw_output = replOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: replOutput.output } },
+      ];
+    }
+    return fields;
+  }
+  const backgroundLaunchOutput = !isError
+    ? backgroundLaunchResultFields(toolName, rawResult, rawContent)
+    : undefined;
+  if (backgroundLaunchOutput !== undefined) {
+    fields.status = backgroundLaunchOutput.failed
+      ? "failed"
+      : backgroundLaunchOutput.keepRunning
+        ? "in_progress"
+        : "completed";
+    if (backgroundLaunchOutput.output) {
+      fields.raw_output = backgroundLaunchOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: backgroundLaunchOutput.output } },
+      ];
+    }
+    return fields;
+  }
   const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
   const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
   const rawOutput = bashResultRecord
     ? buildBashDisplayOutput(bashResultRecord)
     : normalizedRawOutput || JSON.stringify(rawContent);
-  if (rawOutput) {
+  if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
     fields.raw_output = rawOutput;
   }
   const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;
+  }
+
+  if (!isError && isTaskToolName(toolName)) {
+    if (toolName === "TaskUpdate" && taskUpdateSucceeded(rawResult, rawContent) === false) {
+      fields.status = "failed";
+    }
+    const taskOutput = taskToolResultText(toolName, rawResult, rawContent, base?.raw_input);
+    if (taskOutput) {
+      fields.content = [{ type: "content", content: { type: "text", text: taskOutput } }];
+      return fields;
+    }
+    if (toolName === "TaskCreate" || toolName === "TaskUpdate" || toolName === "TaskOutput" || toolName === "TaskStop") {
+      return fields;
+    }
   }
 
   if (!isError && toolName === "Write") {

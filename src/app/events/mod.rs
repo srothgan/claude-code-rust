@@ -22,7 +22,7 @@ use crate::app::keys::CMD_MOD;
 #[cfg(test)]
 use crate::app::keys::WORD_NAV_MOD;
 use crate::app::keys::{KeyOutcome, RuntimeCommand, reclaim_input_from_inline_prompt_if_needed};
-use crate::app::todos::apply_plan_todos;
+use crate::app::tasks::apply_task_state_update;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
@@ -248,6 +248,18 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             tool_updates::handle_tool_call_update_session(app, &tcu);
         }
+        model::SessionUpdate::TaskStateUpdate(update) => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "task_state_update_applied",
+                message = "task state update applied",
+                outcome = "success",
+                task_count = update.tasks.len(),
+                removed_task_count = update.removed_task_ids.len(),
+                complete_snapshot = update.is_complete_snapshot,
+            );
+            apply_task_state_update(app, update);
+        }
         model::SessionUpdate::UserMessageChunk(_) => {}
         model::SessionUpdate::AgentThoughtChunk(chunk) => {
             let chunk_chars = match &chunk.content {
@@ -263,16 +275,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
             app.status = AppStatus::Thinking;
         }
-        model::SessionUpdate::Plan(plan) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "plan_update_applied",
-                message = "plan update applied",
-                outcome = "success",
-                todo_count = plan.entries.len(),
-            );
-            apply_plan_todos(app, &plan);
-        }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -280,6 +282,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 message = "available commands update applied",
                 outcome = "success",
                 command_count = cmds.available_commands.len(),
+                source = cmds.source.as_deref().unwrap_or("unknown"),
+                generation = cmds.generation,
             );
             app.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
@@ -408,6 +412,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 session_status = ?status,
                 compacting = app.is_compacting,
             );
+        }
+        model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
+            let severity = match severity {
+                model::SystemNoticeSeverity::Info => SystemSeverity::Info,
+                model::SystemNoticeSeverity::Warning => SystemSeverity::Warning,
+                model::SystemNoticeSeverity::Error => SystemSeverity::Error,
+            };
+            notices::emit_system_notice(app, severity, &message);
         }
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
@@ -538,8 +550,8 @@ mod tests {
     use crate::app::{
         BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
         FullscreenView, InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason,
-        SurfaceMode, TerminalLifecycleState, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
-        ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+        SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+        UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
@@ -571,6 +583,21 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+        }
+    }
+
+    fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
+        model::TaskItem {
+            task_id: id.to_owned(),
+            subject: subject.to_owned(),
+            description: None,
+            active_form: None,
+            status,
+            owner: None,
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
+            metadata: None,
+            source_tool_call_id: None,
         }
     }
 
@@ -1243,31 +1270,9 @@ mod tests {
     }
 
     #[test]
-    fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
+    fn todowrite_tool_call_does_not_mutate_task_state() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
-            content: "Existing todo".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
-
-        let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
-            .kind(model::ToolKind::Other)
-            .raw_input(serde_json::json!({}))
-            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
-        );
-
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Existing todo");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
-    }
-
-    #[test]
-    fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
-        let mut app = make_test_app();
+        app.tasks.push(task_item("task-1", "Existing task", model::TaskStatus::InProgress));
         let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
             .kind(model::ToolKind::Other)
             .raw_input(serde_json::json!({
@@ -1278,8 +1283,6 @@ mod tests {
             &mut app,
             ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
         );
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
 
         let update = model::ToolCallUpdate::new(
             "tc-todo-update",
@@ -1290,9 +1293,10 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
         );
 
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].task_id, "task-1");
+        assert_eq!(app.tasks[0].subject, "Existing task");
+        assert_eq!(app.tasks[0].status, model::TaskStatus::InProgress);
     }
 
     #[test]
@@ -1485,7 +1489,7 @@ mod tests {
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-        assert!(app.todos.is_empty());
+        assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(!app.cancelled_turn_pending_hint);
         assert!(matches!(app.status, AppStatus::Ready));
@@ -1677,9 +1681,9 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1826,7 +1830,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(crate::agent::types::AccountInfo {
+        app.account_info = Some(crate::agent::model::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
@@ -1988,7 +1992,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "test-session".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Pro".into()),
@@ -2045,15 +2049,11 @@ mod tests {
         app.status = AppStatus::Running;
         app.files_accessed = 9;
         app.pending_interaction_ids.push("perm-1".into());
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
+        app.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2086,7 +2086,7 @@ mod tests {
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
-        assert!(app.todos.is_empty());
+        assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(app.mcp.servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
@@ -2103,9 +2103,9 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2182,7 +2182,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "old-session".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
                     subscription_type: None,
@@ -2211,7 +2211,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2245,7 +2245,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2267,9 +2267,9 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(crate::agent::model::McpServerStatus {
             name: "current".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: crate::agent::model::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -2281,9 +2281,9 @@ mod tests {
             &mut app,
             ClientEvent::McpSnapshotReceived {
                 session_id: "old-session".into(),
-                servers: vec![crate::agent::types::McpServerStatus {
+                servers: vec![crate::agent::model::McpServerStatus {
                     name: "stale".into(),
-                    status: crate::agent::types::McpServerConnectionStatus::Connected,
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
                     server_info: None,
                     error: None,
                     config: None,
@@ -2833,7 +2833,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "active-456".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -2884,7 +2884,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "startup-resume".into(),
-                account: crate::agent::types::AccountInfo {
+                account: crate::agent::model::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -3158,7 +3158,11 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "adapter failed".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "adapter failed".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert!(!app.pending_compact_clear);
@@ -3208,7 +3212,11 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "cancelled".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "cancelled".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert_eq!(app.messages.len(), 3);
@@ -3231,6 +3239,7 @@ mod tests {
             &mut app,
             ClientEvent::TurnError {
                 message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3256,6 +3265,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "turn failed".into(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3280,6 +3290,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "auth required".into(),
                 class: TurnErrorClass::AuthRequired,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3287,6 +3298,71 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
         assert!(app.should_quit);
         assert_eq!(app.exit_error, Some(crate::error::AppError::AuthRequired));
+    }
+
+    #[test]
+    fn classified_turn_error_model_unavailable_suggests_model_switch() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "model_not_found".into(),
+                class: TurnErrorClass::ModelUnavailable,
+                api_error_status: Some(404),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        assert_eq!(app.exit_error, None);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("The selected model is unavailable"));
+        assert!(text.contains("Use /model"));
+    }
+
+    #[test]
+    fn classified_turn_error_account_access_does_not_quit_for_login() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "oauth_org_not_allowed".into(),
+                class: TurnErrorClass::AccountAccess,
+                api_error_status: Some(403),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        assert_eq!(app.exit_error, None);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("current account or organization"));
+        assert!(text.contains("cannot use the requested resource"));
+    }
+
+    #[test]
+    fn classified_turn_error_transient_service_suggests_retry() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "overloaded".into(),
+                class: TurnErrorClass::TransientService,
+                api_error_status: Some(529),
+                terminal_reason: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(!app.should_quit);
+        let text = first_block_text(app.messages.last().expect("expected message"));
+        assert!(text.contains("temporarily overloaded or unavailable"));
+        assert!(text.contains("retry"));
     }
 
     #[test]
@@ -3301,7 +3377,11 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "boom".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                message: "boom".into(),
+                api_error_status: None,
+                terminal_reason: None,
+            },
         );
 
         assert!(app.active_task_ids.is_empty());
@@ -3580,6 +3660,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3620,6 +3701,7 @@ mod tests {
             ClientEvent::TurnErrorClassified {
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -3740,6 +3822,7 @@ mod tests {
             &mut app,
             ClientEvent::TurnError {
                 message: "Error: Request was aborted.\n    at stack line".into(),
+                api_error_status: None,
                 terminal_reason: None,
             },
         );
@@ -4237,27 +4320,6 @@ mod tests {
         assert_eq!(app.focus_owner(), FocusOwner::Input);
         assert_eq!(app.input.text(), "n");
         assert_eq!(question_focus_state(&app, "question-auto"), Some(false));
-    }
-
-    #[test]
-    fn permission_focus_ignores_ctrl_t_as_todo_shortcut() {
-        let mut app = make_test_app();
-        app.pending_interaction_ids.push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
-        app.todos.push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert!(app.input.is_empty());
-        assert_eq!(app.todos.len(), 1);
     }
 
     #[test]
@@ -5085,7 +5147,53 @@ mod tests {
             panic!("expected API retry notice");
         };
         assert_eq!(notice.severity, SystemSeverity::Warning);
-        assert_eq!(notice.text.text, "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",);
+        assert_eq!(notice.text.text, "API retry 2/4 after server error HTTP 529, retrying in 1.5s",);
+    }
+
+    #[test]
+    fn system_notice_update_uses_notice_lane() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::SystemNoticeUpdate {
+                severity: model::SystemNoticeSeverity::Warning,
+                message: "Plugin install failed.".to_owned(),
+            }),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        let MessageBlock::Notice(notice) = &app.messages[0].blocks[0] else {
+            panic!("expected system notice");
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert_eq!(notice.text.text, "Plugin install failed.");
+    }
+
+    #[test]
+    fn available_commands_update_replaces_previous_commands() {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
+                    "/old",
+                    "Old command",
+                )]),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![
+                    model::AvailableCommand::new("/new", "New command").input_hint("<arg>"),
+                ]),
+            )),
+        );
+
+        assert_eq!(
+            app.available_commands,
+            vec![model::AvailableCommand::new("/new", "New command").input_hint("<arg>")]
+        );
     }
 
     #[test]
@@ -5095,23 +5203,6 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert_eq!(app.input.text(), "Write focused tests");
-        assert!(app.prompt_suggestion.is_none());
-    }
-
-    #[test]
-    fn prompt_suggestion_tab_accepts_even_with_todos_present() {
-        let mut app = make_test_app();
-        app.prompt_suggestion = Some("Write focused tests".to_owned());
-        app.todos.push(TodoItem {
-            content: "todo".to_owned(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
         assert_eq!(app.input.text(), "Write focused tests");
         assert!(app.prompt_suggestion.is_none());
     }

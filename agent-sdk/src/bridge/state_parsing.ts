@@ -50,9 +50,12 @@ export function parseRuntimeSessionState(value: unknown): RuntimeSessionState | 
 export function parseApiRetryError(value: unknown): ApiRetryError {
   switch (value) {
     case "authentication_failed":
+    case "oauth_org_not_allowed":
     case "billing_error":
     case "rate_limit":
+    case "overloaded":
     case "invalid_request":
+    case "model_not_found":
     case "server_error":
     case "max_output_tokens":
       return value;

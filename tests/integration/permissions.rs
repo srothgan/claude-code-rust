@@ -39,6 +39,21 @@ fn allow_deny_options() -> Vec<model::PermissionOption> {
     ]
 }
 
+fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
+    model::TaskItem {
+        task_id: id.to_owned(),
+        subject: subject.to_owned(),
+        description: None,
+        active_form: None,
+        status,
+        owner: None,
+        blocks: Vec::new(),
+        blocked_by: Vec::new(),
+        metadata: None,
+        source_tool_call_id: None,
+    }
+}
+
 // --- PermissionRequest attaches to tool call ---
 
 #[tokio::test]
@@ -191,19 +206,14 @@ async fn turn_complete_does_not_clear_tool_call_index() {
 }
 
 #[tokio::test]
-async fn turn_complete_does_not_clear_todos() {
+async fn turn_complete_does_not_clear_tasks() {
     let mut app = test_app();
 
-    // Simulate a TodoWrite by directly setting todos
-    app.todos = vec![claude_code_rust::app::TodoItem {
-        content: "Test task".into(),
-        status: claude_code_rust::app::TodoStatus::InProgress,
-        active_form: "Testing".into(),
-    }];
+    app.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert_eq!(app.todos.len(), 1, "todos should persist across turns");
+    assert_eq!(app.tasks.len(), 1, "tasks should persist across turns");
 }
 
 #[tokio::test]

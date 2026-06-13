@@ -4,7 +4,7 @@ use super::{
     ResolvedSettingValue, RuntimeCatalogKind, SettingId, SettingOptions, SettingSpec,
     SettingValidation, store,
 };
-use crate::agent::model::AvailableModel;
+use crate::agent::model::{AvailableModel, EffortLevel};
 use serde_json::Value;
 
 pub(super) fn resolve_setting_document(
@@ -135,6 +135,9 @@ fn resolve_model_setting(
 }
 
 fn option_exists(spec: &SettingSpec, value: &str) -> bool {
+    if spec.id == SettingId::ThinkingEffort {
+        return EffortLevel::from_persisted_setting(value).is_some();
+    }
     match spec.options {
         SettingOptions::Static(options) => options.iter().any(|option| option.stored == value),
         SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {

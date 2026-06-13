@@ -3,9 +3,9 @@ mod cli;
 use crate::agent::events::ClientEvent;
 use crate::app::App;
 use crate::app::config::{
-    AddMarketplaceOverlayState, ConfigOverlayState, InstalledPluginActionKind,
-    InstalledPluginActionOverlayState, MarketplaceActionKind, MarketplaceActionsOverlayState,
-    PluginInstallActionKind, PluginInstallOverlayState,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, ConfirmationOverlayState,
+    InstalledPluginActionKind, InstalledPluginActionOverlayState, MarketplaceActionKind,
+    MarketplaceActionsOverlayState, PluginInstallActionKind, PluginInstallOverlayState,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -379,7 +379,7 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
 }
 
 pub(crate) fn clamp_selection(app: &mut App) {
-    let installed_len = filtered_installed(&app.plugins).len();
+    let installed_len = ordered_installed(&app.plugins, &app.cwd_raw).len();
     let plugin_len = filtered_marketplace_plugins(&app.plugins).len();
     let marketplace_len = marketplace_row_count(&app.plugins);
     app.plugins.installed_selected_index =
@@ -407,28 +407,10 @@ pub(crate) fn ordered_installed<'a>(
     current_project_raw: &str,
 ) -> Vec<&'a InstalledPluginEntry> {
     let current_project = normalize_project_path(current_project_raw);
-    let mut relevant = Vec::new();
-    let mut other = Vec::new();
-
-    for entry in filtered_installed(state) {
-        if is_relevant_installed_entry(entry, &current_project) {
-            relevant.push(entry);
-        } else {
-            other.push(entry);
-        }
-    }
-
-    relevant.extend(other);
-    relevant
-}
-
-#[must_use]
-pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw: &str) -> usize {
-    let current_project = normalize_project_path(current_project_raw);
     filtered_installed(state)
         .into_iter()
-        .filter(|entry| is_relevant_installed_entry(entry, &current_project))
-        .count()
+        .filter(|entry| is_visible_installed_entry(entry, &current_project))
+        .collect()
 }
 
 #[must_use]
@@ -473,7 +455,7 @@ pub(crate) fn display_label(raw: &str) -> String {
 
 pub(crate) fn handle_installed_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_installed_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_installed_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_installed_overlay_action(app),
@@ -483,7 +465,7 @@ pub(crate) fn handle_installed_overlay_key(app: &mut App, key: KeyEvent) {
 
 pub(crate) fn handle_plugin_install_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_plugin_install_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_plugin_install_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_plugin_install_action(app),
@@ -493,7 +475,7 @@ pub(crate) fn handle_plugin_install_overlay_key(app: &mut App, key: KeyEvent) {
 
 pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_marketplace_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_marketplace_action(app),
@@ -504,7 +486,7 @@ pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
 pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_add_marketplace_cursor_left(app);
         }
@@ -540,9 +522,9 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
 
     let title = display_label(&entry.id);
     let description = installed_overlay_description(app, &entry);
-    let actions = installed_overlay_actions(app, &entry);
-    app.config.overlay =
-        Some(ConfigOverlayState::InstalledPluginActions(InstalledPluginActionOverlayState {
+    let actions = installed_overlay_actions(&entry);
+    app.config.replace_overlay(ConfigOverlayState::InstalledPluginActions(
+        InstalledPluginActionOverlayState {
             plugin_id: entry.id,
             title,
             description,
@@ -550,7 +532,8 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
             project_path: entry.project_path,
             selected_index: 0,
             actions,
-        }));
+        },
+    ));
     true
 }
 
@@ -560,8 +543,8 @@ fn open_plugin_install_overlay(app: &mut App) -> bool {
         return false;
     };
 
-    app.config.overlay =
-        Some(ConfigOverlayState::PluginInstallActions(PluginInstallOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::PluginInstallActions(
+        PluginInstallOverlayState {
             plugin_id: entry.plugin_id,
             title: display_label(&entry.name),
             description: entry
@@ -573,7 +556,8 @@ fn open_plugin_install_overlay(app: &mut App) -> bool {
                 PluginInstallActionKind::Project,
                 PluginInstallActionKind::Local,
             ],
-        }));
+        },
+    ));
     true
 }
 
@@ -583,22 +567,22 @@ fn open_marketplace_actions_overlay(app: &mut App) -> bool {
         return false;
     };
 
-    app.config.overlay =
-        Some(ConfigOverlayState::MarketplaceActions(MarketplaceActionsOverlayState {
+    app.config.replace_overlay(ConfigOverlayState::MarketplaceActions(
+        MarketplaceActionsOverlayState {
             name: entry.name.clone(),
             title: display_label(&entry.name),
             description: marketplace_overlay_description(&entry),
             selected_index: 0,
             actions: vec![MarketplaceActionKind::Update, MarketplaceActionKind::Remove],
-        }));
+        },
+    ));
     true
 }
 
 fn open_add_marketplace_overlay(app: &mut App) -> bool {
-    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(
+    app.config.replace_overlay(ConfigOverlayState::AddMarketplace(
         AddMarketplaceOverlayState::from_text_input(String::new(), 0),
     ));
-    app.config.last_error = None;
     true
 }
 
@@ -661,16 +645,39 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
         return;
     };
 
+    if action == InstalledPluginActionKind::Uninstall {
+        open_installed_plugin_uninstall_confirmation(app, overlay);
+        return;
+    }
+
+    execute_installed_plugin_action(app, overlay, action);
+}
+
+pub(crate) fn execute_confirmed_installed_plugin_action(
+    app: &mut App,
+    action: InstalledPluginActionKind,
+) {
+    let Some(overlay) = app.config.installed_plugin_actions_overlay().cloned() else {
+        return;
+    };
+    execute_installed_plugin_action(app, overlay, action);
+}
+
+fn execute_installed_plugin_action(
+    app: &mut App,
+    overlay: InstalledPluginActionOverlayState,
+    action: InstalledPluginActionKind,
+) {
     let (cwd_raw, args, status_message) = installed_action_command(app, &overlay, action);
 
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
     }
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -706,7 +713,7 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     };
 
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for plugin action".to_owned());
         return;
@@ -730,7 +737,7 @@ fn execute_selected_plugin_install_action(app: &mut App) {
         }
     };
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -765,8 +772,28 @@ fn execute_selected_marketplace_action(app: &mut App) {
         return;
     };
 
+    if action == MarketplaceActionKind::Remove {
+        open_marketplace_remove_confirmation(app, overlay);
+        return;
+    }
+
+    execute_marketplace_action(app, overlay, action);
+}
+
+pub(crate) fn execute_confirmed_marketplace_action(app: &mut App, action: MarketplaceActionKind) {
+    let Some(overlay) = app.config.marketplace_actions_overlay().cloned() else {
+        return;
+    };
+    execute_marketplace_action(app, overlay, action);
+}
+
+fn execute_marketplace_action(
+    app: &mut App,
+    overlay: MarketplaceActionsOverlayState,
+    action: MarketplaceActionKind,
+) {
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for marketplace action".to_owned());
         return;
@@ -775,7 +802,7 @@ fn execute_selected_marketplace_action(app: &mut App) {
     let args = marketplace_action_command(&overlay, action);
     let status_message = marketplace_action_status_message(&overlay.title, action);
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(status_message);
     app.plugins.loading = true;
@@ -802,18 +829,77 @@ fn execute_selected_marketplace_action(app: &mut App) {
     });
 }
 
+fn open_installed_plugin_uninstall_confirmation(
+    app: &mut App,
+    overlay: InstalledPluginActionOverlayState,
+) {
+    let title = format!("Uninstall {}", overlay.title);
+    let scope = overlay.scope.clone();
+    let plugin_id = overlay.plugin_id.clone();
+    let body = match overlay.project_path.as_deref() {
+        Some(project_path) => format!(
+            "Uninstall plugin {plugin_id} from {scope} scope for {project_path}? This removes the plugin registration from that scope."
+        ),
+        None => format!(
+            "Uninstall plugin {plugin_id} from {scope} scope? This removes the plugin registration from that scope."
+        ),
+    };
+    open_confirmation_overlay(
+        app,
+        ConfigOverlayState::InstalledPluginActions(overlay),
+        ConfirmationAction::InstalledPluginUninstall,
+        title,
+        body,
+        "Uninstall",
+    );
+}
+
+fn open_marketplace_remove_confirmation(app: &mut App, overlay: MarketplaceActionsOverlayState) {
+    let title = format!("Remove {}", overlay.title);
+    let marketplace_name = overlay.name.clone();
+    let body = format!(
+        "Remove marketplace {marketplace_name} from user configuration? Plugins already installed from it remain installed."
+    );
+    open_confirmation_overlay(
+        app,
+        ConfigOverlayState::MarketplaceActions(overlay),
+        ConfirmationAction::MarketplaceRemove,
+        title,
+        body,
+        "Remove",
+    );
+}
+
+fn open_confirmation_overlay(
+    app: &mut App,
+    previous: ConfigOverlayState,
+    action: ConfirmationAction,
+    title: impl Into<String>,
+    body: impl Into<String>,
+    confirm_label: impl Into<String>,
+) {
+    app.config.replace_overlay(ConfigOverlayState::Confirmation(ConfirmationOverlayState {
+        title: title.into(),
+        body: body.into(),
+        confirm_label: confirm_label.into(),
+        cancel_label: "Cancel".to_owned(),
+        selected_index: 0,
+        action,
+        previous: Box::new(previous),
+    }));
+}
+
 fn confirm_add_marketplace_overlay(app: &mut App) {
     let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
         return;
     };
     let source = overlay.draft.trim().to_owned();
     if source.is_empty() {
-        app.config.last_error = Some("Marketplace source cannot be empty".to_owned());
-        app.config.status_message = None;
+        app.config.set_overlay_error("Marketplace source cannot be empty");
         return;
     }
     if tokio::runtime::Handle::try_current().is_err() {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         app.config.status_message = None;
         app.config.last_error = Some("No runtime available for marketplace action".to_owned());
         return;
@@ -828,7 +914,7 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
         "user".to_owned(),
     ];
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
     app.config.last_error = None;
     app.config.status_message = Some(format!("Adding marketplace {source}..."));
     app.plugins.loading = true;
@@ -956,17 +1042,6 @@ fn installed_action_command(
             ],
             format!("Updating {action_label}..."),
         ),
-        InstalledPluginActionKind::InstallInCurrentProject => (
-            app.cwd_raw.clone(),
-            vec![
-                "plugin".to_owned(),
-                "install".to_owned(),
-                plugin_id.clone(),
-                "--scope".to_owned(),
-                "local".to_owned(),
-            ],
-            format!("Installing {action_label} in the current project..."),
-        ),
         InstalledPluginActionKind::Uninstall => (
             cwd_raw,
             vec![
@@ -990,9 +1065,6 @@ fn installed_action_success_message(
         InstalledPluginActionKind::Enable => format!("Enabled {title} in {scope} scope"),
         InstalledPluginActionKind::Disable => format!("Disabled {title} in {scope} scope"),
         InstalledPluginActionKind::Update => format!("Updated {title} in {scope} scope"),
-        InstalledPluginActionKind::InstallInCurrentProject => {
-            format!("Installed {title} in the current project")
-        }
         InstalledPluginActionKind::Uninstall => format!("Uninstalled {title} from {scope} scope"),
     }
 }
@@ -1046,27 +1118,16 @@ fn action_cwd(app: &App, overlay: &InstalledPluginActionOverlayState) -> String 
     }
 }
 
-fn installed_overlay_actions(
-    app: &App,
-    entry: &InstalledPluginEntry,
-) -> Vec<InstalledPluginActionKind> {
-    let mut actions = Vec::new();
-    match entry.scope.as_str() {
-        "user" | "project" | "local" => {
-            actions.push(if entry.enabled {
-                InstalledPluginActionKind::Disable
-            } else {
-                InstalledPluginActionKind::Enable
-            });
-        }
-        _ => {}
-    }
-    actions.push(InstalledPluginActionKind::Update);
-    if can_install_in_current_project(app, entry) {
-        actions.push(InstalledPluginActionKind::InstallInCurrentProject);
-    }
-    actions.push(InstalledPluginActionKind::Uninstall);
-    actions
+fn installed_overlay_actions(entry: &InstalledPluginEntry) -> Vec<InstalledPluginActionKind> {
+    vec![
+        if entry.enabled {
+            InstalledPluginActionKind::Disable
+        } else {
+            InstalledPluginActionKind::Enable
+        },
+        InstalledPluginActionKind::Update,
+        InstalledPluginActionKind::Uninstall,
+    ]
 }
 
 fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> String {
@@ -1084,23 +1145,6 @@ fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> Str
         Some(project_path) => format!("Installed in {} scope for {}.", entry.scope, project_path),
         None => format!("Installed in {} scope.", entry.scope),
     }
-}
-
-fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bool {
-    let current_project = normalize_project_path(&app.cwd_raw);
-    let selected_project = entry.project_path.as_deref().map(normalize_project_path);
-    if matches!(entry.scope.as_str(), "local" | "project")
-        && selected_project.as_deref() == Some(current_project.as_str())
-    {
-        return false;
-    }
-
-    !app.plugins.installed.iter().any(|candidate| {
-        candidate.id == entry.id
-            && matches!(candidate.scope.as_str(), "local" | "project")
-            && candidate.project_path.as_deref().map(normalize_project_path).as_deref()
-                == Some(current_project.as_str())
-    })
 }
 
 fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntry> {
@@ -1221,7 +1265,7 @@ fn reset_selection_for_active_tab(app: &mut App) {
 fn move_selection(app: &mut App, delta: isize) {
     let tab = app.plugins.active_tab;
     let len = match tab {
-        PluginsViewTab::Installed => filtered_installed(&app.plugins).len(),
+        PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
         PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
         PluginsViewTab::Marketplace => marketplace_row_count(&app.plugins),
     };
@@ -1255,7 +1299,7 @@ fn installed_entry_matches(entry: &InstalledPluginEntry, query: &str) -> bool {
             .is_some_and(|version| version.to_ascii_lowercase().contains(&query))
 }
 
-fn is_relevant_installed_entry(entry: &InstalledPluginEntry, current_project: &str) -> bool {
+fn is_visible_installed_entry(entry: &InstalledPluginEntry, current_project: &str) -> bool {
     match entry.scope.as_str() {
         "user" => true,
         "local" | "project" => entry
@@ -1384,53 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn install_in_current_project_is_available_for_other_project_local_install() {
-        let mut app = crate::app::App::test_default();
-        app.cwd_raw = "C:\\work\\project-b".to_owned();
-        let entry = InstalledPluginEntry {
-            id: "frontend-design@claude-plugins-official".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            scope: "local".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: Some("C:\\work\\project-a".to_owned()),
-            capability: PluginCapability::Skill,
-        };
-
-        assert!(can_install_in_current_project(&app, &entry));
-    }
-
-    #[test]
-    fn install_in_current_project_is_hidden_when_already_installed_here() {
-        let mut app = crate::app::App::test_default();
-        app.cwd_raw = "C:\\work\\project-b".to_owned();
-        app.plugins.installed.push(InstalledPluginEntry {
-            id: "frontend-design@claude-plugins-official".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            scope: "local".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: Some("C:\\work\\project-b".to_owned()),
-            capability: PluginCapability::Skill,
-        });
-        let entry = InstalledPluginEntry {
-            id: "frontend-design@claude-plugins-official".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            scope: "local".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: Some("C:\\work\\project-a".to_owned()),
-            capability: PluginCapability::Skill,
-        };
-
-        assert!(!can_install_in_current_project(&app, &entry));
-    }
-
-    #[test]
-    fn ordered_installed_puts_current_project_and_user_entries_first() {
+    fn ordered_installed_keeps_only_user_and_current_project_entries() {
         let state = PluginsState {
             installed: vec![
                 InstalledPluginEntry {
@@ -1463,6 +1461,16 @@ mod tests {
                     project_path: Some("C:\\work\\project-b".to_owned()),
                     capability: PluginCapability::Skill,
                 },
+                InstalledPluginEntry {
+                    id: "managed-plugin@claude-plugins-official".to_owned(),
+                    version: None,
+                    scope: "managed".to_owned(),
+                    enabled: true,
+                    installed_at: None,
+                    last_updated: None,
+                    project_path: None,
+                    capability: PluginCapability::Mcp,
+                },
             ],
             ..PluginsState::default()
         };
@@ -1472,11 +1480,7 @@ mod tests {
 
         assert_eq!(
             ordered_ids,
-            vec![
-                "user-plugin@claude-plugins-official",
-                "current-local@claude-plugins-official",
-                "other-local@claude-plugins-official",
-            ]
+            vec!["user-plugin@claude-plugins-official", "current-local@claude-plugins-official",]
         );
     }
 

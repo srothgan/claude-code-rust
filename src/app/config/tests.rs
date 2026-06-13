@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::model::AvailableModel;
+use crate::agent::model::{AvailableModel, EffortLevel};
 use crate::agent::wire::BridgeCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -336,6 +336,7 @@ fn plugins_inner_tab_switch_does_not_trigger_refresh() {
 fn installed_plugin_enter_opens_actions_overlay() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
+    app.cwd_raw = "C:\\work\\project-a".to_owned();
     app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
         id: "frontend-design@claude-plugins-official".to_owned(),
         version: Some("1.0.0".to_owned()),
@@ -366,7 +367,6 @@ fn installed_plugin_enter_opens_actions_overlay() {
         vec![
             InstalledPluginActionKind::Disable,
             InstalledPluginActionKind::Update,
-            InstalledPluginActionKind::InstallInCurrentProject,
             InstalledPluginActionKind::Uninstall,
         ]
     );
@@ -547,6 +547,81 @@ fn add_marketplace_overlay_accepts_paste() {
 
     let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "anthropics/claude-plugins-official");
+}
+
+#[test]
+fn empty_marketplace_source_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.add_marketplace_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Marketplace source cannot be empty");
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
+fn installed_plugin_uninstall_requires_confirmation_and_restores_previous_overlay_on_cancel() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
+        id: "frontend-design@claude-plugins-official".to_owned(),
+        version: Some("1.0.0".to_owned()),
+        scope: "user".to_owned(),
+        enabled: false,
+        installed_at: None,
+        last_updated: None,
+        project_path: None,
+        capability: crate::app::plugins::PluginCapability::Skill,
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::InstalledPluginUninstall);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("frontend-design@claude-plugins-official"));
+    assert!(confirmation.body.contains("user scope"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let restored =
+        app.config.installed_plugin_actions_overlay().expect("restored installed actions overlay");
+    assert_eq!(restored.selected_index, 2);
+}
+
+#[test]
+fn marketplace_remove_requires_confirmation_and_escape_restores_previous_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Plugins;
+    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
+    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
+        name: "claude-plugins-official".to_owned(),
+        source: Some("github".to_owned()),
+        repo: Some("anthropics/claude-plugins-official".to_owned()),
+    }];
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::MarketplaceRemove);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("claude-plugins-official"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let restored = app.config.marketplace_actions_overlay().expect("restored marketplace overlay");
+    assert_eq!(restored.selected_index, 1);
 }
 
 #[test]
@@ -801,6 +876,76 @@ fn handle_key_cycles_default_permission_mode() {
         store::default_permission_mode(&app.config.committed_settings_document),
         Ok(DefaultPermissionMode::Auto)
     );
+}
+
+#[test]
+fn thinking_effort_options_come_from_persistable_effort_levels() {
+    let (_dir, app) = open_settings_test_app();
+    let spec = setting_spec(SettingId::ThinkingEffort);
+
+    assert_eq!(
+        setting_detail_options(&app, spec),
+        EffortLevel::PERSISTABLE_SETTINGS
+            .iter()
+            .map(|level| level.label().to_owned())
+            .collect::<Vec<_>>()
+    );
+    for level in EffortLevel::PERSISTABLE_SETTINGS {
+        let mut document = serde_json::json!({ "effortLevel": level.as_stored() });
+        assert!(matches!(
+            resolve_setting_document(&document, SettingId::ThinkingEffort, &[]).validation,
+            SettingValidation::Valid
+        ));
+        store::set_thinking_effort_level(&mut document, level).expect("level is persistable");
+        assert_eq!(store::thinking_effort_level(&document), Ok(level));
+    }
+}
+
+#[test]
+fn thinking_effort_rejects_max_as_persisted_setting() {
+    let mut document = serde_json::json!({ "effortLevel": "max" });
+
+    assert!(matches!(
+        resolve_setting_document(&document, SettingId::ThinkingEffort, &[]).validation,
+        SettingValidation::InvalidValue
+    ));
+    assert_eq!(store::thinking_effort_level(&document), Err(()));
+    assert_eq!(store::set_thinking_effort_level(&mut document, EffortLevel::Max), Err(()));
+    assert_eq!(document, serde_json::json!({ "effortLevel": "max" }));
+}
+
+#[test]
+fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_list() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.available_models = vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
+    select_setting(&mut app, SettingId::ThinkingEffort);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for _ in 0..4 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+
+    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
+}
+
+#[test]
+fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.available_models = vec![
+        AvailableModel::new("opus", "Opus")
+            .supports_effort(true)
+            .supported_effort_levels(EffortLevel::ALL.to_vec()),
+    ];
+    select_setting(&mut app, SettingId::ThinkingEffort);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for _ in 0..4 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+
+    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
 }
 
 #[test]
@@ -1255,6 +1400,48 @@ fn language_overlay_supports_cursor_aware_editing() {
 }
 
 #[test]
+fn invalid_language_confirm_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    select_setting(&mut app, SettingId::Language);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.language_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Language must be at least 2 characters.");
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
+fn escape_cancels_language_overlay_without_writing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = App::test_default();
+    app.settings_home_override = Some(dir.path().to_path_buf());
+    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
+    std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
+    open(&mut app).expect("open");
+    select_setting(&mut app, SettingId::Language);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    for _ in 0.."German".chars().count() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    for ch in "English".chars() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.config.overlay.is_none());
+    assert_eq!(store::language(&read_json_file(&path)), Ok(Some("German".to_owned())));
+}
+
+#[test]
 fn enter_closes_settings_without_editing_selected_row() {
     let (_dir, mut app) = open_settings_test_app();
     select_setting(&mut app, SettingId::FastMode);
@@ -1270,15 +1457,17 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+    app.mcp.servers = vec![crate::agent::model::McpServerStatus {
         name: "filesystem".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
-        config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
+        config: Some(crate::agent::model::McpServerStatusConfig::Stdio {
             command: "npx".to_owned(),
             args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
             env: BTreeMap::new(),
+            timeout: None,
+            always_load: None,
         }),
         scope: Some("project".to_owned()),
         tools: vec![],
@@ -1309,15 +1498,66 @@ fn mcp_details_overlay_enter_closes_overlay() {
 }
 
 #[test]
+fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.mcp.servers = vec![crate::agent::model::McpServerStatus {
+        name: "filesystem".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("project".to_owned()),
+        tools: Vec::new(),
+    }];
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "filesystem".to_owned(),
+        selected_index: 1,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let confirmation = app.config.confirmation_overlay().expect("confirmation overlay");
+    assert_eq!(confirmation.action, ConfirmationAction::McpClearAuth);
+    assert_eq!(confirmation.selected_index, 0);
+    assert!(confirmation.body.contains("filesystem"));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let restored = app.config.mcp_details_overlay().expect("restored mcp details overlay");
+    assert_eq!(restored.server_name, "filesystem");
+    assert_eq!(restored.selected_index, 1);
+}
+
+#[test]
+fn empty_mcp_callback_url_sets_overlay_error_and_keeps_overlay_open() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.config.overlay = Some(ConfigOverlayState::McpCallbackUrl(McpCallbackUrlOverlayState {
+        server_name: "filesystem".to_owned(),
+        draft: String::new(),
+        cursor: 0,
+    }));
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.config.mcp_callback_url_overlay().is_some());
+    let message = app.config.overlay_message.as_ref().expect("overlay message");
+    assert_eq!(message.kind, OverlayMessageKind::Error);
+    assert_eq!(message.text, "Callback URL cannot be empty");
+    assert!(app.config.last_error.is_none());
+}
+
+#[test]
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: None,
         config: None,
@@ -1365,9 +1605,9 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: crate::agent::model::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: None,
@@ -1402,16 +1642,17 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let server = crate::agent::types::McpServerStatus {
+    let server = crate::agent::model::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: Some(
             "MCP server requires authentication but no OAuth token is configured.".to_owned(),
         ),
-        config: Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy {
+        config: Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy {
             url: "https://mcp-proxy.anthropic.com/v1/mcp/server".to_owned(),
             id: "mcpsrv_test".to_owned(),
+            timeout: None,
         }),
         scope: Some("session".to_owned()),
         tools: Vec::new(),

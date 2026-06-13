@@ -38,6 +38,9 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,9 +92,12 @@ pub enum RateLimitStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    OauthOrgNotAllowed,
     BillingError,
     RateLimit,
+    Overloaded,
     InvalidRequest,
+    ModelNotFound,
     ServerError,
     MaxOutputTokens,
     #[serde(other)]
@@ -104,6 +110,14 @@ pub enum RuntimeSessionState {
     Idle,
     Running,
     RequiresAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemNoticeSeverity {
+    Info,
+    Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +144,7 @@ pub struct RateLimitUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
+    Requesting,
     Idle,
 }
 
@@ -190,11 +205,6 @@ pub struct ToolLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
 }
@@ -202,7 +212,6 @@ pub struct BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -211,6 +220,9 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub request_id: Option<String>,
+    pub subagent_type: Option<String>,
+    pub task_description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,11 +246,48 @@ pub enum ToolCallContent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskUpdateSource {
+    #[serde(rename = "task_create")]
+    Create,
+    #[serde(rename = "task_update")]
+    Update,
+    #[serde(rename = "task_get")]
+    Get,
+    #[serde(rename = "task_list")]
+    List,
+    #[serde(rename = "task_lifecycle")]
+    Lifecycle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub status: String,
-    pub active_form: String,
+pub struct TaskItem {
+    pub task_id: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub active_form: Option<String>,
+    pub status: TaskStatus,
+    pub owner: Option<String>,
+    pub blocks: Vec<String>,
+    pub blocked_by: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub source_tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStateUpdate {
+    pub source: TaskUpdateSource,
+    pub tasks: Vec<TaskItem>,
+    pub removed_task_ids: Vec<String>,
+    pub is_complete_snapshot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,11 +308,14 @@ pub enum SessionUpdate {
     ToolCallUpdate {
         tool_call_update: ToolCallUpdate,
     },
-    Plan {
-        entries: Vec<PlanEntry>,
+    TaskStateUpdate {
+        #[serde(flatten)]
+        update: TaskStateUpdate,
     },
     AvailableCommandsUpdate {
         commands: Vec<AvailableCommand>,
+        source: Option<String>,
+        generation: Option<u64>,
     },
     AvailableAgentsUpdate {
         agents: Vec<AvailableAgent>,
@@ -316,6 +368,10 @@ pub enum SessionUpdate {
     },
     SessionStatusUpdate {
         status: SessionStatus,
+    },
+    SystemNoticeUpdate {
+        severity: SystemNoticeSeverity,
+        message: String,
     },
     CompactionBoundary {
         trigger: CompactionTrigger,
@@ -574,6 +630,23 @@ pub struct McpTool {
     pub annotations: Option<McpToolAnnotations>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerToolPermissionPolicy {
+    #[serde(rename = "always_allow")]
+    Allow,
+    #[serde(rename = "always_ask")]
+    Ask,
+    #[serde(rename = "always_deny")]
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerToolPolicy {
+    pub name: String,
+    pub permission_policy: McpServerToolPermissionPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
@@ -583,16 +656,32 @@ pub enum McpServerConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
     Sse {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<McpServerToolPolicy>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
     Http {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<McpServerToolPolicy>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        always_load: Option<bool>,
     },
 }
 
@@ -605,16 +694,26 @@ pub enum McpServerStatusConfig {
         args: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Sse {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Http {
         url: String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
     },
     Sdk {
         name: String,
@@ -623,6 +722,10 @@ pub enum McpServerStatusConfig {
     ClaudeaiProxy {
         url: String,
         id: String,
+        timeout: Option<u64>,
+    },
+    Unknown {
+        raw_type: String,
     },
 }
 
@@ -650,7 +753,52 @@ pub struct McpSetServersResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiRetryError, SessionUpdate};
+    use super::{
+        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerStatus,
+        McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus, SessionUpdate,
+        SystemNoticeSeverity,
+    };
+
+    #[test]
+    fn available_model_deserializes_new_effort_levels() {
+        let model: AvailableModel = serde_json::from_value(serde_json::json!({
+            "id": "sonnet",
+            "display_name": "Claude Sonnet",
+            "description": null,
+            "supports_effort": true,
+            "supported_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+            "supports_adaptive_thinking": true,
+            "supports_fast_mode": true,
+            "supports_auto_mode": false
+        }))
+        .expect("deserialize available model");
+
+        assert_eq!(
+            model.supported_effort_levels,
+            vec![
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::XHigh,
+                EffortLevel::Max,
+            ]
+        );
+    }
+
+    #[test]
+    fn account_info_deserializes_gateway_provider() {
+        let account: AccountInfo = serde_json::from_value(serde_json::json!({
+            "email": null,
+            "organization": null,
+            "subscription_type": null,
+            "token_source": null,
+            "api_key_source": null,
+            "api_provider": "gateway"
+        }))
+        .expect("deserialize account info");
+
+        assert_eq!(account.api_provider.as_deref(), Some("gateway"));
+    }
 
     #[test]
     fn api_retry_update_deserializes_unknown_error_defensively() {
@@ -668,6 +816,144 @@ mod tests {
             update,
             SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
         ));
+    }
+
+    #[test]
+    fn api_retry_update_deserializes_new_known_errors() {
+        for (raw, expected) in [
+            ("model_not_found", ApiRetryError::ModelNotFound),
+            ("oauth_org_not_allowed", ApiRetryError::OauthOrgNotAllowed),
+            ("overloaded", ApiRetryError::Overloaded),
+        ] {
+            let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+                "type": "api_retry_update",
+                "attempt": 1,
+                "max_retries": 4,
+                "retry_delay_ms": 1000,
+                "error_status": null,
+                "error": raw
+            }))
+            .expect("deserialize api retry update");
+
+            assert!(matches!(
+                update,
+                SessionUpdate::ApiRetryUpdate { error, .. } if error == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn session_status_update_deserializes_requesting() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "session_status_update",
+            "status": "requesting"
+        }))
+        .expect("deserialize session status update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::SessionStatusUpdate { status: SessionStatus::Requesting }
+        ));
+    }
+
+    #[test]
+    fn available_commands_update_deserializes_source_and_generation() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "available_commands_update",
+            "commands": [
+                {
+                    "name": "adobe-retouch-portraits",
+                    "description": "Retouch portraits",
+                    "input_hint": "<file>"
+                }
+            ],
+            "source": "commands_changed",
+            "generation": 2
+        }))
+        .expect("deserialize available commands update");
+
+        let SessionUpdate::AvailableCommandsUpdate { commands, source, generation } = update else {
+            panic!("expected available commands update");
+        };
+
+        assert_eq!(source.as_deref(), Some("commands_changed"));
+        assert_eq!(generation, Some(2));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "adobe-retouch-portraits");
+        assert_eq!(commands[0].input_hint.as_deref(), Some("<file>"));
+    }
+
+    #[test]
+    fn system_notice_update_deserializes() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "system_notice_update",
+            "severity": "warning",
+            "message": "Plugin install failed."
+        }))
+        .expect("deserialize system notice update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::SystemNoticeUpdate {
+                severity: SystemNoticeSeverity::Warning,
+                ref message,
+            } if message == "Plugin install failed."
+        ));
+    }
+
+    #[test]
+    fn mcp_status_deserializes_latest_config_fields() {
+        let server: McpServerStatus = serde_json::from_value(serde_json::json!({
+            "name": "notion",
+            "status": "connected",
+            "config": {
+                "type": "http",
+                "url": "https://mcp.notion.com/mcp",
+                "headers": { "Authorization": "Bearer token" },
+                "tools": [
+                    { "name": "search", "permission_policy": "always_ask" }
+                ],
+                "timeout": 5000,
+                "always_load": true
+            },
+            "tools": []
+        }))
+        .expect("deserialize MCP server status");
+
+        let Some(McpServerStatusConfig::Http { tools, timeout, always_load, .. }) = server.config
+        else {
+            panic!("expected http MCP config");
+        };
+        assert_eq!(timeout, Some(5000));
+        assert_eq!(always_load, Some(true));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].permission_policy, McpServerToolPermissionPolicy::Ask);
+    }
+
+    #[test]
+    fn task_metadata_deserializes_correlation_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "tool_call_update",
+            "tool_call_update": {
+                "tool_call_id": "tool-1",
+                "fields": {
+                    "task_metadata": {
+                        "request_id": "request-1",
+                        "subagent_type": "tester",
+                        "task_description": "Validate the branch"
+                    }
+                }
+            }
+        }))
+        .expect("deserialize task metadata");
+
+        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
+            panic!("expected tool call update");
+        };
+        let metadata = tool_call_update.fields.task_metadata.expect("task metadata");
+        assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
+        assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
+        assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
     }
 
     #[test]

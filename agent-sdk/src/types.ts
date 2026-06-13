@@ -23,13 +23,20 @@ export interface AvailableCommand {
   input_hint?: string;
 }
 
+export type AvailableCommandsSource =
+  | "session_result_commands"
+  | "init_slash_commands"
+  | "supportedCommands"
+  | "commands_changed"
+  | "reload_plugins";
+
 export interface AvailableAgent {
   name: string;
   description: string;
   model?: string;
 }
 
-export type EffortLevel = "low" | "medium" | "high";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AvailableModel {
   id: string;
@@ -86,14 +93,18 @@ export interface RateLimitUpdate {
 
 export type ApiRetryError =
   | "authentication_failed"
+  | "oauth_org_not_allowed"
   | "billing_error"
   | "rate_limit"
+  | "overloaded"
   | "invalid_request"
+  | "model_not_found"
   | "server_error"
   | "unknown"
   | "max_output_tokens";
 
 export type RuntimeSessionState = "idle" | "running" | "requires_action";
+export type SystemNoticeSeverity = "info" | "warning" | "error";
 
 export interface SettingsParseErrorUpdate {
   file?: string;
@@ -123,17 +134,12 @@ export type ToolCallContent =
       blob_saved_to?: string;
     };
 
-export interface TodoWriteOutputMetadata {
-  verification_nudge_needed?: boolean;
-}
-
 export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
 }
 
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
-  todo_write?: TodoWriteOutputMetadata;
 }
 
 export interface TaskMetadata {
@@ -141,6 +147,15 @@ export interface TaskMetadata {
   total_paused_ms?: number;
   error?: string;
   is_backgrounded?: boolean;
+  request_id?: string;
+  subagent_type?: string;
+  task_description?: string;
+  task_type?: string;
+  workflow_name?: string;
+  prompt?: string;
+  output_file?: string;
+  summary?: string;
+  terminal_status?: string;
 }
 
 export interface ToolLocation {
@@ -180,10 +195,32 @@ export interface ToolCallUpdate {
   fields: ToolCallUpdateFields;
 }
 
-export interface PlanEntry {
-  content: string;
-  status: string;
-  active_form: string;
+export type TaskStatus = "pending" | "in_progress" | "completed";
+export type TaskUpdateSource =
+  | "task_create"
+  | "task_update"
+  | "task_get"
+  | "task_list"
+  | "task_lifecycle";
+
+export interface TaskItem {
+  task_id: string;
+  subject: string;
+  description?: string;
+  active_form?: string;
+  status: TaskStatus;
+  owner?: string;
+  blocks: string[];
+  blocked_by: string[];
+  metadata?: Json;
+  source_tool_call_id?: string;
+}
+
+export interface TaskStateUpdate {
+  source: TaskUpdateSource;
+  tasks: TaskItem[];
+  removed_task_ids: string[];
+  is_complete_snapshot: boolean;
 }
 
 export type SessionUpdate =
@@ -192,8 +229,13 @@ export type SessionUpdate =
   | { type: "agent_thought_chunk"; content: ContentBlock }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
-  | { type: "plan"; entries: PlanEntry[] }
-  | { type: "available_commands_update"; commands: AvailableCommand[] }
+  | ({ type: "task_state_update" } & TaskStateUpdate)
+  | {
+      type: "available_commands_update";
+      commands: AvailableCommand[];
+      source?: AvailableCommandsSource;
+      generation?: number;
+    }
   | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "mode_state_update"; mode: ModeState }
   | { type: "current_mode_update"; current_mode_id: string }
@@ -212,7 +254,8 @@ export type SessionUpdate =
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
-  | { type: "session_status_update"; status: "compacting" | "idle" }
+  | { type: "session_status_update"; status: "compacting" | "requesting" | "idle" }
+  | { type: "system_notice_update"; severity: SystemNoticeSeverity; message: string }
   | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 
 export interface PermissionOption {
@@ -347,22 +390,40 @@ export interface McpTool {
   annotations?: McpToolAnnotations;
 }
 
+export type McpServerToolPermissionPolicy =
+  | "always_allow"
+  | "always_ask"
+  | "always_deny";
+
+export interface McpServerToolPolicy {
+  name: string;
+  permission_policy: McpServerToolPermissionPolicy;
+}
+
 export type McpServerConfig =
   | {
       type: "stdio";
       command: string;
       args?: string[];
       env?: Record<string, string>;
+      timeout?: number;
+      always_load?: boolean;
     }
   | {
       type: "sse";
       url: string;
       headers?: Record<string, string>;
+      tools?: McpServerToolPolicy[];
+      timeout?: number;
+      always_load?: boolean;
     }
   | {
       type: "http";
       url: string;
       headers?: Record<string, string>;
+      tools?: McpServerToolPolicy[];
+      timeout?: number;
+      always_load?: boolean;
     };
 
 export type McpServerStatusConfig =
@@ -375,6 +436,11 @@ export type McpServerStatusConfig =
       type: "claudeai-proxy";
       url: string;
       id: string;
+      timeout?: number;
+    }
+  | {
+      type: "unknown";
+      raw_type: string;
     };
 
 export interface McpServerStatus {
@@ -442,6 +508,16 @@ export type BridgeCommand =
       command: "set_mode";
       session_id: string;
       mode: string;
+    }
+  | {
+      command: "set_effort";
+      session_id: string;
+      effort: EffortLevel;
+    }
+  | {
+      command: "set_agent";
+      session_id: string;
+      agent: string | null;
     }
   | {
       command: "generate_session_title";
@@ -547,7 +623,14 @@ export interface InitializeResult {
   };
 }
 
-export type TurnErrorKind = "plan_limit" | "auth_required" | "internal" | "other";
+export type TurnErrorKind =
+  | "plan_limit"
+  | "auth_required"
+  | "account_access"
+  | "model_unavailable"
+  | "transient_service"
+  | "internal"
+  | "other";
 
 export type BridgeEvent =
   | {
@@ -575,7 +658,8 @@ export type BridgeEvent =
       message: string;
       error_kind?: TurnErrorKind;
       sdk_result_subtype?: string;
-      assistant_error?: string;
+      assistant_error?: ApiRetryError;
+      api_error_status?: number;
       terminal_reason?: TerminalReason;
     }
   | { event: "slash_error"; session_id: string; message: string }

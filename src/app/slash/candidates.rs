@@ -7,6 +7,7 @@ use super::{
     APP_SLASH_COMMANDS, AppSlashCommand, MAX_CANDIDATES, SlashCandidate, SlashContext,
     SlashDetection, SlashState, command_spec, normalize_slash_name,
 };
+use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crate::app::config::store;
 use crate::app::dialog::DialogState;
@@ -15,18 +16,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
 const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
+const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 
 fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
     match model_id {
         OPUS_4_5_MODEL_ID => Some("4.5"),
         OPUS_4_6_MODEL_ID => Some("4.6"),
         OPUS_4_7_MODEL_ID => Some("4.7"),
+        OPUS_4_8_MODEL_ID => Some("4.8"),
         _ => None,
     }
-}
-
-fn is_sdk_default_model_option(model: &crate::agent::model::AvailableModel) -> bool {
-    model.id.eq_ignore_ascii_case("default") || model.display_name.eq_ignore_ascii_case("default")
 }
 
 fn model_candidate_secondary(
@@ -55,6 +54,7 @@ fn model_candidate_secondary(
     Some(
         description
             .replace("Opus 4.7", &format!("Opus {version}"))
+            .replace("Opus 4.8", &format!("Opus {version}"))
             .replace("Opus 4.6", &format!("Opus {version}"))
             .replace("Opus 4.5", &format!("Opus {version}")),
     )
@@ -163,7 +163,11 @@ fn is_builtin_variable_input_command(command_name: &str) -> bool {
         !spec.args.is_empty()
             || matches!(
                 spec.command,
-                AppSlashCommand::Mode | AppSlashCommand::Model | AppSlashCommand::Resume
+                AppSlashCommand::Agent
+                    | AppSlashCommand::Effort
+                    | AppSlashCommand::Mode
+                    | AppSlashCommand::Model
+                    | AppSlashCommand::Resume
             )
     })
 }
@@ -264,6 +268,49 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
     })
 }
 
+fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
+    let mut levels = match app.current_model.as_ref() {
+        Some(model) if !model.supports_effort => Vec::new(),
+        Some(model) if !model.supported_effort_levels.is_empty() => {
+            model.supported_effort_levels.clone()
+        }
+        _ => EffortLevel::ALL.to_vec(),
+    };
+    if !levels.contains(&EffortLevel::Max) {
+        levels.push(EffortLevel::Max);
+    }
+
+    levels
+        .into_iter()
+        .map(|level| SlashCandidate {
+            insert_value: level.as_stored().to_owned(),
+            primary: level.as_stored().to_owned(),
+            secondary: Some(format!("{} - {}", level.label(), level.description())),
+        })
+        .collect()
+}
+
+fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
+    let mut candidates = Vec::with_capacity(app.available_agents.len() + 1);
+    candidates.push(SlashCandidate {
+        insert_value: "reset".to_owned(),
+        primary: "reset".to_owned(),
+        secondary: Some("Clear active agent".to_owned()),
+    });
+    candidates.extend(app.available_agents.iter().map(|agent| {
+        let description = agent.description.trim();
+        let model = agent.model.as_deref().map(str::trim).filter(|model| !model.is_empty());
+        let secondary = match (description.is_empty(), model) {
+            (false, Some(model)) => Some(format!("{description} - {model}")),
+            (false, None) => Some(description.to_owned()),
+            (true, Some(model)) => Some(format!("Model: {model}")),
+            (true, None) => None,
+        };
+        SlashCandidate { insert_value: agent.name.clone(), primary: agent.name.clone(), secondary }
+    }));
+    candidates
+}
+
 fn now_epoch_seconds() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
@@ -317,6 +364,8 @@ pub(super) fn argument_candidates(
 
     match command_name {
         "/1m-context" | "/docs" | "/opus-version" => static_argument_candidates(command_name),
+        "/agent" => agent_argument_candidates(app),
+        "/effort" => effort_argument_candidates(app),
         "/resume" => app
             .recent_sessions
             .iter()
@@ -348,7 +397,6 @@ pub(super) fn argument_candidates(
         "/model" => app
             .available_models
             .iter()
-            .filter(|model| !is_sdk_default_model_option(model))
             .map(|model| SlashCandidate {
                 insert_value: model.id.clone(),
                 primary: model.display_name.clone(),

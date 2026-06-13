@@ -21,7 +21,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::SurfaceMode;
-use super::{App, AppStatus, FocusManager, TodoItem};
+use super::{App, AppStatus, FocusManager};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
@@ -173,7 +173,7 @@ pub fn create_app(cli: &Cli) -> App {
         tool_call_scopes: HashMap::new(),
         terminals,
         tool_call_index: HashMap::new(),
-        todos: Vec::<TodoItem>::new(),
+        tasks: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
         available_commands: Vec::new(),

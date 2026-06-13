@@ -30,9 +30,9 @@ pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
 mod tab_title;
+pub(crate) mod tasks;
 mod terminal;
 pub(crate) mod terminal_runtime;
-pub(crate) mod todos;
 mod trust;
 mod update_check;
 pub(crate) mod usage;
@@ -65,8 +65,8 @@ pub use state::{
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
     RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState, SystemSeverity,
-    TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
+    TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock, TextBlockSpacing,
+    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
     UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };

@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
 const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
+const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 
 /// Handle slash command submission.
 ///
@@ -40,6 +41,8 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Compact => handle_compact_submit(app, &parsed.args),
         AppSlashCommand::Config => handle_config_submit(app, &parsed.args),
         AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
+        AppSlashCommand::Agent => handle_agent_submit(app, &parsed.args),
+        AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
         AppSlashCommand::Help => handle_help_submit(app, &parsed.args),
         AppSlashCommand::Mcp => handle_mcp_submit(app, &parsed.args),
         AppSlashCommand::Plugins => handle_plugins_submit(app, &parsed.args),
@@ -64,6 +67,7 @@ fn opus_model_id_for_version(version: &str) -> Option<&'static str> {
         "4.5" => Some(OPUS_4_5_MODEL_ID),
         "4.6" => Some(OPUS_4_6_MODEL_ID),
         "4.7" => Some(OPUS_4_7_MODEL_ID),
+        "4.8" => Some(OPUS_4_8_MODEL_ID),
         _ => None,
     }
 }
@@ -73,6 +77,7 @@ fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
         OPUS_4_5_MODEL_ID => Some("4.5"),
         OPUS_4_6_MODEL_ID => Some("4.6"),
         OPUS_4_7_MODEL_ID => Some("4.7"),
+        OPUS_4_8_MODEL_ID => Some("4.8"),
         _ => None,
     }
 }
@@ -732,6 +737,99 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
+fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
+    let [effort_arg] = args else {
+        push_system_message(app, usage(AppSlashCommand::Effort));
+        return true;
+    };
+    let Some(effort) = crate::agent::model::EffortLevel::from_stored(effort_arg.trim()) else {
+        push_system_message(app, usage(AppSlashCommand::Effort));
+        return true;
+    };
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch effort: not connected yet.",
+        "Cannot switch effort: no active session.",
+    ) else {
+        return true;
+    };
+
+    if app.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
+        push_system_message(app, "Cannot switch effort: current model does not support effort.");
+        return true;
+    }
+
+    set_command_pending(
+        app,
+        "Switching effort...",
+        Some(crate::app::PendingCommandAck::ConfigOption { option_id: "effortLevel".to_owned() }),
+    );
+
+    let tx = app.event_tx.clone();
+    let effort = effort.as_stored().to_owned();
+    tokio::task::spawn_local(async move {
+        match conn.set_effort(sid.to_string(), effort) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /effort: {e}")));
+            }
+        }
+    });
+    true
+}
+
+fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
+    let [agent_arg] = args else {
+        push_system_message(app, usage(AppSlashCommand::Agent));
+        return true;
+    };
+    let requested_agent = agent_arg.trim();
+    if requested_agent.is_empty() {
+        push_system_message(app, usage(AppSlashCommand::Agent));
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch agent: not connected yet.",
+        "Cannot switch agent: no active session.",
+    ) else {
+        return true;
+    };
+
+    let agent = if requested_agent == "reset" {
+        None
+    } else {
+        if !app.available_agents.is_empty()
+            && !app.available_agents.iter().any(|candidate| candidate.name == requested_agent)
+        {
+            push_system_message(app, format!("Unknown agent: {requested_agent}"));
+            return true;
+        }
+        Some(requested_agent.to_owned())
+    };
+
+    set_command_pending(
+        app,
+        "Switching agent...",
+        Some(crate::app::PendingCommandAck::ConfigOption { option_id: "agent".to_owned() }),
+    );
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        match conn.set_agent(sid.to_string(), agent) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /agent: {e}")));
+            }
+        }
+    });
+    true
+}
+
 fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
     if !args.is_empty() {
         push_system_message(app, usage(AppSlashCommand::NewSession));
@@ -887,7 +985,17 @@ fn model_details(model: &crate::agent::model::AvailableModel) -> String {
         parts.push(description.trim().to_owned());
     }
     if model.supports_effort {
-        parts.push("Effort".to_owned());
+        if model.supported_effort_levels.is_empty() {
+            parts.push("Effort".to_owned());
+        } else {
+            let levels = model
+                .supported_effort_levels
+                .iter()
+                .map(|level| level.label())
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("Effort: {levels}"));
+        }
     }
     if model.supports_adaptive_thinking == Some(true) {
         parts.push("Adaptive thinking".to_owned());

@@ -1,8 +1,9 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
-  AvailableCommand,
   BridgeCommand,
+  SystemNoticeSeverity,
+  TaskMetadata,
   TerminalReason,
   ToolCallUpdateFields,
 } from "../types.js";
@@ -23,7 +24,6 @@ import {
 import {
   emitToolCall,
   emitToolCallUpdate,
-  emitPlanIfTodoWrite,
   emitToolResultUpdate,
   finalizeOpenToolCalls,
   emitToolProgressUpdate,
@@ -33,20 +33,30 @@ import {
   toolAcceptsTaskLifecycle,
   taskProgressText,
   taskUpdatedFields,
+  type ToolCorrelationMetadata,
 } from "./tool_calls.js";
+import { applyTaskLifecycleState } from "./tasks.js";
+import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
+import {
+  mapInitSlashCommands,
+  mapSdkSlashCommands,
+  updateAvailableCommands,
+} from "./available_commands.js";
 import {
   buildApiRetryUpdate,
   buildRateLimitUpdate,
   normalizeSettingsParseErrors,
   numberField,
+  parseApiRetryError,
   parseRuntimeSessionState,
 } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { emitCurrentModelUpdate, refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { mapMcpServerStatus, summarizeMcpServersForDiagnostics } from "./mcp_metadata.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
   const chunks = command.chunks ?? [];
@@ -72,6 +82,81 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 ]);
 
 type SupportedImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+function sdkCorrelationMetadata(msg: Record<string, unknown>): ToolCorrelationMetadata {
+  return {
+    requestId: typeof msg.request_id === "string" ? msg.request_id : undefined,
+    subagentType: typeof msg.subagent_type === "string" ? msg.subagent_type : undefined,
+    taskDescription: typeof msg.task_description === "string" ? msg.task_description : undefined,
+  };
+}
+
+function sdkTaskMetadata(msg: Record<string, unknown>): TaskMetadata | undefined {
+  const metadata = sdkCorrelationMetadata(msg);
+  const taskType = typeof msg.task_type === "string" && msg.task_type.length > 0 ? msg.task_type : undefined;
+  const workflowName =
+    typeof msg.workflow_name === "string" && msg.workflow_name.length > 0 ? msg.workflow_name : undefined;
+  const prompt = typeof msg.prompt === "string" && msg.prompt.length > 0 ? msg.prompt : undefined;
+  const outputFile = typeof msg.output_file === "string" && msg.output_file.length > 0 ? msg.output_file : undefined;
+  const status = typeof msg.status === "string" && msg.status.length > 0 ? msg.status : undefined;
+  const summary =
+    status && typeof msg.summary === "string" && msg.summary.length > 0 ? msg.summary : undefined;
+  const taskMetadata: TaskMetadata = {
+    ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
+    ...(metadata.subagentType ? { subagent_type: metadata.subagentType } : {}),
+    ...(metadata.taskDescription ? { task_description: metadata.taskDescription } : {}),
+    ...(taskType ? { task_type: taskType } : {}),
+    ...(workflowName ? { workflow_name: workflowName } : {}),
+    ...(prompt ? { prompt } : {}),
+    ...(outputFile ? { output_file: outputFile } : {}),
+    ...(summary ? { summary } : {}),
+    ...(status ? { terminal_status: status } : {}),
+  };
+  return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
+}
+
+function sdkMessageOriginKind(msg: Record<string, unknown>): string | undefined {
+  const origin = msg.origin && typeof msg.origin === "object" ? (msg.origin as Record<string, unknown>) : null;
+  return typeof origin?.kind === "string" ? origin.kind : undefined;
+}
+
+function logSdkMessageOrigin(session: SessionState, msg: Record<string, unknown>): void {
+  const originKind = sdkMessageOriginKind(msg);
+  if (!originKind) {
+    return;
+  }
+  bridgeLogger.debug({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "sdk_message_origin_observed",
+    message: "SDK message origin observed",
+    outcome: originKind === "auto-continuation" ? "accepted" : "observed",
+    sessionId: session.sessionId,
+    fields: {
+      message_type: typeof msg.type === "string" ? msg.type : undefined,
+      origin_kind: originKind,
+    },
+  });
+}
+
+function emitSystemNoticeUpdate(
+  session: SessionState,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  emitSessionUpdate(session.sessionId, { type: "system_notice_update", severity, message: trimmed });
+}
+
+function notificationSeverity(priority: unknown): SystemNoticeSeverity {
+  return priority === "high" || priority === "immediate" ? "warning" : "info";
+}
+
+function isTerminalToolStatus(status: ToolCallUpdateFields["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "killed";
+}
 
 /** Fast check that a string looks like valid base64 (non-empty, correct charset & padding). */
 function isValidBase64(data: string): boolean {
@@ -143,20 +228,21 @@ export function handleTaskSystemMessage(
   session: SessionState,
   subtype: string,
   msg: Record<string, unknown>,
-): void {
+): boolean {
   if (
     subtype !== "task_started" &&
     subtype !== "task_progress" &&
     subtype !== "task_updated" &&
     subtype !== "task_notification"
   ) {
-    return;
+    return false;
   }
 
   const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
   const explicitToolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
+  const messageTaskMetadata = sdkTaskMetadata(msg);
   if (taskId && explicitToolUseId) {
-    session.taskToolUseIds.set(taskId, explicitToolUseId);
+    linkTaskToolUse(session, taskId, explicitToolUseId);
   }
   const toolUseId = resolveTaskToolUseId(session, msg);
   bridgeLogger.debug({
@@ -196,6 +282,7 @@ export function handleTaskSystemMessage(
     });
   }
   if (!toolUseId) {
+    applyTaskLifecycleState(session, subtype, msg);
     if (subtype === "task_updated" && taskId) {
       bridgeLogger.debug({
         target: LOG_TARGETS.APP_TOOL,
@@ -206,16 +293,17 @@ export function handleTaskSystemMessage(
         fields: { task_id: taskId, subtype },
       });
     }
-    return;
+    return true;
   }
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
   if (!toolAcceptsTaskLifecycle(toolCall)) {
     if (taskId) {
-      session.taskToolUseIds.delete(taskId);
+      unlinkTaskToolUse(session, taskId);
     }
-    return;
+    return true;
   }
+  applyTaskLifecycleState(session, subtype, msg);
   if (toolCall.status === "pending") {
     emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
   }
@@ -223,43 +311,50 @@ export function handleTaskSystemMessage(
   if (subtype === "task_started") {
     const description = typeof msg.description === "string" ? msg.description : "";
     if (!description) {
-      return;
+      return true;
     }
+    const fields: ToolCallUpdateFields = {
+      status: "in_progress",
+      raw_output: description,
+      content: [{ type: "content", content: { type: "text", text: description } }],
+      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
+    };
     emitToolCallUpdate(
       session,
       toolUseId,
-      {
-        status: "in_progress",
-        raw_output: description,
-        content: [{ type: "content", content: { type: "text", text: description } }],
-      },
+      fields,
       "task_started",
     );
-    return;
+    return true;
   }
 
   if (subtype === "task_progress") {
     const progress = taskProgressText(msg);
     if (!progress) {
-      return;
+      return true;
     }
+    const fields: ToolCallUpdateFields = {
+      status: "in_progress",
+      raw_output: progress,
+      content: [{ type: "content", content: { type: "text", text: progress } }],
+      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
+    };
     emitToolCallUpdate(
       session,
       toolUseId,
-      {
-        status: "in_progress",
-        raw_output: progress,
-        content: [{ type: "content", content: { type: "text", text: progress } }],
-      },
+      fields,
       "task_progress",
     );
-    return;
+    return true;
   }
 
   if (subtype === "task_updated") {
     const fields = taskUpdatedFields(msg);
+    if (messageTaskMetadata) {
+      fields.task_metadata = { ...(fields.task_metadata ?? {}), ...messageTaskMetadata };
+    }
     if (Object.keys(fields).length === 0) {
-      return;
+      return true;
     }
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_TOOL,
@@ -277,26 +372,34 @@ export function handleTaskSystemMessage(
       },
     });
     emitToolCallUpdate(session, toolUseId, fields, "task_updated");
-    return;
+    if (taskId && isTerminalToolStatus(fields.status)) {
+      unlinkTaskToolUse(session, taskId);
+    }
+    return true;
   }
 
   const status = typeof msg.status === "string" ? msg.status : "";
   const summary = typeof msg.summary === "string" ? msg.summary : "";
   const finalStatus = status === "completed" ? "completed" : status === "stopped" ? "killed" : "failed";
   const fields: ToolCallUpdateFields = { status: finalStatus };
+  if (messageTaskMetadata) {
+    fields.task_metadata = messageTaskMetadata;
+  }
   if (summary) {
     fields.raw_output = summary;
     fields.content = [{ type: "content", content: { type: "text", text: summary } }];
   }
   emitToolCallUpdate(session, toolUseId, fields, "task_notification");
   if (taskId) {
-    session.taskToolUseIds.delete(taskId);
+    unlinkTaskToolUse(session, taskId);
   }
+  return true;
 }
 
 type ContentBlockLinkage = {
   source: "assistant" | "stream_event" | "user";
   parentToolUseId?: string;
+  metadata?: ToolCorrelationMetadata;
 };
 
 function logContentBlockLinkage(
@@ -389,8 +492,7 @@ export function handleContentBlock(
       return;
     }
     logContentBlockLinkage(session, blockType, toolUseId, name, linkage);
-    emitPlanIfTodoWrite(session, name, input);
-    emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null);
+    emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null, linkage?.metadata);
     return;
   }
 
@@ -448,8 +550,9 @@ export function handleStreamEvent(
 export function handleAssistantMessage(session: SessionState, message: Record<string, unknown>): void {
   const assistantError = typeof message.error === "string" ? message.error : "";
   if (assistantError.length > 0) {
-    session.lastAssistantError = assistantError;
+    session.lastAssistantError = parseApiRetryError(assistantError);
   }
+  const metadata = sdkCorrelationMetadata(message);
 
   const messageObject =
     message.message && typeof message.message === "object"
@@ -473,20 +576,31 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
     ) {
       const parentToolUseId =
         typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
-      handleContentBlock(session, blockRecord, { source: "assistant", parentToolUseId });
+      handleContentBlock(session, blockRecord, { source: "assistant", parentToolUseId, metadata });
     }
   }
 }
 
-export function handleUserToolResultBlocks(session: SessionState, message: Record<string, unknown>): void {
+function messageToolUseResult(message: Record<string, unknown>): unknown {
+  if (Object.hasOwn(message, "toolUseResult")) {
+    return message.toolUseResult;
+  }
+  if (Object.hasOwn(message, "tool_use_result")) {
+    return message.tool_use_result;
+  }
+  return undefined;
+}
+
+export function handleUserToolResultBlocks(session: SessionState, message: Record<string, unknown>): boolean {
   const messageObject =
     message.message && typeof message.message === "object"
       ? (message.message as Record<string, unknown>)
       : null;
   if (!messageObject) {
-    return;
+    return false;
   }
   const content = Array.isArray(messageObject.content) ? messageObject.content : [];
+  let handled = false;
   for (const block of content) {
     if (!block || typeof block !== "object") {
       continue;
@@ -496,9 +610,28 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
     if (TOOL_RESULT_TYPES.has(blockType)) {
       const parentToolUseId =
         typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
-      handleContentBlock(session, blockRecord, { source: "user", parentToolUseId });
+      const toolUseId = typeof blockRecord.tool_use_id === "string" ? blockRecord.tool_use_id : "";
+      if (!toolUseId) {
+        continue;
+      }
+      handled = true;
+      if (isHiddenToolResult(session, toolUseId, blockType)) {
+        continue;
+      }
+      logContentBlockLinkage(session, blockType, toolUseId, undefined, {
+        source: "user",
+        parentToolUseId,
+      });
+      emitToolResultUpdate(
+        session,
+        toolUseId,
+        Boolean(blockRecord.is_error),
+        blockRecord.content,
+        messageToolUseResult(message) ?? blockRecord,
+      );
     }
   }
+  return handled;
 }
 
 export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
@@ -532,6 +665,7 @@ export function handleResultMessage(session: SessionState, message: Record<strin
   finalizeOpenToolCalls(session, "failed");
   const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
   const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
+  const apiErrorStatus = numberField(message, "api_error_status", "apiErrorStatus");
   writeEvent({
     event: "turn_error",
     session_id: session.sessionId,
@@ -539,6 +673,7 @@ export function handleResultMessage(session: SessionState, message: Record<strin
     error_kind: errorKind,
     ...(subtype ? { sdk_result_subtype: subtype } : {}),
     ...(assistantError ? { assistant_error: assistantError } : {}),
+    ...(apiErrorStatus !== undefined ? { api_error_status: apiErrorStatus } : {}),
     ...(terminalReason ? { terminal_reason: terminalReason } : {}),
   });
   session.lastAssistantError = undefined;
@@ -567,9 +702,102 @@ function terminalReasonFromValue(value: unknown): TerminalReason | undefined {
 export function handleSdkMessage(session: SessionState, message: SDKMessage): void {
   const msg = message as unknown as Record<string, unknown>;
   const type = typeof msg.type === "string" ? msg.type : "";
+  logSdkMessageOrigin(session, msg);
 
   if (type === "system") {
     const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
+    if (subtype === "commands_changed") {
+      updateAvailableCommands(session, "commands_changed", mapSdkSlashCommands(msg.commands));
+      return;
+    }
+
+    if (subtype === "notification") {
+      const text = typeof msg.text === "string" ? msg.text : "";
+      emitSystemNoticeUpdate(session, notificationSeverity(msg.priority), text);
+      return;
+    }
+
+    if (subtype === "mirror_error") {
+      const error = typeof msg.error === "string" ? msg.error : "";
+      const key = asRecordOrNull(msg.key);
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "sdk_mirror_error_received",
+        message: "SDK transcript mirror error received",
+        outcome: "failure",
+        sessionId: session.sessionId,
+        fields: {
+          error_message: error || undefined,
+          project_key: typeof key?.projectKey === "string" ? key.projectKey : undefined,
+          mirror_session_id: typeof key?.sessionId === "string" ? key.sessionId : undefined,
+          subpath: typeof key?.subpath === "string" ? key.subpath : undefined,
+        },
+      });
+      return;
+    }
+
+    if (subtype === "plugin_install") {
+      const status = typeof msg.status === "string" ? msg.status : "";
+      const name = typeof msg.name === "string" ? msg.name : "";
+      const error = typeof msg.error === "string" ? msg.error : "";
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_SDK,
+        eventName: "sdk_plugin_install_received",
+        message: "SDK plugin install event received",
+        outcome: status === "failed" ? "failure" : status || "observed",
+        sessionId: session.sessionId,
+        fields: {
+          plugin_status: status || undefined,
+          plugin_name: name || undefined,
+          error_message: error || undefined,
+        },
+      });
+      if (status === "failed") {
+        const subject = name ? ` ${name}` : "";
+        const suffix = error ? `: ${error}` : ".";
+        emitSystemNoticeUpdate(session, "warning", `Plugin install failed${subject}${suffix}`);
+      }
+      return;
+    }
+
+    if (subtype === "permission_denied") {
+      bridgeLogger.info({
+        target: LOG_TARGETS.BRIDGE_PERMISSION,
+        eventName: "sdk_permission_denied_received",
+        message: "SDK permission denied event received",
+        outcome: "denied",
+        sessionId: session.sessionId,
+        toolCallId: typeof msg.tool_use_id === "string" ? msg.tool_use_id : undefined,
+        fields: {
+          tool_name: typeof msg.tool_name === "string" ? msg.tool_name : undefined,
+          agent_id: typeof msg.agent_id === "string" ? msg.agent_id : undefined,
+          decision_reason_type:
+            typeof msg.decision_reason_type === "string" ? msg.decision_reason_type : undefined,
+          decision_reason: typeof msg.decision_reason === "string" ? msg.decision_reason : undefined,
+          denial_message: typeof msg.message === "string" ? msg.message : undefined,
+        },
+      });
+      return;
+    }
+
+    if (subtype === "memory_recall" || subtype === "thinking_tokens") {
+      bridgeLogger.debug({
+        target: LOG_TARGETS.BRIDGE_SDK,
+        eventName: "sdk_system_message_log_only",
+        message: "SDK system message handled with log-only policy",
+        outcome: "ignored",
+        sessionId: session.sessionId,
+        fields: {
+          sdk_subtype: subtype,
+          memory_count: Array.isArray(msg.memories) ? msg.memories.length : undefined,
+          estimated_tokens: typeof msg.estimated_tokens === "number" ? msg.estimated_tokens : undefined,
+          estimated_tokens_delta:
+            typeof msg.estimated_tokens_delta === "number" ? msg.estimated_tokens_delta : undefined,
+        },
+      });
+      return;
+    }
+
     if (subtype === "api_retry") {
       const update = buildApiRetryUpdate(msg);
       if (update) {
@@ -621,12 +849,35 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       }
 
       if (Array.isArray(msg.slash_commands)) {
-        const commands: AvailableCommand[] = msg.slash_commands
-          .filter((entry): entry is string => typeof entry === "string")
-          .map((name) => ({ name, description: "", input_hint: undefined }));
-        if (commands.length > 0) {
-          emitSessionUpdate(session.sessionId, { type: "available_commands_update", commands });
-        }
+        updateAvailableCommands(
+          session,
+          "init_slash_commands",
+          mapInitSlashCommands(msg.slash_commands),
+        );
+      }
+
+      if (Array.isArray(msg.mcp_servers)) {
+        const servers = msg.mcp_servers.map((server) =>
+          mapMcpServerStatus(
+            server as import("@anthropic-ai/claude-agent-sdk").McpServerStatus,
+          ),
+        );
+        bridgeLogger.info({
+          target: LOG_TARGETS.BRIDGE_MCP,
+          eventName: "mcp_init_snapshot_emitted",
+          message: "MCP init snapshot emitted",
+          outcome: "success",
+          sessionId: session.sessionId,
+          fields: {
+            server_count: servers.length,
+            servers: summarizeMcpServersForDiagnostics(servers),
+          },
+        });
+        writeEvent({
+          event: "mcp_snapshot",
+          session_id: session.sessionId,
+          servers,
+        });
       }
 
       if (session.lastAvailableAgentsSignature === undefined && Array.isArray(msg.agents)) {
@@ -636,12 +887,8 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       void session.query
         .supportedCommands()
         .then((commands) => {
-          const mapped: AvailableCommand[] = commands.map((command) => ({
-            name: command.name,
-            description: command.description ?? "",
-            input_hint: command.argumentHint ?? undefined,
-          }));
-          emitSessionUpdate(session.sessionId, { type: "available_commands_update", commands: mapped });
+          const mapped = mapSdkSlashCommands(commands);
+          updateAvailableCommands(session, "supportedCommands", mapped);
         })
         .catch(() => {
           // Best-effort only; slash commands from init were already emitted.
@@ -668,6 +915,8 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       }
       if (msg.status === "compacting") {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "compacting" });
+      } else if (msg.status === "requesting") {
+        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "requesting" });
       } else if (msg.status === null) {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
       }
@@ -719,7 +968,19 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       return;
     }
 
-    handleTaskSystemMessage(session, subtype, msg);
+    if (handleTaskSystemMessage(session, subtype, msg)) {
+      return;
+    }
+    bridgeLogger.debug({
+      target: LOG_TARGETS.BRIDGE_SDK,
+      eventName: "sdk_system_message_unhandled",
+      message: "SDK system message ignored by explicit fallback policy",
+      outcome: "ignored",
+      sessionId: session.sessionId,
+      fields: {
+        sdk_subtype: subtype || undefined,
+      },
+    });
     return;
   }
 
@@ -765,7 +1026,10 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_progress") {
     const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
-    if (isHiddenToolUse(session, toolUseId, toolName)) {
+    const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
+    const taskToolUseId = taskId ? session.taskToolUseIds.get(taskId) ?? "" : "";
+    const resolvedToolUseId = taskToolUseId || toolUseId;
+    if (isHiddenToolUse(session, resolvedToolUseId, toolName)) {
       return;
     }
     bridgeLogger.debug({
@@ -774,17 +1038,18 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       message: "SDK tool progress linkage observed",
       outcome: typeof msg.parent_tool_use_id === "string" ? "child" : "root_or_unknown",
       sessionId: session.sessionId,
-      toolCallId: toolUseId || undefined,
+      toolCallId: resolvedToolUseId || undefined,
       fields: {
         tool_name: toolName,
         tool_use_id: toolUseId || undefined,
         parent_tool_use_id:
           typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined,
-        task_id: typeof msg.task_id === "string" ? msg.task_id : undefined,
+        task_id: taskId || undefined,
+        task_resolved_tool_use_id: taskToolUseId || undefined,
       },
     });
-    if (toolUseId) {
-      emitToolProgressUpdate(session, toolUseId, toolName);
+    if (resolvedToolUseId) {
+      emitToolProgressUpdate(session, resolvedToolUseId, toolName);
     }
     return;
   }
@@ -853,15 +1118,16 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "user") {
-    handleUserToolResultBlocks(session, msg);
+    const handledBlocks = handleUserToolResultBlocks(session, msg);
 
     const toolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
-    if (toolUseId && "tool_use_result" in msg) {
+    const rawToolUseResult = messageToolUseResult(msg);
+    if (!handledBlocks && toolUseId && rawToolUseResult !== undefined) {
       if (session.hiddenToolUseIds.has(toolUseId)) {
         return;
       }
-      const parsed = unwrapToolUseResult(msg.tool_use_result);
-      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, msg.tool_use_result);
+      const parsed = unwrapToolUseResult(rawToolUseResult);
+      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, rawToolUseResult);
     }
     return;
   }

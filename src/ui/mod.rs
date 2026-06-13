@@ -80,7 +80,7 @@ mod tests {
         terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 
         let rendered = buffer_text(&terminal);
-        assert!(rendered.contains("Config"));
+        assert!(rendered.contains("Settings"));
     }
 
     #[test]

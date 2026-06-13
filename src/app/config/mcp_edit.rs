@@ -1,4 +1,3 @@
-use super::ConfigOverlayState;
 use super::edit::{
     TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
     insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,
@@ -10,6 +9,7 @@ use super::mcp::{
     open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
     send_mcp_elicitation_response, set_mcp_server_enabled, submit_mcp_oauth_callback_url,
 };
+use super::{ConfigOverlayState, ConfirmationAction, ConfirmationOverlayState};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -47,7 +47,7 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
 
 fn handle_mcp_details_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_mcp_details_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_mcp_details_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_selected_mcp_overlay_action(app),
@@ -80,7 +80,7 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     };
     let Some(server) = app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
     else {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         return;
     };
     let actions = available_mcp_actions(server);
@@ -91,29 +91,60 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
         return;
     }
 
+    if action == McpServerActionKind::ClearAuth {
+        open_mcp_clear_auth_confirmation(app, overlay);
+        return;
+    }
+
+    execute_mcp_server_action(app, &overlay.server_name, action);
+}
+
+pub(super) fn execute_confirmed_mcp_server_action(app: &mut App, action: McpServerActionKind) {
+    let Some(overlay) = app.config.mcp_details_overlay().cloned() else {
+        return;
+    };
+    execute_mcp_server_action(app, &overlay.server_name, action);
+}
+
+fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServerActionKind) {
     match action {
         McpServerActionKind::RefreshSnapshot => {
             crate::app::session_runtime::request_runtime_reload(app);
             refresh_mcp_snapshot(app);
         }
         McpServerActionKind::Authenticate => {
-            authenticate_mcp_server(app, &overlay.server_name);
+            authenticate_mcp_server(app, server_name);
         }
         McpServerActionKind::ClearAuth => {
-            clear_mcp_server_auth(app, &overlay.server_name);
+            clear_mcp_server_auth(app, server_name);
         }
         McpServerActionKind::Reconnect => {
-            reconnect_mcp_server(app, &overlay.server_name);
+            reconnect_mcp_server(app, server_name);
         }
         McpServerActionKind::Enable => {
-            set_mcp_server_enabled(app, &overlay.server_name, true);
+            set_mcp_server_enabled(app, server_name, true);
         }
         McpServerActionKind::Disable => {
-            set_mcp_server_enabled(app, &overlay.server_name, false);
+            set_mcp_server_enabled(app, server_name, false);
         }
     }
 
-    app.config.overlay = None;
+    app.config.clear_overlay();
+}
+
+fn open_mcp_clear_auth_confirmation(app: &mut App, overlay: super::mcp::McpDetailsOverlayState) {
+    let server_name = overlay.server_name.clone();
+    app.config.replace_overlay(ConfigOverlayState::Confirmation(ConfirmationOverlayState {
+        title: format!("Clear auth for {server_name}"),
+        body: format!(
+            "Clear saved authentication for MCP server {server_name}? The server may require a fresh authentication flow before it can reconnect."
+        ),
+        confirm_label: "Clear auth".to_owned(),
+        cancel_label: "Cancel".to_owned(),
+        selected_index: 0,
+        action: ConfirmationAction::McpClearAuth,
+        previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
+    }));
 }
 
 fn handle_mcp_callback_url_overlay_key(app: &mut App, key: KeyEvent) {
@@ -149,7 +180,7 @@ fn cancel_mcp_callback_url_overlay(app: &mut App) {
     let Some(server_name) =
         app.config.mcp_callback_url_overlay().map(|overlay| overlay.server_name.clone())
     else {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         return;
     };
     open_mcp_server_details(app, server_name, Some(McpServerActionKind::Authenticate));
@@ -161,13 +192,12 @@ fn confirm_mcp_callback_url_overlay(app: &mut App) {
     };
     let callback_url = overlay.draft.trim().to_owned();
     if callback_url.is_empty() {
-        app.config.last_error = Some("Callback URL cannot be empty".to_owned());
-        app.config.status_message = None;
+        app.config.set_overlay_error("Callback URL cannot be empty");
         return;
     }
 
     submit_mcp_oauth_callback_url(app, &overlay.server_name, callback_url);
-    app.config.overlay = None;
+    app.config.clear_overlay();
 }
 
 fn handle_mcp_elicitation_overlay_key(app: &mut App, key: KeyEvent) {
@@ -184,7 +214,7 @@ fn cancel_mcp_elicitation_overlay(app: &mut App) {
     let Some(request_id) =
         app.config.mcp_elicitation_overlay().map(|overlay| overlay.request.request_id.clone())
     else {
-        app.config.overlay = None;
+        app.config.clear_overlay();
         return;
     };
     send_mcp_elicitation_response(
@@ -193,7 +223,7 @@ fn cancel_mcp_elicitation_overlay(app: &mut App) {
         crate::agent::types::ElicitationAction::Cancel,
         None,
     );
-    app.config.overlay = None;
+    app.config.clear_overlay();
 }
 
 #[derive(Clone, Copy)]
@@ -212,7 +242,7 @@ fn handle_mcp_auth_redirect_overlay_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Up, KeyModifiers::NONE) => move_mcp_auth_redirect_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_mcp_auth_redirect_overlay_selection(app, 1),
         (KeyCode::Enter, KeyModifiers::NONE) => execute_mcp_auth_redirect_overlay_action(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
+        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         _ => {}
     }
 }
@@ -240,22 +270,20 @@ fn execute_mcp_auth_redirect_overlay_action(app: &mut App) {
         McpAuthRedirectAction::Refresh => {
             crate::app::session_runtime::request_runtime_reload(app);
             refresh_mcp_snapshot(app);
-            app.config.overlay = None;
+            app.config.clear_overlay();
         }
         McpAuthRedirectAction::CopyUrl => {
             match copy_text_to_clipboard(&overlay.redirect.auth_url) {
                 Ok(()) => {
-                    app.config.status_message = Some("Copied auth URL to clipboard.".to_owned());
-                    app.config.last_error = None;
+                    app.config.set_overlay_info("Copied auth URL to clipboard.");
                 }
                 Err(error) => {
-                    app.config.last_error = Some(error);
-                    app.config.status_message = None;
+                    app.config.set_overlay_error(error);
                 }
             }
         }
         McpAuthRedirectAction::Close => {
-            app.config.overlay = None;
+            app.config.clear_overlay();
         }
     }
 }
@@ -283,7 +311,7 @@ fn execute_mcp_elicitation_overlay_action(app: &mut App) {
         return;
     };
     send_mcp_elicitation_response(app, &overlay.request.request_id, action, None);
-    app.config.overlay = None;
+    app.config.clear_overlay();
 }
 
 fn mcp_elicitation_actions(

@@ -1,10 +1,5 @@
 import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  BridgeEvent,
-  BridgeEventEnvelope,
-  McpOperationError,
-  SessionUpdate,
-} from "../types.js";
+import type { BridgeEvent, BridgeEventEnvelope, McpOperationError, SessionUpdate } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";

@@ -70,6 +70,14 @@ pub enum BridgeCommand {
         session_id: String,
         mode: String,
     },
+    SetEffort {
+        session_id: String,
+        effort: String,
+    },
+    SetAgent {
+        session_id: String,
+        agent: Option<String>,
+    },
     GenerateSessionTitle {
         session_id: String,
         description: String,
@@ -153,6 +161,8 @@ impl BridgeCommand {
             Self::CancelTurn { .. } => "cancel_turn",
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
+            Self::SetEffort { .. } => "set_effort",
+            Self::SetAgent { .. } => "set_agent",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
             Self::NewSession { .. } => "new_session",
@@ -181,6 +191,8 @@ impl BridgeCommand {
             | Self::CancelTurn { session_id }
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
+            | Self::SetEffort { session_id, .. }
+            | Self::SetAgent { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
@@ -213,6 +225,8 @@ impl BridgeCommand {
             | Self::CancelTurn { .. }
             | Self::SetModel { .. }
             | Self::SetMode { .. }
+            | Self::SetEffort { .. }
+            | Self::SetAgent { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
             | Self::NewSession { .. }
@@ -299,6 +313,8 @@ pub enum BridgeEvent {
         error_kind: Option<String>,
         sdk_result_subtype: Option<String>,
         assistant_error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_error_status: Option<u16>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminal_reason: Option<types::TerminalReason>,
     },
@@ -435,6 +451,7 @@ mod tests {
         BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope, SessionLaunchSettings,
     };
     use crate::agent::types;
+    use std::collections::BTreeMap;
 
     #[test]
     fn command_envelope_roundtrip_json() {
@@ -451,6 +468,114 @@ mod tests {
     }
 
     #[test]
+    fn set_effort_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetEffort {
+                session_id: "s1".to_owned(),
+                effort: "max".to_owned(),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_effort",
+                "session_id": "s1",
+                "effort": "max"
+            })
+        );
+    }
+
+    #[test]
+    fn set_agent_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent {
+                session_id: "s1".to_owned(),
+                agent: Some("reviewer".to_owned()),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_agent",
+                "session_id": "s1",
+                "agent": "reviewer"
+            })
+        );
+    }
+
+    #[test]
+    fn set_agent_reset_serializes_null_agent() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent { session_id: "s1".to_owned(), agent: None },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_agent",
+                "session_id": "s1",
+                "agent": null
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_set_servers_command_serializes_latest_fields_as_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::McpSetServers {
+                session_id: "s1".to_owned(),
+                servers: BTreeMap::from([(
+                    "notion".to_owned(),
+                    types::McpServerConfig::Http {
+                        url: "https://mcp.notion.com/mcp".to_owned(),
+                        headers: BTreeMap::new(),
+                        tools: vec![types::McpServerToolPolicy {
+                            name: "search".to_owned(),
+                            permission_policy: types::McpServerToolPermissionPolicy::Allow,
+                        }],
+                        timeout: Some(5000),
+                        always_load: Some(true),
+                    },
+                )]),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "mcp_set_servers",
+                "session_id": "s1",
+                "servers": {
+                    "notion": {
+                        "type": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                        "headers": {},
+                        "tools": [
+                            { "name": "search", "permission_policy": "always_allow" }
+                        ],
+                        "timeout": 5000,
+                        "always_load": true
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
     fn event_envelope_roundtrip_json() {
         let env = EventEnvelope {
             request_id: None,
@@ -462,6 +587,25 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn turn_error_deserializes_api_error_status() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "turn_error",
+            "session_id": "session-1",
+            "message": "service overloaded",
+            "error_kind": "transient_service",
+            "api_error_status": 529
+        }))
+        .expect("deserialize turn error");
+
+        let BridgeEvent::TurnError { api_error_status, error_kind, .. } = decoded.event else {
+            panic!("expected turn_error event");
+        };
+
+        assert_eq!(api_error_status, Some(529));
+        assert_eq!(error_kind.as_deref(), Some("transient_service"));
     }
 
     #[test]

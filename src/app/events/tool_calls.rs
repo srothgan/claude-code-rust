@@ -7,7 +7,6 @@ use super::super::{
 };
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
-use crate::app::todos::{parse_todos_if_present, set_todos};
 
 pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let id_str = tc.tool_call_id.clone();
@@ -15,13 +14,13 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
     let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
-    maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
     update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
     upsert_tool_call_into_assistant_message(app, tool_info);
+    crate::app::tasks::refresh_task_tool_displays(app);
 
     app.status = AppStatus::Running;
     app.files_accessed += 1;
@@ -72,56 +71,6 @@ pub(super) fn register_tool_call_scope(
     };
     app.register_tool_call_scope(id.to_owned(), scope.clone());
     scope
-}
-
-fn maybe_apply_todo_write_from_tool_call(
-    app: &mut App,
-    id: &str,
-    sdk_tool_name: &str,
-    raw_input: Option<&serde_json::Value>,
-) {
-    if sdk_tool_name != "TodoWrite" {
-        return;
-    }
-    let session_id = current_session_id(app);
-    if let Some(raw_input) = raw_input {
-        if let Some(todos) = parse_todos_if_present(raw_input) {
-            tracing::info!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "tool_plan_synchronized",
-                message = "todo plan synchronized from tool call",
-                outcome = "success",
-                session_id = %session_id,
-                tool_call_id = %id,
-                count = todos.len(),
-                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-                tool_name = "TodoWrite",
-                todo_count = todos.len(),
-            );
-            set_todos(app, todos);
-        } else {
-            tracing::debug!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "tool_plan_sync_skipped",
-                message = "todo plan sync skipped for tool call",
-                outcome = "skipped",
-                session_id = %session_id,
-                tool_call_id = %id,
-                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-                tool_name = "TodoWrite",
-            );
-        }
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_plan_sync_blocked",
-            message = "todo plan sync blocked by missing tool input",
-            outcome = "blocked",
-            session_id = %session_id,
-            tool_call_id = %id,
-            tool_name = "TodoWrite",
-        );
-    }
 }
 
 pub(super) fn update_subagent_scope_state(

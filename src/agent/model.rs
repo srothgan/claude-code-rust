@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -235,6 +236,106 @@ impl McpResource {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerConnectionStatus {
+    Connected,
+    Failed,
+    NeedsAuth,
+    Pending,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct McpToolAnnotations {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub open_world: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerToolPermissionPolicy {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl McpServerToolPermissionPolicy {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "always allow",
+            Self::Ask => "always ask",
+            Self::Deny => "always deny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerToolPolicy {
+    pub name: String,
+    pub permission_policy: McpServerToolPermissionPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerStatusConfig {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Sse {
+        url: String,
+        headers: BTreeMap<String, String>,
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+        tools: Vec<McpServerToolPolicy>,
+        timeout: Option<u64>,
+        always_load: Option<bool>,
+    },
+    Sdk {
+        name: String,
+    },
+    ClaudeaiProxy {
+        url: String,
+        id: String,
+        timeout: Option<u64>,
+    },
+    Unknown {
+        raw_type: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub status: McpServerConnectionStatus,
+    pub server_info: Option<McpServerInfo>,
+    pub error: Option<String>,
+    pub config: Option<McpServerStatusConfig>,
+    pub scope: Option<String>,
+    pub tools: Vec<McpTool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCallContent {
     Content(Content),
@@ -440,24 +541,6 @@ impl ToolCallUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-impl TodoWriteOutputMetadata {
-    #[must_use]
-    pub fn new() -> Self {
-        Self { verification_nudge_needed: None }
-    }
-
-    #[must_use]
-    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
-        self.verification_nudge_needed = verification_nudge_needed;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
 }
@@ -481,7 +564,6 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -490,6 +572,9 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub request_id: Option<String>,
+    pub subagent_type: Option<String>,
+    pub task_description: Option<String>,
 }
 
 impl TaskMetadata {
@@ -521,6 +606,24 @@ impl TaskMetadata {
         self.is_backgrounded = is_backgrounded;
         self
     }
+
+    #[must_use]
+    pub fn request_id(mut self, request_id: Option<String>) -> Self {
+        self.request_id = request_id;
+        self
+    }
+
+    #[must_use]
+    pub fn subagent_type(mut self, subagent_type: Option<String>) -> Self {
+        self.subagent_type = subagent_type;
+        self
+    }
+
+    #[must_use]
+    pub fn task_description(mut self, task_description: Option<String>) -> Self {
+        self.task_description = task_description;
+        self
+    }
 }
 
 impl ToolOutputMetadata {
@@ -534,57 +637,121 @@ impl ToolOutputMetadata {
         self.bash = bash;
         self
     }
-
-    #[must_use]
-    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
-        self.todo_write = todo_write;
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlanEntryPriority {
-    High,
-    Medium,
-    Low,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanEntryStatus {
+pub enum TaskStatus {
     Pending,
     InProgress,
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub priority: PlanEntryPriority,
-    pub status: PlanEntryStatus,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskUpdateSource {
+    #[serde(rename = "task_create")]
+    Create,
+    #[serde(rename = "task_update")]
+    Update,
+    #[serde(rename = "task_get")]
+    Get,
+    #[serde(rename = "task_list")]
+    List,
+    #[serde(rename = "task_lifecycle")]
+    Lifecycle,
 }
 
-impl PlanEntry {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskItem {
+    pub task_id: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub active_form: Option<String>,
+    pub status: TaskStatus,
+    pub owner: Option<String>,
+    pub blocks: Vec<String>,
+    pub blocked_by: Vec<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub source_tool_call_id: Option<String>,
+}
+
+impl TaskItem {
     #[must_use]
-    pub fn new(
-        content: impl Into<String>,
-        priority: PlanEntryPriority,
-        status: PlanEntryStatus,
-    ) -> Self {
-        Self { content: content.into(), priority, status }
+    pub fn new(task_id: impl Into<String>, subject: impl Into<String>, status: TaskStatus) -> Self {
+        Self {
+            task_id: task_id.into(),
+            subject: subject.into(),
+            description: None,
+            active_form: None,
+            status,
+            owner: None,
+            blocks: Vec::new(),
+            blocked_by: Vec::new(),
+            metadata: None,
+            source_tool_call_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn active_form(mut self, active_form: impl Into<String>) -> Self {
+        self.active_form = Some(active_form.into());
+        self
+    }
+
+    #[must_use]
+    pub fn blocks(mut self, blocks: Vec<String>) -> Self {
+        self.blocks = blocks;
+        self
+    }
+
+    #[must_use]
+    pub fn blocked_by(mut self, blocked_by: Vec<String>) -> Self {
+        self.blocked_by = blocked_by;
+        self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Plan {
-    pub entries: Vec<PlanEntry>,
+pub struct TaskStateUpdate {
+    pub source: TaskUpdateSource,
+    pub tasks: Vec<TaskItem>,
+    pub removed_task_ids: Vec<String>,
+    pub is_complete_snapshot: bool,
 }
 
-impl Plan {
+impl TaskStateUpdate {
     #[must_use]
-    pub fn new(entries: Vec<PlanEntry>) -> Self {
-        Self { entries }
+    pub fn new(source: TaskUpdateSource) -> Self {
+        Self {
+            source,
+            tasks: Vec::new(),
+            removed_task_ids: Vec::new(),
+            is_complete_snapshot: false,
+        }
+    }
+
+    #[must_use]
+    pub fn tasks(mut self, tasks: Vec<TaskItem>) -> Self {
+        self.tasks = tasks;
+        self
+    }
+
+    #[must_use]
+    pub fn removed_task_ids(mut self, removed_task_ids: Vec<String>) -> Self {
+        self.removed_task_ids = removed_task_ids;
+        self
+    }
+
+    #[must_use]
+    pub const fn complete_snapshot(mut self, is_complete_snapshot: bool) -> Self {
+        self.is_complete_snapshot = is_complete_snapshot;
+        self
     }
 }
 
@@ -611,12 +778,26 @@ impl AvailableCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableCommandsUpdate {
     pub available_commands: Vec<AvailableCommand>,
+    pub source: Option<String>,
+    pub generation: Option<u64>,
 }
 
 impl AvailableCommandsUpdate {
     #[must_use]
     pub fn new(available_commands: Vec<AvailableCommand>) -> Self {
-        Self { available_commands }
+        Self { available_commands, source: None, generation: None }
+    }
+
+    #[must_use]
+    pub fn source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
+        self
     }
 }
 
@@ -646,15 +827,23 @@ pub enum EffortLevel {
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 impl EffortLevel {
+    pub const ALL: [Self; 5] = [Self::Low, Self::Medium, Self::High, Self::XHigh, Self::Max];
+    pub const PERSISTABLE_SETTINGS: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::XHigh];
+
     #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -664,6 +853,8 @@ impl EffortLevel {
             Self::Low => "Low",
             Self::Medium => "Medium",
             Self::High => "High",
+            Self::XHigh => "XHigh",
+            Self::Max => "Max",
         }
     }
 
@@ -673,6 +864,8 @@ impl EffortLevel {
             Self::Low => "Fastest responses",
             Self::Medium => "Balanced speed and depth",
             Self::High => "Deeper reasoning",
+            Self::XHigh => "Deeper than high",
+            Self::Max => "Maximum effort",
         }
     }
 
@@ -682,8 +875,20 @@ impl EffortLevel {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub const fn is_persistable_setting(self) -> bool {
+        !matches!(self, Self::Max)
+    }
+
+    #[must_use]
+    pub fn from_persisted_setting(value: &str) -> Option<Self> {
+        Self::from_stored(value).filter(|level| level.is_persistable_setting())
     }
 }
 
@@ -838,6 +1043,89 @@ impl CurrentModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountApiProvider {
+    FirstParty,
+    Bedrock,
+    Vertex,
+    Foundry,
+    AnthropicAws,
+    Mantle,
+    Gateway,
+    Other(String),
+}
+
+impl AccountApiProvider {
+    #[must_use]
+    pub fn from_wire(value: impl Into<String>) -> Self {
+        match value.into().trim() {
+            "firstParty" => Self::FirstParty,
+            "bedrock" => Self::Bedrock,
+            "vertex" => Self::Vertex,
+            "foundry" => Self::Foundry,
+            "anthropicAws" => Self::AnthropicAws,
+            "mantle" => Self::Mantle,
+            "gateway" => Self::Gateway,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::FirstParty => "First party",
+            Self::Bedrock => "Bedrock",
+            Self::Vertex => "Vertex",
+            Self::Foundry => "Foundry",
+            Self::AnthropicAws => "Anthropic AWS",
+            Self::Mantle => "Mantle",
+            Self::Gateway => "Gateway",
+            Self::Other(provider) => provider.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        !matches!(self, Self::FirstParty)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub email: Option<String>,
+    pub organization: Option<String>,
+    pub subscription_type: Option<String>,
+    pub token_source: Option<String>,
+    pub api_key_source: Option<String>,
+    pub api_provider: Option<AccountApiProvider>,
+}
+
+impl AccountInfo {
+    #[must_use]
+    pub fn login_method_label(&self) -> String {
+        if self.api_provider.as_ref().is_some_and(AccountApiProvider::is_external) {
+            return "External provider".to_owned();
+        }
+        if let Some(source) = self.api_key_source.as_deref() {
+            match source {
+                "oauth" => return "Claude Max Account".to_owned(),
+                "user" => return "User API key".to_owned(),
+                "project" => return "Project API key".to_owned(),
+                "org" => return "Organization API key".to_owned(),
+                "temporary" => return "Temporary key".to_owned(),
+                other if !other.is_empty() => return other.to_owned(),
+                _ => {}
+            }
+        }
+        if let Some(source) = self.token_source.as_deref()
+            && !source.is_empty()
+        {
+            return source.to_owned();
+        }
+        "Unknown".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgentsUpdate {
     pub available_agents: Vec<AvailableAgent>,
 }
@@ -898,9 +1186,12 @@ pub enum RateLimitStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    OauthOrgNotAllowed,
     BillingError,
     RateLimit,
+    Overloaded,
     InvalidRequest,
+    ModelNotFound,
     ServerError,
     MaxOutputTokens,
     Unknown,
@@ -911,6 +1202,13 @@ pub enum RuntimeSessionState {
     Idle,
     Running,
     RequiresAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemNoticeSeverity {
+    Info,
+    Warning,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -930,6 +1228,7 @@ pub struct RateLimitUpdate {
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Compacting,
+    Requesting,
     Idle,
 }
 
@@ -953,7 +1252,7 @@ pub enum SessionUpdate {
     AgentThoughtChunk(ContentChunk),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
-    Plan(Plan),
+    TaskStateUpdate(TaskStateUpdate),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
     ModeStateUpdate(crate::app::ModeState),
@@ -977,6 +1276,10 @@ pub enum SessionUpdate {
         message: String,
     },
     SessionStatusUpdate(SessionStatus),
+    SystemNoticeUpdate {
+        severity: SystemNoticeSeverity,
+        message: String,
+    },
     CompactionBoundary(CompactionBoundary),
 }
 

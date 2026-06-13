@@ -9,7 +9,7 @@ npm install
 npm run build
 ```
 
-Build output is written to `dist/bridge.mjs`.
+Build output is written to `dist/bridge.js`.
 
 ## License
 

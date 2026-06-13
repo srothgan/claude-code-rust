@@ -185,6 +185,7 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
+        assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
@@ -345,6 +346,11 @@ mod tests {
         assert!(candidates.iter().any(|c| c.insert_value == "4.6"));
         assert!(candidates.iter().any(|c| c.insert_value == "4.7"));
         assert!(candidates.iter().any(|c| {
+            c.insert_value == "4.8"
+                && c.primary == "4.8"
+                && c.secondary.as_deref() == Some("Claude Opus 4.8")
+        }));
+        assert!(candidates.iter().any(|c| {
             c.insert_value == "default"
                 && c.primary == "default"
                 && c.secondary.as_deref() == Some("Use Claude default Opus alias")
@@ -407,6 +413,21 @@ mod tests {
         let settings_path = dir.path().join(".claude").join("settings.local.json");
         let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
         assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
+    }
+
+    #[test]
+    fn opus_version_48_persists_folder_local_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.cwd_raw = dir.path().to_string_lossy().to_string();
+
+        let consumed = try_handle_submit(&mut app, "/opus-version 4.8");
+
+        assert!(consumed);
+        let settings_path = dir.path().join(".claude").join("settings.local.json");
+        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
+        assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-8\""));
     }
 
     #[test]
@@ -499,7 +520,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -514,7 +535,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -529,7 +550,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
+        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
     }
 
     #[test]
@@ -707,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn model_argument_candidates_hide_sdk_default_option() {
+    fn model_argument_candidates_include_sdk_default_option() {
         let mut app = App::test_default();
         app.available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
@@ -718,8 +739,9 @@ mod tests {
 
         let candidates = argument_candidates(&app, "/model", 0);
 
-        assert!(!candidates.iter().any(|c| c.insert_value == "default"));
-        assert!(!candidates.iter().any(|c| c.primary == "Default"));
+        assert!(candidates.iter().any(|c| c.insert_value == "default"));
+        assert!(candidates.iter().any(|c| c.primary == "Default"));
+        assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Default (recommended)")));
         assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
         assert!(candidates.iter().any(|c| c.insert_value == "opus"));
     }
@@ -766,6 +788,102 @@ mod tests {
     }
 
     #[test]
+    fn agent_argument_candidates_include_reset_and_available_agents() {
+        let mut app = App::test_default();
+        app.available_agents = vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Review code")
+                .model("claude-opus"),
+            crate::agent::model::AvailableAgent::new("planner", "Plan work"),
+        ];
+
+        let candidates = argument_candidates(&app, "/agent", 0);
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "reset"
+                && candidate.secondary.as_deref() == Some("Clear active agent")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "reviewer"
+                && candidate.primary == "reviewer"
+                && candidate.secondary.as_deref() == Some("Review code - claude-opus")
+        }));
+        assert!(candidates.iter().any(|candidate| candidate.insert_value == "planner"));
+    }
+
+    #[test]
+    fn agent_argument_candidates_filter_by_query() {
+        let mut app = App::test_default();
+        app.available_agents = vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
+            crate::agent::model::AvailableAgent::new("planner", "Plan work"),
+        ];
+        app.input.set_text("/agent rev");
+        let _ = app.input.set_cursor(0, "/agent rev".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(matches!(slash.context, SlashContext::Argument { .. }));
+        assert_eq!(
+            slash
+                .candidates
+                .iter()
+                .map(|candidate| candidate.insert_value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reviewer"]
+        );
+    }
+
+    #[test]
+    fn effort_argument_candidates_include_session_only_max() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    crate::agent::model::EffortLevel::Low,
+                    crate::agent::model::EffortLevel::Medium,
+                    crate::agent::model::EffortLevel::High,
+                    crate::agent::model::EffortLevel::XHigh,
+                ]),
+        );
+
+        let candidates = argument_candidates(&app, "/effort", 0);
+
+        assert_eq!(
+            candidates.iter().map(|candidate| candidate.insert_value.as_str()).collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "max"
+                && candidate.secondary.as_deref() == Some("Max - Maximum effort")
+        }));
+    }
+
+    #[test]
+    fn effort_argument_candidates_filter_by_query() {
+        let mut app = App::test_default();
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                .supports_effort(true)
+                .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
+        );
+        app.input.set_text("/effort xh");
+        let _ = app.input.set_cursor(0, "/effort xh".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(matches!(slash.context, SlashContext::Argument { .. }));
+        assert_eq!(
+            slash
+                .candidates
+                .iter()
+                .map(|candidate| candidate.insert_value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["xhigh"]
+        );
+    }
+
+    #[test]
     fn docs_argument_candidates_are_static_topics() {
         let app = App::test_default();
         let candidates = argument_candidates(&app, "/docs", 0);
@@ -788,6 +906,35 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
+    }
+
+    #[test]
+    fn docs_models_show_advertised_effort_levels() {
+        let mut app = App::test_default();
+        app.available_models = vec![
+            crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
+                .description("Balanced model")
+                .supports_effort(true)
+                .supported_effort_levels(vec![
+                    crate::agent::model::EffortLevel::Low,
+                    crate::agent::model::EffortLevel::Medium,
+                    crate::agent::model::EffortLevel::High,
+                    crate::agent::model::EffortLevel::XHigh,
+                    crate::agent::model::EffortLevel::Max,
+                ])
+                .supports_fast_mode(Some(true)),
+        ];
+
+        let consumed = try_handle_submit(&mut app, "/docs models");
+
+        assert!(consumed);
+        let last = app.messages.last().expect("expected system message");
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(block.text.contains("Docs: Models"));
+        assert!(block.text.contains("Effort: Low, Medium, High, XHigh, Max"));
+        assert!(block.text.contains("Fast mode"));
     }
 
     #[test]
@@ -1112,6 +1259,281 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.current_model = Some(
+                    crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
+                );
+
+                let consumed = try_handle_submit(&mut app, "/effort xhigh");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching effort..."));
+                assert!(matches!(
+                    app.pending_command_ack.as_ref(),
+                    Some(super::super::PendingCommandAck::ConfigOption { option_id })
+                        if option_id == "effortLevel"
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set effort command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetEffort {
+                        session_id: "sess-1".to_owned(),
+                        effort: "xhigh".to_owned(),
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "effortLevel".to_owned(),
+                                value: serde_json::json!("xhigh"),
+                            },
+                        ),
+                    ),
+                );
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert_eq!(
+                    app.config_options.get("effortLevel"),
+                    Some(&serde_json::json!("xhigh"))
+                );
+                assert_eq!(
+                    app.session_thinking_effort_effective(),
+                    crate::agent::model::EffortLevel::XHigh
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_accepts_session_only_max() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.current_model = Some(
+                    crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(vec![
+                            crate::agent::model::EffortLevel::Low,
+                            crate::agent::model::EffortLevel::Medium,
+                            crate::agent::model::EffortLevel::High,
+                        ]),
+                );
+
+                let consumed = try_handle_submit(&mut app, "/effort max");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set effort command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetEffort {
+                        session_id: "sess-1".to_owned(),
+                        effort: "max".to_owned(),
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.available_agents =
+                    vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+
+                let consumed = try_handle_submit(&mut app, "/agent reviewer");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching agent..."));
+                assert!(matches!(
+                    app.pending_command_ack.as_ref(),
+                    Some(super::super::PendingCommandAck::ConfigOption { option_id })
+                        if option_id == "agent"
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: Some("reviewer".to_owned()),
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "agent".to_owned(),
+                                value: serde_json::json!("reviewer"),
+                            },
+                        ),
+                    ),
+                );
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert_eq!(app.config_options.get("agent"), Some(&serde_json::json!("reviewer")));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_reset_sends_null_agent() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+
+                let consumed = try_handle_submit(&mut app, "/agent reset");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("reset agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: None,
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+
+                let consumed = try_handle_submit(&mut app, "/agent custom-agent");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: Some("custom-agent".to_owned()),
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[test]
+    fn agent_rejects_unknown_when_available_agents_are_populated() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some("sess-1".into());
+        app.available_agents =
+            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+
+        let consumed = try_handle_submit(&mut app, "/agent planner");
+
+        assert!(consumed);
+        assert!(rx.try_recv().is_err());
+        assert!(!matches!(app.status, AppStatus::CommandPending));
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Unknown agent: planner");
+    }
+
+    #[test]
+    fn agent_invalid_arguments_return_usage() {
+        for input in ["/agent", "/agent reviewer extra"] {
+            let mut app = App::test_default();
+
+            let consumed = try_handle_submit(&mut app, input);
+
+            assert!(consumed);
+            let Some(last) = app.messages.last() else {
+                panic!("expected system usage message for {input}");
+            };
+            let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+                panic!("expected text block");
+            };
+            assert_eq!(block.text, "Usage: /agent <name|reset>");
+            assert!(!matches!(app.status, AppStatus::CommandPending));
+        }
+    }
+
+    #[test]
+    fn effort_invalid_arguments_return_usage() {
+        for input in ["/effort", "/effort banana", "/effort high extra"] {
+            let mut app = App::test_default();
+
+            let consumed = try_handle_submit(&mut app, input);
+
+            assert!(consumed);
+            let Some(last) = app.messages.last() else {
+                panic!("expected system usage message for {input}");
+            };
+            let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+                panic!("expected text block");
+            };
+            assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max>");
+            assert!(!matches!(app.status, AppStatus::CommandPending));
+        }
+    }
+
+    #[test]
+    fn effort_rejects_models_without_effort_support() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some("sess-1".into());
+        app.current_model = Some(
+            crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku")
+                .supports_effort(false),
+        );
+
+        let consumed = try_handle_submit(&mut app, "/effort high");
+
+        assert!(consumed);
+        assert!(rx.try_recv().is_err());
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Cannot switch effort: current model does not support effort.");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn new_session_sets_command_pending() {
         tokio::task::LocalSet::new()
             .run_until(async {
@@ -1287,6 +1709,8 @@ mod tests {
     fn single_argument_builtin_selection_closes_autocomplete() {
         for (command, value) in [
             ("/docs", "commands"),
+            ("/agent", "reviewer"),
+            ("/effort", "xhigh"),
             ("/mode", "plan"),
             ("/model", "sonnet"),
             ("/opus-version", "4.7"),

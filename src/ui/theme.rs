@@ -43,12 +43,23 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LS" => ("\u{2315}", "LS"),
         "Bash" => ("\u{27e9}", "Bash"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
+        "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
+            ("\u{25a1}", "Task")
+        }
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
+        "EnterPlanMode" => ("\u{2299}", "EnterPlanMode"),
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
-        "TodoWrite" => ("\u{25cc}", "TodoWrite"),
         "Config" => ("\u{2299}", "Config"),
+        "CronCreate" | "CronDelete" | "CronList" => ("\u{25f7}", "Cron"),
+        "ScheduleWakeup" => ("\u{25f7}", "Wakeup"),
+        "PushNotification" => ("!", "Notify"),
+        "RemoteTrigger" => ("\u{21c4}", "Remote"),
+        "REPL" => ("\u{03bb}", "REPL"),
+        "Monitor" => ("\u{25c9}", "Monitor"),
+        "Workflow" => ("\u{25c7}", "Workflow"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
     }
 }
@@ -61,5 +72,64 @@ mod tests {
     fn task_and_agent_share_subagent_label_and_icon() {
         assert_eq!(tool_name_label("Task"), ("\u{25c7}", "Subagent"));
         assert_eq!(tool_name_label("Agent"), ("\u{25c7}", "Subagent"));
+    }
+
+    #[test]
+    fn sdk_task_state_tools_use_neutral_task_label() {
+        for sdk_tool_name in
+            ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop"]
+        {
+            assert_eq!(tool_name_label(sdk_tool_name), ("\u{25a1}", "Task"));
+        }
+    }
+
+    #[test]
+    fn worktree_tools_use_worktree_labels_and_icon() {
+        assert_eq!(tool_name_label("EnterWorktree"), ("\u{21c4}", "EnterWorktree"));
+        assert_eq!(tool_name_label("ExitWorktree"), ("\u{21c4}", "ExitWorktree"));
+    }
+
+    #[test]
+    fn cron_tools_use_cron_labels_and_icon() {
+        for sdk_tool_name in ["CronCreate", "CronDelete", "CronList"] {
+            assert_eq!(tool_name_label(sdk_tool_name), ("\u{25f7}", "Cron"));
+        }
+    }
+
+    #[test]
+    fn schedule_wakeup_tool_uses_wakeup_label_and_icon() {
+        assert_eq!(tool_name_label("ScheduleWakeup"), ("\u{25f7}", "Wakeup"));
+    }
+
+    #[test]
+    fn push_notification_tool_uses_notify_label_and_icon() {
+        assert_eq!(tool_name_label("PushNotification"), ("!", "Notify"));
+    }
+
+    #[test]
+    fn remote_trigger_tool_uses_remote_label_and_icon() {
+        assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21c4}", "Remote"));
+    }
+
+    #[test]
+    fn repl_tool_uses_lambda_label_and_icon() {
+        assert_eq!(tool_name_label("REPL"), ("\u{03bb}", "REPL"));
+    }
+
+    #[test]
+    fn monitor_and_workflow_tools_use_background_task_labels_and_icons() {
+        assert_eq!(tool_name_label("Monitor"), ("\u{25c9}", "Monitor"));
+        assert_eq!(tool_name_label("Workflow"), ("\u{25c7}", "Workflow"));
+    }
+
+    #[test]
+    fn plan_mode_tools_use_plan_mode_labels_and_icon() {
+        assert_eq!(tool_name_label("EnterPlanMode"), ("\u{2299}", "EnterPlanMode"));
+        assert_eq!(tool_name_label("ExitPlanMode"), ("\u{2299}", "ExitPlanMode"));
+    }
+
+    #[test]
+    fn unknown_tools_use_generic_fallback() {
+        assert_eq!(tool_name_label("UnknownFutureTool"), ("\u{25cb}", "Tool"));
     }
 }

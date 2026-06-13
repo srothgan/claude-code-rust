@@ -75,15 +75,6 @@ impl ToolCallInfo {
     }
 
     #[must_use]
-    pub fn verification_nudge_needed(&self) -> bool {
-        self.output_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.todo_write.as_ref())
-            .and_then(|metadata| metadata.verification_nudge_needed)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
         self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }

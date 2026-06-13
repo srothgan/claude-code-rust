@@ -39,12 +39,15 @@ fn format_api_retry_message(
 
 fn api_retry_error_label(error: ApiRetryError) -> &'static str {
     match error {
-        ApiRetryError::AuthenticationFailed => "authentication_failed",
-        ApiRetryError::BillingError => "billing_error",
-        ApiRetryError::RateLimit => "rate_limit",
-        ApiRetryError::InvalidRequest => "invalid_request",
-        ApiRetryError::ServerError => "server_error",
-        ApiRetryError::MaxOutputTokens => "max_output_tokens",
+        ApiRetryError::AuthenticationFailed => "authentication failure",
+        ApiRetryError::OauthOrgNotAllowed => "account access not allowed",
+        ApiRetryError::BillingError => "billing issue",
+        ApiRetryError::RateLimit => "rate limit",
+        ApiRetryError::Overloaded => "service overloaded",
+        ApiRetryError::InvalidRequest => "invalid request",
+        ApiRetryError::ModelNotFound => "model unavailable",
+        ApiRetryError::ServerError => "server error",
+        ApiRetryError::MaxOutputTokens => "max output tokens",
         ApiRetryError::Unknown => "connection error",
     }
 }
@@ -67,7 +70,23 @@ mod tests {
     fn formats_api_retry_http_status() {
         assert_eq!(
             format_api_retry_message(2, 4, 1500.0, Some(529), ApiRetryError::ServerError),
-            "API retry 2/4 after server_error HTTP 529, retrying in 1.5s",
+            "API retry 2/4 after server error HTTP 529, retrying in 1.5s",
+        );
+    }
+
+    #[test]
+    fn formats_new_sdk_api_retry_errors_with_user_facing_labels() {
+        assert_eq!(
+            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::ModelNotFound),
+            "API retry 1/4 after model unavailable, retrying in 250ms",
+        );
+        assert_eq!(
+            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::OauthOrgNotAllowed),
+            "API retry 1/4 after account access not allowed, retrying in 250ms",
+        );
+        assert_eq!(
+            format_api_retry_message(1, 4, 250.0, Some(529), ApiRetryError::Overloaded),
+            "API retry 1/4 after service overloaded HTTP 529, retrying in 250ms",
         );
     }
 

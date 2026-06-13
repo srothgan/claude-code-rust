@@ -9,10 +9,20 @@
 //! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
+mod cron;
 mod errors;
 mod execute;
+mod fields;
 mod interactions;
+mod monitor;
+mod push_notification;
+mod remote_trigger;
+mod repl;
+mod schedule_wakeup;
 mod standard;
+mod tasks;
+mod workflow;
+mod worktree;
 
 use std::borrow::Cow;
 
@@ -173,13 +183,6 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
-    if tc.verification_nudge_needed() {
-        badges.push(Span::styled(
-            "  [verification needed]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-    }
-
     badges
 }
 
@@ -207,7 +210,6 @@ mod tests {
     use super::*;
     use crate::app::BlockCache;
     use pretty_assertions::assert_eq;
-    use serde_json::json;
     use std::fmt::Write as _;
 
     fn test_tool_call(
@@ -236,12 +238,6 @@ mod tests {
             pending_permission: None,
             pending_question: None,
         }
-    }
-
-    fn todo_write_tool_call(raw_input: serde_json::Value) -> ToolCallInfo {
-        let mut tc = test_tool_call("tc-todo", "TodoWrite", model::ToolCallStatus::Completed);
-        tc.raw_input = Some(raw_input);
-        tc
     }
 
     fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
@@ -383,6 +379,17 @@ mod tests {
 
         assert!(text.contains("Create Plan"));
         assert!(!text.contains("Write notes/plan.md"));
+    }
+
+    #[test]
+    fn standard_title_uses_generic_icon_for_unknown_tools() {
+        let tc =
+            test_tool_call("tc-unknown", "UnknownFutureTool", model::ToolCallStatus::Completed);
+
+        let rendered =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+
+        assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{25cb} "));
     }
 
     #[test]
@@ -557,145 +564,6 @@ mod tests {
         assert!(text.contains("echo hi"));
         assert!(!text.contains("Create Plan"));
         assert!(!text.contains("Update Plan"));
-    }
-
-    #[test]
-    fn todo_write_title_renders_verification_badge() {
-        let mut tc = test_tool_call("tc-todo", "TodoWrite", model::ToolCallStatus::Completed);
-        tc.output_metadata = Some(model::ToolOutputMetadata::new().todo_write(Some(
-            model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
-        )));
-
-        let rendered =
-            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
-        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("[verification needed]"));
-    }
-
-    #[test]
-    fn todo_write_body_renders_todos_from_raw_input_and_ignores_reported_content() {
-        let mut tc = todo_write_tool_call(json!({
-            "todos": [
-                {"content": "Raw task", "status": "pending", "activeForm": "Raw active"}
-            ]
-        }));
-        tc.content = vec![model::ToolCallContent::from("reported output should not render")];
-
-        let body = standard::render_tool_call_body(&tc, 80);
-        let rendered = rendered_line_texts(&body);
-
-        assert!(rendered.iter().any(|line| line.contains("Raw task")));
-        assert!(!rendered.iter().any(|line| line.contains("reported output")));
-    }
-
-    #[test]
-    fn todo_write_without_todos_array_does_not_render_reported_content() {
-        let mut tc = todo_write_tool_call(json!({}));
-        tc.content = vec![model::ToolCallContent::from("reported output should not render")];
-
-        assert!(!standard::tool_call_has_body(&tc));
-        assert!(standard::render_tool_call_body(&tc, 80).is_empty());
-    }
-
-    #[test]
-    fn todo_write_body_uses_block_markers_and_active_form() {
-        let tc = todo_write_tool_call(json!({
-            "todos": [
-                {"content": "Done task", "status": "completed", "activeForm": "Done active"},
-                {"content": "Doing task", "status": "in_progress", "activeForm": "Doing active"},
-                {"content": "Pending task", "status": "pending", "activeForm": "Pending active"}
-            ]
-        }));
-
-        let body = standard::render_tool_call_body(&tc, 80);
-        let rendered = rendered_line_texts(&body);
-
-        assert!(rendered.iter().any(|line| line.contains("\u{25a0} Done task")));
-        assert!(rendered.iter().any(|line| line.contains("\u{25a3} Doing active")));
-        assert!(rendered.iter().any(|line| line.contains("\u{25a1} Pending task")));
-        assert!(!rendered.iter().any(|line| line.contains("Doing task")));
-
-        let done_line = body
-            .iter()
-            .find(|line| line.spans.iter().any(|span| span.content.as_ref() == "\u{25a0}"))
-            .expect("done marker line");
-        let done_marker = done_line
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "\u{25a0}")
-            .expect("done marker span");
-        assert_eq!(done_marker.style.fg, Some(theme::DIM));
-
-        let current_line = body
-            .iter()
-            .find(|line| line.spans.iter().any(|span| span.content.as_ref() == "\u{25a3}"))
-            .expect("current marker line");
-        let current_text = current_line
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "Doing active")
-            .expect("current text span");
-        assert_eq!(current_text.style.fg, Some(theme::RUST_ORANGE));
-    }
-
-    #[test]
-    fn todo_write_overflow_anchors_first_unfinished_todo() {
-        let tc = todo_write_tool_call(json!({
-            "todos": (0..12)
-                .map(|idx| {
-                    let status = if idx == 0 { "pending" } else { "completed" };
-                    json!({"content": format!("Task {idx}"), "status": status})
-                })
-                .collect::<Vec<_>>()
-        }));
-
-        let rendered = rendered_line_texts(&standard::render_tool_call_body(&tc, 80));
-
-        assert_eq!(rendered.len(), TOOL_BODY_MAX_LINES);
-        assert!(rendered.first().is_some_and(|line| line.contains("Task 0")));
-        assert!(rendered.last().is_some_and(|line| line.contains("...")));
-        assert!(!rendered.iter().any(|line| line.contains("hidden")));
-    }
-
-    #[test]
-    fn todo_write_overflow_centers_middle_unfinished_todo() {
-        let tc = todo_write_tool_call(json!({
-            "todos": (0..12)
-                .map(|idx| {
-                    let status = if idx == 6 { "pending" } else { "completed" };
-                    json!({"content": format!("Task {idx}"), "status": status})
-                })
-                .collect::<Vec<_>>()
-        }));
-
-        let rendered = rendered_line_texts(&standard::render_tool_call_body(&tc, 80));
-
-        assert_eq!(rendered.len(), TOOL_BODY_MAX_LINES);
-        assert!(rendered.first().is_some_and(|line| line.contains("...")));
-        assert!(rendered.last().is_some_and(|line| line.contains("...")));
-        assert!(rendered.iter().any(|line| line.contains("Task 6")));
-        assert!(!rendered.iter().any(|line| line.contains("Task 2")));
-        assert!(!rendered.iter().any(|line| line.contains("Task 10")));
-        assert!(!rendered.iter().any(|line| line.contains("hidden")));
-    }
-
-    #[test]
-    fn todo_write_overflow_anchors_last_unfinished_todo() {
-        let tc = todo_write_tool_call(json!({
-            "todos": (0..12)
-                .map(|idx| {
-                    let status = if idx == 11 { "pending" } else { "completed" };
-                    json!({"content": format!("Task {idx}"), "status": status})
-                })
-                .collect::<Vec<_>>()
-        }));
-
-        let rendered = rendered_line_texts(&standard::render_tool_call_body(&tc, 80));
-
-        assert_eq!(rendered.len(), TOOL_BODY_MAX_LINES);
-        assert!(rendered.first().is_some_and(|line| line.contains("...")));
-        assert!(rendered.last().is_some_and(|line| line.contains("Task 11")));
-        assert!(!rendered.iter().any(|line| line.contains("hidden")));
     }
 
     #[test]
