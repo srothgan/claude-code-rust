@@ -2948,7 +2948,7 @@ test("available command registry lets authoritative snapshots remove commands", 
   );
 });
 
-test("handleSdkMessage emits system notices for notification mirror and plugin failures", () => {
+test("handleSdkMessage emits system notices for notifications and plugin failures", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleSdkMessage(session, {
@@ -2958,14 +2958,6 @@ test("handleSdkMessage emits system notices for notification mirror and plugin f
       text: "Sync completed",
       priority: "low",
       uuid: "message-notification",
-      session_id: "session-1",
-    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
-    handleSdkMessage(session, {
-      type: "system",
-      subtype: "mirror_error",
-      error: "append timed out",
-      key: { projectKey: "project", sessionId: "session-1" },
-      uuid: "message-mirror",
       session_id: "session-1",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
     handleSdkMessage(session, {
@@ -2981,9 +2973,24 @@ test("handleSdkMessage emits system notices for notification mirror and plugin f
 
   assert.deepEqual(events.map((event) => event.update), [
     { type: "system_notice_update", severity: "info", message: "Sync completed" },
-    { type: "system_notice_update", severity: "warning", message: "Transcript mirror failed: append timed out" },
     { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
   ]);
+});
+
+test("handleSdkMessage treats mirror errors as log-only diagnostics", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "mirror_error",
+      error: "append timed out",
+      key: { projectKey: "project", sessionId: "session-1", subpath: "subagents/agent-1" },
+      uuid: "message-mirror",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
 });
 
 test("handleSdkMessage keeps log-only system messages non-emitting", () => {

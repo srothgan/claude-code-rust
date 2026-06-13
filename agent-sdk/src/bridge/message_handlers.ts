@@ -733,11 +733,6 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
           subpath: typeof key?.subpath === "string" ? key.subpath : undefined,
         },
       });
-      emitSystemNoticeUpdate(
-        session,
-        "warning",
-        error ? `Transcript mirror failed: ${error}` : "Transcript mirror failed.",
-      );
       return;
     }
 
