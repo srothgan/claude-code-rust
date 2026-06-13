@@ -685,6 +685,9 @@ mod tests {
         ImageAttachment {
             count: usize,
         },
+        UserDialog {
+            request_id: String,
+        },
     }
 
     fn message_snapshots(app: &App) -> Vec<MessageSnapshot> {
@@ -721,6 +724,9 @@ mod tests {
             },
             MessageBlock::ImageAttachment(block) => {
                 BlockSnapshot::ImageAttachment { count: block.count }
+            }
+            MessageBlock::UserDialog(block) => {
+                BlockSnapshot::UserDialog { request_id: block.request_id.clone() }
             }
         }
     }
@@ -866,6 +872,9 @@ mod tests {
             Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
             Some(MessageBlock::ImageAttachment(_)) => {
                 panic!("expected text-like block, found image attachment")
+            }
+            Some(MessageBlock::UserDialog(_)) => {
+                panic!("expected text-like block, found user dialog")
             }
             None => panic!("expected message block"),
         }
@@ -1205,7 +1214,8 @@ mod tests {
                 MessageBlock::Notice(notice) => notice.text.text == expected,
                 MessageBlock::ToolCall(_)
                 | MessageBlock::Welcome(_)
-                | MessageBlock::ImageAttachment(_) => false,
+                | MessageBlock::ImageAttachment(_)
+                | MessageBlock::UserDialog(_) => false,
             })
         })
     }

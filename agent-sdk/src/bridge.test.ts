@@ -24,7 +24,6 @@ import {
   mapSessionMessagesToUpdates,
   mapSdkSessions,
   agentSdkVersionCompatibilityError,
-  attachRequestUserDialogInterceptor,
   looksLikeAuthRequired,
   normalizeToolResultText,
   parseFastModeState,
@@ -55,8 +54,10 @@ import {
 } from "./bridge/commands.js";
 import {
   emitCurrentModelUpdate,
+  handleUserDialogResponse,
   refreshCurrentModel,
   resolveCurrentModel,
+  sessions,
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
@@ -98,6 +99,7 @@ function makeSessionState(): SessionState {
     taskIdsByToolUseId: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
+    pendingUserDialogs: new Map(),
     pendingElicitations: new Map(),
     mcpStatusRevalidatedAt: new Map(),
     hiddenToolUseIds: new Set(),
@@ -2592,6 +2594,67 @@ test("parseCommandEnvelope validates question_response command", () => {
       notes: "User note",
     },
   });
+});
+
+test("parseCommandEnvelope validates user_dialog_response selected command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "user_dialog_response",
+      session_id: "session-1",
+      request_id: "dialog-1",
+      outcome: {
+        outcome: "selected",
+        option_id: "retry_fallback",
+      },
+    }),
+  );
+
+  assert.equal(parsed.requestId, "dialog-1");
+  assert.equal(parsed.command.command, "user_dialog_response");
+  if (parsed.command.command !== "user_dialog_response") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-1");
+  assert.equal(parsed.command.request_id, "dialog-1");
+  assert.deepEqual(parsed.command.outcome, {
+    outcome: "selected",
+    option_id: "retry_fallback",
+  });
+});
+
+test("parseCommandEnvelope validates user_dialog_response cancelled command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "user_dialog_response",
+      session_id: "session-1",
+      request_id: "dialog-1",
+      outcome: { outcome: "cancelled" },
+    }),
+  );
+
+  assert.equal(parsed.command.command, "user_dialog_response");
+  if (parsed.command.command !== "user_dialog_response") {
+    throw new Error("unexpected command variant");
+  }
+  assert.deepEqual(parsed.command.outcome, { outcome: "cancelled" });
+});
+
+test("parseCommandEnvelope rejects unsupported user_dialog_response choices", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "user_dialog_response",
+          session_id: "session-1",
+          request_id: "dialog-1",
+          outcome: {
+            outcome: "selected",
+            option_id: "future_choice",
+          },
+        }),
+      ),
+    /user_dialog_response\.outcome\.option_id must be 'retry_fallback' or 'edit_prompt'/,
+  );
 });
 
 test("requestAskUserQuestionAnswers preserves previews and annotations in updated input", async () => {
@@ -5590,131 +5653,185 @@ test("resolveCurrentModel keeps runtime version in short display while using cat
   assert.equal(currentModel.supports_effort, true);
 });
 
-test("attachRequestUserDialogInterceptor rejects request_user_dialog with a stable error", async () => {
-  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
-  const fakeQuery = {
-    async processControlRequest(
-      request: { request_id: string; request: Record<string, unknown> },
-      _signal: AbortSignal,
-    ): Promise<Record<string, unknown>> {
-      calls.push(request);
-      return { ok: true };
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+function userDialogHandlerForTest(): NonNullable<Options["onUserDialog"]> {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: { language: "English" },
+    provisionalSessionId: "session-dialog",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-dialog",
+  });
+  assert.deepEqual(options.supportedDialogKinds, ["refusal_fallback_prompt"]);
+  const handler = options.onUserDialog;
+  assert.ok(handler, "expected buildQueryOptions to declare onUserDialog");
+  return handler;
+}
 
-  assert.equal(
-    attachRequestUserDialogInterceptor(fakeQuery, () => "session-test"),
-    true,
-  );
+function registerDialogSession(): SessionState {
+  const session = makeSessionState();
+  session.sessionId = "session-dialog";
+  sessions.set("session-dialog", session);
+  return session;
+}
 
-  await assert.rejects(
-    (fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
-      processControlRequest: (
-        request: { request_id: string; request: Record<string, unknown> },
-        signal: AbortSignal,
-      ) => Promise<Record<string, unknown> | undefined>;
-    }).processControlRequest(
-      {
-        request_id: "dialog-1",
-        request: {
-          subtype: "request_user_dialog",
-          dialog_kind: "computer_use_approval",
-          payload: { title: "Need approval", kind: "computer_use_approval" },
-          tool_use_id: "tool-1",
-        },
-      },
-      new AbortController().signal,
-    ),
-    /request_user_dialog is not supported by claude-rs yet \(dialog_kind: computer_use_approval\)/,
-  );
-  assert.equal(calls.length, 0);
-});
-
-test("attachRequestUserDialogInterceptor preserves non-dialog control requests", async () => {
-  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
-  const fakeQuery = {
-    async processControlRequest(
-      request: { request_id: string; request: Record<string, unknown> },
-      _signal: AbortSignal,
-    ): Promise<Record<string, unknown>> {
-      calls.push(request);
-      return { ok: true };
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  attachRequestUserDialogInterceptor(fakeQuery, () => "session-test");
-  const result = await (
-    fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
-      processControlRequest: (
-        request: { request_id: string; request: Record<string, unknown> },
-        signal: AbortSignal,
-      ) => Promise<Record<string, unknown> | undefined>;
-    }
-  ).processControlRequest(
-    {
-      request_id: "permission-1",
-      request: {
-        subtype: "can_use_tool",
-        tool_name: "Bash",
-        input: { command: "dir" },
-        tool_use_id: "tool-1",
-      },
-    },
-    new AbortController().signal,
-  );
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.request.subtype, "can_use_tool");
-});
-
-test("attachRequestUserDialogInterceptor delegates replayed pending permission requests", async () => {
-  const calls: Array<{ request_id: string; request: Record<string, unknown> }> = [];
-  const fakeQuery = {
-    async processControlRequest(
-      request: { request_id: string; request: Record<string, unknown> },
-      _signal: AbortSignal,
-    ): Promise<Record<string, unknown>> {
-      calls.push(request);
-      return { ok: true };
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  const replayedPendingPermission = {
-    request_id: "pending-permission-1",
-    request: {
-      subtype: "can_use_tool",
-      tool_name: "Write",
-      input: {
-        file_path: "C:/work/file.txt",
-        content: "hello",
-      },
-      permission_suggestions: [
+test("onUserDialog round-trips a retry_fallback selection", async () => {
+  const handler = userDialogHandlerForTest();
+  const session = registerDialogSession();
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      const resultPromise = handler(
         {
-          type: "addRules",
-          rules: [{ toolName: "Write" }],
-          behavior: "allow",
-          destination: "session",
+          dialogKind: "refusal_fallback_prompt",
+          payload: {
+            originalModel: "claude-opus-4-8",
+            fallbackModel: "claude-sonnet-4-6",
+            guidanceText: "This request was declined.",
+          },
         },
-      ],
-      blocked_path: "C:/work/file.txt",
-      title: "Write file",
-      display_name: "Write",
-      description: "Create or overwrite a file",
-      tool_use_id: "tool-pending-1",
-    },
-  };
+        { signal: new AbortController().signal },
+      );
 
-  attachRequestUserDialogInterceptor(fakeQuery, () => "session-test");
-  const result = await (
-    fakeQuery as import("@anthropic-ai/claude-agent-sdk").Query & {
-      processControlRequest: (
-        request: { request_id: string; request: Record<string, unknown> },
-        signal: AbortSignal,
-      ) => Promise<Record<string, unknown> | undefined>;
-    }
-  ).processControlRequest(replayedPendingPermission, new AbortController().signal);
+      const requestId = [...session.pendingUserDialogs.keys()][0];
+      assert.ok(requestId, "expected a pending user dialog resolver");
 
-  assert.deepEqual(result, { ok: true });
-  assert.deepEqual(calls, [replayedPendingPermission]);
+      handleUserDialogResponse({
+        command: "user_dialog_response",
+        session_id: "session-dialog",
+        request_id: requestId,
+        outcome: { outcome: "selected", option_id: "retry_fallback" },
+      });
+
+      assert.deepEqual(await resultPromise, {
+        behavior: "completed",
+        result: "retry_fallback",
+      });
+    });
+
+    const dialogEvent = events.find((event) => event.event === "user_dialog_request");
+    assert.ok(dialogEvent, "expected a user_dialog_request event");
+    const request = dialogEvent.request as {
+      dialog_kind: string;
+      payload: Record<string, unknown>;
+      options: Array<{ option_id: string; label: string }>;
+    };
+    assert.equal(request.dialog_kind, "refusal_fallback_prompt");
+    assert.equal(request.payload.original_model, "claude-opus-4-8");
+    assert.equal(request.payload.fallback_model, "claude-sonnet-4-6");
+    assert.equal(request.payload.guidance_text, "This request was declined.");
+    assert.deepEqual(
+      request.options.map((option) => option.option_id),
+      ["retry_fallback", "edit_prompt"],
+    );
+    assert.equal(request.options[0].label, "Switch to claude-sonnet-4-6");
+    assert.equal(request.options[1].label, "Edit prompt and retry with claude-opus-4-8");
+  } finally {
+    sessions.delete("session-dialog");
+  }
+});
+
+test("onUserDialog round-trips an edit_prompt selection", async () => {
+  const handler = userDialogHandlerForTest();
+  const session = registerDialogSession();
+  try {
+    const resultPromise = handler(
+      {
+        dialogKind: "refusal_fallback_prompt",
+        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+      },
+      { signal: new AbortController().signal },
+    );
+
+    const requestId = [...session.pendingUserDialogs.keys()][0];
+    handleUserDialogResponse({
+      command: "user_dialog_response",
+      session_id: "session-dialog",
+      request_id: requestId,
+      outcome: { outcome: "selected", option_id: "edit_prompt" },
+    });
+
+    assert.deepEqual(await resultPromise, { behavior: "completed", result: "edit_prompt" });
+  } finally {
+    sessions.delete("session-dialog");
+  }
+});
+
+test("onUserDialog cancels when the dialog is aborted", async () => {
+  const handler = userDialogHandlerForTest();
+  const session = registerDialogSession();
+  const controller = new AbortController();
+  try {
+    const resultPromise = handler(
+      {
+        dialogKind: "refusal_fallback_prompt",
+        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+      },
+      { signal: controller.signal },
+    );
+
+    assert.equal(session.pendingUserDialogs.size, 1);
+    controller.abort();
+
+    assert.deepEqual(await resultPromise, { behavior: "cancelled" });
+    assert.equal(session.pendingUserDialogs.size, 0);
+  } finally {
+    sessions.delete("session-dialog");
+  }
+});
+
+test("onUserDialog fails closed on an unknown dialog kind without emitting", async () => {
+  const handler = userDialogHandlerForTest();
+  const session = registerDialogSession();
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      const result = await handler(
+        { dialogKind: "some_future_dialog_kind", payload: { anything: true } },
+        { signal: new AbortController().signal },
+      );
+      assert.deepEqual(result, { behavior: "cancelled" });
+    });
+
+    assert.equal(
+      events.find((event) => event.event === "user_dialog_request"),
+      undefined,
+    );
+    assert.equal(session.pendingUserDialogs.size, 0);
+  } finally {
+    sessions.delete("session-dialog");
+  }
+});
+
+test("handleUserDialogResponse ignores a duplicate response for a resolved request", async () => {
+  const handler = userDialogHandlerForTest();
+  const session = registerDialogSession();
+  try {
+    const resultPromise = handler(
+      {
+        dialogKind: "refusal_fallback_prompt",
+        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+      },
+      { signal: new AbortController().signal },
+    );
+
+    const requestId = [...session.pendingUserDialogs.keys()][0];
+    const response = {
+      command: "user_dialog_response" as const,
+      session_id: "session-dialog",
+      request_id: requestId,
+      outcome: { outcome: "selected" as const, option_id: "retry_fallback" as const },
+    };
+
+    handleUserDialogResponse(response);
+    assert.deepEqual(await resultPromise, { behavior: "completed", result: "retry_fallback" });
+
+    // A replayed pending_user_dialog_requests entry with the same id must be a
+    // no-op now that the resolver is gone.
+    assert.equal(session.pendingUserDialogs.has(requestId), false);
+    assert.doesNotThrow(() => handleUserDialogResponse(response));
+  } finally {
+    sessions.delete("session-dialog");
+  }
 });

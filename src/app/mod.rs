@@ -36,6 +36,7 @@ pub(crate) mod terminal_runtime;
 mod trust;
 mod update_check;
 pub(crate) mod usage;
+mod user_dialog;
 mod view;
 
 pub(crate) const AUTOCOMPLETE_VISIBLE_ROWS: usize = 5;
@@ -67,8 +68,8 @@ pub use state::{
     RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState, SystemSeverity,
     TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock, TextBlockSpacing,
     ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock,
+    WelcomeBlock, hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

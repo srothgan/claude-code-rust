@@ -38,6 +38,7 @@ import {
   handleElicitationResponse,
   handlePermissionResponse,
   handleQuestionResponse,
+  handleUserDialogResponse,
   emitCurrentModelUpdate,
   refreshCurrentModel,
   shouldInvalidateResolvedRuntimeModel,
@@ -88,10 +89,7 @@ export {
 } from "./bridge/history.js";
 export { handleSdkMessage, handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
-export {
-  attachRequestUserDialogInterceptor,
-  buildQueryOptions,
-} from "./bridge/session_lifecycle.js";
+export { buildQueryOptions } from "./bridge/session_lifecycle.js";
 export { mapAvailableModels } from "./bridge/model_metadata.js";
 export {
   bridgeMcpConfigToSdk,
@@ -829,6 +827,10 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
     case "question_response":
       handleQuestionResponse(command);
+      return;
+
+    case "user_dialog_response":
+      handleUserDialogResponse(command);
       return;
 
     case "elicitation_response":

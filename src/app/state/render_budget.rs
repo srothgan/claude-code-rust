@@ -48,6 +48,7 @@ impl super::App {
             MessageBlock::Welcome(welcome) => &welcome.cache,
             MessageBlock::ToolCall(tc) => &tc.cache,
             MessageBlock::ImageAttachment(img) => &img.cache,
+            MessageBlock::UserDialog(dialog) => &dialog.cache,
         }
     }
 
@@ -316,6 +317,7 @@ impl super::App {
             MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
             MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
             MessageBlock::ImageAttachment(img) => img.cache.evict_cached_render(),
+            MessageBlock::UserDialog(dialog) => dialog.cache.evict_cached_render(),
         };
         if removed > 0 {
             self.sync_render_cache_slot(msg_idx, block_idx);

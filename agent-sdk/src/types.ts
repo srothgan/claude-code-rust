@@ -367,6 +367,46 @@ export type QuestionOutcome =
     }
   | { outcome: "cancelled" };
 
+/**
+ * The host-selectable choices of a `refusal_fallback_prompt` dialog. `cancelled`
+ * is the CLI default and is delivered via the Esc/decline path, not as a listed
+ * option, so it is excluded from this union (see {@link UserDialogOutcome}).
+ */
+export type RefusalFallbackPromptChoice = "retry_fallback" | "edit_prompt";
+
+/**
+ * Snake-case host wire shape of the `refusal_fallback_prompt` payload. The CLI
+ * builds it with camelCase keys (`originalModel`, …); the bridge normalizes the
+ * casing before emitting.
+ */
+export interface RefusalFallbackPromptPayload {
+  original_model: string;
+  fallback_model: string;
+  api_refusal_category?: string;
+  guidance_text?: string;
+  retracted_message_uuids?: string[];
+}
+
+export interface UserDialogOption {
+  option_id: RefusalFallbackPromptChoice;
+  label: string;
+}
+
+/**
+ * Host-facing shape of a `request_user_dialog` control request. The bridge owns
+ * `request_id` (generated per callback) and the rendered option labels.
+ */
+export interface UserDialogRequestPayload {
+  request_id: string;
+  dialog_kind: "refusal_fallback_prompt";
+  payload: RefusalFallbackPromptPayload;
+  options: UserDialogOption[];
+}
+
+export type UserDialogOutcome =
+  | { outcome: "selected"; option_id: RefusalFallbackPromptChoice }
+  | { outcome: "cancelled" };
+
 export interface SessionListEntry {
   session_id: string;
   summary: string;
@@ -568,6 +608,12 @@ export type BridgeCommand =
       outcome: QuestionOutcome;
     }
   | {
+      command: "user_dialog_response";
+      session_id: string;
+      request_id: string;
+      outcome: UserDialogOutcome;
+    }
+  | {
       command: "elicitation_response";
       session_id: string;
       elicitation_request_id: string;
@@ -668,6 +714,7 @@ export type BridgeEvent =
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
+  | { event: "user_dialog_request"; session_id: string; request: UserDialogRequestPayload }
   | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
   | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
   | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }

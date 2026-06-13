@@ -69,6 +69,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::QuestionRequest { request, response_tx } => {
             turn::handle_question_request_event(app, request, response_tx);
         }
+        ClientEvent::UserDialogRequest { request, response_tx } => {
+            turn::handle_user_dialog_request_event(app, request, response_tx);
+        }
         ClientEvent::McpElicitationRequest { request } => {
             crate::app::config::present_mcp_elicitation_request(app, request);
         }

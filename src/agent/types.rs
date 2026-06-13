@@ -489,6 +489,44 @@ pub enum QuestionOutcome {
     Cancelled,
 }
 
+/// Host answer to a `refusal_fallback_prompt` user dialog. `option_id` carries
+/// the dialog's string-enum choice (`retry_fallback` | `edit_prompt`);
+/// declining maps to `Cancelled` (the CLI default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum UserDialogOutcome {
+    Selected { option_id: String },
+    Cancelled,
+}
+
+/// Snake-case payload of a `refusal_fallback_prompt` dialog, as normalized by
+/// the bridge. `original_model`/`fallback_model` are always present; the rest is
+/// optional metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RefusalFallbackPayload {
+    pub original_model: String,
+    pub fallback_model: String,
+    pub api_refusal_category: Option<String>,
+    pub guidance_text: Option<String>,
+    pub retracted_message_uuids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDialogOption {
+    pub option_id: String,
+    pub label: String,
+}
+
+/// Turn-level `request_user_dialog` request the bridge emits for a refusal
+/// fallback. Keyed by a bridge-generated `request_id` (no tool-call anchor).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDialogRequest {
+    pub request_id: String,
+    pub dialog_kind: String,
+    pub payload: RefusalFallbackPayload,
+    pub options: Vec<UserDialogOption>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElicitationMode {

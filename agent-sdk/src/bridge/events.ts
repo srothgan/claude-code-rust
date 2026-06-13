@@ -107,6 +107,28 @@ export function emitQuestionRequestEvent(
   writeEvent({ event: "question_request", session_id: sessionId, request });
 }
 
+export function emitUserDialogRequestEvent(
+  sessionId: string,
+  request: Extract<BridgeEvent, { event: "user_dialog_request" }>["request"],
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "user_dialog_request_emitted",
+    message: "user dialog request emitted",
+    outcome: "success",
+    sessionId,
+    requestId: request.request_id,
+    count: request.options.length,
+    fields: {
+      dialog_kind: request.dialog_kind,
+      option_count: request.options.length,
+      original_model: request.payload.original_model,
+      fallback_model: request.payload.fallback_model,
+    },
+  });
+  writeEvent({ event: "user_dialog_request", session_id: sessionId, request });
+}
+
 export function emitElicitationRequestEvent(
   sessionId: string,
   request: Extract<BridgeEvent, { event: "elicitation_request" }>["request"],

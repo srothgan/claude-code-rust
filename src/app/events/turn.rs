@@ -4,6 +4,7 @@
 use super::super::{
     App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
     InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
+    UserDialogBlock,
 };
 use super::clear_compaction_state;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
@@ -221,6 +222,68 @@ pub(super) fn handle_question_request_event(
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
         app.request_chat_mutable_rebuild();
     }
+}
+
+pub(super) fn handle_user_dialog_request_event(
+    app: &mut App,
+    request: model::RequestUserDialogRequest,
+    response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
+) {
+    let session_id = request.session_id.to_string();
+    let request_id = request.request_id.clone();
+    let dialog_kind = request.dialog_kind.clone();
+    let option_count = request.options.len();
+
+    if app.pending_interaction_ids.iter().any(|id| id == &request_id) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "user_dialog_request_rejected",
+            message = "duplicate user dialog request rejected",
+            outcome = "dropped",
+            session_id = %session_id,
+            request_id = %request_id,
+            reason = "duplicate_pending_interaction",
+        );
+        let _ = response_tx.send(model::RequestUserDialogResponse::new(
+            model::RequestUserDialogOutcome::Cancelled,
+        ));
+        return;
+    }
+
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let mi = app.messages.len();
+    let bi = 0;
+    let mut block = UserDialogBlock::new(request, response_tx);
+    block.focused = auto_focus;
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(SystemSeverity::Warning)),
+        vec![MessageBlock::UserDialog(block)],
+        None,
+    ));
+    app.index_tool_call(request_id.clone(), mi, bi);
+    app.pending_interaction_ids.push(request_id.clone());
+    if auto_focus {
+        app.claim_focus_target(FocusTarget::Permission);
+    }
+    app.notifications.notify(
+        app.config.preferred_notification_channel_effective(),
+        super::super::notify::NotifyEvent::QuestionRequired,
+    );
+    app.sync_render_cache_slot(mi, bi);
+    app.recompute_message_retained_bytes(mi);
+    app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    app.request_chat_mutable_rebuild();
+    tracing::info!(
+        target: crate::logging::targets::APP_PERMISSION,
+        event_name = "user_dialog_request_applied",
+        message = "user dialog request applied as inline system chooser",
+        outcome = "success",
+        session_id = %session_id,
+        request_id = %request_id,
+        dialog_kind = %dialog_kind,
+        option_count,
+        focused = auto_focus,
+    );
 }
 
 fn reject_permission_request(

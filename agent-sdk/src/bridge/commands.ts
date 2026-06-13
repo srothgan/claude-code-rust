@@ -9,7 +9,9 @@ import type {
   ModeState,
   PermissionOutcome,
   QuestionOutcome,
+  RefusalFallbackPromptChoice,
   SessionLaunchSettings,
+  UserDialogOutcome,
 } from "../types.js";
 import { parseMcpServersRecord } from "./mcp_metadata.js";
 import type { SessionState } from "./session_lifecycle.js";
@@ -275,6 +277,18 @@ function expectBoolean(
   return value;
 }
 
+function expectRefusalFallbackPromptChoice(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): RefusalFallbackPromptChoice {
+  const value = expectString(record, key, context);
+  if (value !== "retry_fallback" && value !== "edit_prompt") {
+    throw new Error(`${context}.${key} must be 'retry_fallback' or 'edit_prompt'`);
+  }
+  return value;
+}
+
 export function parseCommandEnvelope(line: string): { requestId?: string; command: BridgeCommand } {
   const raw = asRecord(JSON.parse(line) as BridgeCommandEnvelope, "command envelope");
   const requestId = typeof raw.request_id === "string" ? raw.request_id : undefined;
@@ -440,6 +454,30 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "question_response",
           session_id: expectString(raw, "session_id", "question_response"),
           tool_call_id: expectString(raw, "tool_call_id", "question_response"),
+          outcome: parsedOutcome,
+        };
+      }
+      case "user_dialog_response": {
+        const outcome = asRecord(raw.outcome, "user_dialog_response.outcome");
+        const outcomeType = expectString(outcome, "outcome", "user_dialog_response.outcome");
+        if (outcomeType !== "selected" && outcomeType !== "cancelled") {
+          throw new Error("user_dialog_response.outcome.outcome must be 'selected' or 'cancelled'");
+        }
+        const parsedOutcome: UserDialogOutcome =
+          outcomeType === "selected"
+            ? {
+                outcome: "selected",
+                option_id: expectRefusalFallbackPromptChoice(
+                  outcome,
+                  "option_id",
+                  "user_dialog_response.outcome",
+                ),
+              }
+            : { outcome: "cancelled" };
+        return {
+          command: "user_dialog_response",
+          session_id: expectString(raw, "session_id", "user_dialog_response"),
+          request_id: expectString(raw, "request_id", "user_dialog_response"),
           outcome: parsedOutcome,
         };
       }

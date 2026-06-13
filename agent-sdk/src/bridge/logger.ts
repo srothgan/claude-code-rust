@@ -208,6 +208,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "session_update":
     case "permission_request":
     case "question_request":
+    case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":
     case "mcp_auth_redirect":

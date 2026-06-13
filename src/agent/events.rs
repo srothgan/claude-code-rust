@@ -26,6 +26,12 @@ pub enum ClientEvent {
         request: model::RequestQuestionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
+    /// Turn-level `request_user_dialog` (e.g. `refusal_fallback_prompt`) that
+    /// needs a user decision. Not anchored to a tool call.
+    UserDialogRequest {
+        request: model::RequestUserDialogRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
+    },
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.

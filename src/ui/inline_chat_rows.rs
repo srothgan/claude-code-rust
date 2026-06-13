@@ -259,6 +259,10 @@ fn render_user_system_live_rows(
         return RenderedMessageRows::skipped_transcript_content();
     }
 
+    // A message hosting an unanswered user dialog must stay in the live
+    // (mutable) region so its chooser re-renders on focus/selection changes;
+    // committing it would freeze it in immutable scrollback.
+    let commit_ready = !message_has_pending_user_dialog(&app.messages[msg_idx]);
     let rendered = build_user_system_message_rows(
         &mut app.messages[msg_idx],
         message_render_context(current_mode_id, width),
@@ -271,9 +275,16 @@ fn render_user_system_live_rows(
             block_idx: None,
             kind: LiveRowBoundaryKind::Message,
             start_row: 0,
-            commit_ready: true,
+            commit_ready,
         },
     )
+}
+
+fn message_has_pending_user_dialog(message: &ChatMessage) -> bool {
+    message
+        .blocks
+        .iter()
+        .any(|block| matches!(block, MessageBlock::UserDialog(dialog) if !dialog.answered))
 }
 
 fn render_assistant_live_rows(
@@ -425,7 +436,8 @@ fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
             MessageBlock::Text(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
-            | MessageBlock::ImageAttachment(_) => None,
+            | MessageBlock::ImageAttachment(_)
+            | MessageBlock::UserDialog(_) => None,
         })
         .unwrap_or_else(|| vec![HistoryOutputId::Message(message.id)])
 }
@@ -471,7 +483,8 @@ fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
             MessageBlock::Text(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
-            | MessageBlock::ImageAttachment(_) => None,
+            | MessageBlock::ImageAttachment(_)
+            | MessageBlock::UserDialog(_) => None,
         })
         .is_some_and(|welcome| {
             welcome_value_ready(&welcome.subscription) && welcome_value_ready(&welcome.session_id)
@@ -762,7 +775,9 @@ fn assistant_render_items_from_message(
                 });
                 previous_kind = Some(current_kind);
             }
-            MessageBlock::Welcome(_) | MessageBlock::ImageAttachment(_) => {}
+            MessageBlock::Welcome(_)
+            | MessageBlock::ImageAttachment(_)
+            | MessageBlock::UserDialog(_) => {}
         }
     }
 
@@ -780,7 +795,8 @@ fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
         MessageBlock::Text(_)
         | MessageBlock::ToolCall(_)
         | MessageBlock::Welcome(_)
-        | MessageBlock::ImageAttachment(_) => None,
+        | MessageBlock::ImageAttachment(_)
+        | MessageBlock::UserDialog(_) => None,
     })
 }
 

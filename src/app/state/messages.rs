@@ -4,6 +4,7 @@
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
 use super::types::MessageUsage;
+use crate::agent::model;
 use ratatui::style::Color;
 use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
@@ -445,6 +446,47 @@ pub enum MessageBlock {
     Welcome(WelcomeBlock),
     /// Indicates N images were attached to this user message.
     ImageAttachment(ImageAttachmentBlock),
+    /// Turn-level user dialog (e.g. `refusal_fallback_prompt`) rendered inline as
+    /// a selectable chooser. Not anchored to a tool call.
+    UserDialog(UserDialogBlock),
+}
+
+/// Inline chooser for a turn-level `request_user_dialog`. Carries the oneshot
+/// responder back to the bridge; `response_tx` is taken once the user answers.
+pub struct UserDialogBlock {
+    pub id: MessageBlockId,
+    pub request_id: String,
+    pub payload: model::RefusalFallbackPayload,
+    pub options: Vec<model::UserDialogOption>,
+    pub selected_index: usize,
+    /// Whether this dialog currently has keyboard focus (shows the selection
+    /// arrow and accepts navigation/confirm input).
+    pub focused: bool,
+    /// Set once the user has answered; the block then renders as resolved and is
+    /// removed from the focus queue.
+    pub answered: bool,
+    pub response_tx: Option<tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>>,
+    pub cache: BlockCache,
+}
+
+impl UserDialogBlock {
+    #[must_use]
+    pub fn new(
+        request: model::RequestUserDialogRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
+    ) -> Self {
+        Self {
+            id: MessageBlockId::new(),
+            request_id: request.request_id,
+            payload: request.payload,
+            options: request.options,
+            selected_index: 0,
+            focused: false,
+            answered: false,
+            response_tx: Some(response_tx),
+            cache: BlockCache::default(),
+        }
+    }
 }
 
 /// Lightweight block for image attachment indicators. Carries a [`BlockCache`]

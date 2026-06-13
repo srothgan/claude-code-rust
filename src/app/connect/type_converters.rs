@@ -494,6 +494,37 @@ pub(super) fn map_question_request(
     )
 }
 
+/// Convert a wire `user_dialog_request` into the app model. Returns the model
+/// request and the synthetic `request_id` used as its focus-queue/index key.
+pub(super) fn map_user_dialog_request(
+    session_id: &str,
+    request: types::UserDialogRequest,
+) -> (model::RequestUserDialogRequest, String) {
+    let request_id = request.request_id.clone();
+    let payload = model::RefusalFallbackPayload {
+        original_model: request.payload.original_model,
+        fallback_model: request.payload.fallback_model,
+        api_refusal_category: request.payload.api_refusal_category,
+        guidance_text: request.payload.guidance_text,
+        retracted_message_uuids: request.payload.retracted_message_uuids,
+    };
+    let options = request
+        .options
+        .into_iter()
+        .map(|option| model::UserDialogOption::new(option.option_id, option.label))
+        .collect();
+    (
+        model::RequestUserDialogRequest::new(
+            model::SessionId::new(session_id),
+            request_id.clone(),
+            request.dialog_kind,
+            payload,
+            options,
+        ),
+        request_id,
+    )
+}
+
 pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
     match content {
         types::ContentBlock::Text { text } => {
