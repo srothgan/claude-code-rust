@@ -56,6 +56,8 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "PushNotification" => ("!", "Notify"),
         "RemoteTrigger" => ("\u{21c4}", "Remote"),
         "REPL" => ("\u{03bb}", "REPL"),
+        "Monitor" => ("\u{25c9}", "Monitor"),
+        "Workflow" => ("\u{25c7}", "Workflow"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
@@ -112,6 +114,12 @@ mod tests {
     #[test]
     fn repl_tool_uses_lambda_label_and_icon() {
         assert_eq!(tool_name_label("REPL"), ("\u{03bb}", "REPL"));
+    }
+
+    #[test]
+    fn monitor_and_workflow_tools_use_background_task_labels_and_icons() {
+        assert_eq!(tool_name_label("Monitor"), ("\u{25c9}", "Monitor"));
+        assert_eq!(tool_name_label("Workflow"), ("\u{25c7}", "Workflow"));
     }
 
     #[test]

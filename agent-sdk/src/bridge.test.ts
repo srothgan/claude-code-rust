@@ -60,6 +60,7 @@ import {
 } from "./bridge/session_lifecycle.js";
 import { classifyTurnErrorKind } from "./bridge/error_classification.js";
 import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
+import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { handleResultMessage } from "./bridge/message_handlers.js";
 
@@ -92,6 +93,7 @@ function makeSessionState(): SessionState {
     tasksById: new Map(),
     taskOrder: [],
     taskToolUseIds: new Map(),
+    taskIdsByToolUseId: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
     pendingElicitations: new Map(),
@@ -1049,6 +1051,10 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
             content: { type: "text", text: "Found the auth bug and prepared the fix" },
           },
         ],
+        task_metadata: {
+          summary: "Found the auth bug and prepared the fix",
+          terminal_status: "completed",
+        },
       },
     },
   });
@@ -1309,6 +1315,7 @@ test("handleTaskSystemMessage uses task_updated terminal error text when descrip
         task_metadata: {
           error: "Task stopped by parent agent",
           end_time: 1234,
+          terminal_status: "killed",
           total_paused_ms: 250,
         },
       },
@@ -1346,6 +1353,125 @@ test("handleTaskSystemMessage merges task metadata patches into the linked task 
     error: "Task stopped by parent agent",
     end_time: 1234,
   });
+});
+
+test("Monitor launch links task id and accepts task lifecycle updates", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-monitor", "Monitor", {
+      description: "watch deploy logs",
+      timeout_ms: 30000,
+      persistent: false,
+      command: "tail -f deploy.log",
+    });
+    emitToolResultUpdate(session, "tool-monitor", false, {
+      taskId: "monitor-1",
+      timeoutMs: 30000,
+      persistent: false,
+    });
+  });
+
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_updated", {
+      task_id: "monitor-1",
+      patch: {
+        status: "running",
+        description: "Monitor observed deploy log output",
+        is_backgrounded: true,
+      },
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-monitor");
+  assert.equal(toolCall?.status, "in_progress");
+  assert.equal(toolCall?.raw_output, "Monitor observed deploy log output");
+  assert.equal(toolCall?.task_metadata?.is_backgrounded, true);
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+});
+
+test("Monitor launch stays in progress after successful assistant turn until final lifecycle notification", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-monitor", "Monitor", {
+      description: "watch deploy logs",
+      timeout_ms: 30000,
+      persistent: false,
+      command: "tail -f deploy.log",
+    });
+    emitToolResultUpdate(session, "tool-monitor", false, {
+      taskId: "monitor-1",
+      timeoutMs: 30000,
+      persistent: false,
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+    });
+  });
+
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
+  assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "monitor-1",
+      tool_use_id: "tool-monitor",
+      status: "completed",
+      output_file: "C:/tmp/monitor-1.output",
+      summary: "Monitor completed",
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-monitor");
+  assert.equal(toolCall?.status, "completed");
+  assert.equal(toolCall?.raw_output, "Monitor completed");
+  assert.equal(toolCall?.task_metadata?.output_file, "C:/tmp/monitor-1.output");
+  assert.equal(session.taskToolUseIds.has("monitor-1"), false);
+  assert.equal(session.taskIdsByToolUseId.has("tool-monitor"), false);
+});
+
+test("Workflow task notifications finish the linked root tool", () => {
+  for (const [sdkStatus, expectedStatus] of [
+    ["completed", "completed"],
+    ["stopped", "killed"],
+    ["failed", "failed"],
+  ] as const) {
+    const session = makeSessionState();
+    captureBridgeEvents(() => {
+      emitToolCall(session, `tool-workflow-${sdkStatus}`, "Workflow", {
+        name: "spec",
+      });
+      emitToolResultUpdate(session, `tool-workflow-${sdkStatus}`, false, {
+        status: "async_launched",
+        taskId: `workflow-${sdkStatus}`,
+        runId: `run-${sdkStatus}`,
+      });
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: `workflow-${sdkStatus}`,
+        status: sdkStatus,
+        output_file: `C:/tmp/workflow-${sdkStatus}.output`,
+        summary: `Workflow ${sdkStatus}`,
+      });
+    });
+
+    const toolCall = session.toolCalls.get(`tool-workflow-${sdkStatus}`);
+    assert.equal(toolCall?.status, expectedStatus);
+    assert.equal(toolCall?.raw_output, `Workflow ${sdkStatus}`);
+    assert.equal(toolCall?.task_metadata?.output_file, `C:/tmp/workflow-${sdkStatus}.output`);
+    assert.equal(toolCall?.task_metadata?.summary, `Workflow ${sdkStatus}`);
+    assert.equal(toolCall?.task_metadata?.terminal_status, sdkStatus);
+    assert.equal(session.taskToolUseIds.has(`workflow-${sdkStatus}`), false);
+    assert.equal(session.taskIdsByToolUseId.has(`tool-workflow-${sdkStatus}`), false);
+  }
 });
 
 test("TaskCreate output emits task state and links lifecycle task id", () => {
@@ -1702,7 +1828,7 @@ test("TaskStop renders structured output and marks the task terminal", () => {
     blocked_by: [],
   });
   session.taskOrder.push("task-1");
-  session.taskToolUseIds.set("task-1", "tool-agent");
+  linkTaskToolUse(session, "task-1", "tool-agent");
 
   const events = captureBridgeEvents(() => {
     emitToolCall(session, "tool-stop", "TaskStop", {
@@ -2384,6 +2510,8 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("PushNotification"), "other");
   assert.equal(normalizeToolKind("RemoteTrigger"), "other");
   assert.equal(normalizeToolKind("REPL"), "other");
+  assert.equal(normalizeToolKind("Monitor"), "other");
+  assert.equal(normalizeToolKind("Workflow"), "other");
   assert.equal(normalizeToolKind("TaskOutput"), "other");
   assert.equal(normalizeToolKind("TaskStop"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
@@ -3279,6 +3407,33 @@ test("createToolCall uses REPL fallback title instead of description", () => {
 
   assert.equal(toolCall.kind, "other");
   assert.equal(toolCall.title, "REPL");
+});
+
+test("createToolCall maps Monitor to other kind and description title", () => {
+  const toolCall = createToolCall("tc-monitor", "Monitor", {
+    description: "watch deploy logs",
+    timeout_ms: 30000,
+    persistent: false,
+    command: "tail -f deploy.log",
+  });
+
+  assert.equal(toolCall.kind, "other");
+  assert.equal(toolCall.title, "Monitor: watch deploy logs");
+});
+
+test("createToolCall maps Workflow to other kind and name title", () => {
+  const namedWorkflow = createToolCall("tc-workflow", "Workflow", {
+    name: "spec",
+    args: { topic: "rendering" },
+  });
+  const fallbackWorkflow = createToolCall("tc-workflow-fallback", "Workflow", {
+    script: "export const meta = { name: 'inline', description: 'Run', phases: [] };",
+  });
+
+  assert.equal(namedWorkflow.kind, "other");
+  assert.equal(namedWorkflow.title, "Workflow: spec");
+  assert.equal(fallbackWorkflow.kind, "other");
+  assert.equal(fallbackWorkflow.title, "Workflow");
 });
 
 test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
@@ -4686,6 +4841,106 @@ test("buildToolResultFields parses REPL transcript JSON", () => {
   assert.equal(fields.raw_output?.includes('"code"'), false);
   assert.equal(fields.raw_output?.includes("hidden-image"), false);
   assert.equal(fields.raw_output?.includes("hidden-document"), false);
+});
+
+test("buildToolResultFields renders Monitor launch output as structured text", () => {
+  const base = createToolCall("tc-monitor", "Monitor", {
+    description: "watch deploy logs",
+    timeout_ms: 30000,
+    persistent: false,
+    command: "tail -f deploy.log",
+  });
+  const fields = buildToolResultFields(
+    false,
+    { taskId: "monitor-1", timeoutMs: 30000, persistent: false },
+    base,
+  );
+
+  assert.equal(fields.status, "in_progress");
+  assert.equal(fields.raw_output, "Task ID: monitor-1\nPersistent: no\nTimeout: 30s");
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: fields.raw_output,
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders Workflow launch output as structured text", () => {
+  const base = createToolCall("tc-workflow", "Workflow", {
+    name: "spec",
+    args: { topic: "rendering" },
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: "async_launched",
+      taskId: "workflow-1",
+      runId: "run-1",
+      summary: "Workflow started",
+      transcriptDir: "C:/tmp/transcripts",
+      scriptPath: "C:/tmp/workflow.js",
+      warning: "branch diverged",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "in_progress");
+  assert.equal(
+    fields.raw_output,
+    "Status: async launched\nTask ID: workflow-1\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",
+  );
+  assert.equal(fields.raw_output?.includes("{"), false);
+  assert.equal(fields.raw_output?.includes('"status"'), false);
+});
+
+test("buildToolResultFields marks Workflow output with error as failed", () => {
+  const base = createToolCall("tc-workflow-error", "Workflow", {
+    script: "bad workflow script",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: "async_launched",
+      taskId: "workflow-err",
+      error: "Syntax check failed",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(
+    fields.raw_output,
+    "Status: async launched\nTask ID: workflow-err\nError: Syntax check failed",
+  );
+  assert.equal(fields.raw_output?.includes("bad workflow script"), false);
+});
+
+test("buildToolResultFields parses Workflow transcript JSON", () => {
+  const base = createToolCall("tc-workflow-history", "Workflow", {
+    name: "remote-spec",
+  });
+  const transcriptJson = JSON.stringify({
+    status: "remote_launched",
+    taskId: "workflow-remote",
+    sessionUrl: "https://claude.ai/session/remote",
+  });
+
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-workflow-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "Status: remote launched\nTask ID: workflow-remote\nSession URL: https://claude.ai/session/remote",
+  );
+  assert.equal(fields.raw_output?.includes('"taskId"'), false);
 });
 
 test("buildToolResultFields suppresses EnterPlanMode structured output body", () => {

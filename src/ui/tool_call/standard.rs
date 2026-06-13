@@ -19,9 +19,9 @@ use super::errors::{
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, cron, execute, markdown_inline_spans,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, cron, execute, markdown_inline_spans, monitor,
     push_notification, remote_trigger, repl, schedule_wakeup, status_icon, tasks,
-    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, worktree,
+    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, workflow, worktree,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -118,6 +118,16 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     }
     if repl::is_repl_tool(tc) {
         return repl::has_structured_body(tc)
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+    if monitor::is_monitor_tool(tc) {
+        return monitor::has_structured_body(tc)
+            || tc.pending_permission.is_some()
+            || tc.pending_question.is_some();
+    }
+    if workflow::is_workflow_tool(tc) {
+        return workflow::has_structured_body(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some();
     }
@@ -315,6 +325,16 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         && let Some(repl_lines) = repl::render_tool_content(tc)
     {
         return repl_lines;
+    }
+    if monitor::is_monitor_tool(tc)
+        && let Some(monitor_lines) = monitor::render_tool_content(tc)
+    {
+        return monitor_lines;
+    }
+    if workflow::is_workflow_tool(tc)
+        && let Some(workflow_lines) = workflow::render_tool_content(tc)
+    {
+        return workflow_lines;
     }
 
     if tc.is_execute_tool() {

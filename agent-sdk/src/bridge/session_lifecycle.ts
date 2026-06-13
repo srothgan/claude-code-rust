@@ -141,6 +141,7 @@ export type SessionState = {
   tasksById: Map<string, TaskItem>;
   taskOrder: string[];
   taskToolUseIds: Map<string, string>;
+  taskIdsByToolUseId: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
   pendingElicitations: Map<string, PendingElicitation>;
@@ -550,6 +551,7 @@ export async function createSession(params: {
     tasksById: new Map<string, TaskItem>(),
     taskOrder: [],
     taskToolUseIds: new Map<string, string>(),
+    taskIdsByToolUseId: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     pendingQuestions: new Map<string, PendingQuestion>(),
     pendingElicitations: new Map<string, PendingElicitation>(),

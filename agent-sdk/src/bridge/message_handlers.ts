@@ -36,6 +36,7 @@ import {
   type ToolCorrelationMetadata,
 } from "./tool_calls.js";
 import { applyTaskLifecycleState } from "./tasks.js";
+import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import {
@@ -92,10 +93,24 @@ function sdkCorrelationMetadata(msg: Record<string, unknown>): ToolCorrelationMe
 
 function sdkTaskMetadata(msg: Record<string, unknown>): TaskMetadata | undefined {
   const metadata = sdkCorrelationMetadata(msg);
+  const taskType = typeof msg.task_type === "string" && msg.task_type.length > 0 ? msg.task_type : undefined;
+  const workflowName =
+    typeof msg.workflow_name === "string" && msg.workflow_name.length > 0 ? msg.workflow_name : undefined;
+  const prompt = typeof msg.prompt === "string" && msg.prompt.length > 0 ? msg.prompt : undefined;
+  const outputFile = typeof msg.output_file === "string" && msg.output_file.length > 0 ? msg.output_file : undefined;
+  const status = typeof msg.status === "string" && msg.status.length > 0 ? msg.status : undefined;
+  const summary =
+    status && typeof msg.summary === "string" && msg.summary.length > 0 ? msg.summary : undefined;
   const taskMetadata: TaskMetadata = {
     ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
     ...(metadata.subagentType ? { subagent_type: metadata.subagentType } : {}),
     ...(metadata.taskDescription ? { task_description: metadata.taskDescription } : {}),
+    ...(taskType ? { task_type: taskType } : {}),
+    ...(workflowName ? { workflow_name: workflowName } : {}),
+    ...(prompt ? { prompt } : {}),
+    ...(outputFile ? { output_file: outputFile } : {}),
+    ...(summary ? { summary } : {}),
+    ...(status ? { terminal_status: status } : {}),
   };
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }
@@ -137,6 +152,10 @@ function emitSystemNoticeUpdate(
 
 function notificationSeverity(priority: unknown): SystemNoticeSeverity {
   return priority === "high" || priority === "immediate" ? "warning" : "info";
+}
+
+function isTerminalToolStatus(status: ToolCallUpdateFields["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "killed";
 }
 
 /** Fast check that a string looks like valid base64 (non-empty, correct charset & padding). */
@@ -223,7 +242,7 @@ export function handleTaskSystemMessage(
   const explicitToolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
   const messageTaskMetadata = sdkTaskMetadata(msg);
   if (taskId && explicitToolUseId) {
-    session.taskToolUseIds.set(taskId, explicitToolUseId);
+    linkTaskToolUse(session, taskId, explicitToolUseId);
   }
   const toolUseId = resolveTaskToolUseId(session, msg);
   bridgeLogger.debug({
@@ -280,7 +299,7 @@ export function handleTaskSystemMessage(
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
   if (!toolAcceptsTaskLifecycle(toolCall)) {
     if (taskId) {
-      session.taskToolUseIds.delete(taskId);
+      unlinkTaskToolUse(session, taskId);
     }
     return true;
   }
@@ -353,6 +372,9 @@ export function handleTaskSystemMessage(
       },
     });
     emitToolCallUpdate(session, toolUseId, fields, "task_updated");
+    if (taskId && isTerminalToolStatus(fields.status)) {
+      unlinkTaskToolUse(session, taskId);
+    }
     return true;
   }
 
@@ -369,7 +391,7 @@ export function handleTaskSystemMessage(
   }
   emitToolCallUpdate(session, toolUseId, fields, "task_notification");
   if (taskId) {
-    session.taskToolUseIds.delete(taskId);
+    unlinkTaskToolUse(session, taskId);
   }
   return true;
 }
@@ -1009,7 +1031,10 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_progress") {
     const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
-    if (isHiddenToolUse(session, toolUseId, toolName)) {
+    const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
+    const taskToolUseId = taskId ? session.taskToolUseIds.get(taskId) ?? "" : "";
+    const resolvedToolUseId = taskToolUseId || toolUseId;
+    if (isHiddenToolUse(session, resolvedToolUseId, toolName)) {
       return;
     }
     bridgeLogger.debug({
@@ -1018,17 +1043,18 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       message: "SDK tool progress linkage observed",
       outcome: typeof msg.parent_tool_use_id === "string" ? "child" : "root_or_unknown",
       sessionId: session.sessionId,
-      toolCallId: toolUseId || undefined,
+      toolCallId: resolvedToolUseId || undefined,
       fields: {
         tool_name: toolName,
         tool_use_id: toolUseId || undefined,
         parent_tool_use_id:
           typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined,
-        task_id: typeof msg.task_id === "string" ? msg.task_id : undefined,
+        task_id: taskId || undefined,
+        task_resolved_tool_use_id: taskToolUseId || undefined,
       },
     });
-    if (toolUseId) {
-      emitToolProgressUpdate(session, toolUseId, toolName);
+    if (resolvedToolUseId) {
+      emitToolProgressUpdate(session, resolvedToolUseId, toolName);
     }
     return;
   }

@@ -14,12 +14,14 @@ mod errors;
 mod execute;
 mod fields;
 mod interactions;
+mod monitor;
 mod push_notification;
 mod remote_trigger;
 mod repl;
 mod schedule_wakeup;
 mod standard;
 mod tasks;
+mod workflow;
 mod worktree;
 
 use std::borrow::Cow;

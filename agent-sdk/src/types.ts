@@ -150,6 +150,12 @@ export interface TaskMetadata {
   request_id?: string;
   subagent_type?: string;
   task_description?: string;
+  task_type?: string;
+  workflow_name?: string;
+  prompt?: string;
+  output_file?: string;
+  summary?: string;
+  terminal_status?: string;
 }
 
 export interface ToolLocation {

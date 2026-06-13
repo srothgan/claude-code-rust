@@ -4,7 +4,12 @@ import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { applyTaskToolResult } from "./tasks.js";
-import { buildToolResultFields, createToolCall } from "./tooling.js";
+import { activeTaskIdForToolUse, linkTaskToolUse } from "./task_links.js";
+import {
+  backgroundToolLaunchTaskIdFromResult,
+  buildToolResultFields,
+  createToolCall,
+} from "./tooling.js";
 
 type ToolUpdateKind =
   | "initial"
@@ -26,7 +31,7 @@ export type ToolCorrelationMetadata = {
 };
 
 const TOOL_SUMMARY_TOOL_NAMES = new Set(["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"]);
-const TASK_LIFECYCLE_TOOL_NAMES = new Set(["Agent", "Task"]);
+const TASK_LIFECYCLE_TOOL_NAMES = new Set(["Agent", "Task", "Monitor", "Workflow"]);
 
 function jsonSize(value: unknown): number | undefined {
   if (value === undefined) {
@@ -399,13 +404,20 @@ export function emitToolResultUpdate(
   rawResult: unknown = rawContent,
 ): void {
   const base = session.toolCalls.get(toolUseId);
+  const baseToolName = toolNameFromMeta(base?.meta) ?? "";
   const fields = buildToolResultFields(
     isError,
     rawContent,
     base,
     rawResult,
-    taskTitleContext(session, toolNameFromMeta(base?.meta) ?? "", asRecordOrNull(base?.raw_input) ?? {}),
+    taskTitleContext(session, baseToolName, asRecordOrNull(base?.raw_input) ?? {}),
   );
+  if (!isError) {
+    const taskId = backgroundToolLaunchTaskIdFromResult(baseToolName, rawResult, rawContent);
+    if (taskId) {
+      linkTaskToolUse(session, taskId, toolUseId);
+    }
+  }
   emitToolCallUpdate(session, toolUseId, fields, "result");
   applyTaskToolResult(session, toolUseId, isError, rawContent, rawResult);
 }
@@ -413,6 +425,9 @@ export function emitToolResultUpdate(
 export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {
   for (const [toolUseId, toolCall] of session.toolCalls) {
     if (toolCall.status !== "pending" && toolCall.status !== "in_progress") {
+      continue;
+    }
+    if (toolAcceptsTaskLifecycle(toolCall) && activeTaskIdForToolUse(session, toolUseId)) {
       continue;
     }
     emitToolCallUpdate(session, toolUseId, { status }, "finalize");
@@ -531,6 +546,9 @@ function buildTaskMetadata(patch: Record<string, unknown>): TaskMetadata | undef
     patch.total_paused_ms >= 0
   ) {
     taskMetadata.total_paused_ms = Math.trunc(patch.total_paused_ms);
+  }
+  if (typeof patch.status === "string" && ["completed", "failed", "killed"].includes(patch.status)) {
+    taskMetadata.terminal_status = patch.status;
   }
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }

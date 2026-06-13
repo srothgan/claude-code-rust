@@ -2,6 +2,7 @@ import type { Json, TaskItem, TaskStatus, TaskUpdateSource, ToolCall } from "../
 import type { SessionState } from "./session_lifecycle.js";
 import { emitSessionUpdate } from "./events.js";
 import { asRecordOrNull } from "./shared.js";
+import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 
 type TaskPatch = {
   task_id: string;
@@ -469,7 +470,7 @@ function removeTasks(session: SessionState, taskIds: string[]): string[] {
     } else {
       removed.push(taskId);
     }
-    session.taskToolUseIds.delete(taskId);
+    unlinkTaskToolUse(session, taskId);
   }
   if (removed.length > 0) {
     const removedSet = new Set(removed);
@@ -641,7 +642,7 @@ function replaceTaskSnapshot(
   const retained = new Set(nextIds);
   const removedTaskIds = previousIds.filter((taskId) => !retained.has(taskId));
   for (const taskId of removedTaskIds) {
-    session.taskToolUseIds.delete(taskId);
+    unlinkTaskToolUse(session, taskId);
   }
   session.tasksById = nextTasks;
   session.taskOrder = nextIds;
@@ -810,7 +811,7 @@ export function applyTaskToolResult(
     if (!patch) {
       return;
     }
-    session.taskToolUseIds.set(patch.task_id, toolUseId);
+    linkTaskToolUse(session, patch.task_id, toolUseId);
     emitTaskStateUpdate(session, "task_create", [upsertTask(session, patch)]);
     return;
   }
@@ -898,7 +899,7 @@ export function applyTaskToolResult(
         source_tool_call_id: sourceToolCallId,
       }),
     ]);
-    session.taskToolUseIds.delete(taskId);
+    unlinkTaskToolUse(session, taskId);
   }
 }
 
@@ -933,6 +934,9 @@ function lifecycleMetadata(msg: Record<string, unknown>): Record<string, Json> |
     "request_id",
     "subagent_type",
     "task_description",
+    "task_type",
+    "workflow_name",
+    "prompt",
     "output_file",
     "summary",
     "end_time",
@@ -965,7 +969,7 @@ export function applyTaskLifecycleState(
   const patch = asRecordOrNull(msg.patch);
   const explicitToolUseId = nonEmptyString(msg.tool_use_id);
   if (explicitToolUseId) {
-    session.taskToolUseIds.set(taskId, explicitToolUseId);
+    linkTaskToolUse(session, taskId, explicitToolUseId);
   }
 
   const existing = session.tasksById.get(taskId);
@@ -977,6 +981,7 @@ export function applyTaskLifecycleState(
     nonEmptyString(patch?.subject) ??
     nonEmptyString(msg.subject) ??
     existing?.subject ??
+    nonEmptyString(msg.workflow_name) ??
     nonEmptyString(msg.task_description) ??
     description ??
     taskId;

@@ -27,6 +27,8 @@ const PUSH_NOTIFICATION_TOOL_NAME = "PushNotification";
 const REMOTE_TRIGGER_TOOL_NAME = "RemoteTrigger";
 const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
 const REPL_TOOL_NAME = "REPL";
+const MONITOR_TOOL_NAME = "Monitor";
+const WORKFLOW_TOOL_NAME = "Workflow";
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -79,6 +81,8 @@ export function normalizeToolKind(name: string): string {
     case "EnterWorktree":
     case "ExitWorktree":
     case "REPL":
+    case "Monitor":
+    case "Workflow":
       return "other";
     case "Task":
     case "Agent":
@@ -148,6 +152,14 @@ export function toolTitle(
   if (name === REPL_TOOL_NAME) {
     const code = typeof input.code === "string" ? input.code.trim() : "";
     return code ? `REPL: ${code}` : REPL_TOOL_NAME;
+  }
+  if (name === MONITOR_TOOL_NAME) {
+    const description = nonEmptyString(input.description);
+    return description ? `${MONITOR_TOOL_NAME}: ${description}` : MONITOR_TOOL_NAME;
+  }
+  if (name === WORKFLOW_TOOL_NAME) {
+    const workflowName = nonEmptyString(input.name);
+    return workflowName ? `${WORKFLOW_TOOL_NAME}: ${workflowName}` : WORKFLOW_TOOL_NAME;
   }
   if (name === "EnterWorktree") {
     const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
@@ -1123,6 +1135,14 @@ function formatDurationSeconds(seconds: number): string {
   return parts.join(" ");
 }
 
+function formatDurationMilliseconds(milliseconds: number): string {
+  const rounded = Math.max(0, Math.trunc(milliseconds));
+  if (rounded < 1000) {
+    return `${rounded}ms`;
+  }
+  return formatDurationSeconds(rounded / 1000);
+}
+
 function formatLocalTimestamp(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) {
     return undefined;
@@ -1408,6 +1428,175 @@ function replResultFields(
   return undefined;
 }
 
+type BackgroundLaunchResult = {
+  output?: string;
+  taskId?: string;
+  failed: boolean;
+  keepRunning: boolean;
+};
+
+function collectResultCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+  return candidates;
+}
+
+function monitorResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  if (toolName !== MONITOR_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const taskId = nonEmptyString(candidate.taskId);
+    const timeoutMs =
+      typeof candidate.timeoutMs === "number" && Number.isFinite(candidate.timeoutMs)
+        ? Math.max(0, Math.trunc(candidate.timeoutMs))
+        : undefined;
+    const persistent =
+      typeof candidate.persistent === "boolean"
+        ? candidate.persistent
+        : timeoutMs === 0
+          ? true
+          : timeoutMs !== undefined
+            ? false
+            : undefined;
+    const isStructuredMonitorOutput =
+      taskId !== undefined || timeoutMs !== undefined || persistent !== undefined;
+    if (!isStructuredMonitorOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    if (taskId) {
+      lines.push(`Task ID: ${taskId}`);
+    }
+    if (persistent !== undefined) {
+      lines.push(`Persistent: ${booleanLabel(persistent)}`);
+    }
+    if (timeoutMs !== undefined && persistent !== true) {
+      lines.push(`Timeout: ${formatDurationMilliseconds(timeoutMs)}`);
+    }
+    return {
+      output: lines.length > 0 ? lines.join("\n") : undefined,
+      taskId,
+      failed: false,
+      keepRunning: Boolean(taskId),
+    };
+  }
+
+  return undefined;
+}
+
+function workflowStatusLabel(value: unknown): string | undefined {
+  switch (value) {
+    case "async_launched":
+      return "async launched";
+    case "remote_launched":
+      return "remote launched";
+    default:
+      return nonEmptyString(value);
+  }
+}
+
+function workflowResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  if (toolName !== WORKFLOW_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const taskId = nonEmptyString(candidate.taskId);
+    const status = workflowStatusLabel(candidate.status);
+    const error = nonEmptyString(candidate.error);
+    const isStructuredWorkflowOutput =
+      status !== undefined ||
+      taskId !== undefined ||
+      "runId" in candidate ||
+      "summary" in candidate ||
+      "transcriptDir" in candidate ||
+      "scriptPath" in candidate ||
+      "sessionUrl" in candidate ||
+      "warning" in candidate ||
+      "error" in candidate;
+    if (!isStructuredWorkflowOutput) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    if (status) {
+      lines.push(`Status: ${status}`);
+    }
+    if (taskId) {
+      lines.push(`Task ID: ${taskId}`);
+    }
+    const runId = nonEmptyString(candidate.runId);
+    if (runId) {
+      lines.push(`Run ID: ${runId}`);
+    }
+    const summary = nonEmptyString(candidate.summary);
+    if (summary) {
+      lines.push(`Summary: ${summary}`);
+    }
+    const transcriptDir = nonEmptyString(candidate.transcriptDir);
+    if (transcriptDir) {
+      lines.push(`Transcript dir: ${transcriptDir}`);
+    }
+    const scriptPath = nonEmptyString(candidate.scriptPath);
+    if (scriptPath) {
+      lines.push(`Script path: ${scriptPath}`);
+    }
+    const sessionUrl = nonEmptyString(candidate.sessionUrl);
+    if (sessionUrl) {
+      lines.push(`Session URL: ${sessionUrl}`);
+    }
+    const warning = nonEmptyString(candidate.warning);
+    if (warning) {
+      lines.push(`Warning: ${warning}`);
+    }
+    if (error) {
+      lines.push(`Error: ${error}`);
+    }
+
+    return {
+      output: lines.length > 0 ? lines.join("\n") : undefined,
+      taskId,
+      failed: Boolean(error),
+      keepRunning: Boolean(taskId && !error),
+    };
+  }
+
+  return undefined;
+}
+
+function backgroundLaunchResultFields(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): BackgroundLaunchResult | undefined {
+  return (
+    monitorResultFields(toolName, rawResult, rawContent) ??
+    workflowResultFields(toolName, rawResult, rawContent)
+  );
+}
+
+export function backgroundToolLaunchTaskIdFromResult(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  const result = backgroundLaunchResultFields(toolName, rawResult, rawContent);
+  return result?.keepRunning ? result.taskId : undefined;
+}
+
 function enterPlanModeStructuredOutputHandled(
   toolName: string,
   rawResult: unknown,
@@ -1520,6 +1709,23 @@ export function buildToolResultFields(
       fields.raw_output = replOutput.output;
       fields.content = [
         { type: "content", content: { type: "text", text: replOutput.output } },
+      ];
+    }
+    return fields;
+  }
+  const backgroundLaunchOutput = !isError
+    ? backgroundLaunchResultFields(toolName, rawResult, rawContent)
+    : undefined;
+  if (backgroundLaunchOutput !== undefined) {
+    fields.status = backgroundLaunchOutput.failed
+      ? "failed"
+      : backgroundLaunchOutput.keepRunning
+        ? "in_progress"
+        : "completed";
+    if (backgroundLaunchOutput.output) {
+      fields.raw_output = backgroundLaunchOutput.output;
+      fields.content = [
+        { type: "content", content: { type: "text", text: backgroundLaunchOutput.output } },
       ];
     }
     return fields;
