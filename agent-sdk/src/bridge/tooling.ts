@@ -29,6 +29,7 @@ const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
 const REPL_TOOL_NAME = "REPL";
 const MONITOR_TOOL_NAME = "Monitor";
 const WORKFLOW_TOOL_NAME = "Workflow";
+const SEARCH_OUTPUT_MODES = new Set(["content", "files_with_matches", "count"]);
 
 function isCronToolName(name: string): boolean {
   return CRON_TOOL_NAMES.has(name);
@@ -45,6 +46,100 @@ export function isToolSearchToolResultType(blockType: string): boolean {
 
 export function isToolUseBlockType(blockType: string): boolean {
   return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
+}
+
+function inputString(input: Record<string, unknown>, key: string): string {
+  return typeof input[key] === "string" ? input[key].trim() : "";
+}
+
+function inputNumber(input: Record<string, unknown>, key: string): number | undefined {
+  const value = input[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function inputBoolean(input: Record<string, unknown>, key: string): boolean | undefined {
+  return typeof input[key] === "boolean" ? input[key] : undefined;
+}
+
+function searchModeLabel(value: unknown): string {
+  if (typeof value !== "string" || !SEARCH_OUTPUT_MODES.has(value)) {
+    return "";
+  }
+  switch (value) {
+    case "files_with_matches":
+      return "files";
+    case "content":
+      return "content";
+    case "count":
+      return "count";
+    default:
+      return "";
+  }
+}
+
+function grepContextValue(input: Record<string, unknown>): number | undefined {
+  return (
+    inputNumber(input, "context") ??
+    inputNumber(input, "-C") ??
+    inputNumber(input, "-A") ??
+    inputNumber(input, "-B")
+  );
+}
+
+function formatGlobTitle(input: Record<string, unknown>): string {
+  const pattern = inputString(input, "pattern");
+  const path = inputString(input, "path");
+  if (pattern && path) {
+    return `Glob ${pattern} in ${path}`;
+  }
+  if (pattern) {
+    return `Glob ${pattern}`;
+  }
+  if (path) {
+    return `Glob ${path}`;
+  }
+  return "Glob";
+}
+
+function formatGrepTitle(input: Record<string, unknown>): string {
+  const pattern = inputString(input, "pattern");
+  const path = inputString(input, "path");
+  const glob = inputString(input, "glob");
+  const fileType = inputString(input, "type");
+  const outputMode = searchModeLabel(input.output_mode);
+  const headLimit = inputNumber(input, "head_limit");
+  const offset = inputNumber(input, "offset");
+  const context = grepContextValue(input);
+  const flags: string[] = [];
+
+  if (glob) {
+    flags.push(`glob ${glob}`);
+  }
+  if (fileType) {
+    flags.push(`type ${fileType}`);
+  }
+  if (outputMode) {
+    flags.push(outputMode);
+  }
+  if (inputBoolean(input, "-i") === true) {
+    flags.push("case-insensitive");
+  }
+  if (context !== undefined) {
+    flags.push(`context ${context}`);
+  }
+  if (headLimit !== undefined) {
+    flags.push(`limit ${headLimit}`);
+  }
+  if (offset !== undefined && offset > 0) {
+    flags.push(`offset ${offset}`);
+  }
+  if (inputBoolean(input, "multiline") === true) {
+    flags.push("multiline");
+  }
+
+  const base = pattern ? `Grep ${pattern}` : "Grep";
+  const scoped = path ? `${base} in ${path}` : base;
+  return flags.length > 0 ? `${scoped} (${flags.join(", ")})` : scoped;
 }
 
 export function normalizeToolKind(name: string): string {
@@ -105,17 +200,10 @@ export function toolTitle(
     return command || "Terminal";
   }
   if (name === "Glob") {
-    const pattern = typeof input.pattern === "string" ? input.pattern : "";
-    const path = typeof input.path === "string" ? input.path : "";
-    if (pattern && path) {
-      return `Glob ${pattern} in ${path}`;
-    }
-    if (pattern) {
-      return `Glob ${pattern}`;
-    }
-    if (path) {
-      return `Glob ${path}`;
-    }
+    return formatGlobTitle(input);
+  }
+  if (name === "Grep") {
+    return formatGrepTitle(input);
   }
   if (name === "WebFetch") {
     const url = typeof input.url === "string" ? input.url : "";
@@ -700,6 +788,139 @@ function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown): str
     }
   }
   return "";
+}
+
+function firstSearchRecord(toolName: string, rawResult: unknown, rawContent: unknown): Record<string, unknown> | undefined {
+  if (toolName !== "Glob" && toolName !== "Grep") {
+    return undefined;
+  }
+
+  const candidates = resultRecordCandidates(rawResult, rawContent);
+  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
+
+  return candidates.find((candidate) => {
+    if (toolName === "Glob") {
+      return Array.isArray(candidate.filenames) || "numFiles" in candidate || "truncated" in candidate;
+    }
+    return (
+      Array.isArray(candidate.filenames) ||
+      "numFiles" in candidate ||
+      "content" in candidate ||
+      "numLines" in candidate ||
+      "numMatches" in candidate
+    );
+  });
+}
+
+function recordNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function recordString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function searchFilenames(record: Record<string, unknown>): string[] {
+  return Array.isArray(record.filenames)
+    ? record.filenames.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return count === 1 ? singular : plural;
+}
+
+function truncateList(values: string[], limit: number): { visible: string[]; hidden: number } {
+  if (values.length <= limit) {
+    return { visible: values, hidden: 0 };
+  }
+  return { visible: values.slice(0, limit), hidden: values.length - limit };
+}
+
+function globResultText(record: Record<string, unknown>): string | undefined {
+  const filenames = searchFilenames(record);
+  const numFiles = recordNumber(record, "numFiles") ?? filenames.length;
+  const truncated = record.truncated === true;
+  const lines: string[] = [];
+
+  if (numFiles === 0 && filenames.length === 0) {
+    lines.push("No files found");
+  } else {
+    lines.push(`${numFiles} ${pluralize(numFiles, "file")} found${truncated ? " (truncated)" : ""}`);
+  }
+
+  if (filenames.length > 0) {
+    const { visible, hidden } = truncateList(filenames, 20);
+    lines.push(...visible);
+    if (hidden > 0) {
+      lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
+    }
+  }
+
+  const durationMs = recordNumber(record, "durationMs");
+  if (durationMs !== undefined) {
+    lines.push(`Duration: ${durationMs}ms`);
+  }
+
+  return lines.join("\n");
+}
+
+function grepResultText(record: Record<string, unknown>): string | undefined {
+  const filenames = searchFilenames(record);
+  const content = recordString(record, "content") ?? "";
+  const numFiles = recordNumber(record, "numFiles") ?? filenames.length;
+  const numLines = recordNumber(record, "numLines");
+  const numMatches = recordNumber(record, "numMatches");
+  const appliedLimit = recordNumber(record, "appliedLimit");
+  const appliedOffset = recordNumber(record, "appliedOffset");
+  const mode = searchModeLabel(record.mode) || "files";
+  const lines: string[] = [];
+
+  if (content.trim().length > 0) {
+    lines.push(content);
+  } else if (filenames.length > 0) {
+    const { visible, hidden } = truncateList(filenames, 20);
+    lines.push(...visible);
+    if (hidden > 0) {
+      lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
+    }
+  } else {
+    lines.push("No matches found");
+  }
+
+  const summaryParts: string[] = [];
+  summaryParts.push(`${numFiles} ${pluralize(numFiles, "file")}`);
+  if (numMatches !== undefined) {
+    summaryParts.push(`${numMatches} ${pluralize(numMatches, "match", "matches")}`);
+  }
+  if (numLines !== undefined) {
+    summaryParts.push(`${numLines} ${pluralize(numLines, "line")}`);
+  }
+  summaryParts.push(`mode ${mode}`);
+  if (appliedLimit !== undefined) {
+    summaryParts.push(`limit ${appliedLimit}`);
+  }
+  if (appliedOffset !== undefined && appliedOffset > 0) {
+    summaryParts.push(`offset ${appliedOffset}`);
+  }
+
+  if (summaryParts.length > 0) {
+    lines.push(`Summary: ${summaryParts.join(", ")}`);
+  }
+
+  return lines.join("\n");
+}
+
+function searchResultText(toolName: string, rawResult: unknown, rawContent: unknown): string | undefined {
+  const record = firstSearchRecord(toolName, rawResult, rawContent);
+  if (!record) {
+    return undefined;
+  }
+  return toolName === "Glob" ? globResultText(record) : grepResultText(record);
 }
 
 function worktreeResultFields(
@@ -1640,6 +1861,12 @@ export function buildToolResultFields(
   const agentTitle = !isError && toolName === "Agent" ? agentTitleFromAgentOutput(rawResult, rawContent) : "";
   if (agentTitle) {
     fields.title = agentTitle;
+  }
+  const searchOutput = !isError ? searchResultText(toolName, rawResult, rawContent) : undefined;
+  if (searchOutput !== undefined) {
+    fields.raw_output = searchOutput;
+    fields.content = [{ type: "content", content: { type: "text", text: searchOutput } }];
+    return fields;
   }
   const worktreeOutput = !isError
     ? worktreeResultFields(toolName, rawResult, rawContent)

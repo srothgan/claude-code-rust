@@ -1479,6 +1479,75 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
   );
 });
 
+test("handleSdkMessage refreshes Grep title when final assistant snapshot carries input", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-stream",
+      session_id: "session-1",
+      event: {
+        type: "content_block_start",
+        content_block: {
+          type: "tool_use",
+          id: "tool-grep",
+          name: "Grep",
+          input: {},
+        },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-final",
+      session_id: "session-1",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-grep",
+            name: "Grep",
+            input: { pattern: "<rare string>", output_mode: "content", "-n": true },
+          },
+        ],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "tool_call",
+      tool_call: {
+        tool_call_id: "tool-grep",
+        title: "Grep",
+        kind: "search",
+        status: "in_progress",
+        source_message_uuid: "assistant-stream",
+        content: [],
+        raw_input: {},
+        locations: [],
+        meta: { claudeCode: { toolName: "Grep", parentToolUseId: null } },
+      },
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-grep",
+        source_message_uuid: "assistant-final",
+        fields: {
+          title: "Grep <rare string> (content)",
+          kind: "search",
+          status: "in_progress",
+          raw_input: { pattern: "<rare string>", output_mode: "content", "-n": true },
+          locations: [],
+          meta: { claudeCode: { toolName: "Grep", parentToolUseId: null } },
+        },
+      },
+    },
+  ]);
+});
+
 test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
   const session = makeSessionState();
 
@@ -3706,9 +3775,26 @@ test("createToolCall builds write preview diff content", () => {
   ]);
 });
 
-test("createToolCall includes glob and webfetch context in title", () => {
+test("createToolCall includes search and webfetch context in title", () => {
   const glob = createToolCall("tc-g", "Glob", { pattern: "**/*.md", path: "notes" });
   assert.equal(glob.title, "Glob **/*.md in notes");
+
+  const grep = createToolCall("tc-grep", "Grep", {
+    pattern: "TODO",
+    path: "src",
+    glob: "**/*.rs",
+    output_mode: "content",
+    "-i": true,
+    "-C": 2,
+    type: "rust",
+    head_limit: 10,
+    offset: 5,
+    multiline: true,
+  });
+  assert.equal(
+    grep.title,
+    "Grep TODO in src (glob **/*.rs, type rust, content, case-insensitive, context 2, limit 10, offset 5, multiline)",
+  );
 
   const fetch = createToolCall("tc-f", "WebFetch", { url: "https://example.com" });
   assert.equal(fetch.title, "WebFetch https://example.com");
@@ -3845,6 +3931,68 @@ test("buildToolResultFields extracts plain-text output", () => {
   assert.equal(fields.raw_output, "line 1\nline 2");
   assert.deepEqual(fields.content, [
     { type: "content", content: { type: "text", text: "line 1\nline 2" } },
+  ]);
+});
+
+test("buildToolResultFields renders structured Grep output", () => {
+  const base = createToolCall("tc-grep", "Grep", {
+    pattern: "TODO",
+    path: "src",
+    output_mode: "content",
+  });
+  const fields = buildToolResultFields(false, "raw SDK text", base, {
+    mode: "content",
+    numFiles: 2,
+    filenames: ["src/a.rs", "src/b.rs"],
+    content: "src/a.rs:1:TODO\nsrc/b.rs:2:TODO",
+    numLines: 2,
+    numMatches: 2,
+    appliedLimit: 250,
+  });
+
+  const expected =
+    "src/a.rs:1:TODO\nsrc/b.rs:2:TODO\nSummary: 2 files, 2 matches, 2 lines, mode content, limit 250";
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, expected);
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: expected } },
+  ]);
+});
+
+test("buildToolResultFields renders structured empty Grep output", () => {
+  const base = createToolCall("tc-grep-empty", "Grep", {
+    pattern: "<rare string>",
+    output_mode: "content",
+  });
+  const fields = buildToolResultFields(false, "No matches found", base, {
+    mode: "content",
+    numFiles: 0,
+    filenames: [],
+    content: "",
+    numLines: 0,
+  });
+
+  const expected = "No matches found\nSummary: 0 files, 0 lines, mode content";
+  assert.equal(fields.raw_output, expected);
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: expected } },
+  ]);
+});
+
+test("buildToolResultFields renders structured Glob output", () => {
+  const base = createToolCall("tc-glob", "Glob", { pattern: "**/*.rs", path: "src" });
+  const fields = buildToolResultFields(false, "", base, {
+    durationMs: 12,
+    numFiles: 2,
+    filenames: ["src/main.rs", "src/lib.rs"],
+    truncated: false,
+  });
+
+  const expected = "2 files found\nsrc/main.rs\nsrc/lib.rs\nDuration: 12ms";
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, expected);
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: expected } },
   ]);
 });
 
