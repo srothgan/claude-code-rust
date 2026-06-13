@@ -396,6 +396,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn set_agent(&self, session_id: String, agent: Option<String>) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent { session_id, agent },
+        })
+    }
+
     pub fn generate_session_title(
         &self,
         session_id: String,
@@ -618,6 +625,37 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 effort: "max".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn set_agent_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_agent("session-1".to_owned(), Some("reviewer".to_owned())).expect("set agent");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetAgent {
+                session_id: "session-1".to_owned(),
+                agent: Some("reviewer".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn set_agent_reset_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_agent("session-1".to_owned(), None).expect("reset agent");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetAgent { session_id: "session-1".to_owned(), agent: None }
         );
     }
 

@@ -12,7 +12,9 @@ import {
   buildSessionListOptions,
   buildToolResultFields,
   createToolCall,
+  applySessionAgent,
   applySessionEffort,
+  emitAgentConfigOptionUpdate,
   emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
@@ -3142,6 +3144,57 @@ test("parseCommandEnvelope rejects unsupported set_effort values", () => {
   );
 });
 
+test("parseCommandEnvelope validates set_agent command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-agent",
+      command: "set_agent",
+      session_id: "session-1",
+      agent: "reviewer",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-agent");
+  assert.equal(parsed.command.command, "set_agent");
+  if (parsed.command.command !== "set_agent") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-1");
+  assert.equal(parsed.command.agent, "reviewer");
+});
+
+test("parseCommandEnvelope validates set_agent reset", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "set_agent",
+      session_id: "session-1",
+      agent: null,
+    }),
+  );
+
+  assert.equal(parsed.command.command, "set_agent");
+  if (parsed.command.command !== "set_agent") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.agent, null);
+});
+
+test("parseCommandEnvelope rejects invalid set_agent values", () => {
+  for (const agent of [undefined, "", "   ", 42, {}, []]) {
+    assert.throws(
+      () =>
+        parseCommandEnvelope(
+          JSON.stringify({
+            command: "set_agent",
+            session_id: "session-1",
+            ...(agent !== undefined ? { agent } : {}),
+          }),
+        ),
+      /set_agent\.agent must be a non-empty string or null/,
+    );
+  }
+});
+
 test("applySessionEffort uses live flag settings for xhigh and max", async () => {
   const calls: unknown[] = [];
   const query = {
@@ -3156,6 +3209,20 @@ test("applySessionEffort uses live flag settings for xhigh and max", async () =>
   assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
 });
 
+test("applySessionAgent uses live flag settings for agent switch and reset", async () => {
+  const calls: unknown[] = [];
+  const query = {
+    async applyFlagSettings(settings: unknown): Promise<void> {
+      calls.push(settings);
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await applySessionAgent(query, "reviewer");
+  await applySessionAgent(query, null);
+
+  assert.deepEqual(calls, [{ agent: "reviewer" }, { agent: null }]);
+});
+
 test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
   const events = captureBridgeEvents(() => {
     emitEffortConfigOptionUpdate("session-1", "max");
@@ -3168,6 +3235,22 @@ test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
       type: "config_option_update",
       option_id: "effortLevel",
       value: "max",
+    },
+  });
+});
+
+test("emitAgentConfigOptionUpdate publishes agent config option", () => {
+  const events = captureBridgeEvents(() => {
+    emitAgentConfigOptionUpdate("session-1", null);
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "config_option_update",
+      option_id: "agent",
+      value: null,
     },
   });
 });

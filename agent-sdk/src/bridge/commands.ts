@@ -142,6 +142,21 @@ function expectEffortLevel(
   return value;
 }
 
+function expectNonEmptyStringOrNull(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string | null {
+  const value = record[key];
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${context}.${key} must be a non-empty string or null`);
+  }
+  return value;
+}
+
 function optionalString(
   record: Record<string, unknown>,
   key: string,
@@ -322,6 +337,12 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "set_effort",
           session_id: expectString(raw, "session_id", "set_effort"),
           effort: expectEffortLevel(raw, "effort", "set_effort"),
+        };
+      case "set_agent":
+        return {
+          command: "set_agent",
+          session_id: expectString(raw, "session_id", "set_agent"),
+          agent: expectNonEmptyStringOrNull(raw, "agent", "set_agent"),
         };
       case "generate_session_title":
         return {

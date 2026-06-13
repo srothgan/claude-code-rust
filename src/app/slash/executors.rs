@@ -41,6 +41,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Compact => handle_compact_submit(app, &parsed.args),
         AppSlashCommand::Config => handle_config_submit(app, &parsed.args),
         AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
+        AppSlashCommand::Agent => handle_agent_submit(app, &parsed.args),
         AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
         AppSlashCommand::Help => handle_help_submit(app, &parsed.args),
         AppSlashCommand::Mcp => handle_mcp_submit(app, &parsed.args),
@@ -773,6 +774,56 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
             Err(e) => {
                 let _ =
                     tx.send(ClientEvent::SlashCommandError(format!("Failed to run /effort: {e}")));
+            }
+        }
+    });
+    true
+}
+
+fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
+    let [agent_arg] = args else {
+        push_system_message(app, usage(AppSlashCommand::Agent));
+        return true;
+    };
+    let requested_agent = agent_arg.trim();
+    if requested_agent.is_empty() {
+        push_system_message(app, usage(AppSlashCommand::Agent));
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot switch agent: not connected yet.",
+        "Cannot switch agent: no active session.",
+    ) else {
+        return true;
+    };
+
+    let agent = if requested_agent == "reset" {
+        None
+    } else {
+        if !app.available_agents.is_empty()
+            && !app.available_agents.iter().any(|candidate| candidate.name == requested_agent)
+        {
+            push_system_message(app, format!("Unknown agent: {requested_agent}"));
+            return true;
+        }
+        Some(requested_agent.to_owned())
+    };
+
+    set_command_pending(
+        app,
+        "Switching agent...",
+        Some(crate::app::PendingCommandAck::ConfigOption { option_id: "agent".to_owned() }),
+    );
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        match conn.set_agent(sid.to_string(), agent) {
+            Ok(()) => {}
+            Err(e) => {
+                let _ =
+                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /agent: {e}")));
             }
         }
     });

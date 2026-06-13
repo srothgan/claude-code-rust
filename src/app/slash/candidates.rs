@@ -163,7 +163,8 @@ fn is_builtin_variable_input_command(command_name: &str) -> bool {
         !spec.args.is_empty()
             || matches!(
                 spec.command,
-                AppSlashCommand::Effort
+                AppSlashCommand::Agent
+                    | AppSlashCommand::Effort
                     | AppSlashCommand::Mode
                     | AppSlashCommand::Model
                     | AppSlashCommand::Resume
@@ -289,6 +290,27 @@ fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
         .collect()
 }
 
+fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
+    let mut candidates = Vec::with_capacity(app.available_agents.len() + 1);
+    candidates.push(SlashCandidate {
+        insert_value: "reset".to_owned(),
+        primary: "reset".to_owned(),
+        secondary: Some("Clear active agent".to_owned()),
+    });
+    candidates.extend(app.available_agents.iter().map(|agent| {
+        let description = agent.description.trim();
+        let model = agent.model.as_deref().map(str::trim).filter(|model| !model.is_empty());
+        let secondary = match (description.is_empty(), model) {
+            (false, Some(model)) => Some(format!("{description} - {model}")),
+            (false, None) => Some(description.to_owned()),
+            (true, Some(model)) => Some(format!("Model: {model}")),
+            (true, None) => None,
+        };
+        SlashCandidate { insert_value: agent.name.clone(), primary: agent.name.clone(), secondary }
+    }));
+    candidates
+}
+
 fn now_epoch_seconds() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
@@ -342,6 +364,7 @@ pub(super) fn argument_candidates(
 
     match command_name {
         "/1m-context" | "/docs" | "/opus-version" => static_argument_candidates(command_name),
+        "/agent" => agent_argument_candidates(app),
         "/effort" => effort_argument_candidates(app),
         "/resume" => app
             .recent_sessions

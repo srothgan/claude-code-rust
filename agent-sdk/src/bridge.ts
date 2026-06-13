@@ -164,11 +164,27 @@ export async function applySessionEffort(
   await query.applyFlagSettings(settings);
 }
 
+export async function applySessionAgent(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  agent: string | null,
+): Promise<void> {
+  const settings = { agent } as Parameters<typeof query.applyFlagSettings>[0];
+  await query.applyFlagSettings(settings);
+}
+
 export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLevel): void {
   emitSessionUpdate(sessionId, {
     type: "config_option_update",
     option_id: "effortLevel",
     value: effort,
+  });
+}
+
+export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | null): void {
+  emitSessionUpdate(sessionId, {
+    type: "config_option_update",
+    option_id: "agent",
+    value: agent,
   });
 }
 
@@ -540,6 +556,22 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         slashError(command.session_id, `failed to set effort: ${message}`, requestId);
+      }
+      return;
+    }
+
+    case "set_agent": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      try {
+        await applySessionAgent(session.query, command.agent);
+        emitAgentConfigOptionUpdate(session.sessionId, command.agent);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        slashError(command.session_id, `failed to set agent: ${message}`, requestId);
       }
       return;
     }

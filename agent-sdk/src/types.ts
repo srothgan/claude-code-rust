@@ -515,6 +515,11 @@ export type BridgeCommand =
       effort: EffortLevel;
     }
   | {
+      command: "set_agent";
+      session_id: string;
+      agent: string | null;
+    }
+  | {
       command: "generate_session_title";
       session_id: string;
       description: string;

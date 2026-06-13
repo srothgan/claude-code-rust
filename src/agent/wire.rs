@@ -74,6 +74,10 @@ pub enum BridgeCommand {
         session_id: String,
         effort: String,
     },
+    SetAgent {
+        session_id: String,
+        agent: Option<String>,
+    },
     GenerateSessionTitle {
         session_id: String,
         description: String,
@@ -158,6 +162,7 @@ impl BridgeCommand {
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
+            Self::SetAgent { .. } => "set_agent",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
             Self::NewSession { .. } => "new_session",
@@ -187,6 +192,7 @@ impl BridgeCommand {
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
+            | Self::SetAgent { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
@@ -220,6 +226,7 @@ impl BridgeCommand {
             | Self::SetModel { .. }
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
+            | Self::SetAgent { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
             | Self::NewSession { .. }
@@ -478,6 +485,47 @@ mod tests {
                 "command": "set_effort",
                 "session_id": "s1",
                 "effort": "max"
+            })
+        );
+    }
+
+    #[test]
+    fn set_agent_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent {
+                session_id: "s1".to_owned(),
+                agent: Some("reviewer".to_owned()),
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_agent",
+                "session_id": "s1",
+                "agent": "reviewer"
+            })
+        );
+    }
+
+    #[test]
+    fn set_agent_reset_serializes_null_agent() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetAgent { session_id: "s1".to_owned(), agent: None },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_agent",
+                "session_id": "s1",
+                "agent": null
             })
         );
     }

@@ -185,6 +185,7 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
+        assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
         assert!(names.iter().any(|n| n == "/config"), "missing /config");
         assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
         assert!(names.iter().any(|n| n == "/login"), "missing /login");
@@ -787,6 +788,52 @@ mod tests {
     }
 
     #[test]
+    fn agent_argument_candidates_include_reset_and_available_agents() {
+        let mut app = App::test_default();
+        app.available_agents = vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Review code")
+                .model("claude-opus"),
+            crate::agent::model::AvailableAgent::new("planner", "Plan work"),
+        ];
+
+        let candidates = argument_candidates(&app, "/agent", 0);
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "reset"
+                && candidate.secondary.as_deref() == Some("Clear active agent")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.insert_value == "reviewer"
+                && candidate.primary == "reviewer"
+                && candidate.secondary.as_deref() == Some("Review code - claude-opus")
+        }));
+        assert!(candidates.iter().any(|candidate| candidate.insert_value == "planner"));
+    }
+
+    #[test]
+    fn agent_argument_candidates_filter_by_query() {
+        let mut app = App::test_default();
+        app.available_agents = vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
+            crate::agent::model::AvailableAgent::new("planner", "Plan work"),
+        ];
+        app.input.set_text("/agent rev");
+        let _ = app.input.set_cursor(0, "/agent rev".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(matches!(slash.context, SlashContext::Argument { .. }));
+        assert_eq!(
+            slash
+                .candidates
+                .iter()
+                .map(|candidate| candidate.insert_value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["reviewer"]
+        );
+    }
+
+    #[test]
     fn effort_argument_candidates_include_session_only_max() {
         let mut app = App::test_default();
         app.current_model = Some(
@@ -1303,6 +1350,146 @@ mod tests {
             .await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+                app.available_agents =
+                    vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+
+                let consumed = try_handle_submit(&mut app, "/agent reviewer");
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert_eq!(app.pending_command_label.as_deref(), Some("Switching agent..."));
+                assert!(matches!(
+                    app.pending_command_ack.as_ref(),
+                    Some(super::super::PendingCommandAck::ConfigOption { option_id })
+                        if option_id == "agent"
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: Some("reviewer".to_owned()),
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionUpdate(
+                        crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                            crate::agent::model::ConfigOptionUpdate {
+                                option_id: "agent".to_owned(),
+                                value: serde_json::json!("reviewer"),
+                            },
+                        ),
+                    ),
+                );
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert_eq!(app.config_options.get("agent"), Some(&serde_json::json!("reviewer")));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_reset_sends_null_agent() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+
+                let consumed = try_handle_submit(&mut app, "/agent reset");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("reset agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: None,
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_id = Some("sess-1".into());
+
+                let consumed = try_handle_submit(&mut app, "/agent custom-agent");
+                assert!(consumed);
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set agent command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetAgent {
+                        session_id: "sess-1".to_owned(),
+                        agent: Some("custom-agent".to_owned()),
+                    }
+                );
+            })
+            .await;
+    }
+
+    #[test]
+    fn agent_rejects_unknown_when_available_agents_are_populated() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some("sess-1".into());
+        app.available_agents =
+            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+
+        let consumed = try_handle_submit(&mut app, "/agent planner");
+
+        assert!(consumed);
+        assert!(rx.try_recv().is_err());
+        assert!(!matches!(app.status, AppStatus::CommandPending));
+        let Some(last) = app.messages.last() else {
+            panic!("expected system message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Unknown agent: planner");
+    }
+
+    #[test]
+    fn agent_invalid_arguments_return_usage() {
+        for input in ["/agent", "/agent reviewer extra"] {
+            let mut app = App::test_default();
+
+            let consumed = try_handle_submit(&mut app, input);
+
+            assert!(consumed);
+            let Some(last) = app.messages.last() else {
+                panic!("expected system usage message for {input}");
+            };
+            let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+                panic!("expected text block");
+            };
+            assert_eq!(block.text, "Usage: /agent <name|reset>");
+            assert!(!matches!(app.status, AppStatus::CommandPending));
+        }
+    }
+
     #[test]
     fn effort_invalid_arguments_return_usage() {
         for input in ["/effort", "/effort banana", "/effort high extra"] {
@@ -1522,6 +1709,7 @@ mod tests {
     fn single_argument_builtin_selection_closes_autocomplete() {
         for (command, value) in [
             ("/docs", "commands"),
+            ("/agent", "reviewer"),
             ("/effort", "xhigh"),
             ("/mode", "plan"),
             ("/model", "sonnet"),
