@@ -886,6 +886,57 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
   assert.equal("agentProgressSummaries" in options, false);
 });
 
+test("buildQueryOptions forwards SDK-provided spawn env without passing top-level env", async () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {},
+    provisionalSessionId: "session-spawn-env",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-spawn-env",
+  });
+
+  assert.equal("env" in options, false);
+
+  const previousParentOnly = process.env.PHASE10_PARENT_ONLY;
+  process.env.PHASE10_PARENT_ONLY = "must-not-leak";
+  try {
+    const child = options.spawnClaudeCodeProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null}))",
+      ],
+      cwd: process.cwd(),
+      env: { PHASE10_ENV_CHECK: "forwarded" },
+      signal: new AbortController().signal,
+    });
+
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", (code) => resolve(code));
+    });
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null });
+  } finally {
+    if (previousParentOnly === undefined) {
+      delete process.env.PHASE10_PARENT_ONLY;
+    } else {
+      process.env.PHASE10_PARENT_ONLY = previousParentOnly;
+    }
+  }
+});
+
 test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
