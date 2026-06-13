@@ -710,10 +710,21 @@ pub enum McpServerToolPermissionPolicy {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerOrgMaxPermission {
+    Allow,
+    Ask,
+    Blocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerToolPolicy {
     pub name: String,
-    pub permission_policy: McpServerToolPermissionPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<McpServerToolPermissionPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org_max_permission: Option<McpServerOrgMaxPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -823,9 +834,9 @@ pub struct McpSetServersResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerStatus,
-        McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus, SessionUpdate,
-        SystemNoticeSeverity, TranscriptRetractionReason,
+        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
+        McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus,
+        SessionUpdate, SystemNoticeSeverity, TranscriptRetractionReason,
     };
 
     #[test]
@@ -980,7 +991,16 @@ mod tests {
                 "url": "https://mcp.notion.com/mcp",
                 "headers": { "Authorization": "Bearer token" },
                 "tools": [
-                    { "name": "search", "permission_policy": "always_ask" }
+                    {
+                        "name": "search",
+                        "permission_policy": "always_ask",
+                        "org_max_permission": "ask"
+                    },
+                    { "name": "lookup" },
+                    {
+                        "name": "write",
+                        "org_max_permission": "blocked"
+                    }
                 ],
                 "timeout": 5000,
                 "always_load": true
@@ -995,8 +1015,13 @@ mod tests {
         };
         assert_eq!(timeout, Some(5000));
         assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].permission_policy, McpServerToolPermissionPolicy::Ask);
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].permission_policy, Some(McpServerToolPermissionPolicy::Ask));
+        assert_eq!(tools[0].org_max_permission, Some(McpServerOrgMaxPermission::Ask));
+        assert_eq!(tools[1].permission_policy, None);
+        assert_eq!(tools[1].org_max_permission, None);
+        assert_eq!(tools[2].permission_policy, None);
+        assert_eq!(tools[2].org_max_permission, Some(McpServerOrgMaxPermission::Blocked));
     }
 
     #[test]

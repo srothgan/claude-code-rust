@@ -437,7 +437,15 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
           tools: [
             {
               name: "search",
+            },
+            {
+              name: "read",
               permission_policy: "always_ask",
+            },
+            {
+              name: "write",
+              permission_policy: "always_deny",
+              org_max_permission: "ask",
             },
           ],
         },
@@ -463,7 +471,15 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
       tools: [
         {
           name: "search",
+        },
+        {
+          name: "read",
           permission_policy: "always_ask",
+        },
+        {
+          name: "write",
+          permission_policy: "always_deny",
+          org_max_permission: "ask",
         },
       ],
     },
@@ -471,6 +487,24 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
 });
 
 test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "http",
+              url: "https://mcp.example.com",
+              tools: [{ name: "read", org_max_permission: "deny" }],
+            },
+          },
+        }),
+      ),
+    /org_max_permission must be one of allow, ask, blocked/,
+  );
+
   assert.throws(
     () =>
       parseCommandEnvelope(
@@ -539,14 +573,20 @@ test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
       url: "https://mcp.example.com/sse",
       timeout: 2500,
       always_load: true,
-      tools: [{ name: "search", permission_policy: "always_allow" }],
+      tools: [
+        { name: "search" },
+        { name: "write", permission_policy: "always_allow", org_max_permission: "blocked" },
+      ],
     }),
     {
       type: "sse",
       url: "https://mcp.example.com/sse",
       timeout: 2500,
       alwaysLoad: true,
-      tools: [{ name: "search", permission_policy: "always_allow" }],
+      tools: [
+        { name: "search" },
+        { name: "write", permission_policy: "always_allow", org_max_permission: "blocked" },
+      ],
     },
   );
 });
@@ -561,7 +601,10 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
       headers: { Authorization: "Bearer token" },
       timeout: 5000,
       alwaysLoad: true,
-      tools: [{ name: "search", permission_policy: "always_deny" }],
+      tools: [
+        { name: "search" },
+        { name: "write", permission_policy: "always_deny", org_max_permission: "ask" },
+      ],
     },
     tools: [],
   });
@@ -572,7 +615,10 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
     headers: { Authorization: "Bearer token" },
     timeout: 5000,
     always_load: true,
-    tools: [{ name: "search", permission_policy: "always_deny" }],
+    tools: [
+      { name: "search" },
+      { name: "write", permission_policy: "always_deny", org_max_permission: "ask" },
+    ],
   });
 });
 

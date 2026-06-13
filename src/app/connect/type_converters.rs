@@ -66,10 +66,21 @@ fn map_mcp_tool_permission_policy(
     }
 }
 
+fn map_mcp_server_org_max_permission(
+    permission: types::McpServerOrgMaxPermission,
+) -> model::McpServerOrgMaxPermission {
+    match permission {
+        types::McpServerOrgMaxPermission::Allow => model::McpServerOrgMaxPermission::Allow,
+        types::McpServerOrgMaxPermission::Ask => model::McpServerOrgMaxPermission::Ask,
+        types::McpServerOrgMaxPermission::Blocked => model::McpServerOrgMaxPermission::Blocked,
+    }
+}
+
 fn map_mcp_tool_policy(policy: types::McpServerToolPolicy) -> model::McpServerToolPolicy {
     model::McpServerToolPolicy {
         name: policy.name,
-        permission_policy: map_mcp_tool_permission_policy(policy.permission_policy),
+        permission_policy: policy.permission_policy.map(map_mcp_tool_permission_policy),
+        org_max_permission: policy.org_max_permission.map(map_mcp_server_org_max_permission),
     }
 }
 
@@ -1467,10 +1478,18 @@ mod tests {
             config: Some(types::McpServerStatusConfig::Http {
                 url: "https://mcp.notion.com/mcp".to_owned(),
                 headers: std::collections::BTreeMap::new(),
-                tools: vec![types::McpServerToolPolicy {
-                    name: "search".to_owned(),
-                    permission_policy: types::McpServerToolPermissionPolicy::Deny,
-                }],
+                tools: vec![
+                    types::McpServerToolPolicy {
+                        name: "search".to_owned(),
+                        permission_policy: Some(types::McpServerToolPermissionPolicy::Deny),
+                        org_max_permission: Some(types::McpServerOrgMaxPermission::Blocked),
+                    },
+                    types::McpServerToolPolicy {
+                        name: "lookup".to_owned(),
+                        permission_policy: None,
+                        org_max_permission: Some(types::McpServerOrgMaxPermission::Ask),
+                    },
+                ],
                 timeout: Some(5000),
                 always_load: Some(true),
             }),
@@ -1487,7 +1506,10 @@ mod tests {
         };
         assert_eq!(timeout, Some(5000));
         assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].permission_policy, model::McpServerToolPermissionPolicy::Deny);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].permission_policy, Some(model::McpServerToolPermissionPolicy::Deny));
+        assert_eq!(tools[0].org_max_permission, Some(model::McpServerOrgMaxPermission::Blocked));
+        assert_eq!(tools[1].permission_policy, None);
+        assert_eq!(tools[1].org_max_permission, Some(model::McpServerOrgMaxPermission::Ask));
     }
 }

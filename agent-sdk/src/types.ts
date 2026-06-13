@@ -456,9 +456,12 @@ export type McpServerToolPermissionPolicy =
   | "always_ask"
   | "always_deny";
 
+export type McpServerOrgMaxPermission = "allow" | "ask" | "blocked";
+
 export interface McpServerToolPolicy {
   name: string;
-  permission_policy: McpServerToolPermissionPolicy;
+  permission_policy?: McpServerToolPermissionPolicy;
+  org_max_permission?: McpServerOrgMaxPermission;
 }
 
 export type McpServerConfig =

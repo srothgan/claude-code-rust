@@ -290,10 +290,29 @@ impl McpServerToolPermissionPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerOrgMaxPermission {
+    Allow,
+    Ask,
+    Blocked,
+}
+
+impl McpServerOrgMaxPermission {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Ask => "ask",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerToolPolicy {
     pub name: String,
-    pub permission_policy: McpServerToolPermissionPolicy,
+    pub permission_policy: Option<McpServerToolPermissionPolicy>,
+    pub org_max_permission: Option<McpServerOrgMaxPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

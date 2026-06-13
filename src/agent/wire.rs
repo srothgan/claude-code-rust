@@ -556,10 +556,20 @@ mod tests {
                     types::McpServerConfig::Http {
                         url: "https://mcp.notion.com/mcp".to_owned(),
                         headers: BTreeMap::new(),
-                        tools: vec![types::McpServerToolPolicy {
-                            name: "search".to_owned(),
-                            permission_policy: types::McpServerToolPermissionPolicy::Allow,
-                        }],
+                        tools: vec![
+                            types::McpServerToolPolicy {
+                                name: "search".to_owned(),
+                                permission_policy: Some(
+                                    types::McpServerToolPermissionPolicy::Allow,
+                                ),
+                                org_max_permission: Some(types::McpServerOrgMaxPermission::Ask),
+                            },
+                            types::McpServerToolPolicy {
+                                name: "lookup".to_owned(),
+                                permission_policy: None,
+                                org_max_permission: Some(types::McpServerOrgMaxPermission::Blocked),
+                            },
+                        ],
                         timeout: Some(5000),
                         always_load: Some(true),
                     },
@@ -580,7 +590,15 @@ mod tests {
                         "url": "https://mcp.notion.com/mcp",
                         "headers": {},
                         "tools": [
-                            { "name": "search", "permission_policy": "always_allow" }
+                            {
+                                "name": "search",
+                                "permission_policy": "always_allow",
+                                "org_max_permission": "ask"
+                            },
+                            {
+                                "name": "lookup",
+                                "org_max_permission": "blocked"
+                            }
                         ],
                         "timeout": 5000,
                         "always_load": true

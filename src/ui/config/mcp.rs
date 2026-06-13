@@ -594,12 +594,19 @@ fn append_mcp_runtime_config_lines(
             Color::White,
         ));
         for tool in tools {
-            lines.push(detail_kv(
-                &format!("  {}", tool.name),
-                tool.permission_policy.label(),
-                Color::White,
-            ));
+            let policy_summary = format_mcp_tool_policy_summary(tool);
+            lines.push(detail_kv(&format!("  {}", tool.name), &policy_summary, Color::White));
         }
+    }
+}
+
+fn format_mcp_tool_policy_summary(tool: &crate::agent::model::McpServerToolPolicy) -> String {
+    let permission = tool.permission_policy.map_or("not specified", |policy| policy.label());
+    match tool.org_max_permission {
+        Some(org_max_permission) => {
+            format!("{permission}, org max {}", org_max_permission.label())
+        }
+        None => permission.to_owned(),
     }
 }
 
@@ -839,7 +846,10 @@ mod tests {
                     headers: BTreeMap::new(),
                     tools: vec![crate::agent::model::McpServerToolPolicy {
                         name: "search".to_owned(),
-                        permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                        permission_policy: Some(
+                            crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                        ),
+                        org_max_permission: None,
                     }],
                     timeout: Some(5000),
                     always_load: Some(true),
@@ -896,10 +906,20 @@ mod tests {
         let lines = config_lines(&McpServerStatusConfig::Http {
             url: "https://mcp.notion.com/mcp".to_owned(),
             headers: BTreeMap::new(),
-            tools: vec![crate::agent::model::McpServerToolPolicy {
-                name: "search".to_owned(),
-                permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Deny,
-            }],
+            tools: vec![
+                crate::agent::model::McpServerToolPolicy {
+                    name: "search".to_owned(),
+                    permission_policy: Some(
+                        crate::agent::model::McpServerToolPermissionPolicy::Deny,
+                    ),
+                    org_max_permission: None,
+                },
+                crate::agent::model::McpServerToolPolicy {
+                    name: "lookup".to_owned(),
+                    permission_policy: None,
+                    org_max_permission: Some(crate::agent::model::McpServerOrgMaxPermission::Ask),
+                },
+            ],
             timeout: Some(5000),
             always_load: Some(true),
         });
@@ -909,5 +929,8 @@ mod tests {
         assert!(text.contains("enabled"));
         assert!(text.contains("search"));
         assert!(text.contains("always deny"));
+        assert!(text.contains("lookup"));
+        assert!(text.contains("not specified"));
+        assert!(text.contains("org max ask"));
     }
 }

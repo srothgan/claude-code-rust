@@ -1,5 +1,6 @@
 import type {
   McpServerConfig,
+  McpServerOrgMaxPermission,
   McpServerStatus,
   McpServerStatusConfig,
   McpServerToolPermissionPolicy,
@@ -28,6 +29,12 @@ const TOOL_PERMISSION_POLICIES = new Set<McpServerToolPermissionPolicy>([
   "always_allow",
   "always_ask",
   "always_deny",
+]);
+
+const ORG_MAX_PERMISSIONS = new Set<McpServerOrgMaxPermission>([
+  "allow",
+  "ask",
+  "blocked",
 ]);
 
 function asRecord(value: unknown, context: string): Record<string, unknown> {
@@ -115,14 +122,22 @@ function optionalToolPolicies(
     if (typeof name !== "string") {
       throw new Error(`${context}.tools[${index}].name must be a string`);
     }
+    const policy: McpServerToolPolicy = { name };
     const permissionPolicy = item.permission_policy;
-    if (typeof permissionPolicy !== "string" || !TOOL_PERMISSION_POLICIES.has(permissionPolicy as McpServerToolPermissionPolicy)) {
-      throw new Error(`${context}.tools[${index}].permission_policy must be one of always_allow, always_ask, always_deny`);
+    if (permissionPolicy !== undefined) {
+      if (typeof permissionPolicy !== "string" || !TOOL_PERMISSION_POLICIES.has(permissionPolicy as McpServerToolPermissionPolicy)) {
+        throw new Error(`${context}.tools[${index}].permission_policy must be one of always_allow, always_ask, always_deny`);
+      }
+      policy.permission_policy = permissionPolicy as McpServerToolPermissionPolicy;
     }
-    return {
-      name,
-      permission_policy: permissionPolicy as McpServerToolPermissionPolicy,
-    };
+    const orgMaxPermission = item.org_max_permission;
+    if (orgMaxPermission !== undefined) {
+      if (typeof orgMaxPermission !== "string" || !ORG_MAX_PERMISSIONS.has(orgMaxPermission as McpServerOrgMaxPermission)) {
+        throw new Error(`${context}.tools[${index}].org_max_permission must be one of allow, ask, blocked`);
+      }
+      policy.org_max_permission = orgMaxPermission as McpServerOrgMaxPermission;
+    }
+    return policy;
   });
 }
 
@@ -189,7 +204,8 @@ export function parseMcpServersRecord(
 function toSdkToolPolicies(tools?: McpServerToolPolicy[]): import("@anthropic-ai/claude-agent-sdk").McpServerToolPolicy[] | undefined {
   return tools?.map((tool) => ({
     name: tool.name,
-    permission_policy: tool.permission_policy,
+    ...(tool.permission_policy === undefined ? {} : { permission_policy: tool.permission_policy }),
+    ...(tool.org_max_permission === undefined ? {} : { org_max_permission: tool.org_max_permission }),
   }));
 }
 
@@ -239,17 +255,27 @@ function mapSdkToolPolicies(tools: unknown): McpServerToolPolicy[] | undefined {
   }
   return tools
     .map((tool) => {
+      if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+        return null;
+      }
       const raw = tool as Record<string, unknown>;
-      if (typeof raw.name !== "string" || typeof raw.permission_policy !== "string") {
+      if (typeof raw.name !== "string") {
         return null;
       }
-      if (!TOOL_PERMISSION_POLICIES.has(raw.permission_policy as McpServerToolPermissionPolicy)) {
-        return null;
+      const policy: McpServerToolPolicy = { name: raw.name };
+      if (raw.permission_policy !== undefined) {
+        if (typeof raw.permission_policy !== "string" || !TOOL_PERMISSION_POLICIES.has(raw.permission_policy as McpServerToolPermissionPolicy)) {
+          return null;
+        }
+        policy.permission_policy = raw.permission_policy as McpServerToolPermissionPolicy;
       }
-      return {
-        name: raw.name,
-        permission_policy: raw.permission_policy as McpServerToolPermissionPolicy,
-      };
+      if (raw.org_max_permission !== undefined) {
+        if (typeof raw.org_max_permission !== "string" || !ORG_MAX_PERMISSIONS.has(raw.org_max_permission as McpServerOrgMaxPermission)) {
+          return null;
+        }
+        policy.org_max_permission = raw.org_max_permission as McpServerOrgMaxPermission;
+      }
+      return policy;
     })
     .filter((tool): tool is McpServerToolPolicy => tool !== null);
 }
