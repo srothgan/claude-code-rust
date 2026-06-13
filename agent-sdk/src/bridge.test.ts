@@ -1286,6 +1286,197 @@ test("handleSdkMessage suppresses ToolSearch bridge events without denying SDK u
   assert.equal(session.toolCalls.has("tool-search-1"), false);
 });
 
+test("handleSdkMessage emits transcript retraction for model_refusal_fallback", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_fallback",
+      trigger: "refusal",
+      direction: "retry",
+      original_model: "claude-opus-4-1",
+      fallback_model: "claude-sonnet-4-5",
+      request_id: "req-1",
+      api_refusal_category: "cyber",
+      api_refusal_explanation: "policy text",
+      retracted_message_uuids: ["assistant-old", "assistant-old", "", 7],
+      content: "Retried with fallback model",
+      uuid: "fallback-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "transcript_retraction",
+      message_uuids: ["assistant-old"],
+      reason: "model_refusal_fallback",
+      request_id: "req-1",
+      trigger: "refusal",
+      direction: "retry",
+      original_model: "claude-opus-4-1",
+      fallback_model: "claude-sonnet-4-5",
+      api_refusal_category: "cyber",
+      api_refusal_explanation: "policy text",
+      content: "Retried with fallback model",
+    },
+  ]);
+  assert.equal(
+    events.some(
+      (event) =>
+        (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
+    ),
+    false,
+  );
+});
+
+test("handleSdkMessage emits tolerant transcript retraction for model_fallback", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_fallback",
+      original_model: "claude-opus-4-1",
+      fallback_model: "claude-sonnet-4-5",
+      retracted_message_uuids: ["old-1", "old-2"],
+      uuid: "fallback-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "transcript_retraction",
+      message_uuids: ["old-1", "old-2"],
+      reason: "model_fallback",
+      original_model: "claude-opus-4-1",
+      fallback_model: "claude-sonnet-4-5",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits assistant supersedes before replacement content", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-new",
+      supersedes: ["assistant-old"],
+      session_id: "session-1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo ok" } },
+        ],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "transcript_retraction",
+      message_uuids: ["assistant-old"],
+      reason: "assistant_supersedes",
+    },
+    {
+      type: "tool_call",
+      tool_call: {
+        tool_call_id: "tool-1",
+        title: "echo ok",
+        kind: "execute",
+        status: "in_progress",
+        source_message_uuid: "assistant-new",
+        content: [],
+        raw_input: { command: "echo ok" },
+        locations: [],
+        meta: { claudeCode: { toolName: "Bash", parentToolUseId: null } },
+      },
+    },
+  ]);
+});
+
+test("handleSdkMessage propagates source UUIDs for stream text and tool results", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-stream",
+      session_id: "session-1",
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "partial" },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-tool",
+      session_id: "session-1",
+      event: {
+        type: "content_block_start",
+        content_block: {
+          type: "tool_use",
+          id: "tool-1",
+          name: "Bash",
+          input: { command: "echo ok" },
+        },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      uuid: "user-result",
+      session_id: "session-1",
+      parent_tool_use_id: "tool-1",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tool-1", content: "ok", is_error: false },
+        ],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "agent_message_chunk",
+        content: { type: "text", text: "partial" },
+        source_message_uuid: "assistant-stream",
+      },
+      {
+        type: "tool_call",
+        tool_call: {
+          tool_call_id: "tool-1",
+          title: "echo ok",
+          kind: "execute",
+          status: "in_progress",
+          source_message_uuid: "assistant-tool",
+          content: [],
+          raw_input: { command: "echo ok" },
+          locations: [],
+          meta: { claudeCode: { toolName: "Bash", parentToolUseId: null } },
+        },
+      },
+      {
+        type: "tool_call_update",
+        tool_call_update: {
+          tool_call_id: "tool-1",
+          source_message_uuid: "user-result",
+          fields: {
+            status: "completed",
+            raw_output: "ok",
+            content: [{ type: "content", content: { type: "text", text: "ok" } }],
+          },
+        },
+      },
+    ],
+  );
+});
+
 test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
   const session = makeSessionState();
 
@@ -3074,6 +3265,7 @@ test("handleSdkMessage preserves assistant correlation metadata on tool calls", 
         title: "npm test",
         kind: "execute",
         status: "in_progress",
+        source_message_uuid: "message-assistant",
         content: [],
         raw_input: { command: "npm test" },
         locations: [],
@@ -4131,6 +4323,35 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(variantCounts.get("agent_message_chunk"), 1);
   assert.equal(variantCounts.get("tool_call"), 1);
   assert.equal(variantCounts.get("tool_call_update"), 1);
+  const userChunk = updates.find(
+    (
+      update,
+    ): update is Extract<import("./types.js").SessionUpdate, { type: "user_message_chunk" }> =>
+      update.type === "user_message_chunk",
+  );
+  const agentChunk = updates.find(
+    (
+      update,
+    ): update is Extract<import("./types.js").SessionUpdate, { type: "agent_message_chunk" }> =>
+      update.type === "agent_message_chunk",
+  );
+  const toolCall = updates.find(
+    (update): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call" }> =>
+      update.type === "tool_call",
+  );
+  const toolCallUpdate = updates.find(
+    (
+      update,
+    ): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call_update" }> =>
+      update.type === "tool_call_update",
+  );
+  assert.equal(userChunk?.source_message_uuid, "u1");
+  assert.equal(agentChunk?.source_message_uuid, "a1");
+  assert.equal(toolCall?.tool_call.source_message_uuid, "a1");
+  assert.equal(
+    toolCallUpdate?.tool_call_update.source_message_uuid,
+    "u2",
+  );
 });
 
 test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {

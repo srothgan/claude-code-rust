@@ -219,6 +219,7 @@ mod tests {
     ) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
+            source_message_uuids: Vec::new(),
             title: id.to_owned(),
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: None,
@@ -396,6 +397,7 @@ mod tests {
     fn bash_title_does_not_wrap_for_long_title() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
+            source_message_uuids: Vec::new(),
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
                 .into(),
             sdk_tool_name: "Bash".into(),
@@ -931,6 +933,7 @@ mod tests {
     fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
+            source_message_uuids: Vec::new(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
@@ -957,6 +960,7 @@ mod tests {
     fn content_summary_extracts_tool_use_error_for_failed_execute() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
+            source_message_uuids: Vec::new(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
@@ -993,6 +997,7 @@ mod tests {
     fn content_summary_uses_first_terminal_line_for_failed_execute() {
         let tc = ToolCallInfo {
             id: "tc-2".into(),
+            source_message_uuids: Vec::new(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,
@@ -1041,6 +1046,7 @@ mod tests {
     fn render_execute_content_keeps_tail_output() {
         let tc = ToolCallInfo {
             id: "tc-3".into(),
+            source_message_uuids: Vec::new(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
             raw_input: None,

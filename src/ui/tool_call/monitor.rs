@@ -179,6 +179,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-monitor".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "Monitor".to_owned(),
             sdk_tool_name: "Monitor".to_owned(),
             raw_input: Some(raw_input),

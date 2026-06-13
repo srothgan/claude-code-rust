@@ -5,6 +5,7 @@ mod api_retry;
 mod client;
 mod notices;
 mod rate_limit;
+mod retraction;
 mod session;
 mod session_reset;
 mod streaming;
@@ -229,6 +230,7 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::AgentMessageChunk(_)
             | model::SessionUpdate::ToolCall(_)
             | model::SessionUpdate::ToolCallUpdate(_)
+            | model::SessionUpdate::TranscriptRetraction(_)
             | model::SessionUpdate::CompactionBoundary(_)
     );
     handle_session_update(app, update);
@@ -247,6 +249,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             tool_updates::handle_tool_call_update_session(app, &tcu);
+        }
+        model::SessionUpdate::TranscriptRetraction(retraction) => {
+            retraction::handle_transcript_retraction(app, &retraction);
         }
         model::SessionUpdate::TaskStateUpdate(update) => {
             tracing::debug!(
@@ -565,6 +570,7 @@ mod tests {
     fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.into(),
+            source_message_uuids: Vec::new(),
             title: id.into(),
             sdk_tool_name: "Read".into(),
             raw_input: None,
@@ -621,6 +627,30 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
+    }
+
+    fn source_text(text: &str, source_message_uuid: &str) -> MessageBlock {
+        MessageBlock::Text(
+            TextBlock::from_complete(text).with_source_message_uuid(Some(source_message_uuid)),
+        )
+    }
+
+    fn transcript_retraction(
+        message_uuids: Vec<&str>,
+        reason: model::TranscriptRetractionReason,
+    ) -> model::SessionUpdate {
+        model::SessionUpdate::TranscriptRetraction(model::TranscriptRetraction {
+            message_uuids: message_uuids.into_iter().map(str::to_owned).collect(),
+            reason,
+            request_id: None,
+            trigger: None,
+            direction: None,
+            original_model: None,
+            fallback_model: None,
+            api_refusal_category: None,
+            api_refusal_explanation: None,
+            content: None,
+        })
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -738,6 +768,94 @@ mod tests {
         assert_eq!(app.chat_render.live_region.hidden_rows_above, 3);
         assert_eq!(app.chat_render.live_region.viewport_height, 9);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 7);
+    }
+
+    #[test]
+    fn transcript_retraction_removes_matching_text_blocks_only() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_msg(vec![
+            source_text("stale", "old-assistant"),
+            source_text("keep", "new-assistant"),
+        ]));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["old-assistant", "old-assistant", "unknown"],
+                model::TranscriptRetractionReason::ModelRefusalFallback,
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "keep");
+        assert!(block.has_source_message_uuid("new-assistant"));
+    }
+
+    #[test]
+    fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
+        let mut app = App::test_default();
+        let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
+        stale_tool.source_message_uuids =
+            vec!["assistant-tool".to_owned(), "user-result".to_owned()];
+        stale_tool.sdk_tool_name = "Bash".to_owned();
+        stale_tool.terminal_id = Some("term-old".to_owned());
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(stale_tool)),
+            source_text("replacement", "assistant-new"),
+        ]));
+        app.index_tool_call("tool-old".to_owned(), 0, 0);
+        app.sync_terminal_tool_call("term-old".to_owned(), 0, 0);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["user-result"],
+                model::TranscriptRetractionReason::ModelFallback,
+            )),
+        );
+
+        assert!(app.lookup_tool_call("tool-old").is_none());
+        assert!(app.terminal_tool_calls.is_empty());
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected replacement text");
+        };
+        assert_eq!(block.text, "replacement");
+    }
+
+    #[test]
+    fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["assistant-old"],
+                model::TranscriptRetractionReason::AssistantSupersedes,
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                    "replacement",
+                )))
+                .source_message_uuid(Some("assistant-new".to_owned())),
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected replacement text");
+        };
+        assert_eq!(block.text, "replacement");
+        assert!(block.has_source_message_uuid("assistant-new"));
     }
 
     fn first_block_text(msg: &ChatMessage) -> &str {

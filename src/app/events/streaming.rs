@@ -19,7 +19,11 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     if let Some(owner_idx) = app.active_turn_assistant_idx()
         && let Some(owner) = app.messages.get_mut(owner_idx)
     {
-        append_agent_stream_text(&mut owner.blocks, &text.text);
+        append_agent_stream_text(
+            &mut owner.blocks,
+            &text.text,
+            chunk.source_message_uuid.as_deref(),
+        );
         app.sync_after_message_blocks_changed(owner_idx);
         return;
     }
@@ -27,7 +31,11 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     if let Some(last) = app.messages.last_mut()
         && matches!(last.role, MessageRole::Assistant)
     {
-        append_agent_stream_text(&mut last.blocks, &text.text);
+        append_agent_stream_text(
+            &mut last.blocks,
+            &text.text,
+            chunk.source_message_uuid.as_deref(),
+        );
         let last_idx = app.messages.len().saturating_sub(1);
         app.bind_active_turn_assistant(last_idx);
         app.sync_after_message_blocks_changed(last_idx);
@@ -35,21 +43,26 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     }
 
     let mut blocks = Vec::new();
-    append_agent_stream_text(&mut blocks, &text.text);
+    append_agent_stream_text(&mut blocks, &text.text, chunk.source_message_uuid.as_deref());
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
     app.bind_active_turn_assistant_to_tail();
 }
 
-pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &str) {
+pub(super) fn append_agent_stream_text(
+    blocks: &mut Vec<MessageBlock>,
+    chunk: &str,
+    source_message_uuid: Option<&str>,
+) {
     if chunk.is_empty() {
         return;
     }
     if let Some(MessageBlock::Text(block)) = blocks.last_mut() {
         block.text.push_str(chunk);
         block.markdown.append(chunk);
+        block.add_source_message_uuid(source_message_uuid);
         block.cache.invalidate();
     } else {
-        blocks.push(new_text_block(chunk.to_owned()));
+        blocks.push(new_text_block(chunk.to_owned(), source_message_uuid));
     }
 
     let split_count = split_tail_text_block(blocks);
@@ -64,8 +77,8 @@ pub(super) fn append_agent_stream_text(blocks: &mut Vec<MessageBlock>, chunk: &s
     crate::perf::mark_with("text_block_frozen_count", "count", text_block_count.saturating_sub(1));
 }
 
-fn new_text_block(text: String) -> MessageBlock {
-    MessageBlock::Text(TextBlock::new(text))
+fn new_text_block(text: String, source_message_uuid: Option<&str>) -> MessageBlock {
+    MessageBlock::Text(TextBlock::new(text).with_source_message_uuid(source_message_uuid))
 }
 
 fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
@@ -84,9 +97,10 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
             break;
         };
 
-        let (tail_id, completed, remainder) = match blocks.get(tail_idx) {
+        let (tail_id, source_message_uuids, completed, remainder) = match blocks.get(tail_idx) {
             Some(MessageBlock::Text(block)) => (
                 block.id,
+                block.source_message_uuids.clone(),
                 block.text[..split.split_at].to_owned(),
                 block.text[split.split_at..].to_owned(),
             ),
@@ -97,19 +111,30 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
             break;
         }
 
-        blocks[tail_idx] = MessageBlock::Text(TextBlock::new_with_id(tail_id, remainder));
-        blocks.insert(tail_idx, completed_text_block(completed, split));
+        blocks[tail_idx] = MessageBlock::Text(
+            TextBlock::new_with_id(tail_id, remainder)
+                .with_source_message_uuids(source_message_uuids.clone()),
+        );
+        blocks.insert(tail_idx, completed_text_block(completed, split, source_message_uuids));
         split_count += 1;
     }
     split_count
 }
 
-fn completed_text_block(text: String, split: TextSplitDecision) -> MessageBlock {
+fn completed_text_block(
+    text: String,
+    split: TextSplitDecision,
+    source_message_uuids: Vec<String>,
+) -> MessageBlock {
     let trailing_spacing = match split.kind {
         TextSplitKind::Generic => TextBlockSpacing::None,
         TextSplitKind::ParagraphBoundary => TextBlockSpacing::ParagraphBreak,
     };
-    MessageBlock::Text(TextBlock::new(text).with_trailing_spacing(trailing_spacing))
+    MessageBlock::Text(
+        TextBlock::new(text)
+            .with_source_message_uuids(source_message_uuids)
+            .with_trailing_spacing(trailing_spacing),
+    )
 }
 
 pub(super) fn find_text_block_split(text: &str) -> Option<TextSplitDecision> {
@@ -153,5 +178,31 @@ mod tests {
         assert_eq!(first.trailing_spacing, TextBlockSpacing::ParagraphBreak);
         assert_eq!(second.text, "second");
         assert_eq!(second.trailing_spacing, TextBlockSpacing::None);
+    }
+
+    #[test]
+    fn streaming_text_keeps_contiguous_chunks_in_one_block_when_source_uuid_changes() {
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Thinking;
+        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+
+        for (text, source_message_uuid) in
+            [("H", "assistant-part-1"), ("ello!", "assistant-part-2")]
+        {
+            handle_agent_message_chunk(
+                &mut app,
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)))
+                    .source_message_uuid(Some(source_message_uuid.to_owned())),
+            );
+        }
+
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let Some(MessageBlock::Text(block)) = app.messages[0].blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Hello!");
+        assert!(block.has_source_message_uuid("assistant-part-1"));
+        assert!(block.has_source_message_uuid("assistant-part-2"));
     }
 }

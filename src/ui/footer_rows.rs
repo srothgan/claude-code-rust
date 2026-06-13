@@ -549,6 +549,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "perm-1".into(),
+                source_message_uuids: Vec::new(),
                 title: "Read".into(),
                 sdk_tool_name: "Read".into(),
                 raw_input: None,

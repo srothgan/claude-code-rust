@@ -187,6 +187,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-schedule-wakeup".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "ScheduleWakeup".to_owned(),
             sdk_tool_name: "ScheduleWakeup".to_owned(),
             raw_input: Some(raw_input),

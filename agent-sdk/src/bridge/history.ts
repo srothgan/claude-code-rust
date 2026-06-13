@@ -31,15 +31,28 @@ function messageCandidates(raw: unknown): Record<string, unknown>[] {
   return candidates;
 }
 
-function pushResumeTextChunk(updates: SessionUpdate[], role: "user" | "assistant", text: string): void {
+function pushResumeTextChunk(
+  updates: SessionUpdate[],
+  role: "user" | "assistant",
+  text: string,
+  sourceMessageUuid?: string,
+): void {
   if (!text.trim()) {
     return;
   }
   if (role === "assistant") {
-    updates.push({ type: "agent_message_chunk", content: { type: "text", text } });
+    updates.push({
+      type: "agent_message_chunk",
+      content: { type: "text", text },
+      ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+    });
     return;
   }
-  updates.push({ type: "user_message_chunk", content: { type: "text", text } });
+  updates.push({
+    type: "user_message_chunk",
+    content: { type: "text", text },
+    ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+  });
 }
 
 function pushResumeToolUse(
@@ -48,6 +61,7 @@ function pushResumeToolUse(
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
   parentToolUseId: string | null,
+  sourceMessageUuid?: string,
 ): void {
   const toolUseId = typeof block.id === "string" ? block.id : "";
   if (!toolUseId) {
@@ -63,6 +77,9 @@ function pushResumeToolUse(
 
   const toolCall = createToolCall(toolUseId, name, input, parentToolUseId);
   toolCall.status = "in_progress";
+  if (sourceMessageUuid) {
+    toolCall.source_message_uuid = sourceMessageUuid;
+  }
   toolCalls.set(toolUseId, toolCall);
   updates.push({ type: "tool_call", tool_call: toolCall });
 }
@@ -72,6 +89,7 @@ function pushResumeToolResult(
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
+  sourceMessageUuid?: string,
 ): void {
   const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
   if (!toolUseId) {
@@ -85,7 +103,14 @@ function pushResumeToolResult(
   const isError = Boolean(block.is_error);
   const base = toolCalls.get(toolUseId);
   const fields = buildToolResultFields(isError, block.content, base, block);
-  updates.push({ type: "tool_call_update", tool_call_update: { tool_call_id: toolUseId, fields } });
+  updates.push({
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: toolUseId,
+      ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+      fields,
+    },
+  });
 
   if (!base) {
     return;
@@ -148,7 +173,10 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
 
   for (const entry of messages) {
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
+    const entrySourceMessageUuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
     for (const message of messageCandidates(entry.message)) {
+      const sourceMessageUuid =
+        typeof message.uuid === "string" ? message.uuid : entrySourceMessageUuid;
       const roleCandidate = message.role;
       const role = roleCandidate === "assistant" || roleCandidate === "user" ? roleCandidate : fallbackRole;
       const parentToolUseId =
@@ -169,19 +197,26 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
           continue;
         }
         if (blockType === "text" && typeof block.text === "string") {
-          pushResumeTextChunk(updates, role, block.text);
+          pushResumeTextChunk(updates, role, block.text, sourceMessageUuid);
           continue;
         }
         if (isToolUseBlockType(blockType) && role === "assistant") {
-          pushResumeToolUse(updates, toolCalls, hiddenToolUseIds, block, parentToolUseId);
+          pushResumeToolUse(
+            updates,
+            toolCalls,
+            hiddenToolUseIds,
+            block,
+            parentToolUseId,
+            sourceMessageUuid,
+          );
           continue;
         }
         if (TOOL_RESULT_TYPES.has(blockType)) {
-          pushResumeToolResult(updates, toolCalls, hiddenToolUseIds, block);
+          pushResumeToolResult(updates, toolCalls, hiddenToolUseIds, block, sourceMessageUuid);
           continue;
         }
         if (blockType === "image") {
-          pushResumeTextChunk(updates, role, "[image]");
+          pushResumeTextChunk(updates, role, "[image]", sourceMessageUuid);
         }
       }
     }

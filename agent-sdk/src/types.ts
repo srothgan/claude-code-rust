@@ -168,6 +168,7 @@ export interface ToolCall {
   title: string;
   kind: string;
   status: string;
+  source_message_uuid?: string;
   content: ToolCallContent[];
   raw_input?: Json;
   raw_output?: string;
@@ -192,7 +193,26 @@ export interface ToolCallUpdateFields {
 
 export interface ToolCallUpdate {
   tool_call_id: string;
+  source_message_uuid?: string;
   fields: ToolCallUpdateFields;
+}
+
+export type TranscriptRetractionReason =
+  | "model_refusal_fallback"
+  | "model_fallback"
+  | "assistant_supersedes";
+
+export interface TranscriptRetraction {
+  message_uuids: string[];
+  reason: TranscriptRetractionReason;
+  request_id?: string;
+  trigger?: string;
+  direction?: string;
+  original_model?: string;
+  fallback_model?: string;
+  api_refusal_category?: string;
+  api_refusal_explanation?: string;
+  content?: string;
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
@@ -224,11 +244,12 @@ export interface TaskStateUpdate {
 }
 
 export type SessionUpdate =
-  | { type: "agent_message_chunk"; content: ContentBlock }
-  | { type: "user_message_chunk"; content: ContentBlock }
-  | { type: "agent_thought_chunk"; content: ContentBlock }
+  | { type: "agent_message_chunk"; content: ContentBlock; source_message_uuid?: string }
+  | { type: "user_message_chunk"; content: ContentBlock; source_message_uuid?: string }
+  | { type: "agent_thought_chunk"; content: ContentBlock; source_message_uuid?: string }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
+  | ({ type: "transcript_retraction" } & TranscriptRetraction)
   | ({ type: "task_state_update" } & TaskStateUpdate)
   | {
       type: "available_commands_update";

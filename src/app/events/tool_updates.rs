@@ -109,6 +109,7 @@ fn apply_tool_call_update_to_indexed_block(
     {
         let tc = tc.as_mut();
         let mut changed = false;
+        changed |= tc.add_source_message_uuid(tcu.source_message_uuid.as_deref());
         changed |= apply_tool_call_status_update(tc, tcu.fields.status);
         changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
         changed |= apply_tool_call_content_update(
@@ -640,6 +641,7 @@ mod tests {
     ) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
+            source_message_uuids: Vec::new(),
             title: format!("tool {id}"),
             sdk_tool_name: "Bash".to_owned(),
             raw_input: None,
@@ -668,6 +670,7 @@ mod tests {
     fn make_task_tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
+            source_message_uuids: Vec::new(),
             title: format!("task {id}"),
             sdk_tool_name: "Agent".to_owned(),
             raw_input: None,

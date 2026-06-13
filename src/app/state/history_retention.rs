@@ -312,7 +312,7 @@ impl super::App {
         *old_bytes = new_bytes;
     }
 
-    pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+    pub(crate) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
         self.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids.clear();

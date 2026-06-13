@@ -116,9 +116,13 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
             block.text.push_str(&text.text);
             block.markdown.append(&text.text);
+            block.add_source_message_uuid(chunk.source_message_uuid.as_deref());
             block.cache.invalidate();
         } else {
-            last.blocks.push(MessageBlock::Text(TextBlock::from_complete(&text.text)));
+            last.blocks.push(MessageBlock::Text(
+                TextBlock::from_complete(&text.text)
+                    .with_source_message_uuid(chunk.source_message_uuid.as_deref()),
+            ));
         }
         let last_idx = app.messages.len().saturating_sub(1);
         app.sync_after_message_blocks_changed(last_idx);
@@ -127,7 +131,10 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
     app.push_message_tracked(ChatMessage::new(
         MessageRole::User,
-        vec![MessageBlock::Text(TextBlock::from_complete(&text.text))],
+        vec![MessageBlock::Text(
+            TextBlock::from_complete(&text.text)
+                .with_source_message_uuid(chunk.source_message_uuid.as_deref()),
+        )],
         None,
     ));
 }

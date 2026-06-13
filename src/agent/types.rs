@@ -169,6 +169,7 @@ pub struct ToolCall {
     pub title: String,
     pub kind: String,
     pub status: String,
+    pub source_message_uuid: Option<String>,
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
@@ -181,7 +182,30 @@ pub struct ToolCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallUpdate {
     pub tool_call_id: String,
+    pub source_message_uuid: Option<String>,
     pub fields: ToolCallUpdateFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptRetractionReason {
+    ModelRefusalFallback,
+    ModelFallback,
+    AssistantSupersedes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRetraction {
+    pub message_uuids: Vec<String>,
+    pub reason: TranscriptRetractionReason,
+    pub request_id: Option<String>,
+    pub trigger: Option<String>,
+    pub direction: Option<String>,
+    pub original_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub api_refusal_category: Option<String>,
+    pub api_refusal_explanation: Option<String>,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -295,18 +319,25 @@ pub struct TaskStateUpdate {
 pub enum SessionUpdate {
     AgentMessageChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     UserMessageChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     AgentThoughtChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     ToolCall {
         tool_call: ToolCall,
     },
     ToolCallUpdate {
         tool_call_update: ToolCallUpdate,
+    },
+    TranscriptRetraction {
+        #[serde(flatten)]
+        retraction: TranscriptRetraction,
     },
     TaskStateUpdate {
         #[serde(flatten)]
@@ -756,7 +787,7 @@ mod tests {
     use super::{
         AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerStatus,
         McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus, SessionUpdate,
-        SystemNoticeSeverity,
+        SystemNoticeSeverity, TranscriptRetractionReason,
     };
 
     #[test]
@@ -954,6 +985,48 @@ mod tests {
         assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
         assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
         assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
+    }
+
+    #[test]
+    fn transcript_retraction_deserializes_with_metadata() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "transcript_retraction",
+            "message_uuids": ["assistant-old", "tool-result-old"],
+            "reason": "model_refusal_fallback",
+            "request_id": "req-1",
+            "trigger": "refusal",
+            "direction": "retry",
+            "original_model": "claude-opus-4-1",
+            "fallback_model": "claude-sonnet-4-5",
+            "api_refusal_category": "cyber",
+            "api_refusal_explanation": "policy text",
+            "content": "Retried with fallback model"
+        }))
+        .expect("deserialize transcript retraction");
+
+        let SessionUpdate::TranscriptRetraction { retraction } = update else {
+            panic!("expected transcript retraction");
+        };
+        assert_eq!(retraction.message_uuids, vec!["assistant-old", "tool-result-old"]);
+        assert_eq!(retraction.reason, TranscriptRetractionReason::ModelRefusalFallback);
+        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
+        assert_eq!(retraction.original_model.as_deref(), Some("claude-opus-4-1"));
+        assert_eq!(retraction.fallback_model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn transcript_updates_deserialize_source_message_uuid() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "agent_message_chunk",
+            "source_message_uuid": "assistant-1",
+            "content": { "type": "text", "text": "hello" }
+        }))
+        .expect("deserialize source-tagged chunk");
+
+        let SessionUpdate::AgentMessageChunk { source_message_uuid, .. } = update else {
+            panic!("expected agent message chunk");
+        };
+        assert_eq!(source_message_uuid.as_deref(), Some("assistant-1"));
     }
 
     #[test]

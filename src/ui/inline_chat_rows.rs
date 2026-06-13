@@ -1302,6 +1302,7 @@ mod tests {
     ) -> MessageBlock {
         let mut tool = ToolCallInfo {
             id: id.to_owned(),
+            source_message_uuids: Vec::new(),
             title: "Child Tool".to_owned(),
             sdk_tool_name: "Bash".to_owned(),
             raw_input: None,

@@ -310,6 +310,7 @@ impl TextBlockSpacing {
 
 pub struct TextBlock {
     pub id: MessageBlockId,
+    pub source_message_uuids: Vec<String>,
     pub text: String,
     pub cache: BlockCache,
     pub markdown: IncrementalMarkdown,
@@ -332,6 +333,7 @@ impl TextBlock {
     pub fn new_with_id(id: MessageBlockId, text: String) -> Self {
         Self {
             id,
+            source_message_uuids: Vec::new(),
             markdown: IncrementalMarkdown::from_complete(&text),
             text,
             cache: BlockCache::default(),
@@ -342,6 +344,38 @@ impl TextBlock {
     #[must_use]
     pub fn from_complete(text: &str) -> Self {
         Self::new(text.to_owned())
+    }
+
+    #[must_use]
+    pub fn with_source_message_uuid(mut self, source_message_uuid: Option<&str>) -> Self {
+        self.add_source_message_uuid(source_message_uuid);
+        self
+    }
+
+    #[must_use]
+    pub fn with_source_message_uuids(mut self, source_message_uuids: Vec<String>) -> Self {
+        for source_message_uuid in source_message_uuids {
+            self.add_source_message_uuid(Some(&source_message_uuid));
+        }
+        self
+    }
+
+    pub fn add_source_message_uuid(&mut self, source_message_uuid: Option<&str>) -> bool {
+        let Some(source_message_uuid) =
+            source_message_uuid.map(str::trim).filter(|uuid| !uuid.is_empty())
+        else {
+            return false;
+        };
+        if self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid) {
+            return false;
+        }
+        self.source_message_uuids.push(source_message_uuid.to_owned());
+        true
+    }
+
+    #[must_use]
+    pub fn has_source_message_uuid(&self, source_message_uuid: &str) -> bool {
+        self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid)
     }
 
     #[must_use]

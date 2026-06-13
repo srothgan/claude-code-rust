@@ -685,6 +685,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
                 id: tool_id.to_owned(),
+                source_message_uuids: Vec::new(),
                 title: "tool".to_owned(),
                 sdk_tool_name: "Bash".to_owned(),
                 raw_input: None,

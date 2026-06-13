@@ -6,6 +6,7 @@ use crate::agent::model;
 
 pub struct ToolCallInfo {
     pub id: String,
+    pub source_message_uuids: Vec<String>,
     pub title: String,
     /// The SDK tool name from `meta.claudeCode.toolName` when available.
     /// Falls back to a derived name when metadata is absent.
@@ -46,6 +47,24 @@ pub enum TerminalSnapshotMode {
 }
 
 impl ToolCallInfo {
+    pub fn add_source_message_uuid(&mut self, source_message_uuid: Option<&str>) -> bool {
+        let Some(source_message_uuid) =
+            source_message_uuid.map(str::trim).filter(|uuid| !uuid.is_empty())
+        else {
+            return false;
+        };
+        if self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid) {
+            return false;
+        }
+        self.source_message_uuids.push(source_message_uuid.to_owned());
+        true
+    }
+
+    #[must_use]
+    pub fn has_source_message_uuid(&self, source_message_uuid: &str) -> bool {
+        self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid)
+    }
+
     pub(crate) fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
         serde_json::to_string(value).map_or(0, |json| json.len())
     }

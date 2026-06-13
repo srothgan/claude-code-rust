@@ -229,6 +229,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-repl".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "REPL".to_owned(),
             sdk_tool_name: "REPL".to_owned(),
             raw_input: Some(raw_input),

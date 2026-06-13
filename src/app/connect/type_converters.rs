@@ -265,17 +265,23 @@ pub(super) fn convert_account_info(account: types::AccountInfo) -> model::Accoun
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
-        types::SessionUpdate::UserMessageChunk { content } => {
+        types::SessionUpdate::UserMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::UserMessageChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
-        types::SessionUpdate::AgentMessageChunk { content } => {
+        types::SessionUpdate::AgentMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
-        types::SessionUpdate::AgentThoughtChunk { content } => {
+        types::SessionUpdate::AgentThoughtChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentThoughtChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentThoughtChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
         types::SessionUpdate::ToolCall { tool_call } => {
             Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
@@ -283,6 +289,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
             Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
         }
+        types::SessionUpdate::TranscriptRetraction { retraction } => Some(
+            model::SessionUpdate::TranscriptRetraction(convert_transcript_retraction(retraction)),
+        ),
         types::SessionUpdate::TaskStateUpdate { update: task_update } => {
             Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
         }
@@ -512,6 +521,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         title,
         kind,
         status,
+        source_message_uuid,
         content,
         raw_input,
         raw_output,
@@ -524,6 +534,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     let mut tc = model::ToolCall::new(tool_call_id, title)
         .kind(convert_tool_kind(&kind))
         .status(convert_tool_status(&status))
+        .source_message_uuid(source_message_uuid)
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
         .locations(
             locations
@@ -563,7 +574,8 @@ pub(super) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
     let mut out = model::ToolCallUpdate::new(
         update.tool_call_id,
         convert_tool_call_update_fields(update.fields),
-    );
+    )
+    .source_message_uuid(update.source_message_uuid);
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }
@@ -609,6 +621,33 @@ pub(super) fn convert_tool_call_to_fields(
     }
 
     fields
+}
+
+fn convert_transcript_retraction(
+    retraction: types::TranscriptRetraction,
+) -> model::TranscriptRetraction {
+    model::TranscriptRetraction {
+        message_uuids: retraction.message_uuids,
+        reason: match retraction.reason {
+            types::TranscriptRetractionReason::ModelRefusalFallback => {
+                model::TranscriptRetractionReason::ModelRefusalFallback
+            }
+            types::TranscriptRetractionReason::ModelFallback => {
+                model::TranscriptRetractionReason::ModelFallback
+            }
+            types::TranscriptRetractionReason::AssistantSupersedes => {
+                model::TranscriptRetractionReason::AssistantSupersedes
+            }
+        },
+        request_id: retraction.request_id,
+        trigger: retraction.trigger,
+        direction: retraction.direction,
+        original_model: retraction.original_model,
+        fallback_model: retraction.fallback_model,
+        api_refusal_category: retraction.api_refusal_category,
+        api_refusal_explanation: retraction.api_refusal_explanation,
+        content: retraction.content,
+    }
 }
 
 pub(super) fn convert_tool_call_update_fields(
@@ -794,7 +833,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_account_info, convert_current_model, convert_tool_call,
+        convert_account_info, convert_current_model, convert_tool_call, convert_tool_call_update,
         convert_tool_call_update_fields, map_available_commands_update, map_available_models,
         map_permission_request, map_question_request, map_session_update,
     };
@@ -1022,6 +1061,46 @@ mod tests {
     }
 
     #[test]
+    fn map_session_update_preserves_source_message_uuid() {
+        let mapped = map_session_update(types::SessionUpdate::AgentMessageChunk {
+            content: types::ContentBlock::Text { text: "hello".to_owned() },
+            source_message_uuid: Some("assistant-1".to_owned()),
+        })
+        .expect("message chunk should map");
+
+        let model::SessionUpdate::AgentMessageChunk(chunk) = mapped else {
+            panic!("expected agent message chunk");
+        };
+        assert_eq!(chunk.source_message_uuid.as_deref(), Some("assistant-1"));
+    }
+
+    #[test]
+    fn map_session_update_converts_transcript_retraction() {
+        let mapped = map_session_update(types::SessionUpdate::TranscriptRetraction {
+            retraction: types::TranscriptRetraction {
+                message_uuids: vec!["old-1".to_owned()],
+                reason: types::TranscriptRetractionReason::AssistantSupersedes,
+                request_id: Some("req-1".to_owned()),
+                trigger: None,
+                direction: None,
+                original_model: None,
+                fallback_model: None,
+                api_refusal_category: None,
+                api_refusal_explanation: None,
+                content: None,
+            },
+        })
+        .expect("transcript retraction should map");
+
+        let model::SessionUpdate::TranscriptRetraction(retraction) = mapped else {
+            panic!("expected transcript retraction");
+        };
+        assert_eq!(retraction.message_uuids, vec!["old-1"]);
+        assert_eq!(retraction.reason, model::TranscriptRetractionReason::AssistantSupersedes);
+        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
+    }
+
+    #[test]
     fn map_permission_request_preserves_display_metadata() {
         let (request, tool_call_id) = map_permission_request(
             "session-1",
@@ -1031,6 +1110,7 @@ mod tests {
                     title: "Bash npm test".to_owned(),
                     kind: "execute".to_owned(),
                     status: "in_progress".to_owned(),
+                    source_message_uuid: None,
                     content: Vec::new(),
                     raw_input: None,
                     raw_output: None,
@@ -1075,6 +1155,7 @@ mod tests {
                     title: "Pick target".to_owned(),
                     kind: "other".to_owned(),
                     status: "in_progress".to_owned(),
+                    source_message_uuid: None,
                     content: Vec::new(),
                     raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
                     raw_output: None,
@@ -1163,6 +1244,17 @@ mod tests {
     }
 
     #[test]
+    fn convert_tool_call_update_preserves_source_message_uuid() {
+        let update = convert_tool_call_update(types::ToolCallUpdate {
+            tool_call_id: "tool-1".to_owned(),
+            source_message_uuid: Some("user-result".to_owned()),
+            fields: types::ToolCallUpdateFields::default(),
+        });
+
+        assert_eq!(update.source_message_uuid.as_deref(), Some("user-result"));
+    }
+
+    #[test]
     fn map_available_commands_update_preserves_source_and_generation() {
         let update = map_available_commands_update(
             vec![types::AvailableCommand {
@@ -1227,6 +1319,7 @@ mod tests {
             title: "Agent task".to_owned(),
             kind: "think".to_owned(),
             status: "killed".to_owned(),
+            source_message_uuid: Some("assistant-tool".to_owned()),
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -1245,6 +1338,7 @@ mod tests {
         });
 
         assert_eq!(tool_call.status, model::ToolCallStatus::Killed);
+        assert_eq!(tool_call.source_message_uuid.as_deref(), Some("assistant-tool"));
         assert_eq!(
             tool_call.task_metadata,
             Some(
@@ -1267,6 +1361,7 @@ mod tests {
             title: "Write src/main.rs".to_owned(),
             kind: "edit".to_owned(),
             status: "completed".to_owned(),
+            source_message_uuid: None,
             content: vec![types::ToolCallContent::Diff {
                 old_path: "src/main.rs".to_owned(),
                 new_path: "src/main.rs".to_owned(),
@@ -1299,6 +1394,7 @@ mod tests {
             title: "ReadMcpResource docs file://manual.pdf".to_owned(),
             kind: "read".to_owned(),
             status: "completed".to_owned(),
+            source_message_uuid: None,
             content: vec![types::ToolCallContent::McpResource {
                 uri: "file://manual.pdf".to_owned(),
                 mime_type: Some("application/pdf".to_owned()),

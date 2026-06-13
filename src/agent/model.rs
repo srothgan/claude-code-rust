@@ -110,12 +110,19 @@ impl Content {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentChunk {
     pub content: ContentBlock,
+    pub source_message_uuid: Option<String>,
 }
 
 impl ContentChunk {
     #[must_use]
     pub fn new(content: ContentBlock) -> Self {
-        Self { content }
+        Self { content, source_message_uuid: None }
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
+        self
     }
 }
 
@@ -363,6 +370,7 @@ pub struct ToolCall {
     pub title: String,
     pub kind: ToolKind,
     pub status: ToolCallStatus,
+    pub source_message_uuid: Option<String>,
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
@@ -380,6 +388,7 @@ impl ToolCall {
             title: title.into(),
             kind: ToolKind::Think,
             status: ToolCallStatus::Pending,
+            source_message_uuid: None,
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -399,6 +408,12 @@ impl ToolCall {
     #[must_use]
     pub fn status(mut self, status: ToolCallStatus) -> Self {
         self.status = status;
+        self
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
         self
     }
 
@@ -523,6 +538,7 @@ impl ToolCallUpdateFields {
 #[allow(clippy::struct_field_names)]
 pub struct ToolCallUpdate {
     pub tool_call_id: String,
+    pub source_message_uuid: Option<String>,
     pub fields: ToolCallUpdateFields,
     pub meta: Option<serde_json::Value>,
 }
@@ -530,7 +546,13 @@ pub struct ToolCallUpdate {
 impl ToolCallUpdate {
     #[must_use]
     pub fn new(tool_call_id: impl Into<String>, fields: ToolCallUpdateFields) -> Self {
-        Self { tool_call_id: tool_call_id.into(), fields, meta: None }
+        Self { tool_call_id: tool_call_id.into(), source_message_uuid: None, fields, meta: None }
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
+        self
     }
 
     #[must_use]
@@ -1245,6 +1267,28 @@ pub struct CompactionBoundary {
     pub pre_tokens: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptRetractionReason {
+    ModelRefusalFallback,
+    ModelFallback,
+    AssistantSupersedes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRetraction {
+    pub message_uuids: Vec<String>,
+    pub reason: TranscriptRetractionReason,
+    pub request_id: Option<String>,
+    pub trigger: Option<String>,
+    pub direction: Option<String>,
+    pub original_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub api_refusal_category: Option<String>,
+    pub api_refusal_explanation: Option<String>,
+    pub content: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
@@ -1252,6 +1296,7 @@ pub enum SessionUpdate {
     AgentThoughtChunk(ContentChunk),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
+    TranscriptRetraction(TranscriptRetraction),
     TaskStateUpdate(TaskStateUpdate),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),

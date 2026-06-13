@@ -165,6 +165,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-workflow".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "Workflow".to_owned(),
             sdk_tool_name: "Workflow".to_owned(),
             raw_input: Some(raw_input),
