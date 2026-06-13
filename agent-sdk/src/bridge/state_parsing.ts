@@ -110,7 +110,9 @@ export function buildRateLimitUpdate(
     update.overage_disabled_reason = info.overageDisabledReason;
   }
 
-  if (typeof info.isUsingOverage === "boolean") {
+  if (typeof info.overageInUse === "boolean") {
+    update.is_using_overage = info.overageInUse;
+  } else if (typeof info.isUsingOverage === "boolean") {
     update.is_using_overage = info.isUsingOverage;
   }
 

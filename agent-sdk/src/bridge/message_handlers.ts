@@ -1227,6 +1227,27 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "rate_limit_event") {
     const rateLimitInfo = asRecordOrNull(msg.rate_limit_info);
     const update = buildRateLimitUpdate(msg.rate_limit_info);
+    const rawIsUsingOverage =
+      typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined;
+    const rawOverageInUse =
+      typeof rateLimitInfo?.overageInUse === "boolean" ? rateLimitInfo.overageInUse : undefined;
+    if (
+      rawIsUsingOverage !== undefined &&
+      rawOverageInUse !== undefined &&
+      rawIsUsingOverage !== rawOverageInUse
+    ) {
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "sdk_rate_limit_overage_spelling_conflict",
+        message: "SDK rate limit overage booleans conflict",
+        outcome: "using_overageInUse",
+        sessionId: session.sessionId,
+        fields: {
+          raw_is_using_overage: rawIsUsingOverage,
+          raw_overage_in_use: rawOverageInUse,
+        },
+      });
+    }
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "sdk_rate_limit_event_received",
@@ -1242,8 +1263,8 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         raw_overage_status:
           typeof rateLimitInfo?.overageStatus === "string" ? rateLimitInfo.overageStatus : undefined,
         raw_overage_resets_at: numberField(rateLimitInfo ?? {}, "overageResetsAt"),
-        raw_is_using_overage:
-          typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined,
+        raw_is_using_overage: rawIsUsingOverage,
+        raw_overage_in_use: rawOverageInUse,
         raw_surpassed_threshold: numberField(rateLimitInfo ?? {}, "surpassedThreshold"),
         parsed_status: update?.status,
         parsed_rate_limit_type: update?.rate_limit_type,

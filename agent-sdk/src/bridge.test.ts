@@ -3087,6 +3087,27 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
   });
 });
 
+test("buildRateLimitUpdate normalizes SDK overage boolean spellings", () => {
+  const cases = [
+    ["old spelling true", { isUsingOverage: true }, true],
+    ["old spelling false", { isUsingOverage: false }, false],
+    ["new spelling true", { overageInUse: true }, true],
+    ["new spelling false", { overageInUse: false }, false],
+    ["both spellings true", { isUsingOverage: true, overageInUse: true }, true],
+    ["both spellings false", { isUsingOverage: false, overageInUse: false }, false],
+    ["conflicting spellings prefer new true", { isUsingOverage: false, overageInUse: true }, true],
+    ["conflicting spellings prefer new false", { isUsingOverage: true, overageInUse: false }, false],
+  ] as const;
+
+  for (const [name, fields, expected] of cases) {
+    const update = buildRateLimitUpdate({
+      status: "allowed",
+      ...fields,
+    });
+    assert.equal(update?.is_using_overage, expected, name);
+  }
+});
+
 test("buildRateLimitUpdate rejects invalid payloads", () => {
   assert.equal(buildRateLimitUpdate(null), null);
   assert.equal(buildRateLimitUpdate({}), null);
@@ -4835,6 +4856,26 @@ test("handleResultMessage emits terminal reason on successful turn completion", 
     event: "turn_complete",
     session_id: "session-1",
     terminal_reason: "completed",
+  });
+});
+
+test("handleResultMessage ignores success result telemetry fields", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      ttft_stream_ms: 42,
+      time_to_request_ms: 12,
+      time_to_request_from_spawn_ms: 7,
+      warm_spare_claimed: true,
+    });
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "turn_complete",
+    session_id: "session-1",
   });
 });
 
