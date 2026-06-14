@@ -431,7 +431,9 @@ fn execute_interaction_action(
     action: InteractionAction,
     key: KeyEvent,
 ) -> KeyOutcome {
-    if questions::has_focused_question(app) {
+    if super::inline_interactions::has_focused_user_dialog(app) {
+        super::user_dialog::execute_user_dialog_action(app, action, key)
+    } else if questions::has_focused_question(app) {
         questions::execute_question_action(app, action, key)
     } else {
         permissions::execute_permission_action(app, action, key)

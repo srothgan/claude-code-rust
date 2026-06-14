@@ -110,12 +110,19 @@ impl Content {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentChunk {
     pub content: ContentBlock,
+    pub source_message_uuid: Option<String>,
 }
 
 impl ContentChunk {
     #[must_use]
     pub fn new(content: ContentBlock) -> Self {
-        Self { content }
+        Self { content, source_message_uuid: None }
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
+        self
     }
 }
 
@@ -283,10 +290,29 @@ impl McpServerToolPermissionPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpServerOrgMaxPermission {
+    Allow,
+    Ask,
+    Blocked,
+}
+
+impl McpServerOrgMaxPermission {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Ask => "ask",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerToolPolicy {
     pub name: String,
-    pub permission_policy: McpServerToolPermissionPolicy,
+    pub permission_policy: Option<McpServerToolPermissionPolicy>,
+    pub org_max_permission: Option<McpServerOrgMaxPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +389,7 @@ pub struct ToolCall {
     pub title: String,
     pub kind: ToolKind,
     pub status: ToolCallStatus,
+    pub source_message_uuid: Option<String>,
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<serde_json::Value>,
@@ -380,6 +407,7 @@ impl ToolCall {
             title: title.into(),
             kind: ToolKind::Think,
             status: ToolCallStatus::Pending,
+            source_message_uuid: None,
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -399,6 +427,12 @@ impl ToolCall {
     #[must_use]
     pub fn status(mut self, status: ToolCallStatus) -> Self {
         self.status = status;
+        self
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
         self
     }
 
@@ -523,6 +557,7 @@ impl ToolCallUpdateFields {
 #[allow(clippy::struct_field_names)]
 pub struct ToolCallUpdate {
     pub tool_call_id: String,
+    pub source_message_uuid: Option<String>,
     pub fields: ToolCallUpdateFields,
     pub meta: Option<serde_json::Value>,
 }
@@ -530,7 +565,13 @@ pub struct ToolCallUpdate {
 impl ToolCallUpdate {
     #[must_use]
     pub fn new(tool_call_id: impl Into<String>, fields: ToolCallUpdateFields) -> Self {
-        Self { tool_call_id: tool_call_id.into(), fields, meta: None }
+        Self { tool_call_id: tool_call_id.into(), source_message_uuid: None, fields, meta: None }
+    }
+
+    #[must_use]
+    pub fn source_message_uuid(mut self, source_message_uuid: Option<String>) -> Self {
+        self.source_message_uuid = source_message_uuid.filter(|uuid| !uuid.trim().is_empty());
+        self
     }
 
     #[must_use]
@@ -564,6 +605,24 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
+    pub agent: Option<AgentOutputMetadata>,
+    pub web_fetch: Option<WebFetchOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentOutputMetadata {
+    pub resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchOutputMetadata {
+    pub artifact_read: Option<WebFetchArtifactReadMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchArtifactReadMetadata {
+    pub slug: String,
+    pub ver: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -575,6 +634,12 @@ pub struct TaskMetadata {
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
+    pub task_type: Option<String>,
+    pub workflow_name: Option<String>,
+    pub prompt: Option<String>,
+    pub output_file: Option<String>,
+    pub summary: Option<String>,
+    pub terminal_status: Option<String>,
 }
 
 impl TaskMetadata {
@@ -624,6 +689,42 @@ impl TaskMetadata {
         self.task_description = task_description;
         self
     }
+
+    #[must_use]
+    pub fn task_type(mut self, task_type: Option<String>) -> Self {
+        self.task_type = task_type;
+        self
+    }
+
+    #[must_use]
+    pub fn workflow_name(mut self, workflow_name: Option<String>) -> Self {
+        self.workflow_name = workflow_name;
+        self
+    }
+
+    #[must_use]
+    pub fn prompt(mut self, prompt: Option<String>) -> Self {
+        self.prompt = prompt;
+        self
+    }
+
+    #[must_use]
+    pub fn output_file(mut self, output_file: Option<String>) -> Self {
+        self.output_file = output_file;
+        self
+    }
+
+    #[must_use]
+    pub fn summary(mut self, summary: Option<String>) -> Self {
+        self.summary = summary;
+        self
+    }
+
+    #[must_use]
+    pub fn terminal_status(mut self, terminal_status: Option<String>) -> Self {
+        self.terminal_status = terminal_status;
+        self
+    }
 }
 
 impl ToolOutputMetadata {
@@ -636,6 +737,51 @@ impl ToolOutputMetadata {
     pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
         self.bash = bash;
         self
+    }
+
+    #[must_use]
+    pub fn agent(mut self, agent: Option<AgentOutputMetadata>) -> Self {
+        self.agent = agent;
+        self
+    }
+
+    #[must_use]
+    pub fn web_fetch(mut self, web_fetch: Option<WebFetchOutputMetadata>) -> Self {
+        self.web_fetch = web_fetch;
+        self
+    }
+}
+
+impl AgentOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn resolved_model(mut self, resolved_model: Option<String>) -> Self {
+        self.resolved_model = resolved_model;
+        self
+    }
+}
+
+impl WebFetchOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn artifact_read(mut self, artifact_read: Option<WebFetchArtifactReadMetadata>) -> Self {
+        self.artifact_read = artifact_read;
+        self
+    }
+}
+
+impl WebFetchArtifactReadMetadata {
+    #[must_use]
+    pub fn new(slug: impl Into<String>, ver: impl Into<String>) -> Self {
+        Self { slug: slug.into(), ver: ver.into() }
     }
 }
 
@@ -1245,6 +1391,28 @@ pub struct CompactionBoundary {
     pub pre_tokens: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptRetractionReason {
+    ModelRefusalFallback,
+    ModelFallback,
+    AssistantSupersedes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRetraction {
+    pub message_uuids: Vec<String>,
+    pub reason: TranscriptRetractionReason,
+    pub request_id: Option<String>,
+    pub trigger: Option<String>,
+    pub direction: Option<String>,
+    pub original_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub api_refusal_category: Option<String>,
+    pub api_refusal_explanation: Option<String>,
+    pub content: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
@@ -1252,6 +1420,7 @@ pub enum SessionUpdate {
     AgentThoughtChunk(ContentChunk),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
+    TranscriptRetraction(TranscriptRetraction),
     TaskStateUpdate(TaskStateUpdate),
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
@@ -1544,5 +1713,89 @@ impl RequestQuestionRequest {
         total_questions: usize,
     ) -> Self {
         Self { session_id: session_id.into(), tool_call, prompt, question_index, total_questions }
+    }
+}
+
+/// Snake-case payload of a `refusal_fallback_prompt` dialog. `original_model`
+/// and `fallback_model` are always present; the rest is optional metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RefusalFallbackPayload {
+    pub original_model: String,
+    pub fallback_model: String,
+    pub api_refusal_category: Option<String>,
+    pub guidance_text: Option<String>,
+    pub retracted_message_uuids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDialogOption {
+    pub option_id: String,
+    pub label: String,
+}
+
+impl UserDialogOption {
+    #[must_use]
+    pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { option_id: option_id.into(), label: label.into() }
+    }
+}
+
+/// Turn-level `request_user_dialog` request surfaced to the app. Keyed by a
+/// bridge-generated `request_id`; it has no tool-call anchor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestUserDialogRequest {
+    pub session_id: SessionId,
+    pub request_id: String,
+    pub dialog_kind: String,
+    pub payload: RefusalFallbackPayload,
+    pub options: Vec<UserDialogOption>,
+}
+
+impl RequestUserDialogRequest {
+    #[must_use]
+    pub fn new(
+        session_id: impl Into<SessionId>,
+        request_id: impl Into<String>,
+        dialog_kind: impl Into<String>,
+        payload: RefusalFallbackPayload,
+        options: Vec<UserDialogOption>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            dialog_kind: dialog_kind.into(),
+            payload,
+            options,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedUserDialogOutcome {
+    pub option_id: String,
+}
+
+impl SelectedUserDialogOutcome {
+    #[must_use]
+    pub fn new(option_id: impl Into<String>) -> Self {
+        Self { option_id: option_id.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestUserDialogOutcome {
+    Selected(SelectedUserDialogOutcome),
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestUserDialogResponse {
+    pub outcome: RequestUserDialogOutcome,
+}
+
+impl RequestUserDialogResponse {
+    #[must_use]
+    pub fn new(outcome: RequestUserDialogOutcome) -> Self {
+        Self { outcome }
     }
 }

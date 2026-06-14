@@ -1,7 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
+use crate::app::{
+    ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock, UserDialogBlock,
+};
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -101,11 +103,75 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
                     rows.push_blank();
                 }
             }
+            MessageBlock::UserDialog(dialog) => {
+                rows.push_lines(render_user_dialog_lines(dialog));
+                rows.push_blank();
+            }
             MessageBlock::ToolCall(_)
             | MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_) => {}
         }
     }
+}
+
+/// Render a `refusal_fallback_prompt` dialog as an inline selectable chooser.
+/// While pending, the focused option shows a `▸` arrow and a help line; once
+/// answered, the resolved choice is shown without controls.
+fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let title = if let Some(guidance) =
+        dialog.payload.guidance_text.as_deref().map(str::trim).filter(|text| !text.is_empty())
+    {
+        guidance.to_owned()
+    } else {
+        format!("{} declined this request.", dialog.payload.original_model)
+    };
+    lines.push(Line::from(Span::styled(
+        title,
+        Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    if dialog.answered {
+        let resolved = dialog
+            .options
+            .get(dialog.selected_index)
+            .map_or_else(|| "Declined".to_owned(), |option| option.label.clone());
+        lines.push(Line::from(Span::styled(
+            format!("  Resolved: {resolved}"),
+            Style::default().fg(theme::DIM),
+        )));
+        return lines;
+    }
+
+    for (index, option) in dialog.options.iter().enumerate() {
+        let is_selected = dialog.focused && index == dialog.selected_index;
+        let mut spans = Vec::new();
+        if is_selected {
+            spans.push(Span::styled(
+                "\u{25b8} ",
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw("  "));
+        }
+        let label_style = if is_selected {
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(option.label.clone(), label_style));
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::default());
+    let help = if dialog.focused {
+        "\u{2191}\u{2193} select  enter confirm  esc decline"
+    } else {
+        "\u{25cb} Waiting for input... (Tab to focus)"
+    };
+    lines.push(Line::from(Span::styled(help, Style::default().fg(theme::DIM))));
+    lines
 }
 
 fn text_block_lines(

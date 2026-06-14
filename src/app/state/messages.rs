@@ -4,6 +4,7 @@
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
 use super::types::MessageUsage;
+use crate::agent::model;
 use ratatui::style::Color;
 use ratatui::text::Line;
 use std::collections::hash_map::DefaultHasher;
@@ -310,6 +311,7 @@ impl TextBlockSpacing {
 
 pub struct TextBlock {
     pub id: MessageBlockId,
+    pub source_message_uuids: Vec<String>,
     pub text: String,
     pub cache: BlockCache,
     pub markdown: IncrementalMarkdown,
@@ -332,6 +334,7 @@ impl TextBlock {
     pub fn new_with_id(id: MessageBlockId, text: String) -> Self {
         Self {
             id,
+            source_message_uuids: Vec::new(),
             markdown: IncrementalMarkdown::from_complete(&text),
             text,
             cache: BlockCache::default(),
@@ -342,6 +345,38 @@ impl TextBlock {
     #[must_use]
     pub fn from_complete(text: &str) -> Self {
         Self::new(text.to_owned())
+    }
+
+    #[must_use]
+    pub fn with_source_message_uuid(mut self, source_message_uuid: Option<&str>) -> Self {
+        self.add_source_message_uuid(source_message_uuid);
+        self
+    }
+
+    #[must_use]
+    pub fn with_source_message_uuids(mut self, source_message_uuids: Vec<String>) -> Self {
+        for source_message_uuid in source_message_uuids {
+            self.add_source_message_uuid(Some(&source_message_uuid));
+        }
+        self
+    }
+
+    pub fn add_source_message_uuid(&mut self, source_message_uuid: Option<&str>) -> bool {
+        let Some(source_message_uuid) =
+            source_message_uuid.map(str::trim).filter(|uuid| !uuid.is_empty())
+        else {
+            return false;
+        };
+        if self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid) {
+            return false;
+        }
+        self.source_message_uuids.push(source_message_uuid.to_owned());
+        true
+    }
+
+    #[must_use]
+    pub fn has_source_message_uuid(&self, source_message_uuid: &str) -> bool {
+        self.source_message_uuids.iter().any(|uuid| uuid == source_message_uuid)
     }
 
     #[must_use]
@@ -411,6 +446,47 @@ pub enum MessageBlock {
     Welcome(WelcomeBlock),
     /// Indicates N images were attached to this user message.
     ImageAttachment(ImageAttachmentBlock),
+    /// Turn-level user dialog (e.g. `refusal_fallback_prompt`) rendered inline as
+    /// a selectable chooser. Not anchored to a tool call.
+    UserDialog(UserDialogBlock),
+}
+
+/// Inline chooser for a turn-level `request_user_dialog`. Carries the oneshot
+/// responder back to the bridge; `response_tx` is taken once the user answers.
+pub struct UserDialogBlock {
+    pub id: MessageBlockId,
+    pub request_id: String,
+    pub payload: model::RefusalFallbackPayload,
+    pub options: Vec<model::UserDialogOption>,
+    pub selected_index: usize,
+    /// Whether this dialog currently has keyboard focus (shows the selection
+    /// arrow and accepts navigation/confirm input).
+    pub focused: bool,
+    /// Set once the user has answered; the block then renders as resolved and is
+    /// removed from the focus queue.
+    pub answered: bool,
+    pub response_tx: Option<tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>>,
+    pub cache: BlockCache,
+}
+
+impl UserDialogBlock {
+    #[must_use]
+    pub fn new(
+        request: model::RequestUserDialogRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
+    ) -> Self {
+        Self {
+            id: MessageBlockId::new(),
+            request_id: request.request_id,
+            payload: request.payload,
+            options: request.options,
+            selected_index: 0,
+            focused: false,
+            answered: false,
+            response_tx: Some(response_tx),
+            cache: BlockCache::default(),
+        }
+    }
 }
 
 /// Lightweight block for image attachment indicators. Carries a [`BlockCache`]

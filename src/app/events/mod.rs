@@ -5,6 +5,7 @@ mod api_retry;
 mod client;
 mod notices;
 mod rate_limit;
+mod retraction;
 mod session;
 mod session_reset;
 mod streaming;
@@ -229,6 +230,7 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::AgentMessageChunk(_)
             | model::SessionUpdate::ToolCall(_)
             | model::SessionUpdate::ToolCallUpdate(_)
+            | model::SessionUpdate::TranscriptRetraction(_)
             | model::SessionUpdate::CompactionBoundary(_)
     );
     handle_session_update(app, update);
@@ -247,6 +249,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             tool_updates::handle_tool_call_update_session(app, &tcu);
+        }
+        model::SessionUpdate::TranscriptRetraction(retraction) => {
+            retraction::handle_transcript_retraction(app, &retraction);
         }
         model::SessionUpdate::TaskStateUpdate(update) => {
             tracing::debug!(
@@ -565,6 +570,7 @@ mod tests {
     fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
             id: id.into(),
+            source_message_uuids: Vec::new(),
             title: id.into(),
             sdk_tool_name: "Read".into(),
             raw_input: None,
@@ -583,6 +589,19 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+        }
+    }
+
+    fn installed_plugin_entry(id: &str) -> crate::app::plugins::InstalledPluginEntry {
+        crate::app::plugins::InstalledPluginEntry {
+            id: id.to_owned(),
+            version: None,
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            mcp_server_names: Vec::new(),
         }
     }
 
@@ -623,6 +642,30 @@ mod tests {
         )
     }
 
+    fn source_text(text: &str, source_message_uuid: &str) -> MessageBlock {
+        MessageBlock::Text(
+            TextBlock::from_complete(text).with_source_message_uuid(Some(source_message_uuid)),
+        )
+    }
+
+    fn transcript_retraction(
+        message_uuids: Vec<&str>,
+        reason: model::TranscriptRetractionReason,
+    ) -> model::SessionUpdate {
+        model::SessionUpdate::TranscriptRetraction(model::TranscriptRetraction {
+            message_uuids: message_uuids.into_iter().map(str::to_owned).collect(),
+            reason,
+            request_id: None,
+            trigger: None,
+            direction: None,
+            original_model: None,
+            fallback_model: None,
+            api_refusal_category: None,
+            api_refusal_explanation: None,
+            content: None,
+        })
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct MessageSnapshot {
         role: MessageRole,
@@ -654,6 +697,9 @@ mod tests {
         },
         ImageAttachment {
             count: usize,
+        },
+        UserDialog {
+            request_id: String,
         },
     }
 
@@ -691,6 +737,9 @@ mod tests {
             },
             MessageBlock::ImageAttachment(block) => {
                 BlockSnapshot::ImageAttachment { count: block.count }
+            }
+            MessageBlock::UserDialog(block) => {
+                BlockSnapshot::UserDialog { request_id: block.request_id.clone() }
             }
         }
     }
@@ -740,6 +789,94 @@ mod tests {
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 7);
     }
 
+    #[test]
+    fn transcript_retraction_removes_matching_text_blocks_only() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_msg(vec![
+            source_text("stale", "old-assistant"),
+            source_text("keep", "new-assistant"),
+        ]));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["old-assistant", "old-assistant", "unknown"],
+                model::TranscriptRetractionReason::ModelRefusalFallback,
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "keep");
+        assert!(block.has_source_message_uuid("new-assistant"));
+    }
+
+    #[test]
+    fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
+        let mut app = App::test_default();
+        let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
+        stale_tool.source_message_uuids =
+            vec!["assistant-tool".to_owned(), "user-result".to_owned()];
+        stale_tool.sdk_tool_name = "Bash".to_owned();
+        stale_tool.terminal_id = Some("term-old".to_owned());
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(stale_tool)),
+            source_text("replacement", "assistant-new"),
+        ]));
+        app.index_tool_call("tool-old".to_owned(), 0, 0);
+        app.sync_terminal_tool_call("term-old".to_owned(), 0, 0);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["user-result"],
+                model::TranscriptRetractionReason::ModelFallback,
+            )),
+        );
+
+        assert!(app.lookup_tool_call("tool-old").is_none());
+        assert!(app.terminal_tool_calls.is_empty());
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].blocks.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected replacement text");
+        };
+        assert_eq!(block.text, "replacement");
+    }
+
+    #[test]
+    fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(transcript_retraction(
+                vec!["assistant-old"],
+                model::TranscriptRetractionReason::AssistantSupersedes,
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                    "replacement",
+                )))
+                .source_message_uuid(Some("assistant-new".to_owned())),
+            )),
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+            panic!("expected replacement text");
+        };
+        assert_eq!(block.text, "replacement");
+        assert!(block.has_source_message_uuid("assistant-new"));
+    }
+
     fn first_block_text(msg: &ChatMessage) -> &str {
         match msg.blocks.first() {
             Some(MessageBlock::Text(block)) => &block.text,
@@ -748,6 +885,9 @@ mod tests {
             Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
             Some(MessageBlock::ImageAttachment(_)) => {
                 panic!("expected text-like block, found image attachment")
+            }
+            Some(MessageBlock::UserDialog(_)) => {
+                panic!("expected text-like block, found user dialog")
             }
             None => panic!("expected message block"),
         }
@@ -1087,7 +1227,8 @@ mod tests {
                 MessageBlock::Notice(notice) => notice.text.text == expected,
                 MessageBlock::ToolCall(_)
                 | MessageBlock::Welcome(_)
-                | MessageBlock::ImageAttachment(_) => false,
+                | MessageBlock::ImageAttachment(_)
+                | MessageBlock::UserDialog(_) => false,
             })
         })
     }
@@ -1690,6 +1831,15 @@ mod tests {
             scope: None,
             tools: Vec::new(),
         });
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "supabase".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -1702,6 +1852,7 @@ mod tests {
         );
         assert!(app.mcp.in_flight);
         assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp.removed_config_servers.is_empty());
     }
 
     #[test]
@@ -1838,16 +1989,7 @@ mod tests {
             api_key_source: None,
             api_provider: None,
         });
-        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
-            id: "old-plugin".into(),
-            version: None,
-            scope: "user".into(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
-        });
+        app.plugins.installed.push(installed_plugin_entry("old-plugin"));
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
         app.config.pending_session_title_change =
             Some(crate::app::config::PendingSessionTitleChangeState {
@@ -2089,6 +2231,7 @@ mod tests {
         assert!(app.tasks.is_empty());
         assert!(app.mention.is_none());
         assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp.removed_config_servers.is_empty());
         assert_eq!(app.cwd_raw, "/replacement");
         assert_eq!(app.cwd, "/replacement");
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
@@ -2290,12 +2433,135 @@ mod tests {
                     scope: None,
                     tools: Vec::new(),
                 }],
+                source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
                 error: None,
             },
         );
 
         assert_eq!(app.mcp.servers.len(), 1);
         assert_eq!(app.mcp.servers[0].name, "current");
+    }
+
+    #[test]
+    fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![
+                    crate::agent::model::McpServerStatus {
+                        name: "notion".into(),
+                        status: crate::agent::model::McpServerConnectionStatus::Connected,
+                        server_info: None,
+                        error: None,
+                        config: None,
+                        scope: Some("user".into()),
+                        tools: Vec::new(),
+                    },
+                    crate::agent::model::McpServerStatus {
+                        name: "fff".into(),
+                        status: crate::agent::model::McpServerConnectionStatus::Connected,
+                        server_info: None,
+                        error: None,
+                        config: None,
+                        scope: Some("user".into()),
+                        tools: Vec::new(),
+                    },
+                ],
+                source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
+                error: None,
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
+        assert_eq!(app.mcp.removed_config_servers.len(), 1);
+    }
+
+    #[test]
+    fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![crate::agent::model::McpServerStatus {
+                    name: "fff".into(),
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
+                    server_info: None,
+                    error: None,
+                    config: None,
+                    scope: Some("user".into()),
+                    tools: Vec::new(),
+                }],
+                source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
+                error: None,
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
+        assert!(app.mcp.removed_config_servers.is_empty());
+    }
+
+    #[test]
+    fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![crate::agent::model::McpServerStatus {
+                    name: "fff".into(),
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
+                    server_info: None,
+                    error: None,
+                    config: None,
+                    scope: Some("user".into()),
+                    tools: Vec::new(),
+                }],
+                source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
+                error: Some("reload failed".to_owned()),
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
+        assert_eq!(app.mcp.removed_config_servers.len(), 1);
     }
 
     #[test]
@@ -2332,16 +2598,7 @@ mod tests {
             ClientEvent::PluginsInventoryUpdated {
                 cwd_raw: "/old".into(),
                 snapshot: crate::app::plugins::PluginsInventorySnapshot {
-                    installed: vec![crate::app::plugins::InstalledPluginEntry {
-                        id: "stale-plugin".into(),
-                        version: None,
-                        scope: "user".into(),
-                        enabled: true,
-                        installed_at: None,
-                        last_updated: None,
-                        project_path: None,
-                        capability: crate::app::plugins::PluginCapability::Skill,
-                    }],
+                    installed: vec![installed_plugin_entry("stale-plugin")],
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
                 },

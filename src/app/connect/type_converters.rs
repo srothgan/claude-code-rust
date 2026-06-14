@@ -66,10 +66,21 @@ fn map_mcp_tool_permission_policy(
     }
 }
 
+fn map_mcp_server_org_max_permission(
+    permission: types::McpServerOrgMaxPermission,
+) -> model::McpServerOrgMaxPermission {
+    match permission {
+        types::McpServerOrgMaxPermission::Allow => model::McpServerOrgMaxPermission::Allow,
+        types::McpServerOrgMaxPermission::Ask => model::McpServerOrgMaxPermission::Ask,
+        types::McpServerOrgMaxPermission::Blocked => model::McpServerOrgMaxPermission::Blocked,
+    }
+}
+
 fn map_mcp_tool_policy(policy: types::McpServerToolPolicy) -> model::McpServerToolPolicy {
     model::McpServerToolPolicy {
         name: policy.name,
-        permission_policy: map_mcp_tool_permission_policy(policy.permission_policy),
+        permission_policy: policy.permission_policy.map(map_mcp_tool_permission_policy),
+        org_max_permission: policy.org_max_permission.map(map_mcp_server_org_max_permission),
     }
 }
 
@@ -265,17 +276,23 @@ pub(super) fn convert_account_info(account: types::AccountInfo) -> model::Accoun
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
-        types::SessionUpdate::UserMessageChunk { content } => {
+        types::SessionUpdate::UserMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::UserMessageChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
-        types::SessionUpdate::AgentMessageChunk { content } => {
+        types::SessionUpdate::AgentMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentMessageChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
-        types::SessionUpdate::AgentThoughtChunk { content } => {
+        types::SessionUpdate::AgentThoughtChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentThoughtChunk(model::ContentChunk::new(content)))
+            Some(model::SessionUpdate::AgentThoughtChunk(
+                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
+            ))
         }
         types::SessionUpdate::ToolCall { tool_call } => {
             Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
@@ -283,6 +300,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
             Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
         }
+        types::SessionUpdate::TranscriptRetraction { retraction } => Some(
+            model::SessionUpdate::TranscriptRetraction(convert_transcript_retraction(retraction)),
+        ),
         types::SessionUpdate::TaskStateUpdate { update: task_update } => {
             Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
         }
@@ -485,6 +505,37 @@ pub(super) fn map_question_request(
     )
 }
 
+/// Convert a wire `user_dialog_request` into the app model. Returns the model
+/// request and the synthetic `request_id` used as its focus-queue/index key.
+pub(super) fn map_user_dialog_request(
+    session_id: &str,
+    request: types::UserDialogRequest,
+) -> (model::RequestUserDialogRequest, String) {
+    let request_id = request.request_id.clone();
+    let payload = model::RefusalFallbackPayload {
+        original_model: request.payload.original_model,
+        fallback_model: request.payload.fallback_model,
+        api_refusal_category: request.payload.api_refusal_category,
+        guidance_text: request.payload.guidance_text,
+        retracted_message_uuids: request.payload.retracted_message_uuids,
+    };
+    let options = request
+        .options
+        .into_iter()
+        .map(|option| model::UserDialogOption::new(option.option_id, option.label))
+        .collect();
+    (
+        model::RequestUserDialogRequest::new(
+            model::SessionId::new(session_id),
+            request_id.clone(),
+            request.dialog_kind,
+            payload,
+            options,
+        ),
+        request_id,
+    )
+}
+
 pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
     match content {
         types::ContentBlock::Text { text } => {
@@ -512,6 +563,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         title,
         kind,
         status,
+        source_message_uuid,
         content,
         raw_input,
         raw_output,
@@ -524,6 +576,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     let mut tc = model::ToolCall::new(tool_call_id, title)
         .kind(convert_tool_kind(&kind))
         .status(convert_tool_status(&status))
+        .source_message_uuid(source_message_uuid)
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
         .locations(
             locations
@@ -563,7 +616,8 @@ pub(super) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
     let mut out = model::ToolCallUpdate::new(
         update.tool_call_id,
         convert_tool_call_update_fields(update.fields),
-    );
+    )
+    .source_message_uuid(update.source_message_uuid);
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }
@@ -609,6 +663,33 @@ pub(super) fn convert_tool_call_to_fields(
     }
 
     fields
+}
+
+fn convert_transcript_retraction(
+    retraction: types::TranscriptRetraction,
+) -> model::TranscriptRetraction {
+    model::TranscriptRetraction {
+        message_uuids: retraction.message_uuids,
+        reason: match retraction.reason {
+            types::TranscriptRetractionReason::ModelRefusalFallback => {
+                model::TranscriptRetractionReason::ModelRefusalFallback
+            }
+            types::TranscriptRetractionReason::ModelFallback => {
+                model::TranscriptRetractionReason::ModelFallback
+            }
+            types::TranscriptRetractionReason::AssistantSupersedes => {
+                model::TranscriptRetractionReason::AssistantSupersedes
+            }
+        },
+        request_id: retraction.request_id,
+        trigger: retraction.trigger,
+        direction: retraction.direction,
+        original_model: retraction.original_model,
+        fallback_model: retraction.fallback_model,
+        api_refusal_category: retraction.api_refusal_category,
+        api_refusal_explanation: retraction.api_refusal_explanation,
+        content: retraction.content,
+    }
 }
 
 pub(super) fn convert_tool_call_update_fields(
@@ -662,10 +743,21 @@ pub(super) fn convert_tool_call_update_fields(
 fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
-    model::ToolOutputMetadata::new().bash(output_metadata.bash.map(|bash| {
-        model::BashOutputMetadata::new()
-            .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-    }))
+    model::ToolOutputMetadata::new()
+        .bash(output_metadata.bash.map(|bash| {
+            model::BashOutputMetadata::new()
+                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
+        }))
+        .agent(
+            output_metadata.agent.map(|agent| {
+                model::AgentOutputMetadata::new().resolved_model(agent.resolved_model)
+            }),
+        )
+        .web_fetch(output_metadata.web_fetch.map(|web_fetch| {
+            model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
+                |artifact| model::WebFetchArtifactReadMetadata::new(artifact.slug, artifact.ver),
+            ))
+        }))
 }
 
 fn convert_permission_display(
@@ -688,6 +780,12 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .request_id(task_metadata.request_id)
         .subagent_type(task_metadata.subagent_type)
         .task_description(task_metadata.task_description)
+        .task_type(task_metadata.task_type)
+        .workflow_name(task_metadata.workflow_name)
+        .prompt(task_metadata.prompt)
+        .output_file(task_metadata.output_file)
+        .summary(task_metadata.summary)
+        .terminal_status(task_metadata.terminal_status)
 }
 
 fn convert_tool_call_content(
@@ -794,7 +892,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_account_info, convert_current_model, convert_tool_call,
+        convert_account_info, convert_current_model, convert_tool_call, convert_tool_call_update,
         convert_tool_call_update_fields, map_available_commands_update, map_available_models,
         map_permission_request, map_question_request, map_session_update,
     };
@@ -1022,6 +1120,46 @@ mod tests {
     }
 
     #[test]
+    fn map_session_update_preserves_source_message_uuid() {
+        let mapped = map_session_update(types::SessionUpdate::AgentMessageChunk {
+            content: types::ContentBlock::Text { text: "hello".to_owned() },
+            source_message_uuid: Some("assistant-1".to_owned()),
+        })
+        .expect("message chunk should map");
+
+        let model::SessionUpdate::AgentMessageChunk(chunk) = mapped else {
+            panic!("expected agent message chunk");
+        };
+        assert_eq!(chunk.source_message_uuid.as_deref(), Some("assistant-1"));
+    }
+
+    #[test]
+    fn map_session_update_converts_transcript_retraction() {
+        let mapped = map_session_update(types::SessionUpdate::TranscriptRetraction {
+            retraction: types::TranscriptRetraction {
+                message_uuids: vec!["old-1".to_owned()],
+                reason: types::TranscriptRetractionReason::AssistantSupersedes,
+                request_id: Some("req-1".to_owned()),
+                trigger: None,
+                direction: None,
+                original_model: None,
+                fallback_model: None,
+                api_refusal_category: None,
+                api_refusal_explanation: None,
+                content: None,
+            },
+        })
+        .expect("transcript retraction should map");
+
+        let model::SessionUpdate::TranscriptRetraction(retraction) = mapped else {
+            panic!("expected transcript retraction");
+        };
+        assert_eq!(retraction.message_uuids, vec!["old-1"]);
+        assert_eq!(retraction.reason, model::TranscriptRetractionReason::AssistantSupersedes);
+        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
+    }
+
+    #[test]
     fn map_permission_request_preserves_display_metadata() {
         let (request, tool_call_id) = map_permission_request(
             "session-1",
@@ -1031,6 +1169,7 @@ mod tests {
                     title: "Bash npm test".to_owned(),
                     kind: "execute".to_owned(),
                     status: "in_progress".to_owned(),
+                    source_message_uuid: None,
                     content: Vec::new(),
                     raw_input: None,
                     raw_output: None,
@@ -1075,6 +1214,7 @@ mod tests {
                     title: "Pick target".to_owned(),
                     kind: "other".to_owned(),
                     status: "in_progress".to_owned(),
+                    source_message_uuid: None,
                     content: Vec::new(),
                     raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
                     raw_output: None,
@@ -1150,16 +1290,46 @@ mod tests {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
+                agent: Some(types::AgentOutputMetadata {
+                    resolved_model: Some("claude-sonnet-4-7".to_owned()),
+                }),
+                web_fetch: Some(types::WebFetchOutputMetadata {
+                    artifact_read: Some(types::WebFetchArtifactReadMetadata {
+                        slug: "dashboard".to_owned(),
+                        ver: "v2".to_owned(),
+                    }),
+                }),
             }),
             ..types::ToolCallUpdateFields::default()
         });
 
         assert_eq!(
             fields.output_metadata,
-            Some(model::ToolOutputMetadata::new().bash(Some(
-                model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
-            )))
+            Some(
+                model::ToolOutputMetadata::new()
+                    .bash(Some(
+                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+                    ))
+                    .agent(Some(
+                        model::AgentOutputMetadata::new()
+                            .resolved_model(Some("claude-sonnet-4-7".to_owned())),
+                    ))
+                    .web_fetch(Some(model::WebFetchOutputMetadata::new().artifact_read(Some(
+                        model::WebFetchArtifactReadMetadata::new("dashboard", "v2"),
+                    ))))
+            )
         );
+    }
+
+    #[test]
+    fn convert_tool_call_update_preserves_source_message_uuid() {
+        let update = convert_tool_call_update(types::ToolCallUpdate {
+            tool_call_id: "tool-1".to_owned(),
+            source_message_uuid: Some("user-result".to_owned()),
+            fields: types::ToolCallUpdateFields::default(),
+        });
+
+        assert_eq!(update.source_message_uuid.as_deref(), Some("user-result"));
     }
 
     #[test]
@@ -1201,6 +1371,12 @@ mod tests {
                 request_id: Some("request-1".to_owned()),
                 subagent_type: Some("tester".to_owned()),
                 task_description: Some("Validate changes".to_owned()),
+                task_type: Some("remote_agent".to_owned()),
+                workflow_name: Some("release-check".to_owned()),
+                prompt: Some("Run validation".to_owned()),
+                output_file: Some("C:/tmp/output.md".to_owned()),
+                summary: Some("Validation complete".to_owned()),
+                terminal_status: Some("completed".to_owned()),
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -1215,7 +1391,13 @@ mod tests {
                     .backgrounded(Some(true))
                     .request_id(Some("request-1".to_owned()))
                     .subagent_type(Some("tester".to_owned()))
-                    .task_description(Some("Validate changes".to_owned())),
+                    .task_description(Some("Validate changes".to_owned()))
+                    .task_type(Some("remote_agent".to_owned()))
+                    .workflow_name(Some("release-check".to_owned()))
+                    .prompt(Some("Run validation".to_owned()))
+                    .output_file(Some("C:/tmp/output.md".to_owned()))
+                    .summary(Some("Validation complete".to_owned()))
+                    .terminal_status(Some("completed".to_owned())),
             )
         );
     }
@@ -1227,6 +1409,7 @@ mod tests {
             title: "Agent task".to_owned(),
             kind: "think".to_owned(),
             status: "killed".to_owned(),
+            source_message_uuid: Some("assistant-tool".to_owned()),
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -1239,12 +1422,19 @@ mod tests {
                 request_id: Some("request-2".to_owned()),
                 subagent_type: Some("reviewer".to_owned()),
                 task_description: Some("Review changes".to_owned()),
+                task_type: Some("local_workflow".to_owned()),
+                workflow_name: Some("review-flow".to_owned()),
+                prompt: Some("Review changes".to_owned()),
+                output_file: Some("C:/tmp/review.md".to_owned()),
+                summary: Some("Review stopped".to_owned()),
+                terminal_status: Some("killed".to_owned()),
             }),
             locations: Vec::new(),
             meta: None,
         });
 
         assert_eq!(tool_call.status, model::ToolCallStatus::Killed);
+        assert_eq!(tool_call.source_message_uuid.as_deref(), Some("assistant-tool"));
         assert_eq!(
             tool_call.task_metadata,
             Some(
@@ -1255,7 +1445,13 @@ mod tests {
                     .backgrounded(Some(false))
                     .request_id(Some("request-2".to_owned()))
                     .subagent_type(Some("reviewer".to_owned()))
-                    .task_description(Some("Review changes".to_owned())),
+                    .task_description(Some("Review changes".to_owned()))
+                    .task_type(Some("local_workflow".to_owned()))
+                    .workflow_name(Some("review-flow".to_owned()))
+                    .prompt(Some("Review changes".to_owned()))
+                    .output_file(Some("C:/tmp/review.md".to_owned()))
+                    .summary(Some("Review stopped".to_owned()))
+                    .terminal_status(Some("killed".to_owned())),
             )
         );
     }
@@ -1267,6 +1463,7 @@ mod tests {
             title: "Write src/main.rs".to_owned(),
             kind: "edit".to_owned(),
             status: "completed".to_owned(),
+            source_message_uuid: None,
             content: vec![types::ToolCallContent::Diff {
                 old_path: "src/main.rs".to_owned(),
                 new_path: "src/main.rs".to_owned(),
@@ -1299,6 +1496,7 @@ mod tests {
             title: "ReadMcpResource docs file://manual.pdf".to_owned(),
             kind: "read".to_owned(),
             status: "completed".to_owned(),
+            source_message_uuid: None,
             content: vec![types::ToolCallContent::McpResource {
                 uri: "file://manual.pdf".to_owned(),
                 mime_type: Some("application/pdf".to_owned()),
@@ -1340,10 +1538,18 @@ mod tests {
             config: Some(types::McpServerStatusConfig::Http {
                 url: "https://mcp.notion.com/mcp".to_owned(),
                 headers: std::collections::BTreeMap::new(),
-                tools: vec![types::McpServerToolPolicy {
-                    name: "search".to_owned(),
-                    permission_policy: types::McpServerToolPermissionPolicy::Deny,
-                }],
+                tools: vec![
+                    types::McpServerToolPolicy {
+                        name: "search".to_owned(),
+                        permission_policy: Some(types::McpServerToolPermissionPolicy::Deny),
+                        org_max_permission: Some(types::McpServerOrgMaxPermission::Blocked),
+                    },
+                    types::McpServerToolPolicy {
+                        name: "lookup".to_owned(),
+                        permission_policy: None,
+                        org_max_permission: Some(types::McpServerOrgMaxPermission::Ask),
+                    },
+                ],
                 timeout: Some(5000),
                 always_load: Some(true),
             }),
@@ -1360,7 +1566,10 @@ mod tests {
         };
         assert_eq!(timeout, Some(5000));
         assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].permission_policy, model::McpServerToolPermissionPolicy::Deny);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].permission_policy, Some(model::McpServerToolPermissionPolicy::Deny));
+        assert_eq!(tools[0].org_max_permission, Some(model::McpServerOrgMaxPermission::Blocked));
+        assert_eq!(tools[1].permission_policy, None);
+        assert_eq!(tools[1].org_max_permission, Some(model::McpServerOrgMaxPermission::Ask));
     }
 }

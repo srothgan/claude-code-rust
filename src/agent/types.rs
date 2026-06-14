@@ -169,6 +169,7 @@ pub struct ToolCall {
     pub title: String,
     pub kind: String,
     pub status: String,
+    pub source_message_uuid: Option<String>,
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<serde_json::Value>,
     pub raw_output: Option<String>,
@@ -181,7 +182,30 @@ pub struct ToolCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallUpdate {
     pub tool_call_id: String,
+    pub source_message_uuid: Option<String>,
     pub fields: ToolCallUpdateFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptRetractionReason {
+    ModelRefusalFallback,
+    ModelFallback,
+    AssistantSupersedes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptRetraction {
+    pub message_uuids: Vec<String>,
+    pub reason: TranscriptRetractionReason,
+    pub request_id: Option<String>,
+    pub trigger: Option<String>,
+    pub direction: Option<String>,
+    pub original_model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub api_refusal_category: Option<String>,
+    pub api_refusal_explanation: Option<String>,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -212,6 +236,24 @@ pub struct BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
+    pub agent: Option<AgentOutputMetadata>,
+    pub web_fetch: Option<WebFetchOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentOutputMetadata {
+    pub resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchOutputMetadata {
+    pub artifact_read: Option<WebFetchArtifactReadMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchArtifactReadMetadata {
+    pub slug: String,
+    pub ver: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -223,6 +265,12 @@ pub struct TaskMetadata {
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
+    pub task_type: Option<String>,
+    pub workflow_name: Option<String>,
+    pub prompt: Option<String>,
+    pub output_file: Option<String>,
+    pub summary: Option<String>,
+    pub terminal_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,18 +343,25 @@ pub struct TaskStateUpdate {
 pub enum SessionUpdate {
     AgentMessageChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     UserMessageChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     AgentThoughtChunk {
         content: ContentBlock,
+        source_message_uuid: Option<String>,
     },
     ToolCall {
         tool_call: ToolCall,
     },
     ToolCallUpdate {
         tool_call_update: ToolCallUpdate,
+    },
+    TranscriptRetraction {
+        #[serde(flatten)]
+        retraction: TranscriptRetraction,
     },
     TaskStateUpdate {
         #[serde(flatten)]
@@ -456,6 +511,44 @@ pub enum PermissionOutcome {
 pub enum QuestionOutcome {
     Answered { selected_option_ids: Vec<String>, annotation: Option<QuestionAnnotation> },
     Cancelled,
+}
+
+/// Host answer to a `refusal_fallback_prompt` user dialog. `option_id` carries
+/// the dialog's string-enum choice (`retry_fallback` | `edit_prompt`);
+/// declining maps to `Cancelled` (the CLI default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum UserDialogOutcome {
+    Selected { option_id: String },
+    Cancelled,
+}
+
+/// Snake-case payload of a `refusal_fallback_prompt` dialog, as normalized by
+/// the bridge. `original_model`/`fallback_model` are always present; the rest is
+/// optional metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RefusalFallbackPayload {
+    pub original_model: String,
+    pub fallback_model: String,
+    pub api_refusal_category: Option<String>,
+    pub guidance_text: Option<String>,
+    pub retracted_message_uuids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDialogOption {
+    pub option_id: String,
+    pub label: String,
+}
+
+/// Turn-level `request_user_dialog` request the bridge emits for a refusal
+/// fallback. Keyed by a bridge-generated `request_id` (no tool-call anchor).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserDialogRequest {
+    pub request_id: String,
+    pub dialog_kind: String,
+    pub payload: RefusalFallbackPayload,
+    pub options: Vec<UserDialogOption>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -641,10 +734,21 @@ pub enum McpServerToolPermissionPolicy {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerOrgMaxPermission {
+    Allow,
+    Ask,
+    Blocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerToolPolicy {
     pub name: String,
-    pub permission_policy: McpServerToolPermissionPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<McpServerToolPermissionPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org_max_permission: Option<McpServerOrgMaxPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -751,12 +855,21 @@ pub struct McpSetServersResult {
     pub errors: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSnapshotSource {
+    ReloadPlugins,
+    McpStatus,
+    McpSetServers,
+    Init,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerStatus,
-        McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus, SessionUpdate,
-        SystemNoticeSeverity,
+        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
+        McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus,
+        SessionUpdate, SystemNoticeSeverity, TranscriptRetractionReason,
     };
 
     #[test]
@@ -911,7 +1024,16 @@ mod tests {
                 "url": "https://mcp.notion.com/mcp",
                 "headers": { "Authorization": "Bearer token" },
                 "tools": [
-                    { "name": "search", "permission_policy": "always_ask" }
+                    {
+                        "name": "search",
+                        "permission_policy": "always_ask",
+                        "org_max_permission": "ask"
+                    },
+                    { "name": "lookup" },
+                    {
+                        "name": "write",
+                        "org_max_permission": "blocked"
+                    }
                 ],
                 "timeout": 5000,
                 "always_load": true
@@ -926,8 +1048,13 @@ mod tests {
         };
         assert_eq!(timeout, Some(5000));
         assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].permission_policy, McpServerToolPermissionPolicy::Ask);
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].permission_policy, Some(McpServerToolPermissionPolicy::Ask));
+        assert_eq!(tools[0].org_max_permission, Some(McpServerOrgMaxPermission::Ask));
+        assert_eq!(tools[1].permission_policy, None);
+        assert_eq!(tools[1].org_max_permission, None);
+        assert_eq!(tools[2].permission_policy, None);
+        assert_eq!(tools[2].org_max_permission, Some(McpServerOrgMaxPermission::Blocked));
     }
 
     #[test]
@@ -940,7 +1067,13 @@ mod tests {
                     "task_metadata": {
                         "request_id": "request-1",
                         "subagent_type": "tester",
-                        "task_description": "Validate the branch"
+                        "task_description": "Validate the branch",
+                        "task_type": "remote_agent",
+                        "workflow_name": "review-flow",
+                        "prompt": "Validate everything",
+                        "output_file": "C:/tmp/output.md",
+                        "summary": "Validation complete",
+                        "terminal_status": "completed"
                     }
                 }
             }
@@ -954,6 +1087,91 @@ mod tests {
         assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
         assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
         assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
+        assert_eq!(metadata.task_type.as_deref(), Some("remote_agent"));
+        assert_eq!(metadata.workflow_name.as_deref(), Some("review-flow"));
+        assert_eq!(metadata.prompt.as_deref(), Some("Validate everything"));
+        assert_eq!(metadata.output_file.as_deref(), Some("C:/tmp/output.md"));
+        assert_eq!(metadata.summary.as_deref(), Some("Validation complete"));
+        assert_eq!(metadata.terminal_status.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn tool_output_metadata_deserializes_agent_and_artifact_read_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "tool_call_update",
+            "tool_call_update": {
+                "tool_call_id": "tool-1",
+                "fields": {
+                    "output_metadata": {
+                        "agent": {
+                            "resolved_model": "claude-sonnet-4-7"
+                        },
+                        "web_fetch": {
+                            "artifact_read": {
+                                "slug": "dashboard",
+                                "ver": "v3"
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("deserialize output metadata");
+
+        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
+            panic!("expected tool call update");
+        };
+        let metadata = tool_call_update.fields.output_metadata.expect("output metadata");
+        let resolved_model = metadata.agent.and_then(|agent| agent.resolved_model);
+        assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-7"));
+        let artifact_read = metadata
+            .web_fetch
+            .and_then(|web_fetch| web_fetch.artifact_read)
+            .expect("artifact read metadata");
+        assert_eq!(artifact_read.slug, "dashboard");
+        assert_eq!(artifact_read.ver, "v3");
+    }
+
+    #[test]
+    fn transcript_retraction_deserializes_with_metadata() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "transcript_retraction",
+            "message_uuids": ["assistant-old", "tool-result-old"],
+            "reason": "model_refusal_fallback",
+            "request_id": "req-1",
+            "trigger": "refusal",
+            "direction": "retry",
+            "original_model": "claude-opus-4-1",
+            "fallback_model": "claude-sonnet-4-5",
+            "api_refusal_category": "cyber",
+            "api_refusal_explanation": "policy text",
+            "content": "Retried with fallback model"
+        }))
+        .expect("deserialize transcript retraction");
+
+        let SessionUpdate::TranscriptRetraction { retraction } = update else {
+            panic!("expected transcript retraction");
+        };
+        assert_eq!(retraction.message_uuids, vec!["assistant-old", "tool-result-old"]);
+        assert_eq!(retraction.reason, TranscriptRetractionReason::ModelRefusalFallback);
+        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
+        assert_eq!(retraction.original_model.as_deref(), Some("claude-opus-4-1"));
+        assert_eq!(retraction.fallback_model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn transcript_updates_deserialize_source_message_uuid() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "agent_message_chunk",
+            "source_message_uuid": "assistant-1",
+            "content": { "type": "text", "text": "hello" }
+        }))
+        .expect("deserialize source-tagged chunk");
+
+        let SessionUpdate::AgentMessageChunk { source_message_uuid, .. } = update else {
+            panic!("expected agent message chunk");
+        };
+        assert_eq!(source_message_uuid.as_deref(), Some("assistant-1"));
     }
 
     #[test]

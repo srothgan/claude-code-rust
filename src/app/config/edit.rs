@@ -261,6 +261,36 @@ fn confirm_confirmation_overlay(app: &mut App) {
                 super::mcp::McpServerActionKind::ClearAuth,
             );
         }
+        ConfirmationAction::McpRemoveConfig => {
+            let Some(overlay) = app.config.mcp_details_overlay().cloned() else {
+                return;
+            };
+            let Some(server) =
+                app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
+            else {
+                app.config.clear_overlay();
+                return;
+            };
+            let Some(scope) = super::mcp::mcp_config_removal_scope(app, server) else {
+                app.config.set_overlay_error("This MCP server cannot be removed from live config.");
+                return;
+            };
+            let action = match scope {
+                super::mcp::McpConfigScope::User => {
+                    super::mcp::McpServerActionKind::RemoveUserConfig
+                }
+                super::mcp::McpConfigScope::Local => {
+                    super::mcp::McpServerActionKind::RemoveLocalConfig
+                }
+                super::mcp::McpConfigScope::Project => {
+                    super::mcp::McpServerActionKind::RemoveProjectConfig
+                }
+                super::mcp::McpConfigScope::Dynamic => {
+                    super::mcp::McpServerActionKind::RemoveDynamicConfig
+                }
+            };
+            super::mcp_edit::execute_confirmed_mcp_server_action(app, action);
+        }
     }
 }
 

@@ -130,6 +130,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-remote-trigger".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "RemoteTrigger".to_owned(),
             sdk_tool_name: "RemoteTrigger".to_owned(),
             raw_input: Some(raw_input),

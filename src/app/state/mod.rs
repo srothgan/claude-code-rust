@@ -20,8 +20,8 @@ pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown,
     MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,
-    SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock, hash_text_block_content,
-    hash_welcome_block_content,
+    SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
@@ -1569,6 +1569,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
+                source_message_uuids: Vec::new(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
                 raw_input: None,
@@ -1601,6 +1602,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
+                source_message_uuids: Vec::new(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Bash".to_owned(),
                 raw_input: None,
@@ -1630,6 +1632,7 @@ mod tests {
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: id.to_owned(),
+                source_message_uuids: Vec::new(),
                 title: format!("tool {id}"),
                 sdk_tool_name: "Read".to_owned(),
                 raw_input: None,
@@ -1659,6 +1662,37 @@ mod tests {
                 }),
                 pending_question: None,
             }))],
+            None,
+        )
+    }
+
+    fn pending_user_dialog_message(request_id: &str) -> ChatMessage {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        ChatMessage::new(
+            MessageRole::System(Some(SystemSeverity::Warning)),
+            vec![MessageBlock::UserDialog(UserDialogBlock::new(
+                model::RequestUserDialogRequest::new(
+                    "session-1",
+                    request_id,
+                    "refusal_fallback_prompt",
+                    model::RefusalFallbackPayload {
+                        original_model: "claude-opus-4-8".to_owned(),
+                        fallback_model: "claude-sonnet-4-6".to_owned(),
+                        ..Default::default()
+                    },
+                    vec![
+                        model::UserDialogOption::new(
+                            "retry_fallback",
+                            "Switch to claude-sonnet-4-6",
+                        ),
+                        model::UserDialogOption::new(
+                            "edit_prompt",
+                            "Edit prompt and retry with claude-opus-4-8",
+                        ),
+                    ],
+                ),
+                tx,
+            ))],
             None,
         )
     }
@@ -1979,6 +2013,35 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
         }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_and_rebuilds_pending_user_dialog() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("droppable"),
+            pending_user_dialog_message("dialog-1"),
+        ];
+        app.index_tool_call("dialog-1".to_owned(), 99, 99);
+        app.pending_interaction_ids = vec!["stale-dialog".to_owned(), "dialog-1".to_owned()];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+
+        assert_eq!(stats.dropped_messages, 1);
+        assert_eq!(app.lookup_tool_call("dialog-1"), Some((2, 0)));
+        assert_eq!(app.pending_interaction_ids, vec!["dialog-1".to_owned()]);
+        let Some((msg_idx, block_idx)) = app.lookup_tool_call("dialog-1") else {
+            panic!("expected rebuilt dialog index");
+        };
+        let Some(MessageBlock::UserDialog(dialog)) =
+            app.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
+        else {
+            panic!("expected user dialog block");
+        };
+        assert!(dialog.focused);
+        assert!(!dialog.answered);
     }
 
     #[test]

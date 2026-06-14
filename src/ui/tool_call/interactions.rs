@@ -429,6 +429,7 @@ mod tests {
     fn test_tool_call(sdk_tool_name: &str) -> ToolCallInfo {
         ToolCallInfo {
             id: "tool-1".into(),
+            source_message_uuids: Vec::new(),
             title: "Tool".into(),
             sdk_tool_name: sdk_tool_name.into(),
             raw_input: None,

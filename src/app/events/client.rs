@@ -69,6 +69,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::QuestionRequest { request, response_tx } => {
             turn::handle_question_request_event(app, request, response_tx);
         }
+        ClientEvent::UserDialogRequest { request, response_tx } => {
+            turn::handle_user_dialog_request_event(app, request, response_tx);
+        }
         ClientEvent::McpElicitationRequest { request } => {
             crate::app::config::present_mcp_elicitation_request(app, request);
         }
@@ -77,6 +80,36 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::McpOperationError { error } => {
             crate::app::config::handle_mcp_operation_error(app, &error);
+        }
+        ClientEvent::McpSetServersResult { session_id, result } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                return;
+            }
+            crate::app::config::handle_mcp_set_servers_result(app, &result);
+        }
+        ClientEvent::McpConfigRemoveSucceeded { cwd_raw, server_name, scope, claude_path } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
+            crate::app::config::apply_mcp_config_remove_success(
+                app,
+                &server_name,
+                &scope,
+                claude_path,
+            );
+        }
+        ClientEvent::McpConfigRemoveFailed { cwd_raw, server_name, scope, message } => {
+            if app.cwd_raw != cwd_raw {
+                return;
+            }
+            crate::app::config::apply_mcp_config_remove_failure(
+                app,
+                &server_name,
+                &scope,
+                &message,
+            );
         }
         ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
@@ -157,6 +190,11 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 return;
             }
             crate::app::plugins::apply_runtime_reload_failure(app, &message);
+            if app.mcp.in_flight {
+                app.mcp.in_flight = false;
+                app.mcp.last_error =
+                    Some(format!("Failed to reload MCP server snapshot: {message}"));
+            }
         }
         ClientEvent::SessionReplaced {
             session_id,
@@ -244,7 +282,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
-        ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
+        ClientEvent::McpSnapshotReceived { session_id, mut servers, source, error } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
@@ -258,6 +296,22 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 );
                 return;
             }
+            let pending_dynamic_mcp_removal_confirmation =
+                crate::app::config::pending_dynamic_mcp_removal_confirmation_from_snapshot(
+                    app,
+                    source,
+                    error.as_deref(),
+                    &servers,
+                );
+            let remove_confirmation_failures =
+                crate::app::config::reconcile_removed_config_mcp_server_guards(
+                    app,
+                    source,
+                    error.as_deref(),
+                    &servers,
+                );
+            crate::app::config::filter_removed_config_mcp_servers(app, &mut servers);
+            crate::app::config::filter_stale_plugin_mcp_servers(app, source, &mut servers);
             let server_count = servers.len();
             let error_present = error.is_some();
             let server_diagnostics = mcp_server_diagnostic_summaries(&servers);
@@ -287,12 +341,21 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     app.config.clear_overlay();
                 }
             }
+            crate::app::config::apply_pending_dynamic_mcp_removal_confirmation(
+                app,
+                pending_dynamic_mcp_removal_confirmation,
+            );
+            crate::app::config::apply_removed_config_mcp_server_confirmation_failures(
+                app,
+                remove_confirmation_failures,
+            );
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
                 event_name = "mcp_snapshot_applied",
                 message = "MCP snapshot applied",
                 outcome = "success",
                 session_id = %session_id,
+                source = ?source,
                 server_count,
                 error_present,
                 servers = ?server_diagnostics,

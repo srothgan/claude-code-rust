@@ -53,22 +53,6 @@ impl PluginsViewTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginCapability {
-    Skill,
-    Mcp,
-}
-
-impl PluginCapability {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Skill => "SKILL",
-            Self::Mcp => "MCP",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledPluginEntry {
     pub id: String,
@@ -78,7 +62,7 @@ pub struct InstalledPluginEntry {
     pub installed_at: Option<String>,
     pub last_updated: Option<String>,
     pub project_path: Option<String>,
-    pub capability: PluginCapability,
+    pub mcp_server_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,6 +331,7 @@ pub(crate) fn apply_inventory_refresh_success(
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(claude_path);
     clamp_selection(app);
+    crate::app::config::reconcile_stale_plugin_mcp_servers(app);
     if should_reload_runtime {
         start_runtime_reload(app, "Plugin inventory refreshed".to_owned());
     } else {
@@ -515,11 +500,14 @@ fn open_marketplace_overlay(app: &mut App) -> bool {
 }
 
 fn open_installed_actions_overlay(app: &mut App) -> bool {
-    let selected = selected_installed_entry(app).cloned();
-    let Some(entry) = selected else {
+    let Some(entry) = selected_installed_entry(app).cloned() else {
         return false;
     };
+    open_installed_actions_overlay_for_entry(app, entry);
+    true
+}
 
+fn open_installed_actions_overlay_for_entry(app: &mut App, entry: InstalledPluginEntry) {
     let title = display_label(&entry.id);
     let description = installed_overlay_description(app, &entry);
     let actions = installed_overlay_actions(&entry);
@@ -534,7 +522,6 @@ fn open_installed_actions_overlay(app: &mut App) -> bool {
             actions,
         },
     ));
-    true
 }
 
 fn open_plugin_install_overlay(app: &mut App) -> bool {
@@ -952,6 +939,7 @@ pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSu
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
     app.plugins.claude_path = Some(result.claude_path);
     clamp_selection(app);
+    crate::app::config::reconcile_stale_plugin_mcp_servers(app);
     start_runtime_reload(app, result.message);
 }
 
@@ -1061,20 +1049,27 @@ fn installed_action_success_message(
     title: &str,
     scope: &str,
 ) -> String {
-    match action {
+    let message = match action {
         InstalledPluginActionKind::Enable => format!("Enabled {title} in {scope} scope"),
         InstalledPluginActionKind::Disable => format!("Disabled {title} in {scope} scope"),
         InstalledPluginActionKind::Update => format!("Updated {title} in {scope} scope"),
         InstalledPluginActionKind::Uninstall => format!("Uninstalled {title} from {scope} scope"),
-    }
+    };
+    with_new_session_hint(message)
 }
 
 fn plugin_install_success_message(action: PluginInstallActionKind, title: &str) -> String {
-    match action {
+    let message = match action {
         PluginInstallActionKind::User => format!("Installed {title} for user scope"),
         PluginInstallActionKind::Project => format!("Installed {title} for project scope"),
         PluginInstallActionKind::Local => format!("Installed {title} locally"),
-    }
+    };
+    with_new_session_hint(message)
+}
+
+fn with_new_session_hint(mut message: String) -> String {
+    message.push_str(". You might need to run /new-session to apply plugin changes.");
+    message
 }
 
 fn marketplace_action_command(
@@ -1149,6 +1144,83 @@ fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> Str
 
 fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntry> {
     ordered_installed(&app.plugins, &app.cwd_raw).get(app.plugins.installed_selected_index).copied()
+}
+
+pub(crate) fn open_installed_actions_overlay_for_mcp_server(
+    app: &mut App,
+    server_name: &str,
+) -> bool {
+    let Some(entry) = installed_mcp_plugin_for_runtime_server(app, server_name).cloned() else {
+        return false;
+    };
+    open_installed_actions_overlay_for_entry(app, entry);
+    true
+}
+
+pub(crate) fn installed_mcp_plugin_for_runtime_server<'a>(
+    app: &'a App,
+    server_name: &str,
+) -> Option<&'a InstalledPluginEntry> {
+    let runtime_name = parse_plugin_mcp_runtime_server_name(server_name)?;
+    app.plugins
+        .installed
+        .iter()
+        .filter(|entry| installed_entry_applies_to_project(entry, &app.cwd_raw))
+        .filter(|entry| {
+            entry
+                .mcp_server_names
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(runtime_name.mcp_server_name))
+        })
+        .find(|entry| plugin_entry_matches_runtime_name(entry, runtime_name.plugin_name))
+}
+
+pub(crate) fn is_stale_plugin_mcp_runtime_server(app: &App, server_name: &str) -> bool {
+    is_plugin_mcp_runtime_server_name(server_name)
+        && app.plugins.last_inventory_refresh_at.is_some()
+        && installed_mcp_plugin_for_runtime_server(app, server_name).is_none()
+}
+
+pub(crate) fn is_plugin_mcp_runtime_server_name(server_name: &str) -> bool {
+    parse_plugin_mcp_runtime_server_name(server_name).is_some()
+}
+
+struct PluginMcpRuntimeServerName<'a> {
+    plugin_name: &'a str,
+    mcp_server_name: &'a str,
+}
+
+fn parse_plugin_mcp_runtime_server_name(
+    server_name: &str,
+) -> Option<PluginMcpRuntimeServerName<'_>> {
+    let (prefix, rest) = server_name.split_once(':')?;
+    if !prefix.eq_ignore_ascii_case("plugin") {
+        return None;
+    }
+    let (plugin_name, mcp_server_name) = rest.split_once(':')?;
+    if plugin_name.trim().is_empty() || mcp_server_name.trim().is_empty() {
+        return None;
+    }
+    Some(PluginMcpRuntimeServerName { plugin_name, mcp_server_name })
+}
+
+fn plugin_entry_matches_runtime_name(
+    entry: &InstalledPluginEntry,
+    runtime_plugin_name: &str,
+) -> bool {
+    let runtime = normalize_plugin_runtime_identifier(runtime_plugin_name);
+    let id_base = entry.id.split('@').next().unwrap_or(entry.id.as_str());
+    [
+        normalize_plugin_runtime_identifier(id_base),
+        normalize_plugin_runtime_identifier(&display_label(id_base)),
+        normalize_plugin_runtime_identifier(&entry.id),
+    ]
+    .into_iter()
+    .any(|candidate| !candidate.is_empty() && candidate == runtime)
+}
+
+fn normalize_plugin_runtime_identifier(value: &str) -> String {
+    value.chars().filter(char::is_ascii_alphanumeric).map(|ch| ch.to_ascii_lowercase()).collect()
 }
 
 fn selected_marketplace_plugin(app: &App) -> Option<&MarketplaceEntry> {
@@ -1311,6 +1383,14 @@ fn is_visible_installed_entry(entry: &InstalledPluginEntry, current_project: &st
     }
 }
 
+fn installed_entry_applies_to_project(
+    entry: &InstalledPluginEntry,
+    current_project_raw: &str,
+) -> bool {
+    let current_project = normalize_project_path(current_project_raw);
+    is_visible_installed_entry(entry, &current_project)
+}
+
 fn marketplace_plugin_matches(entry: &MarketplaceEntry, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -1353,18 +1433,32 @@ mod tests {
         (app, rx)
     }
 
+    fn installed_plugin_entry(
+        id: &str,
+        scope: &str,
+        project_path: Option<&str>,
+        mcp_server_names: &[&str],
+    ) -> InstalledPluginEntry {
+        InstalledPluginEntry {
+            id: id.to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: scope.to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: project_path.map(ToOwned::to_owned),
+            mcp_server_names: mcp_server_names.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
     fn sample_snapshot() -> PluginsInventorySnapshot {
         PluginsInventorySnapshot {
-            installed: vec![InstalledPluginEntry {
-                id: "frontend-design@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "user".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: None,
-                capability: PluginCapability::Skill,
-            }],
+            installed: vec![installed_plugin_entry(
+                "frontend-design@claude-plugins-official",
+                "user",
+                None,
+                &[],
+            )],
             marketplace: vec![],
             marketplaces: vec![],
         }
@@ -1394,6 +1488,22 @@ mod tests {
             "Frontend Design From Claude Plugins Official"
         );
         assert_eq!(display_label("claude-plugins-official"), "Claude Plugins Official");
+    }
+
+    #[test]
+    fn plugin_success_messages_hint_new_session() {
+        assert_eq!(
+            plugin_install_success_message(PluginInstallActionKind::User, "Notion"),
+            "Installed Notion for user scope. You might need to run /new-session to apply plugin changes."
+        );
+        assert_eq!(
+            installed_action_success_message(
+                InstalledPluginActionKind::Uninstall,
+                "Notion",
+                "user",
+            ),
+            "Uninstalled Notion from user scope. You might need to run /new-session to apply plugin changes."
+        );
     }
 
     #[test]
@@ -1431,46 +1541,25 @@ mod tests {
     fn ordered_installed_keeps_only_user_and_current_project_entries() {
         let state = PluginsState {
             installed: vec![
-                InstalledPluginEntry {
-                    id: "other-local@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "local".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: Some("C:\\work\\project-a".to_owned()),
-                    capability: PluginCapability::Skill,
-                },
-                InstalledPluginEntry {
-                    id: "user-plugin@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "user".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: None,
-                    capability: PluginCapability::Skill,
-                },
-                InstalledPluginEntry {
-                    id: "current-local@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "local".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: Some("C:\\work\\project-b".to_owned()),
-                    capability: PluginCapability::Skill,
-                },
-                InstalledPluginEntry {
-                    id: "managed-plugin@claude-plugins-official".to_owned(),
-                    version: None,
-                    scope: "managed".to_owned(),
-                    enabled: true,
-                    installed_at: None,
-                    last_updated: None,
-                    project_path: None,
-                    capability: PluginCapability::Mcp,
-                },
+                installed_plugin_entry(
+                    "other-local@claude-plugins-official",
+                    "local",
+                    Some("C:\\work\\project-a"),
+                    &[],
+                ),
+                installed_plugin_entry("user-plugin@claude-plugins-official", "user", None, &[]),
+                installed_plugin_entry(
+                    "current-local@claude-plugins-official",
+                    "local",
+                    Some("C:\\work\\project-b"),
+                    &[],
+                ),
+                installed_plugin_entry(
+                    "managed-plugin@claude-plugins-official",
+                    "managed",
+                    None,
+                    &["managed"],
+                ),
             ],
             ..PluginsState::default()
         };
@@ -1530,6 +1619,57 @@ mod tests {
             app.plugins.pending_runtime_reload_success_message.as_deref(),
             Some("Updated plugin")
         );
+    }
+
+    #[test]
+    fn cli_action_success_reconciles_stale_plugin_mcp_servers() {
+        let (mut app, mut rx) = app_with_connection();
+        app.mcp.servers = vec![
+            model::McpServerStatus {
+                name: "plugin:Notion:notion".to_owned(),
+                status: model::McpServerConnectionStatus::Connected,
+                server_info: None,
+                error: None,
+                config: None,
+                scope: Some("dynamic".to_owned()),
+                tools: Vec::new(),
+            },
+            model::McpServerStatus {
+                name: "fff".to_owned(),
+                status: model::McpServerConnectionStatus::Connected,
+                server_info: None,
+                error: None,
+                config: None,
+                scope: Some("user".to_owned()),
+                tools: Vec::new(),
+            },
+        ];
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
+            crate::app::config::McpDetailsOverlayState {
+                server_name: "plugin:Notion:notion".to_owned(),
+                selected_index: 0,
+            },
+        ));
+
+        apply_cli_action_success(
+            &mut app,
+            PluginsCliActionSuccess {
+                snapshot: sample_snapshot(),
+                message: "Uninstalled plugin".to_owned(),
+                claude_path: std::path::PathBuf::from("C:\\tools\\claude.exe"),
+            },
+        );
+
+        let envelope = rx.try_recv().expect("reload command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        ));
+        assert_eq!(
+            app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
+            vec!["fff"]
+        );
+        assert!(app.config.overlay.is_none());
     }
 
     #[test]

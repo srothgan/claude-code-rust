@@ -115,6 +115,11 @@ fn build_tool_info_from_tool_call(
 
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
+        source_message_uuids: tc
+            .source_message_uuid
+            .filter(|uuid| !uuid.trim().is_empty())
+            .into_iter()
+            .collect(),
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         sdk_tool_name,
         raw_input: tc.raw_input,
@@ -206,6 +211,9 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         changed |= sync_if_changed(&mut existing.content, &tool_info.content);
         changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
         changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
+        for source_message_uuid in &tool_info.source_message_uuids {
+            changed |= existing.add_source_message_uuid(Some(source_message_uuid));
+        }
         changed |= existing.set_raw_input(tool_info.raw_input.clone());
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);

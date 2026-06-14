@@ -509,6 +509,7 @@ mod tests {
     fn test_tool_call(id: &str) -> ToolCallInfo {
         ToolCallInfo {
             id: id.to_owned(),
+            source_message_uuids: Vec::new(),
             title: format!("Tool {id}"),
             sdk_tool_name: "AskUserQuestion".to_owned(),
             raw_input: None,

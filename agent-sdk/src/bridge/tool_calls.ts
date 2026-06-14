@@ -4,7 +4,7 @@ import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { applyTaskToolResult } from "./tasks.js";
-import { activeTaskIdForToolUse, linkTaskToolUse } from "./task_links.js";
+import { activeTaskIdForToolUse, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import {
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
@@ -74,6 +74,11 @@ export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
   return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
+}
+
+export function defersTaskNotificationCompletion(base: ToolCall | undefined): boolean {
+  const baseToolName = toolName(base);
+  return baseToolName === "Agent" || baseToolName === "Task";
 }
 
 function classifyFailureKind(rawOutput: string | undefined): "refused" | "timeout" | "failed" {
@@ -311,14 +316,22 @@ export function emitToolCallUpdate(
   toolUseId: string,
   fields: ToolCallUpdateFields,
   updateKind: ToolUpdateKind,
+  sourceMessageUuid?: string,
 ): void {
   const base = session.toolCalls.get(toolUseId);
   logToolCallUpdateEmitted(session.sessionId, toolUseId, fields, base, updateKind);
   emitSessionUpdate(session.sessionId, {
     type: "tool_call_update",
-    tool_call_update: { tool_call_id: toolUseId, fields },
+    tool_call_update: {
+      tool_call_id: toolUseId,
+      ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+      fields,
+    },
   });
   if (base) {
+    if (sourceMessageUuid) {
+      base.source_message_uuid = sourceMessageUuid;
+    }
     applyFieldsToBase(base, fields);
   }
 }
@@ -330,6 +343,7 @@ export function emitToolCall(
   input: Record<string, unknown>,
   parentToolUseId: string | null = null,
   metadata?: ToolCorrelationMetadata,
+  sourceMessageUuid?: string,
 ): void {
   const existing = session.toolCalls.get(toolUseId);
   const resolvedParentToolUseId = parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
@@ -341,6 +355,9 @@ export function emitToolCall(
     taskTitleContext(session, name, input),
   );
   applyToolCorrelationMetadata(toolCall, metadata);
+  if (sourceMessageUuid) {
+    toolCall.source_message_uuid = sourceMessageUuid;
+  }
   const status: ToolCall["status"] = "in_progress";
   toolCall.status = status;
 
@@ -360,7 +377,7 @@ export function emitToolCall(
   if (toolCall.content.length > 0) {
     fields.content = toolCall.content;
   }
-  emitToolCallUpdate(session, toolUseId, fields, "refresh");
+  emitToolCallUpdate(session, toolUseId, fields, "refresh", sourceMessageUuid);
 }
 
 export function ensureToolCallVisible(
@@ -402,6 +419,7 @@ export function emitToolResultUpdate(
   isError: boolean,
   rawContent: unknown,
   rawResult: unknown = rawContent,
+  sourceMessageUuid?: string,
 ): void {
   const base = session.toolCalls.get(toolUseId);
   const baseToolName = toolNameFromMeta(base?.meta) ?? "";
@@ -418,8 +436,14 @@ export function emitToolResultUpdate(
       linkTaskToolUse(session, taskId, toolUseId);
     }
   }
-  emitToolCallUpdate(session, toolUseId, fields, "result");
+  emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
   applyTaskToolResult(session, toolUseId, isError, rawContent, rawResult);
+  if (baseToolName === "Agent" || baseToolName === "Task") {
+    const taskId = activeTaskIdForToolUse(session, toolUseId);
+    if (taskId) {
+      unlinkTaskToolUse(session, taskId);
+    }
+  }
 }
 
 export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {

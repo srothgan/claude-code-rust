@@ -7,7 +7,9 @@ use super::theme;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
 use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
-use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use crate::app::config::{
+    available_mcp_actions, is_mcp_action_available, mcp_server_owner_summary,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -66,7 +68,8 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let server = app.mcp.servers.iter().find(|server| server.name == overlay.server_name);
-    let action_lines = server.map_or_else(Vec::new, |server| mcp_action_lines(server, overlay));
+    let action_lines =
+        server.map_or_else(Vec::new, |server| mcp_action_lines(app, server, overlay));
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -88,7 +91,8 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     if action_lines.is_empty() {
-        let body = server.map_or_else(server_missing_lines, server_detail_lines);
+        let body =
+            server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
         frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), rendered.body_area);
         return;
     }
@@ -103,7 +107,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
         .split(rendered.body_area);
 
-    let body = server.map_or_else(server_missing_lines, server_detail_lines);
+    let body = server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), sections[0]);
     render_overlay_separator(frame, sections[1]);
     let action_scroll =
@@ -338,7 +342,7 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
                 status_color(server.status),
             ),
             Span::styled(" ", Style::default()),
-            badge_span(server.scope.as_deref().unwrap_or("session"), Color::White, Color::DarkGray),
+            badge_span(scope_label(server.scope.as_deref()), Color::White, Color::DarkGray),
             Span::styled(" ", Style::default()),
             badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
         ]),
@@ -350,7 +354,7 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
     ]
 }
 
-fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
+fn server_detail_lines(app: &App, server: &McpServerStatus) -> Vec<Line<'static>> {
     let mut lines = vec![
         section_heading("Status"),
         detail_kv("Status", status_label(server.status), status_color(server.status)),
@@ -359,10 +363,14 @@ fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
             if matches!(server.status, McpServerConnectionStatus::Disabled) { "No" } else { "Yes" },
             Color::White,
         ),
-        detail_kv("Scope", server.scope.as_deref().unwrap_or("session"), Color::White),
+        detail_kv("Scope", scope_label(server.scope.as_deref()), Color::White),
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
         detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
     ];
+
+    if let Some(owner) = mcp_server_owner_summary(app, server) {
+        lines.push(detail_kv("Owner", &owner, Color::White));
+    }
 
     if let Some(info) = server.server_info.as_ref() {
         lines.push(detail_kv("Server name", &info.name, Color::White));
@@ -399,10 +407,11 @@ fn server_missing_lines() -> Vec<Line<'static>> {
 }
 
 fn mcp_action_lines(
+    app: &App,
     server: &McpServerStatus,
     overlay: &crate::app::config::McpDetailsOverlayState,
 ) -> Vec<Line<'static>> {
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     if actions.is_empty() {
         return vec![detail_value("No actions available.", theme::DIM)];
     }
@@ -414,7 +423,7 @@ fn mcp_action_lines(
             format!("{} {}", if selected { ">" } else { " " }, action.label()),
             overlay_line_style(selected, true),
         )];
-        if !is_mcp_action_available(server, action) {
+        if !is_mcp_action_available(app, server, action) {
             spans.push(Span::styled("  ", Style::default()));
             spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
         }
@@ -594,12 +603,19 @@ fn append_mcp_runtime_config_lines(
             Color::White,
         ));
         for tool in tools {
-            lines.push(detail_kv(
-                &format!("  {}", tool.name),
-                tool.permission_policy.label(),
-                Color::White,
-            ));
+            let policy_summary = format_mcp_tool_policy_summary(tool);
+            lines.push(detail_kv(&format!("  {}", tool.name), &policy_summary, Color::White));
         }
+    }
+}
+
+fn format_mcp_tool_policy_summary(tool: &crate::agent::model::McpServerToolPolicy) -> String {
+    let permission = tool.permission_policy.map_or("not specified", |policy| policy.label());
+    match tool.org_max_permission {
+        Some(org_max_permission) => {
+            format!("{permission}, org max {}", org_max_permission.label())
+        }
+        None => permission.to_owned(),
     }
 }
 
@@ -732,6 +748,10 @@ fn status_label(status: McpServerConnectionStatus) -> &'static str {
     }
 }
 
+fn scope_label(scope: Option<&str>) -> &str {
+    scope.filter(|value| !value.trim().is_empty()).unwrap_or("unspecified")
+}
+
 fn transport_label(config: Option<&McpServerStatusConfig>) -> &'static str {
     match config {
         Some(McpServerStatusConfig::Stdio { .. }) => "stdio",
@@ -839,7 +859,10 @@ mod tests {
                     headers: BTreeMap::new(),
                     tools: vec![crate::agent::model::McpServerToolPolicy {
                         name: "search".to_owned(),
-                        permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                        permission_policy: Some(
+                            crate::agent::model::McpServerToolPermissionPolicy::Ask,
+                        ),
+                        org_max_permission: None,
                     }],
                     timeout: Some(5000),
                     always_load: Some(true),
@@ -896,10 +919,20 @@ mod tests {
         let lines = config_lines(&McpServerStatusConfig::Http {
             url: "https://mcp.notion.com/mcp".to_owned(),
             headers: BTreeMap::new(),
-            tools: vec![crate::agent::model::McpServerToolPolicy {
-                name: "search".to_owned(),
-                permission_policy: crate::agent::model::McpServerToolPermissionPolicy::Deny,
-            }],
+            tools: vec![
+                crate::agent::model::McpServerToolPolicy {
+                    name: "search".to_owned(),
+                    permission_policy: Some(
+                        crate::agent::model::McpServerToolPermissionPolicy::Deny,
+                    ),
+                    org_max_permission: None,
+                },
+                crate::agent::model::McpServerToolPolicy {
+                    name: "lookup".to_owned(),
+                    permission_policy: None,
+                    org_max_permission: Some(crate::agent::model::McpServerOrgMaxPermission::Ask),
+                },
+            ],
             timeout: Some(5000),
             always_load: Some(true),
         });
@@ -909,5 +942,8 @@ mod tests {
         assert!(text.contains("enabled"));
         assert!(text.contains("search"));
         assert!(text.contains("always deny"));
+        assert!(text.contains("lookup"));
+        assert!(text.contains("not specified"));
+        assert!(text.contains("org max ask"));
     }
 }

@@ -26,6 +26,12 @@ pub enum ClientEvent {
         request: model::RequestQuestionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
+    /// Turn-level `request_user_dialog` (e.g. `refusal_fallback_prompt`) that
+    /// needs a user decision. Not anchored to a tool call.
+    UserDialogRequest {
+        request: model::RequestUserDialogRequest,
+        response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
+    },
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
@@ -34,6 +40,17 @@ pub enum ClientEvent {
     McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
     McpOperationError { error: crate::agent::types::McpOperationError },
+    /// Dynamic MCP server replacement completed through the SDK.
+    McpSetServersResult { session_id: String, result: crate::agent::types::McpSetServersResult },
+    /// Claude CLI removed an MCP server from a persisted config scope.
+    McpConfigRemoveSucceeded {
+        cwd_raw: String,
+        server_name: String,
+        scope: String,
+        claude_path: PathBuf,
+    },
+    /// Claude CLI failed to remove an MCP server from persisted config.
+    McpConfigRemoveFailed { cwd_raw: String, server_name: String, scope: String, message: String },
     /// A prompt turn completed successfully.
     TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
     /// `cancel` notification was accepted by the bridge.
@@ -101,6 +118,7 @@ pub enum ClientEvent {
     McpSnapshotReceived {
         session_id: String,
         servers: Vec<model::McpServerStatus>,
+        source: Option<crate::agent::types::McpSnapshotSource>,
         error: Option<String>,
     },
     /// Usage refresh task started.

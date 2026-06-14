@@ -16,6 +16,7 @@ use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
     convert_account_info, convert_current_model, convert_mode_state, map_available_models,
     map_mcp_server_status, map_permission_request, map_question_request, map_session_update,
+    map_user_dialog_request,
 };
 
 struct ConnectedEventData {
@@ -74,6 +75,9 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::QuestionRequest { session_id, request } => {
             handle_question_request_event(event_tx, cmd_tx, session_id, request);
         }
+        crate::agent::wire::BridgeEvent::UserDialogRequest { session_id, request } => {
+            handle_user_dialog_request_event(event_tx, cmd_tx, session_id, request);
+        }
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
             handle_elicitation_request_event(event_tx, &session_id, request);
         }
@@ -90,6 +94,9 @@ pub(super) fn handle_bridge_event(
         }
         crate::agent::wire::BridgeEvent::McpOperationError { error, .. } => {
             let _ = event_tx.send(ClientEvent::McpOperationError { error });
+        }
+        crate::agent::wire::BridgeEvent::McpSetServersResult { session_id, result } => {
+            let _ = event_tx.send(ClientEvent::McpSetServersResult { session_id, result });
         }
         crate::agent::wire::BridgeEvent::TurnComplete { terminal_reason, .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
@@ -167,10 +174,11 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
             let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
         }
-        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
+        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, source, error } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
                 session_id,
                 servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                source,
                 error,
             });
         }
@@ -251,6 +259,28 @@ fn handle_question_request_event(
             outcome = "failure",
             session_id = %session_id,
             tool_call_id = %tool_call_id,
+        );
+    }
+}
+
+fn handle_user_dialog_request_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    session_id: String,
+    request: types::UserDialogRequest,
+) {
+    let (request, request_id) = map_user_dialog_request(&session_id, request);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    if event_tx.send(ClientEvent::UserDialogRequest { request, response_tx }).is_ok() {
+        spawn_user_dialog_response_forwarder(cmd_tx.clone(), response_rx, session_id, request_id);
+    } else {
+        tracing::error!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "user_dialog_request_dispatch_failed",
+            message = "failed to dispatch user dialog request to app event loop",
+            outcome = "failure",
+            session_id = %session_id,
+            request_id = %request_id,
         );
     }
 }
@@ -392,6 +422,66 @@ fn spawn_question_response_forwarder(
                 session_id = %session_id_for_log,
                 tool_call_id = %tool_call_id_for_log,
                 selected_option_count,
+            );
+        }
+    });
+}
+
+fn spawn_user_dialog_response_forwarder(
+    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    response_rx: tokio::sync::oneshot::Receiver<model::RequestUserDialogResponse>,
+    session_id: String,
+    request_id: String,
+) {
+    tokio::task::spawn_local(async move {
+        let Ok(response) = response_rx.await else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "user_dialog_response_abandoned",
+                message = "user dialog response channel closed before bridge forwarding",
+                outcome = "dropped",
+                session_id = %session_id,
+                request_id = %request_id,
+            );
+            return;
+        };
+        let outcome = match response.outcome {
+            model::RequestUserDialogOutcome::Selected(selected) => {
+                types::UserDialogOutcome::Selected { option_id: selected.option_id }
+            }
+            model::RequestUserDialogOutcome::Cancelled => types::UserDialogOutcome::Cancelled,
+        };
+        let selected_option = match &outcome {
+            types::UserDialogOutcome::Selected { option_id } => option_id.clone(),
+            types::UserDialogOutcome::Cancelled => "cancelled".to_owned(),
+        };
+        let session_id_for_log = session_id.clone();
+        let request_id_for_log = request_id.clone();
+        if cmd_tx
+            .send(CommandEnvelope {
+                request_id: None,
+                command: BridgeCommand::UserDialogResponse { session_id, request_id, outcome },
+            })
+            .is_ok()
+        {
+            tracing::info!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "user_dialog_response_forwarded",
+                message = "user dialog response forwarded to bridge",
+                outcome = "success",
+                session_id = %session_id_for_log,
+                request_id = %request_id_for_log,
+                selected_option = %selected_option,
+            );
+        } else {
+            tracing::error!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "user_dialog_response_forward_failed",
+                message = "failed to forward user dialog response to bridge",
+                outcome = "failure",
+                session_id = %session_id_for_log,
+                request_id = %request_id_for_log,
+                selected_option = %selected_option,
             );
         }
     });

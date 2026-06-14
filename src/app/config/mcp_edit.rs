@@ -6,8 +6,9 @@ use super::edit::{
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
     available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, is_mcp_action_available,
-    open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
-    send_mcp_elicitation_response, set_mcp_server_enabled, submit_mcp_oauth_callback_url,
+    mcp_config_removal_scope, open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
+    remove_mcp_server_from_config, send_mcp_elicitation_response, set_mcp_server_enabled,
+    submit_mcp_oauth_callback_url,
 };
 use super::{ConfigOverlayState, ConfirmationAction, ConfirmationOverlayState};
 use crate::app::App;
@@ -63,7 +64,7 @@ fn move_mcp_details_overlay_selection(app: &mut App, delta: isize) {
     else {
         return;
     };
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     if actions.is_empty() {
         return;
     }
@@ -83,16 +84,21 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
         app.config.clear_overlay();
         return;
     };
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     let Some(action) = actions.get(overlay.selected_index).copied() else {
         return;
     };
-    if !is_mcp_action_available(server, action) {
+    if !is_mcp_action_available(app, server, action) {
         return;
     }
 
     if action == McpServerActionKind::ClearAuth {
         open_mcp_clear_auth_confirmation(app, overlay);
+        return;
+    }
+
+    if action.mcp_config_scope().is_some() {
+        open_mcp_remove_confirmation(app, overlay, action);
         return;
     }
 
@@ -127,6 +133,24 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
         McpServerActionKind::Disable => {
             set_mcp_server_enabled(app, server_name, false);
         }
+        McpServerActionKind::ManagePlugin => {
+            if !crate::app::plugins::open_installed_actions_overlay_for_mcp_server(app, server_name)
+            {
+                app.config.set_overlay_error(
+                    "Refresh plugin inventory from the Plugins tab before managing this MCP server.",
+                );
+            }
+            return;
+        }
+        McpServerActionKind::RemoveUserConfig
+        | McpServerActionKind::RemoveLocalConfig
+        | McpServerActionKind::RemoveProjectConfig
+        | McpServerActionKind::RemoveDynamicConfig => {
+            let Some(scope) = action.mcp_config_scope() else {
+                return;
+            };
+            remove_mcp_server_from_config(app, server_name, scope);
+        }
     }
 
     app.config.clear_overlay();
@@ -143,6 +167,35 @@ fn open_mcp_clear_auth_confirmation(app: &mut App, overlay: super::mcp::McpDetai
         cancel_label: "Cancel".to_owned(),
         selected_index: 0,
         action: ConfirmationAction::McpClearAuth,
+        previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
+    }));
+}
+
+fn open_mcp_remove_confirmation(
+    app: &mut App,
+    overlay: super::mcp::McpDetailsOverlayState,
+    action: McpServerActionKind,
+) {
+    let Some(server) = app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
+    else {
+        app.config.clear_overlay();
+        return;
+    };
+    let Some(_scope) = action.mcp_config_scope().filter(|scope| {
+        mcp_config_removal_scope(app, server).is_some_and(|server_scope| server_scope == *scope)
+    }) else {
+        app.config.set_overlay_error("This MCP server cannot be removed from live config.");
+        return;
+    };
+
+    let server_name = overlay.server_name.clone();
+    app.config.replace_overlay(ConfigOverlayState::Confirmation(ConfirmationOverlayState {
+        title: format!("Remove MCP server {server_name}"),
+        body: format!("Remove MCP server {server_name}? This cannot be reversed."),
+        confirm_label: "Remove".to_owned(),
+        cancel_label: "Cancel".to_owned(),
+        selected_index: 0,
+        action: ConfirmationAction::McpRemoveConfig,
         previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
     }));
 }

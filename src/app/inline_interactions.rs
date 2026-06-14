@@ -12,11 +12,13 @@ fn interaction_id_is_valid(app: &App, tool_id: &str) -> bool {
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         return false;
     };
-    matches!(
-        app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
-        Some(MessageBlock::ToolCall(tc))
-            if tc.pending_permission.is_some() || tc.pending_question.is_some()
-    )
+    match app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)) {
+        Some(MessageBlock::ToolCall(tc)) => {
+            tc.pending_permission.is_some() || tc.pending_question.is_some()
+        }
+        Some(MessageBlock::UserDialog(dialog)) => !dialog.answered,
+        _ => false,
+    }
 }
 
 pub(super) fn focused_interaction(app: &App) -> Option<&ToolCallInfo> {
@@ -65,23 +67,33 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
         return;
     };
     let mut invalidated = false;
-    if let Some(msg) = app.messages.get_mut(mi)
-        && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
-    {
-        let tc = tc.as_mut();
-        if let Some(ref mut perm) = tc.pending_permission
-            && perm.focused != focused
-        {
-            perm.focused = focused;
-            tc.invalidate_render_cache();
-            invalidated = true;
-        }
-        if let Some(ref mut question) = tc.pending_question
-            && question.focused != focused
-        {
-            question.focused = focused;
-            tc.invalidate_render_cache();
-            invalidated = true;
+    if let Some(msg) = app.messages.get_mut(mi) {
+        match msg.blocks.get_mut(bi) {
+            Some(MessageBlock::ToolCall(tc)) => {
+                let tc = tc.as_mut();
+                if let Some(ref mut perm) = tc.pending_permission
+                    && perm.focused != focused
+                {
+                    perm.focused = focused;
+                    tc.invalidate_render_cache();
+                    invalidated = true;
+                }
+                if let Some(ref mut question) = tc.pending_question
+                    && question.focused != focused
+                {
+                    question.focused = focused;
+                    tc.invalidate_render_cache();
+                    invalidated = true;
+                }
+            }
+            Some(MessageBlock::UserDialog(dialog)) => {
+                if dialog.focused != focused {
+                    dialog.focused = focused;
+                    dialog.cache.invalidate();
+                    invalidated = true;
+                }
+            }
+            _ => {}
         }
     }
     if invalidated {
@@ -92,10 +104,35 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
 }
 
 pub(super) fn focused_interaction_is_active(app: &App) -> bool {
-    focused_interaction(app).is_some_and(|tc| {
-        tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            || tc.pending_question.as_ref().is_some_and(|question| question.focused)
-    })
+    let Some(tool_id) = focused_interaction_id(app) else {
+        return false;
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        return false;
+    };
+    match app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)) {
+        Some(MessageBlock::ToolCall(tc)) => {
+            tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
+                || tc.pending_question.as_ref().is_some_and(|question| question.focused)
+        }
+        Some(MessageBlock::UserDialog(dialog)) => dialog.focused && !dialog.answered,
+        _ => false,
+    }
+}
+
+/// Whether the head of the interaction queue is a focused, unanswered user
+/// dialog. Used by key dispatch to route navigation/confirm to the dialog.
+pub(super) fn has_focused_user_dialog(app: &App) -> bool {
+    let Some(tool_id) = focused_interaction_id(app) else {
+        return false;
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        return false;
+    };
+    matches!(
+        app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
+        Some(MessageBlock::UserDialog(dialog)) if dialog.focused && !dialog.answered
+    )
 }
 
 pub(super) fn clear_inline_interaction_focus(app: &mut App) {
@@ -107,25 +144,37 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
         let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
             continue;
         };
-        if let Some(msg) = app.messages.get_mut(mi)
-            && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
-        {
-            let tc = tc.as_mut();
+        if let Some(msg) = app.messages.get_mut(mi) {
             let mut interaction_changed = false;
-            if let Some(ref mut perm) = tc.pending_permission
-                && perm.focused
-            {
-                perm.focused = false;
-                interaction_changed = true;
-            }
-            if let Some(ref mut question) = tc.pending_question
-                && question.focused
-            {
-                question.focused = false;
-                interaction_changed = true;
+            match msg.blocks.get_mut(bi) {
+                Some(MessageBlock::ToolCall(tc)) => {
+                    let tc = tc.as_mut();
+                    if let Some(ref mut perm) = tc.pending_permission
+                        && perm.focused
+                    {
+                        perm.focused = false;
+                        interaction_changed = true;
+                    }
+                    if let Some(ref mut question) = tc.pending_question
+                        && question.focused
+                    {
+                        question.focused = false;
+                        interaction_changed = true;
+                    }
+                    if interaction_changed {
+                        tc.invalidate_render_cache();
+                    }
+                }
+                Some(MessageBlock::UserDialog(dialog)) => {
+                    if dialog.focused {
+                        dialog.focused = false;
+                        dialog.cache.invalidate();
+                        interaction_changed = true;
+                    }
+                }
+                _ => {}
             }
             if interaction_changed {
-                tc.invalidate_render_cache();
                 app.sync_render_cache_slot(mi, bi);
                 app.recompute_message_retained_bytes(mi);
                 app.invalidate_layout(InvalidationLevel::MessageChanged(mi));

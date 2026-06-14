@@ -138,8 +138,23 @@ export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
 }
 
+export interface AgentOutputMetadata {
+  resolved_model?: string;
+}
+
+export interface WebFetchArtifactReadMetadata {
+  slug: string;
+  ver: string;
+}
+
+export interface WebFetchOutputMetadata {
+  artifact_read?: WebFetchArtifactReadMetadata;
+}
+
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
+  agent?: AgentOutputMetadata;
+  web_fetch?: WebFetchOutputMetadata;
 }
 
 export interface TaskMetadata {
@@ -168,6 +183,7 @@ export interface ToolCall {
   title: string;
   kind: string;
   status: string;
+  source_message_uuid?: string;
   content: ToolCallContent[];
   raw_input?: Json;
   raw_output?: string;
@@ -192,7 +208,26 @@ export interface ToolCallUpdateFields {
 
 export interface ToolCallUpdate {
   tool_call_id: string;
+  source_message_uuid?: string;
   fields: ToolCallUpdateFields;
+}
+
+export type TranscriptRetractionReason =
+  | "model_refusal_fallback"
+  | "model_fallback"
+  | "assistant_supersedes";
+
+export interface TranscriptRetraction {
+  message_uuids: string[];
+  reason: TranscriptRetractionReason;
+  request_id?: string;
+  trigger?: string;
+  direction?: string;
+  original_model?: string;
+  fallback_model?: string;
+  api_refusal_category?: string;
+  api_refusal_explanation?: string;
+  content?: string;
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
@@ -224,11 +259,12 @@ export interface TaskStateUpdate {
 }
 
 export type SessionUpdate =
-  | { type: "agent_message_chunk"; content: ContentBlock }
-  | { type: "user_message_chunk"; content: ContentBlock }
-  | { type: "agent_thought_chunk"; content: ContentBlock }
+  | { type: "agent_message_chunk"; content: ContentBlock; source_message_uuid?: string }
+  | { type: "user_message_chunk"; content: ContentBlock; source_message_uuid?: string }
+  | { type: "agent_thought_chunk"; content: ContentBlock; source_message_uuid?: string }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
+  | ({ type: "transcript_retraction" } & TranscriptRetraction)
   | ({ type: "task_state_update" } & TaskStateUpdate)
   | {
       type: "available_commands_update";
@@ -346,6 +382,46 @@ export type QuestionOutcome =
     }
   | { outcome: "cancelled" };
 
+/**
+ * The host-selectable choices of a `refusal_fallback_prompt` dialog. `cancelled`
+ * is the CLI default and is delivered via the Esc/decline path, not as a listed
+ * option, so it is excluded from this union (see {@link UserDialogOutcome}).
+ */
+export type RefusalFallbackPromptChoice = "retry_fallback" | "edit_prompt";
+
+/**
+ * Snake-case host wire shape of the `refusal_fallback_prompt` payload. The CLI
+ * builds it with camelCase keys (`originalModel`, …); the bridge normalizes the
+ * casing before emitting.
+ */
+export interface RefusalFallbackPromptPayload {
+  original_model: string;
+  fallback_model: string;
+  api_refusal_category?: string;
+  guidance_text?: string;
+  retracted_message_uuids?: string[];
+}
+
+export interface UserDialogOption {
+  option_id: RefusalFallbackPromptChoice;
+  label: string;
+}
+
+/**
+ * Host-facing shape of a `request_user_dialog` control request. The bridge owns
+ * `request_id` (generated per callback) and the rendered option labels.
+ */
+export interface UserDialogRequestPayload {
+  request_id: string;
+  dialog_kind: "refusal_fallback_prompt";
+  payload: RefusalFallbackPromptPayload;
+  options: UserDialogOption[];
+}
+
+export type UserDialogOutcome =
+  | { outcome: "selected"; option_id: RefusalFallbackPromptChoice }
+  | { outcome: "cancelled" };
+
 export interface SessionListEntry {
   session_id: string;
   summary: string;
@@ -395,9 +471,12 @@ export type McpServerToolPermissionPolicy =
   | "always_ask"
   | "always_deny";
 
+export type McpServerOrgMaxPermission = "allow" | "ask" | "blocked";
+
 export interface McpServerToolPolicy {
   name: string;
-  permission_policy: McpServerToolPermissionPolicy;
+  permission_policy?: McpServerToolPermissionPolicy;
+  org_max_permission?: McpServerOrgMaxPermission;
 }
 
 export type McpServerConfig =
@@ -458,6 +537,12 @@ export interface McpSetServersResult {
   removed: string[];
   errors: Record<string, string>;
 }
+
+export type McpSnapshotSource =
+  | "reload_plugins"
+  | "mcp_status"
+  | "mcp_set_servers"
+  | "init";
 
 export interface SessionLaunchSettings {
   language?: string;
@@ -545,6 +630,12 @@ export type BridgeCommand =
       session_id: string;
       tool_call_id: string;
       outcome: QuestionOutcome;
+    }
+  | {
+      command: "user_dialog_response";
+      session_id: string;
+      request_id: string;
+      outcome: UserDialogOutcome;
     }
   | {
       command: "elicitation_response";
@@ -647,10 +738,12 @@ export type BridgeEvent =
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
+  | { event: "user_dialog_request"; session_id: string; request: UserDialogRequestPayload }
   | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
   | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
   | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
   | { event: "mcp_operation_error"; session_id: string; error: McpOperationError }
+  | { event: "mcp_set_servers_result"; session_id: string; result: McpSetServersResult }
   | { event: "turn_complete"; session_id: string; terminal_reason?: TerminalReason }
   | {
       event: "turn_error";
@@ -686,5 +779,6 @@ export type BridgeEvent =
       event: "mcp_snapshot";
       session_id: string;
       servers: McpServerStatus[];
+      source?: McpSnapshotSource;
       error?: string;
     };

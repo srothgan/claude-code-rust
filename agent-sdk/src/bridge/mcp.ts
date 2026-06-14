@@ -1,4 +1,9 @@
-import type { BridgeCommand, McpServerStatus } from "../types.js";
+import type {
+  BridgeCommand,
+  McpSetServersResult,
+  McpServerStatus,
+  McpSnapshotSource,
+} from "../types.js";
 import { emitMcpOperationError, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
@@ -18,6 +23,7 @@ type McpAuthMethodName =
   | "mcpAuthenticate"
   | "mcpClearAuth"
   | "mcpSubmitOAuthCallbackUrl";
+type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
 
 export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
 const knownConnectedMcpServers = new Set<string>();
@@ -64,6 +70,28 @@ function logMcpFailure(
 
 function queryWithMcpAuth(session: SessionState): QueryWithMcpAuth {
   return session.query as QueryWithMcpAuth;
+}
+
+function mapMcpSetServersResult(result: unknown): McpSetServersResult {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { added: [], removed: [], errors: {} };
+  }
+  const record = result as Record<string, unknown>;
+  const added = Array.isArray(record.added)
+    ? record.added.filter((value): value is string => typeof value === "string")
+    : [];
+  const removed = Array.isArray(record.removed)
+    ? record.removed.filter((value): value is string => typeof value === "string")
+    : [];
+  const errors =
+    record.errors && typeof record.errors === "object" && !Array.isArray(record.errors)
+      ? Object.fromEntries(
+          Object.entries(record.errors as Record<string, unknown>).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  return { added, removed, errors };
 }
 
 async function callMcpAuthMethod(
@@ -131,12 +159,48 @@ function emitMcpCommandError(
 export async function emitMcpSnapshotEvent(
   session: SessionState,
   requestId?: string,
+  source: McpSnapshotSource = "mcp_status",
 ): Promise<McpServerStatus[]> {
   const servers = await session.query.mcpServerStatus();
   let mapped = servers.map(mapMcpServerStatus);
   mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
+  return emitMcpSnapshotFromMappedStatuses(session, mapped, source, requestId);
+}
+
+export function emitMcpSnapshotFromStatuses(
+  session: SessionState,
+  servers: readonly SdkMcpServerStatus[],
+  source: McpSnapshotSource,
+  requestId?: string,
+): McpServerStatus[] {
+  return emitMcpSnapshotFromMappedStatuses(
+    session,
+    servers.map(mapMcpServerStatus),
+    source,
+    requestId,
+  );
+}
+
+export async function emitReconciledMcpSnapshotFromStatuses(
+  session: SessionState,
+  servers: readonly SdkMcpServerStatus[],
+  source: McpSnapshotSource,
+  requestId?: string,
+): Promise<McpServerStatus[]> {
+  let mapped = servers.map(mapMcpServerStatus);
+  mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
+  return emitMcpSnapshotFromMappedStatuses(session, mapped, source, requestId);
+}
+
+function emitMcpSnapshotFromMappedStatuses(
+  session: SessionState,
+  mapped: McpServerStatus[],
+  source: McpSnapshotSource,
+  requestId?: string,
+): McpServerStatus[] {
   rememberKnownConnectedMcpServers(mapped);
   logMcpSuccess("mcp_snapshot_emitted", "MCP snapshot emitted", session.sessionId, requestId, {
+    source,
     server_count: mapped.length,
     servers: summarizeMcpServersForDiagnostics(mapped),
   });
@@ -144,6 +208,7 @@ export async function emitMcpSnapshotEvent(
     {
       event: "mcp_snapshot",
       session_id: session.sessionId,
+      source,
       servers: mapped,
     },
     requestId,
@@ -278,9 +343,10 @@ async function monitorMcpAuthSnapshot(
 export async function handleMcpStatusCommand(
   session: SessionState,
   requestId?: string,
+  source: McpSnapshotSource = "mcp_status",
 ): Promise<void> {
   try {
-    await emitMcpSnapshotEvent(session, requestId);
+    await emitMcpSnapshotEvent(session, requestId, source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
@@ -294,6 +360,7 @@ export async function handleMcpStatusCommand(
       {
         event: "mcp_snapshot",
         session_id: session.sessionId,
+        source,
         servers: [],
         error: message,
       },
@@ -366,14 +433,30 @@ export async function handleMcpSetServersCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await session.query.setMcpServers(bridgeMcpServersToSdk(command.servers));
+    const result = mapMcpSetServersResult(
+      await session.query.setMcpServers(bridgeMcpServersToSdk(command.servers)),
+    );
     logMcpSuccess(
       "mcp_servers_set_completed",
       "MCP server configuration updated",
       command.session_id,
       requestId,
-      { server_count: Object.keys(command.servers).length },
+      {
+        server_count: Object.keys(command.servers).length,
+        added_count: result.added.length,
+        removed_count: result.removed.length,
+        error_count: Object.keys(result.errors).length,
+      },
     );
+    writeEvent(
+      {
+        event: "mcp_set_servers_result",
+        session_id: command.session_id,
+        result,
+      },
+      requestId,
+    );
+    await handleMcpStatusCommand(session, requestId, "mcp_set_servers");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
@@ -383,6 +466,11 @@ export async function handleMcpSetServersCommand(
       message,
       requestId,
       { server_count: Object.keys(command.servers).length },
+    );
+    emitMcpOperationError(
+      command.session_id,
+      { operation: "set-servers", message },
+      requestId,
     );
     slashError(command.session_id, `failed to set MCP servers: ${message}`, requestId);
   }

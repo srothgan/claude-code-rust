@@ -5,6 +5,7 @@ import type {
   SystemNoticeSeverity,
   TaskMetadata,
   TerminalReason,
+  TranscriptRetractionReason,
   ToolCallUpdateFields,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
@@ -30,6 +31,7 @@ import {
   emitToolSummaryUpdate,
   ensureToolCallVisible,
   resolveTaskToolUseId,
+  defersTaskNotificationCompletion,
   toolAcceptsTaskLifecycle,
   taskProgressText,
   taskUpdatedFields,
@@ -56,7 +58,7 @@ import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { emitCurrentModelUpdate, refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
-import { mapMcpServerStatus, summarizeMcpServersForDiagnostics } from "./mcp_metadata.js";
+import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
   const chunks = command.chunks ?? [];
@@ -381,7 +383,8 @@ export function handleTaskSystemMessage(
   const status = typeof msg.status === "string" ? msg.status : "";
   const summary = typeof msg.summary === "string" ? msg.summary : "";
   const finalStatus = status === "completed" ? "completed" : status === "stopped" ? "killed" : "failed";
-  const fields: ToolCallUpdateFields = { status: finalStatus };
+  const deferCompletion = finalStatus === "completed" && defersTaskNotificationCompletion(toolCall);
+  const fields: ToolCallUpdateFields = deferCompletion ? {} : { status: finalStatus };
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
@@ -389,8 +392,10 @@ export function handleTaskSystemMessage(
     fields.raw_output = summary;
     fields.content = [{ type: "content", content: { type: "text", text: summary } }];
   }
-  emitToolCallUpdate(session, toolUseId, fields, "task_notification");
-  if (taskId) {
+  if (Object.keys(fields).length > 0) {
+    emitToolCallUpdate(session, toolUseId, fields, "task_notification");
+  }
+  if (taskId && !deferCompletion) {
     unlinkTaskToolUse(session, taskId);
   }
   return true;
@@ -400,7 +405,111 @@ type ContentBlockLinkage = {
   source: "assistant" | "stream_event" | "user";
   parentToolUseId?: string;
   metadata?: ToolCorrelationMetadata;
+  sourceMessageUuid?: string;
 };
+
+function stringField(msg: Record<string, unknown>, field: string): string | undefined {
+  const value = msg[field];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function nullableStringField(msg: Record<string, unknown>, field: string): string | undefined {
+  const value = msg[field];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function sourceMessageUuid(msg: Record<string, unknown>): string | undefined {
+  return stringField(msg, "uuid");
+}
+
+function dedupeMessageUuids(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const uuids: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !entry) {
+      continue;
+    }
+    if (seen.has(entry)) {
+      continue;
+    }
+    seen.add(entry);
+    uuids.push(entry);
+  }
+  return uuids;
+}
+
+function emitTranscriptRetraction(
+  session: SessionState,
+  messageUuids: string[],
+  reason: TranscriptRetractionReason,
+  metadata: Record<string, string | undefined> = {},
+): boolean {
+  const deduped = dedupeMessageUuids(messageUuids);
+  if (deduped.length === 0) {
+    return false;
+  }
+  emitSessionUpdate(session.sessionId, {
+    type: "transcript_retraction",
+    message_uuids: deduped,
+    reason,
+    ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
+    ...(metadata.trigger ? { trigger: metadata.trigger } : {}),
+    ...(metadata.direction ? { direction: metadata.direction } : {}),
+    ...(metadata.originalModel ? { original_model: metadata.originalModel } : {}),
+    ...(metadata.fallbackModel ? { fallback_model: metadata.fallbackModel } : {}),
+    ...(metadata.apiRefusalCategory ? { api_refusal_category: metadata.apiRefusalCategory } : {}),
+    ...(metadata.apiRefusalExplanation ? { api_refusal_explanation: metadata.apiRefusalExplanation } : {}),
+    ...(metadata.content ? { content: metadata.content } : {}),
+  });
+  return true;
+}
+
+function handleFallbackRetractionMessage(
+  session: SessionState,
+  subtype: string,
+  msg: Record<string, unknown>,
+): boolean {
+  if (subtype !== "model_refusal_fallback" && subtype !== "model_fallback") {
+    return false;
+  }
+  const reason: TranscriptRetractionReason =
+    subtype === "model_fallback" ? "model_fallback" : "model_refusal_fallback";
+  const messageUuids = dedupeMessageUuids(msg.retracted_message_uuids);
+  const metadata = {
+    requestId: nullableStringField(msg, "request_id"),
+    trigger: stringField(msg, "trigger"),
+    direction: stringField(msg, "direction"),
+    originalModel: stringField(msg, "original_model"),
+    fallbackModel: stringField(msg, "fallback_model"),
+    apiRefusalCategory: nullableStringField(msg, "api_refusal_category"),
+    apiRefusalExplanation: nullableStringField(msg, "api_refusal_explanation"),
+    content: stringField(msg, "content"),
+  };
+  const emitted = emitTranscriptRetraction(session, messageUuids, reason, metadata);
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "sdk_model_fallback_received",
+    message: "SDK model fallback retraction received",
+    outcome: emitted ? "success" : "observed",
+    sessionId: session.sessionId,
+    requestId: metadata.requestId,
+    count: messageUuids.length,
+    fields: {
+      sdk_subtype: subtype,
+      trigger: metadata.trigger,
+      direction: metadata.direction,
+      original_model: metadata.originalModel,
+      fallback_model: metadata.fallbackModel,
+      api_refusal_category: metadata.apiRefusalCategory,
+      has_api_refusal_explanation: metadata.apiRefusalExplanation !== undefined,
+      has_content: metadata.content !== undefined,
+    },
+  });
+  return true;
+}
 
 function logContentBlockLinkage(
   session: SessionState,
@@ -467,7 +576,11 @@ export function handleContentBlock(
   if (blockType === "text") {
     const text = typeof block.text === "string" ? block.text : "";
     if (text) {
-      emitSessionUpdate(session.sessionId, { type: "agent_message_chunk", content: { type: "text", text } });
+      emitSessionUpdate(session.sessionId, {
+        type: "agent_message_chunk",
+        content: { type: "text", text },
+        ...(linkage?.sourceMessageUuid ? { source_message_uuid: linkage.sourceMessageUuid } : {}),
+      });
     }
     return;
   }
@@ -475,7 +588,11 @@ export function handleContentBlock(
   if (blockType === "thinking") {
     const text = typeof block.thinking === "string" ? block.thinking : "";
     if (text) {
-      emitSessionUpdate(session.sessionId, { type: "agent_thought_chunk", content: { type: "text", text } });
+      emitSessionUpdate(session.sessionId, {
+        type: "agent_thought_chunk",
+        content: { type: "text", text },
+        ...(linkage?.sourceMessageUuid ? { source_message_uuid: linkage.sourceMessageUuid } : {}),
+      });
     }
     return;
   }
@@ -492,7 +609,15 @@ export function handleContentBlock(
       return;
     }
     logContentBlockLinkage(session, blockType, toolUseId, name, linkage);
-    emitToolCall(session, toolUseId, name, input, linkage?.parentToolUseId ?? null, linkage?.metadata);
+    emitToolCall(
+      session,
+      toolUseId,
+      name,
+      input,
+      linkage?.parentToolUseId ?? null,
+      linkage?.metadata,
+      linkage?.sourceMessageUuid,
+    );
     return;
   }
 
@@ -506,7 +631,7 @@ export function handleContentBlock(
     }
     logContentBlockLinkage(session, blockType, toolUseId, undefined, linkage);
     const isError = Boolean(block.is_error);
-    emitToolResultUpdate(session, toolUseId, isError, block.content, block);
+    emitToolResultUpdate(session, toolUseId, isError, block.content, block, linkage?.sourceMessageUuid);
   }
 }
 
@@ -514,6 +639,7 @@ export function handleStreamEvent(
   session: SessionState,
   event: Record<string, unknown>,
   parentToolUseId?: string,
+  sourceMessageUuid?: string,
 ): void {
   const eventType = typeof event.type === "string" ? event.type : "";
 
@@ -522,6 +648,7 @@ export function handleStreamEvent(
       handleContentBlock(session, event.content_block as Record<string, unknown>, {
         source: "stream_event",
         parentToolUseId,
+        sourceMessageUuid,
       });
     }
     return;
@@ -536,18 +663,32 @@ export function handleStreamEvent(
     if (deltaType === "text_delta") {
       const text = typeof delta.text === "string" ? delta.text : "";
       if (text) {
-        emitSessionUpdate(session.sessionId, { type: "agent_message_chunk", content: { type: "text", text } });
+        emitSessionUpdate(session.sessionId, {
+          type: "agent_message_chunk",
+          content: { type: "text", text },
+          ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+        });
       }
     } else if (deltaType === "thinking_delta") {
       const text = typeof delta.thinking === "string" ? delta.thinking : "";
       if (text) {
-        emitSessionUpdate(session.sessionId, { type: "agent_thought_chunk", content: { type: "text", text } });
+        emitSessionUpdate(session.sessionId, {
+          type: "agent_thought_chunk",
+          content: { type: "text", text },
+          ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+        });
       }
     }
   }
 }
 
 export function handleAssistantMessage(session: SessionState, message: Record<string, unknown>): void {
+  const assistantMessageUuid = sourceMessageUuid(message);
+  emitTranscriptRetraction(
+    session,
+    dedupeMessageUuids(message.supersedes),
+    "assistant_supersedes",
+  );
   const assistantError = typeof message.error === "string" ? message.error : "";
   if (assistantError.length > 0) {
     session.lastAssistantError = parseApiRetryError(assistantError);
@@ -576,7 +717,12 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
     ) {
       const parentToolUseId =
         typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
-      handleContentBlock(session, blockRecord, { source: "assistant", parentToolUseId, metadata });
+      handleContentBlock(session, blockRecord, {
+        source: "assistant",
+        parentToolUseId,
+        metadata,
+        sourceMessageUuid: assistantMessageUuid,
+      });
     }
   }
 }
@@ -621,6 +767,7 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
       logContentBlockLinkage(session, blockType, toolUseId, undefined, {
         source: "user",
         parentToolUseId,
+        sourceMessageUuid: sourceMessageUuid(message),
       });
       emitToolResultUpdate(
         session,
@@ -628,6 +775,7 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
         Boolean(blockRecord.is_error),
         blockRecord.content,
         messageToolUseResult(message) ?? blockRecord,
+        sourceMessageUuid(message),
       );
     }
   }
@@ -706,6 +854,10 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
   if (type === "system") {
     const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
+    if (handleFallbackRetractionMessage(session, subtype, msg)) {
+      return;
+    }
+
     if (subtype === "commands_changed") {
       updateAvailableCommands(session, "commands_changed", mapSdkSlashCommands(msg.commands));
       return;
@@ -857,27 +1009,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       }
 
       if (Array.isArray(msg.mcp_servers)) {
-        const servers = msg.mcp_servers.map((server) =>
-          mapMcpServerStatus(
-            server as import("@anthropic-ai/claude-agent-sdk").McpServerStatus,
-          ),
+        emitMcpSnapshotFromStatuses(
+          session,
+          msg.mcp_servers as import("@anthropic-ai/claude-agent-sdk").McpServerStatus[],
+          "init",
         );
-        bridgeLogger.info({
-          target: LOG_TARGETS.BRIDGE_MCP,
-          eventName: "mcp_init_snapshot_emitted",
-          message: "MCP init snapshot emitted",
-          outcome: "success",
-          sessionId: session.sessionId,
-          fields: {
-            server_count: servers.length,
-            servers: summarizeMcpServersForDiagnostics(servers),
-          },
-        });
-        writeEvent({
-          event: "mcp_snapshot",
-          session_id: session.sessionId,
-          servers,
-        });
       }
 
       if (session.lastAvailableAgentsSignature === undefined && Array.isArray(msg.agents)) {
@@ -947,6 +1083,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         emitSessionUpdate(session.sessionId, {
           type: "agent_message_chunk",
           content: { type: "text", text: content },
+          ...(sourceMessageUuid(msg) ? { source_message_uuid: sourceMessageUuid(msg) } : {}),
         });
       }
       return;
@@ -1018,7 +1155,12 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     if (msg.event && typeof msg.event === "object") {
       const parentToolUseId =
         typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined;
-      handleStreamEvent(session, msg.event as Record<string, unknown>, parentToolUseId);
+      handleStreamEvent(
+        session,
+        msg.event as Record<string, unknown>,
+        parentToolUseId,
+        sourceMessageUuid(msg),
+      );
     }
     return;
   }
@@ -1073,6 +1215,27 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "rate_limit_event") {
     const rateLimitInfo = asRecordOrNull(msg.rate_limit_info);
     const update = buildRateLimitUpdate(msg.rate_limit_info);
+    const rawIsUsingOverage =
+      typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined;
+    const rawOverageInUse =
+      typeof rateLimitInfo?.overageInUse === "boolean" ? rateLimitInfo.overageInUse : undefined;
+    if (
+      rawIsUsingOverage !== undefined &&
+      rawOverageInUse !== undefined &&
+      rawIsUsingOverage !== rawOverageInUse
+    ) {
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "sdk_rate_limit_overage_spelling_conflict",
+        message: "SDK rate limit overage booleans conflict",
+        outcome: "using_overageInUse",
+        sessionId: session.sessionId,
+        fields: {
+          raw_is_using_overage: rawIsUsingOverage,
+          raw_overage_in_use: rawOverageInUse,
+        },
+      });
+    }
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "sdk_rate_limit_event_received",
@@ -1088,8 +1251,8 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         raw_overage_status:
           typeof rateLimitInfo?.overageStatus === "string" ? rateLimitInfo.overageStatus : undefined,
         raw_overage_resets_at: numberField(rateLimitInfo ?? {}, "overageResetsAt"),
-        raw_is_using_overage:
-          typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined,
+        raw_is_using_overage: rawIsUsingOverage,
+        raw_overage_in_use: rawOverageInUse,
         raw_surpassed_threshold: numberField(rateLimitInfo ?? {}, "surpassedThreshold"),
         parsed_status: update?.status,
         parsed_rate_limit_type: update?.rate_limit_type,
@@ -1127,7 +1290,14 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         return;
       }
       const parsed = unwrapToolUseResult(rawToolUseResult);
-      emitToolResultUpdate(session, toolUseId, parsed.isError, parsed.content, rawToolUseResult);
+      emitToolResultUpdate(
+        session,
+        toolUseId,
+        parsed.isError,
+        parsed.content,
+        rawToolUseResult,
+        sourceMessageUuid(msg),
+      );
     }
     return;
   }

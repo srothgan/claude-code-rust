@@ -101,6 +101,11 @@ pub enum BridgeCommand {
         tool_call_id: String,
         outcome: types::QuestionOutcome,
     },
+    UserDialogResponse {
+        session_id: String,
+        request_id: String,
+        outcome: types::UserDialogOutcome,
+    },
     ElicitationResponse {
         session_id: String,
         elicitation_request_id: String,
@@ -168,6 +173,7 @@ impl BridgeCommand {
             Self::NewSession { .. } => "new_session",
             Self::PermissionResponse { .. } => "permission_response",
             Self::QuestionResponse { .. } => "question_response",
+            Self::UserDialogResponse { .. } => "user_dialog_response",
             Self::ElicitationResponse { .. } => "elicitation_response",
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
@@ -197,6 +203,7 @@ impl BridgeCommand {
             | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
             | Self::QuestionResponse { session_id, .. }
+            | Self::UserDialogResponse { session_id, .. }
             | Self::ElicitationResponse { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
@@ -230,6 +237,7 @@ impl BridgeCommand {
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
             | Self::NewSession { .. }
+            | Self::UserDialogResponse { .. }
             | Self::ElicitationResponse { .. }
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
@@ -285,6 +293,10 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
+    UserDialogRequest {
+        session_id: String,
+        request: types::UserDialogRequest,
+    },
     ElicitationRequest {
         session_id: String,
         request: types::ElicitationRequest,
@@ -301,6 +313,10 @@ pub enum BridgeEvent {
     McpOperationError {
         session_id: String,
         error: types::McpOperationError,
+    },
+    McpSetServersResult {
+        session_id: String,
+        result: types::McpSetServersResult,
     },
     TurnComplete {
         session_id: String,
@@ -356,6 +372,7 @@ pub enum BridgeEvent {
         session_id: String,
         #[serde(default)]
         servers: Vec<types::McpServerStatus>,
+        source: Option<types::McpSnapshotSource>,
         error: Option<String>,
     },
 }
@@ -370,10 +387,12 @@ impl BridgeEvent {
             Self::SessionUpdate { .. } => "session_update",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
+            Self::UserDialogRequest { .. } => "user_dialog_request",
             Self::ElicitationRequest { .. } => "elicitation_request",
             Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
+            Self::McpSetServersResult { .. } => "mcp_set_servers_result",
             Self::TurnComplete { .. } => "turn_complete",
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
@@ -395,10 +414,12 @@ impl BridgeEvent {
             | Self::SessionUpdate { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
+            | Self::UserDialogRequest { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
+            | Self::McpSetServersResult { session_id, .. }
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
@@ -426,10 +447,12 @@ impl BridgeEvent {
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::SessionUpdate { .. }
+            | Self::UserDialogRequest { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
+            | Self::McpSetServersResult { .. }
             | Self::TurnComplete { .. }
             | Self::TurnError { .. }
             | Self::SlashError { .. }
@@ -541,10 +564,20 @@ mod tests {
                     types::McpServerConfig::Http {
                         url: "https://mcp.notion.com/mcp".to_owned(),
                         headers: BTreeMap::new(),
-                        tools: vec![types::McpServerToolPolicy {
-                            name: "search".to_owned(),
-                            permission_policy: types::McpServerToolPermissionPolicy::Allow,
-                        }],
+                        tools: vec![
+                            types::McpServerToolPolicy {
+                                name: "search".to_owned(),
+                                permission_policy: Some(
+                                    types::McpServerToolPermissionPolicy::Allow,
+                                ),
+                                org_max_permission: Some(types::McpServerOrgMaxPermission::Ask),
+                            },
+                            types::McpServerToolPolicy {
+                                name: "lookup".to_owned(),
+                                permission_policy: None,
+                                org_max_permission: Some(types::McpServerOrgMaxPermission::Blocked),
+                            },
+                        ],
                         timeout: Some(5000),
                         always_load: Some(true),
                     },
@@ -565,7 +598,15 @@ mod tests {
                         "url": "https://mcp.notion.com/mcp",
                         "headers": {},
                         "tools": [
-                            { "name": "search", "permission_policy": "always_allow" }
+                            {
+                                "name": "search",
+                                "permission_policy": "always_allow",
+                                "org_max_permission": "ask"
+                            },
+                            {
+                                "name": "lookup",
+                                "org_max_permission": "blocked"
+                            }
                         ],
                         "timeout": 5000,
                         "always_load": true
@@ -587,6 +628,153 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn mcp_set_servers_result_event_deserializes() {
+        let json = serde_json::json!({
+            "request_id": "req-mcp-set",
+            "event": "mcp_set_servers_result",
+            "session_id": "session-1",
+            "result": {
+                "added": ["docs"],
+                "removed": ["plugin:Notion:notion"],
+                "errors": {
+                    "docs": "connection failed"
+                }
+            }
+        });
+
+        let decoded: EventEnvelope = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            decoded,
+            EventEnvelope {
+                request_id: Some("req-mcp-set".to_owned()),
+                event: BridgeEvent::McpSetServersResult {
+                    session_id: "session-1".to_owned(),
+                    result: types::McpSetServersResult {
+                        added: vec!["docs".to_owned()],
+                        removed: vec!["plugin:Notion:notion".to_owned()],
+                        errors: BTreeMap::from([(
+                            "docs".to_owned(),
+                            "connection failed".to_owned()
+                        )]),
+                    },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_event_deserializes_source() {
+        let json = serde_json::json!({
+            "request_id": "req-mcp-snapshot",
+            "event": "mcp_snapshot",
+            "session_id": "session-1",
+            "source": "reload_plugins",
+            "servers": []
+        });
+
+        let decoded: EventEnvelope = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            decoded,
+            EventEnvelope {
+                request_id: Some("req-mcp-snapshot".to_owned()),
+                event: BridgeEvent::McpSnapshot {
+                    session_id: "session-1".to_owned(),
+                    servers: Vec::new(),
+                    source: Some(types::McpSnapshotSource::ReloadPlugins),
+                    error: None,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn user_dialog_response_command_serializes_selected_outcome() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::UserDialogResponse {
+                session_id: "s1".to_owned(),
+                request_id: "req-9".to_owned(),
+                outcome: types::UserDialogOutcome::Selected {
+                    option_id: "retry_fallback".to_owned(),
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "user_dialog_response",
+                "session_id": "s1",
+                "request_id": "req-9",
+                "outcome": { "outcome": "selected", "option_id": "retry_fallback" }
+            })
+        );
+    }
+
+    #[test]
+    fn user_dialog_response_command_serializes_cancelled_outcome() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::UserDialogResponse {
+                session_id: "s1".to_owned(),
+                request_id: "req-9".to_owned(),
+                outcome: types::UserDialogOutcome::Cancelled,
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "user_dialog_response",
+                "session_id": "s1",
+                "request_id": "req-9",
+                "outcome": { "outcome": "cancelled" }
+            })
+        );
+    }
+
+    #[test]
+    fn user_dialog_request_event_deserializes_snake_case_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "user_dialog_request",
+            "session_id": "session-1",
+            "request": {
+                "request_id": "req-9",
+                "dialog_kind": "refusal_fallback_prompt",
+                "payload": {
+                    "original_model": "claude-opus-4-8",
+                    "fallback_model": "claude-sonnet-4-6",
+                    "guidance_text": "This request was declined."
+                },
+                "options": [
+                    { "option_id": "retry_fallback", "label": "Switch to claude-sonnet-4-6" },
+                    { "option_id": "edit_prompt", "label": "Edit prompt and retry with claude-opus-4-8" }
+                ]
+            }
+        }))
+        .expect("deserialize user_dialog_request");
+
+        let BridgeEvent::UserDialogRequest { session_id, request } = decoded.event else {
+            panic!("expected user_dialog_request event");
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(request.request_id, "req-9");
+        assert_eq!(request.dialog_kind, "refusal_fallback_prompt");
+        assert_eq!(request.payload.original_model, "claude-opus-4-8");
+        assert_eq!(request.payload.fallback_model, "claude-sonnet-4-6");
+        assert_eq!(request.payload.guidance_text.as_deref(), Some("This request was declined."));
+        assert_eq!(request.payload.api_refusal_category, None);
+        assert_eq!(request.options.len(), 2);
+        assert_eq!(request.options[0].option_id, "retry_fallback");
     }
 
     #[test]

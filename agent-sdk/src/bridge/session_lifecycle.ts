@@ -11,6 +11,8 @@ import {
   type Query,
   type SDKUserMessage,
   type SettingSource,
+  type UserDialogRequest,
+  type UserDialogResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CurrentModel,
@@ -25,10 +27,13 @@ import type {
   PermissionDisplay,
   PermissionRequest,
   QuestionOutcome,
+  RefusalFallbackPromptChoice,
+  RefusalFallbackPromptPayload,
   SessionLaunchSettings,
   SessionUpdate,
   TaskItem,
   ToolCall,
+  UserDialogOption,
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
 import { AsyncQueue } from "./shared.js";
@@ -42,6 +47,7 @@ import {
   emitConnectEvent,
   emitPermissionRequestEvent,
   emitElicitationRequestEvent,
+  emitUserDialogRequestEvent,
 } from "./events.js";
 import {
   ensureToolCallVisible,
@@ -110,6 +116,10 @@ export type PendingQuestion = {
   inputData: Record<string, unknown>;
 };
 
+export type PendingUserDialog = {
+  resolve: (choice: RefusalFallbackPromptChoice | "cancelled") => void;
+};
+
 export type PendingElicitation = {
   resolve: (result: {
     action: ElicitationAction;
@@ -144,6 +154,7 @@ export type SessionState = {
   taskIdsByToolUseId: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
+  pendingUserDialogs: Map<string, PendingUserDialog>;
   pendingElicitations: Map<string, PendingElicitation>;
   mcpStatusRevalidatedAt: Map<string, number>;
   hiddenToolUseIds: Set<string>;
@@ -154,19 +165,6 @@ export type SessionState = {
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 };
-
-type QueryWithInternalControlHandling = Query & {
-  processControlRequest?: (
-    request: {
-      request_id: string;
-      request: Record<string, unknown>;
-    },
-    signal: AbortSignal,
-  ) => Promise<Record<string, unknown> | undefined>;
-  [requestUserDialogInterceptorInstalled]?: boolean;
-};
-
-const requestUserDialogInterceptorInstalled = Symbol("requestUserDialogInterceptorInstalled");
 
 export const sessions = new Map<string, SessionState>();
 
@@ -195,6 +193,55 @@ function normalizeSdkElicitationContent(
     }
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+const REFUSAL_FALLBACK_DIALOG_KIND = "refusal_fallback_prompt";
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = value.filter((entry): entry is string => typeof entry === "string");
+  return entries.length > 0 ? entries : undefined;
+}
+
+/**
+ * Normalize the camelCase `refusal_fallback_prompt` payload built by the CLI
+ * into the snake-case host wire shape. The dialog descriptor requires
+ * `originalModel`/`fallbackModel`; the rest are optional metadata.
+ */
+function normalizeRefusalFallbackPayload(
+  payload: Record<string, unknown>,
+): RefusalFallbackPromptPayload {
+  return {
+    original_model: typeof payload.originalModel === "string" ? payload.originalModel : "",
+    fallback_model: typeof payload.fallbackModel === "string" ? payload.fallbackModel : "",
+    ...(optionalString(payload.apiRefusalCategory) !== undefined
+      ? { api_refusal_category: optionalString(payload.apiRefusalCategory) }
+      : {}),
+    ...(optionalString(payload.guidanceText) !== undefined
+      ? { guidance_text: optionalString(payload.guidanceText) }
+      : {}),
+    ...(optionalStringArray(payload.retractedMessageUuids) !== undefined
+      ? { retracted_message_uuids: optionalStringArray(payload.retractedMessageUuids) }
+      : {}),
+  };
+}
+
+/**
+ * Build the selectable options the host renders, mirroring the labels the CLI
+ * itself produces (`function Wg$`). `cancelled` is the Esc/decline default and
+ * is not a listed option.
+ */
+function buildRefusalFallbackOptions(payload: RefusalFallbackPromptPayload): UserDialogOption[] {
+  return [
+    { option_id: "retry_fallback", label: `Switch to ${payload.fallback_model}` },
+    { option_id: "edit_prompt", label: `Edit prompt and retry with ${payload.original_model}` },
+  ];
 }
 
 type CloseSessionOptions = {
@@ -246,97 +293,6 @@ export function updateSessionId(session: SessionState, newSessionId: string): vo
   sessions.set(newSessionId, session);
 }
 
-function isRequestUserDialogControlRequest(
-  value: unknown,
-): value is {
-  request_id: string;
-  request: {
-    subtype: "request_user_dialog";
-    dialog_kind: string;
-    payload: Record<string, unknown>;
-    tool_use_id?: string;
-  };
-} {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  const request = record.request;
-  if (!request || typeof request !== "object") {
-    return false;
-  }
-  const inner = request as Record<string, unknown>;
-  const payload = inner.payload;
-  return (
-    typeof record.request_id === "string" &&
-    inner.subtype === "request_user_dialog" &&
-    typeof inner.dialog_kind === "string" &&
-    Boolean(payload && typeof payload === "object" && !Array.isArray(payload))
-  );
-}
-
-export function attachRequestUserDialogInterceptor(
-  query: Query,
-  sessionIdForLogs: () => string,
-): boolean {
-  const internalQuery = query as QueryWithInternalControlHandling;
-  if (internalQuery[requestUserDialogInterceptorInstalled]) {
-    return true;
-  }
-  if (typeof internalQuery.processControlRequest !== "function") {
-    bridgeLogger.warn({
-      target: LOG_TARGETS.APP_SESSION,
-      eventName: "request_user_dialog_interceptor_unavailable",
-      message: "request_user_dialog interceptor could not be installed",
-      outcome: "failure",
-      sessionId: sessionIdForLogs(),
-    });
-    return false;
-  }
-
-  const originalProcessControlRequest = internalQuery.processControlRequest.bind(query);
-  internalQuery.processControlRequest = async (request, signal) => {
-    // SDK 0.2.104 also added cancel_async_message and seed_read_state control
-    // requests. Keep those delegated to the SDK internals: claude-rs does not
-    // own the SDK async-message queue or read-state cache, so TUI-level commands
-    // for them would add unsupported host behavior without user-visible value.
-    if (isRequestUserDialogControlRequest(request)) {
-      bridgeLogger.warn({
-        target: LOG_TARGETS.APP_SESSION,
-        eventName: "request_user_dialog_received",
-        message: "request_user_dialog control request received",
-        outcome: "failure",
-        sessionId: sessionIdForLogs(),
-        requestId: request.request_id,
-        ...(typeof request.request.tool_use_id === "string"
-          ? { toolCallId: request.request.tool_use_id }
-          : {}),
-        fields: {
-          dialog_kind: request.request.dialog_kind,
-          raw_payload: request.request.payload,
-          raw_request: request.request,
-        },
-      });
-      // TODO(request_user_dialog): Revisit this when a real claude-rs host flow needs it.
-      // For now we only log the full control request and reject it explicitly because
-      // normal TUI sessions do not appear to exercise these dialog kinds.
-      throw new Error(
-        `request_user_dialog is not supported by claude-rs yet (dialog_kind: ${request.request.dialog_kind})`,
-      );
-    }
-    return await originalProcessControlRequest(request, signal);
-  };
-  internalQuery[requestUserDialogInterceptorInstalled] = true;
-  bridgeLogger.info({
-    target: LOG_TARGETS.APP_SESSION,
-    eventName: "request_user_dialog_interceptor_installed",
-    message: "request_user_dialog interceptor installed",
-    outcome: "success",
-    sessionId: sessionIdForLogs(),
-  });
-  return true;
-}
-
 export async function closeSession(session: SessionState): Promise<void> {
   session.input.close();
   session.query.close();
@@ -349,6 +305,10 @@ export async function closeSession(session: SessionState): Promise<void> {
     pending.onOutcome({ outcome: "cancelled" });
   }
   session.pendingQuestions.clear();
+  for (const pending of session.pendingUserDialogs.values()) {
+    pending.resolve("cancelled");
+  }
+  session.pendingUserDialogs.clear();
   for (const pending of session.pendingElicitations.values()) {
     pending.resolve({ action: "cancel" });
   }
@@ -508,7 +468,6 @@ export async function createSession(params: {
         sessionIdForLogs,
       }),
     });
-    attachRequestUserDialogInterceptor(queryHandle, sessionIdForLogs);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -554,6 +513,7 @@ export async function createSession(params: {
     taskIdsByToolUseId: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     pendingQuestions: new Map<string, PendingQuestion>(),
+    pendingUserDialogs: new Map<string, PendingUserDialog>(),
     pendingElicitations: new Map<string, PendingElicitation>(),
     mcpStatusRevalidatedAt: new Map<string, number>(),
     hiddenToolUseIds: new Set<string>(),
@@ -1000,6 +960,96 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         });
       });
     },
+    // The SDK "fails closed" and never emits a dialog kind unless it is declared
+    // here. We declare the one refusal-related kind we render: when the API
+    // returns a hard `stop_reason: "refusal"` and a fallback model is configured,
+    // the CLI emits `request_user_dialog` and the host renders the chooser below.
+    supportedDialogKinds: [REFUSAL_FALLBACK_DIALOG_KIND],
+    // Host policy for `request_user_dialog` control requests. Unknown kinds are
+    // logged and answered `{ behavior: "cancelled" }` (the spec-required answer
+    // for unrecognized kinds). For `refusal_fallback_prompt`, we surface an
+    // interactive chooser in the TUI and route the user's decision back to the
+    // CLI as `{ behavior: "completed", result: <choice> }` (or cancelled on
+    // decline/abort/teardown).
+    onUserDialog: async (
+      request: UserDialogRequest,
+      options: { signal: AbortSignal },
+    ): Promise<UserDialogResult> => {
+      if (request.dialogKind !== REFUSAL_FALLBACK_DIALOG_KIND) {
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "user_dialog_received",
+          message: "request_user_dialog received for unknown kind; cancelled",
+          outcome: "cancelled",
+          sessionId: params.sessionIdForLogs(),
+          ...(typeof request.toolUseID === "string" ? { toolCallId: request.toolUseID } : {}),
+          fields: { dialog_kind: request.dialogKind },
+        });
+        return { behavior: "cancelled" };
+      }
+
+      const payload = normalizeRefusalFallbackPayload(request.payload);
+      const requestId = randomUUID();
+      const dialogRequest = {
+        request_id: requestId,
+        dialog_kind: REFUSAL_FALLBACK_DIALOG_KIND as typeof REFUSAL_FALLBACK_DIALOG_KIND,
+        payload,
+        options: buildRefusalFallbackOptions(payload),
+      };
+      bridgeLogger.info({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "user_dialog_received",
+        message: "request_user_dialog received; awaiting host decision",
+        outcome: "start",
+        sessionId: params.sessionIdForLogs(),
+        requestId,
+        ...(typeof request.toolUseID === "string" ? { toolCallId: request.toolUseID } : {}),
+        fields: {
+          dialog_kind: request.dialogKind,
+          original_model: payload.original_model,
+          fallback_model: payload.fallback_model,
+        },
+      });
+
+      const choice = await new Promise<RefusalFallbackPromptChoice | "cancelled">((resolve) => {
+        const currentSession = sessions.get(params.sessionIdForLogs());
+        if (!currentSession) {
+          bridgeLogger.warn({
+            target: LOG_TARGETS.APP_SESSION,
+            eventName: "user_dialog_request_dropped",
+            message: "user dialog request dropped without an active session",
+            outcome: "dropped",
+            sessionId: params.sessionIdForLogs(),
+            requestId,
+            fields: { reason: "unknown_session" },
+          });
+          resolve("cancelled");
+          return;
+        }
+        let settled = false;
+        const settle = (value: RefusalFallbackPromptChoice | "cancelled") => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          currentSession.pendingUserDialogs.delete(requestId);
+          options.signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        };
+        const onAbort = () => settle("cancelled");
+        if (options.signal.aborted) {
+          settle("cancelled");
+          return;
+        }
+        options.signal.addEventListener("abort", onAbort);
+        currentSession.pendingUserDialogs.set(requestId, { resolve: settle });
+        emitUserDialogRequestEvent(params.sessionIdForLogs(), dialogRequest);
+      });
+
+      return choice === "cancelled"
+        ? { behavior: "cancelled" }
+        : { behavior: "completed", result: choice };
+    },
   };
 }
 
@@ -1167,6 +1217,64 @@ export function handleQuestionResponse(command: Extract<BridgeCommand, { command
     },
   });
   resolver.onOutcome(command.outcome);
+}
+
+export function handleUserDialogResponse(
+  command: Extract<BridgeCommand, { command: "user_dialog_response" }>,
+): void {
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "user_dialog_response_received",
+    message: "user dialog response received",
+    outcome: "success",
+    sessionId: command.session_id,
+    requestId: command.request_id,
+    fields: {
+      response_kind: command.outcome.outcome,
+      selected_option:
+        command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled",
+    },
+  });
+  const session = sessionById(command.session_id);
+  if (!session) {
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "user_dialog_response_dropped",
+      message: "user dialog response dropped for unknown session",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      requestId: command.request_id,
+      fields: { reason: "unknown_session" },
+    });
+    return;
+  }
+  const pending = session.pendingUserDialogs.get(command.request_id);
+  if (!pending) {
+    // Idempotent: a late or duplicate response for an already-resolved request
+    // (e.g. the dialog was cancelled on abort/teardown first) is a no-op.
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "user_dialog_response_dropped",
+      message: "user dialog response dropped without a pending request",
+      outcome: "dropped",
+      sessionId: command.session_id,
+      requestId: command.request_id,
+      fields: { reason: "missing_pending_request" },
+    });
+    return;
+  }
+  session.pendingUserDialogs.delete(command.request_id);
+  const choice = command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled";
+  bridgeLogger.info({
+    target: LOG_TARGETS.BRIDGE_PERMISSION,
+    eventName: "user_dialog_response_applied",
+    message: "user dialog response applied",
+    outcome: "success",
+    sessionId: command.session_id,
+    requestId: command.request_id,
+    fields: { choice },
+  });
+  pending.resolve(choice);
 }
 
 export function handleElicitationResponse(

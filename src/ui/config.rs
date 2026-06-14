@@ -1156,6 +1156,23 @@ mod tests {
             .collect()
     }
 
+    fn installed_plugin_entry(
+        id: &str,
+        scope: &str,
+        project_path: Option<&str>,
+    ) -> crate::app::plugins::InstalledPluginEntry {
+        crate::app::plugins::InstalledPluginEntry {
+            id: id.to_owned(),
+            version: Some("1.0.0".to_owned()),
+            scope: scope.to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: project_path.map(ToOwned::to_owned),
+            mcp_server_names: Vec::new(),
+        }
+    }
+
     fn render_config_text(width: u16, height: u16, mut app: App) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1895,16 +1912,8 @@ mod tests {
         let mut app = App::test_default();
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
-        app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
-            id: "frontend-design@claude-plugins-official".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            scope: "user".to_owned(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
-        }];
+        app.plugins.installed =
+            vec![installed_plugin_entry("frontend-design@claude-plugins-official", "user", None)];
         app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
             plugin_id: "frontend-design@claude-plugins-official".to_owned(),
             name: "frontend-design".to_owned(),
@@ -1995,36 +2004,17 @@ mod tests {
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.installed = vec![
-            crate::app::plugins::InstalledPluginEntry {
-                id: "other-local@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "local".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: Some("C:\\work\\project-a".to_owned()),
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
-            crate::app::plugins::InstalledPluginEntry {
-                id: "user-plugin@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "user".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: None,
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
-            crate::app::plugins::InstalledPluginEntry {
-                id: "current-local@claude-plugins-official".to_owned(),
-                version: Some("1.0.0".to_owned()),
-                scope: "local".to_owned(),
-                enabled: true,
-                installed_at: None,
-                last_updated: None,
-                project_path: Some("C:\\work\\project-b".to_owned()),
-                capability: crate::app::plugins::PluginCapability::Skill,
-            },
+            installed_plugin_entry(
+                "other-local@claude-plugins-official",
+                "local",
+                Some("C:\\work\\project-a"),
+            ),
+            installed_plugin_entry("user-plugin@claude-plugins-official", "user", None),
+            installed_plugin_entry(
+                "current-local@claude-plugins-official",
+                "local",
+                Some("C:\\work\\project-b"),
+            ),
         ];
 
         terminal

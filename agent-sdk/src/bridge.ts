@@ -38,9 +38,11 @@ import {
   handleElicitationResponse,
   handlePermissionResponse,
   handleQuestionResponse,
+  handleUserDialogResponse,
   emitCurrentModelUpdate,
   refreshCurrentModel,
   shouldInvalidateResolvedRuntimeModel,
+  type SessionState,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
@@ -48,6 +50,7 @@ import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available
 import { mapSdkAccountInfo } from "./bridge/account_metadata.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
+  emitReconciledMcpSnapshotFromStatuses,
   handleMcpAuthenticateCommand,
   handleMcpClearAuthCommand,
   handleMcpOauthCallbackUrlCommand,
@@ -88,10 +91,7 @@ export {
 } from "./bridge/history.js";
 export { handleSdkMessage, handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
-export {
-  attachRequestUserDialogInterceptor,
-  buildQueryOptions,
-} from "./bridge/session_lifecycle.js";
+export { buildQueryOptions } from "./bridge/session_lifecycle.js";
 export { mapAvailableModels } from "./bridge/model_metadata.js";
 export {
   bridgeMcpConfigToSdk,
@@ -188,7 +188,7 @@ export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | n
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.161";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.177";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -217,6 +217,36 @@ export function agentSdkVersionCompatibilityError(): string | undefined {
     `Unsupported @anthropic-ai/claude-agent-sdk version: expected ${EXPECTED_AGENT_SDK_VERSION}, ` +
     `found ${installed}.`
   );
+}
+
+export async function handleReloadPluginsCommand(
+  session: SessionState,
+  requestId?: string,
+): Promise<void> {
+  try {
+    const result = await session.query.reloadPlugins();
+    updateAvailableCommands(session, "reload_plugins", mapSdkSlashCommands(result.commands));
+    emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
+    await emitReconciledMcpSnapshotFromStatuses(
+      session,
+      result.mcpServers,
+      "reload_plugins",
+      requestId,
+    );
+    emitRuntimeReloadCompleted(session.sessionId, requestId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "reload_plugins_failed",
+      message: "failed to reload session plugins",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: session.sessionId,
+      fields: { error_message: message },
+    });
+    emitRuntimeReloadFailed(session.sessionId, message, requestId);
+  }
 }
 
 async function handleCommand(command: BridgeCommand, requestId?: string): Promise<void> {
@@ -329,7 +359,9 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         setSessionListingDir(matched.cwd ?? process.cwd());
         const historyMessages = await getSessionMessages(
           command.session_id,
-          matched.cwd ? { dir: matched.cwd } : undefined,
+          matched.cwd
+            ? { dir: matched.cwd, includeSystemMessages: true }
+            : { includeSystemMessages: true },
         );
         const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
         const staleSessions = Array.from(sessions.values());
@@ -731,25 +763,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
-      try {
-        const result = await session.query.reloadPlugins();
-        updateAvailableCommands(session, "reload_plugins", mapSdkSlashCommands(result.commands));
-        emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
-        await handleMcpStatusCommand(session, requestId);
-        emitRuntimeReloadCompleted(session.sessionId, requestId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.warn({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "reload_plugins_failed",
-          message: "failed to reload session plugins",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: { error_message: message },
-        });
-        emitRuntimeReloadFailed(session.sessionId, message, requestId);
-      }
+      await handleReloadPluginsCommand(session, requestId);
       return;
     }
 
@@ -829,6 +843,10 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
     case "question_response":
       handleQuestionResponse(command);
+      return;
+
+    case "user_dialog_response":
+      handleUserDialogResponse(command);
       return;
 
     case "elicitation_response":

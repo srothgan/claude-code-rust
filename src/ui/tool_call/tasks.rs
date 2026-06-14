@@ -347,6 +347,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-task".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "tc-task".to_owned(),
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),

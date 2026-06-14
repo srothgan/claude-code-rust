@@ -56,17 +56,17 @@ impl super::App {
         if matches!(msg.role, MessageRole::Welcome) {
             return true;
         }
-        msg.blocks.iter().any(|block| {
-            if let MessageBlock::ToolCall(tc) = block {
+        msg.blocks.iter().any(|block| match block {
+            MessageBlock::ToolCall(tc) => {
                 tc.pending_permission.is_some()
                     || tc.pending_question.is_some()
                     || matches!(
                         tc.status,
                         model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
                     )
-            } else {
-                false
             }
+            MessageBlock::UserDialog(dialog) => !dialog.answered,
+            _ => false,
         })
     }
 
@@ -198,6 +198,20 @@ impl super::App {
                     total =
                         total.saturating_add(size_of::<super::messages::ImageAttachmentBlock>());
                 }
+                MessageBlock::UserDialog(dialog) => {
+                    total = total
+                        .saturating_add(size_of::<super::messages::UserDialogBlock>())
+                        .saturating_add(dialog.request_id.capacity())
+                        .saturating_add(dialog.payload.original_model.capacity())
+                        .saturating_add(dialog.payload.fallback_model.capacity())
+                        .saturating_add(
+                            dialog
+                                .options
+                                .iter()
+                                .map(|option| option.option_id.capacity() + option.label.capacity())
+                                .sum::<usize>(),
+                        );
+                }
             }
         }
         total
@@ -312,7 +326,7 @@ impl super::App {
         *old_bytes = new_bytes;
     }
 
-    pub(super) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+    pub(crate) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
         self.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids.clear();
@@ -322,24 +336,35 @@ impl super::App {
         let mut terminal_tool_calls = Vec::new();
         for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
-                if let MessageBlock::ToolCall(tc) = block {
-                    let tc = tc.as_mut();
-                    self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
-                    if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
-                        let entry =
-                            super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-                        if terminal_tool_call_membership.insert(entry.clone()) {
-                            terminal_tool_calls.push(entry);
+                match block {
+                    MessageBlock::ToolCall(tc) => {
+                        let tc = tc.as_mut();
+                        self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
+                        if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
+                            let entry =
+                                super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
+                            if terminal_tool_call_membership.insert(entry.clone()) {
+                                terminal_tool_calls.push(entry);
+                            }
+                        }
+                        if let Some(permission) = tc.pending_permission.as_mut() {
+                            permission.focused = false;
+                            pending_interaction_ids.push(tc.id.clone());
+                        }
+                        if let Some(question) = tc.pending_question.as_mut() {
+                            question.focused = false;
+                            pending_interaction_ids.push(tc.id.clone());
                         }
                     }
-                    if let Some(permission) = tc.pending_permission.as_mut() {
-                        permission.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
+                    MessageBlock::UserDialog(dialog) => {
+                        self.tool_call_index
+                            .insert(dialog.request_id.clone(), (msg_idx, block_idx));
+                        if !dialog.answered {
+                            dialog.focused = false;
+                            pending_interaction_ids.push(dialog.request_id.clone());
+                        }
                     }
-                    if let Some(question) = tc.pending_question.as_mut() {
-                        question.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
-                    }
+                    _ => {}
                 }
             }
         }
@@ -382,14 +407,22 @@ impl super::App {
         if let Some(first_id) = self.pending_interaction_ids.first().cloned() {
             self.claim_focus_target(super::super::focus::FocusTarget::Permission);
             if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
-                && let Some(MessageBlock::ToolCall(tc)) =
+                && let Some(block) =
                     self.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
             {
-                if let Some(permission) = tc.pending_permission.as_mut() {
-                    permission.focused = true;
-                }
-                if let Some(question) = tc.pending_question.as_mut() {
-                    question.focused = true;
+                match block {
+                    MessageBlock::ToolCall(tc) => {
+                        if let Some(permission) = tc.pending_permission.as_mut() {
+                            permission.focused = true;
+                        }
+                        if let Some(question) = tc.pending_question.as_mut() {
+                            question.focused = true;
+                        }
+                    }
+                    MessageBlock::UserDialog(dialog) if !dialog.answered => {
+                        dialog.focused = true;
+                    }
+                    _ => {}
                 }
             }
         } else {

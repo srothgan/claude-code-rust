@@ -100,6 +100,8 @@ fn field_label(label: &str) -> Option<&'static str> {
     match label {
         "status" | "Status" => Some("Status"),
         "taskId" | "Task ID" => Some("Task ID"),
+        "taskType" | "Task type" => Some("Task type"),
+        "workflowName" | "Workflow name" => Some("Workflow name"),
         "runId" | "Run ID" => Some("Run ID"),
         "summary" | "Summary" => Some("Summary"),
         "transcriptDir" | "Transcript dir" => Some("Transcript dir"),
@@ -165,6 +167,7 @@ mod tests {
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
             id: "tc-workflow".to_owned(),
+            source_message_uuids: Vec::new(),
             title: "Workflow".to_owned(),
             sdk_tool_name: "Workflow".to_owned(),
             raw_input: Some(raw_input),
@@ -231,7 +234,7 @@ mod tests {
         let tc = workflow_tool_call(
             json!({}),
             Some(
-                "Status: async launched\nTask ID: wf-1\nRun ID: run-1\nSummary: started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nSession URL: https://claude.ai/session/1\nWarning: branch diverged",
+                "Status: async launched\nTask ID: wf-1\nTask type: local_workflow\nWorkflow name: spec\nRun ID: run-1\nSummary: started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nSession URL: https://claude.ai/session/1\nWarning: branch diverged",
             ),
             model::ToolCallStatus::InProgress,
         );
@@ -243,6 +246,8 @@ mod tests {
             vec![
                 "Status: async launched",
                 "Task ID: wf-1",
+                "Task type: local_workflow",
+                "Workflow name: spec",
                 "Run ID: run-1",
                 "Summary: started",
                 "Transcript dir: C:/tmp/transcripts",
