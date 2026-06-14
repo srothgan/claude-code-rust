@@ -32,6 +32,7 @@ use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::markdown;
 use crate::ui::theme;
+use crate::ui::tool_display;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -246,7 +247,7 @@ fn tool_display_title<'a>(
         }
     }
 
-    Cow::Borrowed(&tc.title)
+    tool_display::tool_title(&tc.sdk_tool_name, &tc.title)
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +469,49 @@ mod tests {
     }
 
     #[test]
+    fn tool_display_title_formats_raw_mcp_titles() {
+        let tc = test_tool_call(
+            "mcp__claude_ai_Strava__list_activities",
+            "mcp__claude_ai_Strava__list_activities",
+            model::ToolCallStatus::Completed,
+        );
+
+        assert_eq!(
+            tool_display_title(&tc, ToolCallRenderContext::default()),
+            "Strava: List activities"
+        );
+    }
+
+    #[test]
+    fn tool_display_title_keeps_non_raw_mcp_titles() {
+        let mut tc = test_tool_call(
+            "mcp__claude_ai_Strava__list_activities",
+            "mcp__claude_ai_Strava__list_activities",
+            model::ToolCallStatus::Completed,
+        );
+        tc.title = "Recent Strava activities".to_owned();
+
+        assert_eq!(
+            tool_display_title(&tc, ToolCallRenderContext::default()),
+            "Recent Strava activities"
+        );
+    }
+
+    #[test]
+    fn tool_display_title_keeps_malformed_mcp_titles_raw() {
+        let tc = test_tool_call(
+            "mcp__fff_find_files",
+            "mcp__fff_find_files",
+            model::ToolCallStatus::Completed,
+        );
+
+        assert_eq!(
+            tool_display_title(&tc, ToolCallRenderContext::default()),
+            "mcp__fff_find_files"
+        );
+    }
+
+    #[test]
     fn standard_title_uses_plan_alias_for_write() {
         let tc = test_tool_call("Write notes/plan.md", "Write", model::ToolCallStatus::Completed);
 
@@ -492,6 +536,23 @@ mod tests {
             standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
 
         assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{25cb} "));
+    }
+
+    #[test]
+    fn standard_title_uses_mcp_icon_and_readable_title() {
+        let tc = test_tool_call(
+            "mcp__fff__find_files",
+            "mcp__fff__find_files",
+            model::ToolCallStatus::Completed,
+        );
+
+        let rendered =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{232c} "));
+        assert!(text.contains("fff: Find files"));
+        assert!(!text.contains("mcp__fff__find_files"));
     }
 
     #[test]
