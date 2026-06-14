@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.2] - 2026-06-14 [Changes][v0.12.2]
+
+### Features
+
+- **Claude Agent SDK 0.3.177 migration** (#180, #182, @srothgan): Refresh the bridge for new SDK metadata, task events, dialogs, retractions, retry errors, and MCP status.
+- **Opus 4.8 and effort controls** (#180, @srothgan): Add `/opus-version 4.8`, `/effort`, `xhigh`, session-only `max`, and live `/agent` switching.
+- **MCP configuration management** (#180, #182, @srothgan): Add scoped server removal and track dynamic, plugin-owned, persisted, and runtime-only servers.
+
+### UI
+
+- **Structured SDK tool rendering** (#180, #182, @srothgan): Add readable renderers for new task, automation, workflow, MCP, search, project, artifact, and agent tool outputs.
+- **MCP tool-call display** (#184, @srothgan): Show readable MCP titles with a dedicated icon while keeping raw tool names intact.
+- **Config dialog overlays** (#180, @srothgan): Tighten fullscreen dialogs, confirmations, and small-screen overflow.
+
+### Fixes
+
+- **SDK compatibility hardening** (#180, #182, @srothgan): Normalize retry errors, overage fields, unavailable models, mirror errors, resume task replay, and MCP snapshot refresh.
+- **Plugin and MCP scope accuracy** (#180, #182, @srothgan): Filter plugin lists and stale MCP servers by the scopes that are actually active.
+
+### Diagnostics
+
+- **Timestamped runtime logs** (#183, @srothgan): Write default diagnostics to per-run files under `logs/runtime` with bounded retention.
+
+### Documentation
+
+- **Commands and diagnostics manual updates** (#180, #183, @srothgan): Document `/effort`, `/opus-version 4.8`, settings behavior, and diagnostics paths.
+
+### CI and Dependencies
+
+- **Agent SDK package refresh** (#180, #182, @srothgan): Update the Agent SDK bridge packages and npm lockfiles.
+- **Rust dependency updates** (#176, #177, #178, #179): Bump `unicode-segmentation` to `1.13.3`, `uuid` to `1.23.2`, `reqwest` to `0.13.4`, and `ratatui` to `0.30.1`.
+- **Pages workflow updates** (#173, #174, #175): Bump `actions/upload-pages-artifact` to `5`, `actions/deploy-pages` to `5`, and `actions/configure-pages` to `6`.
+
 ## [0.12.1] - 2026-05-28 [Changes][v0.12.1]
 
 ### Documentation
@@ -556,6 +589,8 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.12.2]: https://github.com/srothgan/claude-code-rust/compare/v0.12.1...v0.12.2
+[v0.12.1]: https://github.com/srothgan/claude-code-rust/compare/v0.12.0...v0.12.1
 [v0.12.0]: https://github.com/srothgan/claude-code-rust/compare/v0.11.3...v0.12.0
 [v0.11.3]: https://github.com/srothgan/claude-code-rust/compare/v0.11.2...v0.11.3
 [v0.11.2]: https://github.com/srothgan/claude-code-rust/compare/v0.11.1...v0.11.2
