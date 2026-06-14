@@ -1,5 +1,5 @@
 import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { SessionListEntry, SessionUpdate, ToolCall } from "../types.js";
+import type { Json, SessionListEntry, SessionUpdate, TaskItem, TaskStatus, ToolCall } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
   TOOL_RESULT_TYPES,
@@ -29,6 +29,173 @@ function messageCandidates(raw: unknown): Record<string, unknown>[] {
     }
   }
   return candidates;
+}
+
+function jsonValue(value: unknown): Json | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    const text = JSON.stringify(value);
+    if (text === undefined) {
+      return undefined;
+    }
+    return JSON.parse(text) as Json;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeTaskMetadata(
+  existing: Json | undefined,
+  patch: Record<string, Json> | undefined,
+): Json | undefined {
+  if (!patch) {
+    return existing;
+  }
+  const existingRecord =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? { ...(existing as Record<string, Json>) }
+      : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete existingRecord[key];
+    } else {
+      existingRecord[key] = value;
+    }
+  }
+  return Object.keys(existingRecord).length > 0 ? existingRecord : null;
+}
+
+function normalizeLifecycleTaskStatus(value: unknown): TaskStatus | undefined {
+  switch (value) {
+    case "pending":
+      return "pending";
+    case "running":
+    case "in_progress":
+      return "in_progress";
+    case "completed":
+    case "failed":
+    case "killed":
+    case "stopped":
+      return "completed";
+    default:
+      return undefined;
+  }
+}
+
+function taskSystemMetadata(
+  msg: Record<string, unknown>,
+  patch: Record<string, unknown> | undefined,
+): Record<string, Json> | undefined {
+  const metadata: Record<string, Json> = {};
+  const copyValue = (from: Record<string, unknown> | undefined, key: string): void => {
+    if (!from || !Object.hasOwn(from, key)) {
+      return;
+    }
+    const value = jsonValue(from[key]);
+    if (value !== undefined) {
+      metadata[key] = value;
+    }
+  };
+
+  for (const key of [
+    "error",
+    "is_backgrounded",
+    "request_id",
+    "subagent_type",
+    "task_description",
+    "task_type",
+    "workflow_name",
+    "prompt",
+    "output_file",
+    "summary",
+    "end_time",
+    "total_paused_ms",
+  ]) {
+    copyValue(msg, key);
+    copyValue(patch, key);
+  }
+  const terminalStatus = nonEmptyTrimmed(msg.status) ?? nonEmptyTrimmed(patch?.status);
+  if (
+    terminalStatus === "completed" ||
+    terminalStatus === "failed" ||
+    terminalStatus === "killed" ||
+    terminalStatus === "stopped"
+  ) {
+    metadata.terminal_status = terminalStatus;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function pushResumeTaskSystemUpdate(
+  updates: SessionUpdate[],
+  tasksById: Map<string, TaskItem>,
+  taskToolUseIds: Map<string, string>,
+  msg: Record<string, unknown>,
+): boolean {
+  const subtype = nonEmptyTrimmed(msg.subtype);
+  if (
+    subtype !== "task_started" &&
+    subtype !== "task_progress" &&
+    subtype !== "task_updated" &&
+    subtype !== "task_notification"
+  ) {
+    return false;
+  }
+
+  const taskId = nonEmptyTrimmed(msg.task_id);
+  if (!taskId) {
+    return true;
+  }
+  const explicitToolUseId = nonEmptyTrimmed(msg.tool_use_id);
+  if (explicitToolUseId) {
+    taskToolUseIds.set(taskId, explicitToolUseId);
+  }
+
+  const existing = tasksById.get(taskId);
+  const patch = asRecordOrNull(msg.patch) ?? undefined;
+  const status =
+    normalizeLifecycleTaskStatus(msg.status) ??
+    normalizeLifecycleTaskStatus(patch?.status) ??
+    (subtype === "task_started" || subtype === "task_progress" ? "in_progress" : undefined);
+  const description =
+    nonEmptyTrimmed(patch?.description) ??
+    nonEmptyTrimmed(msg.description) ??
+    nonEmptyTrimmed(msg.summary);
+  const activeForm = nonEmptyTrimmed(patch?.activeForm) ?? nonEmptyTrimmed(patch?.active_form);
+  const subject =
+    nonEmptyTrimmed(patch?.subject) ??
+    nonEmptyTrimmed(msg.subject) ??
+    existing?.subject ??
+    nonEmptyTrimmed(msg.workflow_name) ??
+    nonEmptyTrimmed(msg.task_description) ??
+    description ??
+    taskId;
+  const metadata = mergeTaskMetadata(existing?.metadata, taskSystemMetadata(msg, patch));
+  const sourceToolCallId = taskToolUseIds.get(taskId) ?? existing?.source_tool_call_id;
+
+  const task: TaskItem = {
+    task_id: taskId,
+    subject,
+    ...(description !== undefined ? { description } : existing?.description !== undefined ? { description: existing.description } : {}),
+    ...(activeForm !== undefined ? { active_form: activeForm } : existing?.active_form !== undefined ? { active_form: existing.active_form } : {}),
+    status: status ?? existing?.status ?? "pending",
+    ...(existing?.owner !== undefined ? { owner: existing.owner } : {}),
+    blocks: existing ? [...existing.blocks] : [],
+    blocked_by: existing ? [...existing.blocked_by] : [],
+    ...(metadata !== undefined ? { metadata } : {}),
+    ...(sourceToolCallId !== undefined ? { source_tool_call_id: sourceToolCallId } : {}),
+  };
+  tasksById.set(taskId, task);
+  updates.push({
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [task],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  return true;
 }
 
 function pushResumeTextChunk(
@@ -170,11 +337,22 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
   const hiddenToolUseIds = new Set<string>();
+  const tasksById = new Map<string, TaskItem>();
+  const taskToolUseIds = new Map<string, string>();
 
   for (const entry of messages) {
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
     const entrySourceMessageUuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
-    for (const message of messageCandidates(entry.message)) {
+    const candidates = messageCandidates(entry.message);
+    if (entry.type === "system") {
+      for (const message of candidates) {
+        if (pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, message)) {
+          break;
+        }
+      }
+      continue;
+    }
+    for (const message of candidates) {
       const sourceMessageUuid =
         typeof message.uuid === "string" ? message.uuid : entrySourceMessageUuid;
       const roleCandidate = message.role;

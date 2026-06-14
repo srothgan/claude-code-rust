@@ -885,6 +885,9 @@ export function applyTaskToolResult(
     }
     const existing = session.tasksById.get(taskId);
     const sourceToolCallId = existing?.source_tool_call_id ?? session.taskToolUseIds.get(taskId);
+    if (!existing && !sourceToolCallId) {
+      return;
+    }
     const metadata = mergeMetadata(existing?.metadata, {
       terminal_status: "stopped",
       task_type: output.task_type as Json,

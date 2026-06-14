@@ -579,6 +579,23 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
         errors: { docs: "connection failed" },
       };
     },
+    mcpServerStatus: async () => [
+      {
+        name: "docs",
+        status: "connected",
+        config: {
+          type: "http",
+          url: "https://example.test/mcp",
+          alwaysLoad: true,
+        },
+        tools: [
+          {
+            name: "read_resource",
+            description: "Read docs resources",
+          },
+        ],
+      },
+    ],
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
   const events = await captureBridgeEventsAsync(async () => {
@@ -616,6 +633,28 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
         removed: ["plugin:Notion:notion"],
         errors: { docs: "connection failed" },
       },
+    },
+    {
+      request_id: "req-mcp-set",
+      event: "mcp_snapshot",
+      session_id: "session-1",
+      servers: [
+        {
+          name: "docs",
+          status: "connected",
+          config: {
+            type: "http",
+            url: "https://example.test/mcp",
+            always_load: true,
+          },
+          tools: [
+            {
+              name: "read_resource",
+              description: "Read docs resources",
+            },
+          ],
+        },
+      ],
     },
   ]);
 });
@@ -2342,6 +2381,32 @@ test("TaskStop renders structured output and marks the task terminal", () => {
     is_complete_snapshot: false,
   });
   assert.equal(session.taskToolUseIds.has("task-1"), false);
+});
+
+test("TaskStop result for an already-gone task does not create stale task state", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-stop-missing", "TaskStop", {
+      task_id: "task-missing",
+    });
+    emitToolResultUpdate(session, "tool-stop-missing", false, {
+      message: "Task was already stopped",
+      task_id: "task-missing",
+      task_type: "bash",
+      command: "npm run watch",
+    });
+  });
+
+  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const result = updates.find((update) => {
+    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    return toolCallUpdate?.tool_call_id === "tool-stop-missing";
+  })?.tool_call_update as Record<string, unknown> | undefined;
+  const fields = result?.fields as Record<string, unknown> | undefined;
+  assert.equal(fields?.status, "completed");
+  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(session.tasksById.has("task-missing"), false);
 });
 
 test("TaskUpdate in-progress result leaves activity rendering to app task state", () => {
@@ -4840,6 +4905,154 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
   );
 });
 
+test("mapSessionMessagesToUpdates maps task system records from resume history", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "assistant",
+      uuid: "assistant-agent",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-agent",
+            name: "Agent",
+            input: { prompt: "Inspect the migration smoke" },
+          },
+        ],
+      },
+    },
+    {
+      type: "system",
+      uuid: "system-bg-start",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg",
+        tool_use_id: "tool-agent",
+        description: "Inspect the migration smoke",
+        subagent_type: "general-purpose",
+      },
+    },
+    {
+      type: "system",
+      uuid: "system-bg-update",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-bg",
+        patch: {
+          status: "running",
+          description: "Checking runtime MCP resources",
+          is_backgrounded: true,
+        },
+      },
+    },
+    {
+      type: "system",
+      uuid: "system-remote-start",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-remote",
+        description: "Remote agent is still running",
+        task_type: "remote_agent",
+        task_description: "Remote agent smoke",
+        prompt: "Continue remotely",
+      },
+    },
+    {
+      type: "system",
+      uuid: "system-mcp-start",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-mcp",
+        description: "MCP task is still running",
+        task_type: "mcp",
+        workflow_name: "docs",
+        prompt: "Read resource",
+      },
+    },
+  ]);
+
+  const taskUpdates = updates.filter((update) => update.type === "task_state_update");
+  assert.equal(taskUpdates.length, 4);
+  assert.deepEqual(taskUpdates.at(1), {
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [
+      {
+        task_id: "task-bg",
+        subject: "Inspect the migration smoke",
+        description: "Checking runtime MCP resources",
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          subagent_type: "general-purpose",
+          is_backgrounded: true,
+        },
+        source_tool_call_id: "tool-agent",
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.deepEqual(taskUpdates.at(2), {
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [
+      {
+        task_id: "task-remote",
+        subject: "Remote agent smoke",
+        description: "Remote agent is still running",
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          task_description: "Remote agent smoke",
+          task_type: "remote_agent",
+          prompt: "Continue remotely",
+        },
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+  assert.deepEqual(taskUpdates.at(3), {
+    type: "task_state_update",
+    source: "task_lifecycle",
+    tasks: [
+      {
+        task_id: "task-mcp",
+        subject: "docs",
+        description: "MCP task is still running",
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          task_type: "mcp",
+          workflow_name: "docs",
+          prompt: "Read resource",
+        },
+      },
+    ],
+    removed_task_ids: [],
+    is_complete_snapshot: false,
+  });
+});
+
 test("handleResultMessage emits terminal reason on successful turn completion", () => {
   const session = makeSessionState();
 
@@ -4877,6 +5090,52 @@ test("handleResultMessage ignores success result telemetry fields", () => {
     event: "turn_complete",
     session_id: "session-1",
   });
+});
+
+test("handleResultMessage emits repeated turn_complete while background work remains open", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "tool-monitor", "Monitor", {
+      description: "watch deploy logs",
+      timeout_ms: 30000,
+      persistent: false,
+      command: "tail -f deploy.log",
+    });
+    emitToolResultUpdate(session, "tool-monitor", false, {
+      taskId: "monitor-1",
+      timeoutMs: 30000,
+      persistent: false,
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      terminal_reason: "completed",
+    });
+  });
+
+  assert.deepEqual(
+    events.filter((event) => event.event === "turn_complete"),
+    [
+      {
+        event: "turn_complete",
+        session_id: "session-1",
+        terminal_reason: "completed",
+      },
+      {
+        event: "turn_complete",
+        session_id: "session-1",
+        terminal_reason: "completed",
+      },
+    ],
+  );
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
 });
 
 test("handleResultMessage emits terminal reason on turn errors", () => {
@@ -4966,6 +5225,17 @@ test("mapSessionMessagesToUpdates ignores unsupported records", () => {
       message: {
         role: "assistant",
         content: [{ type: "thinking", thinking: "h" }],
+      },
+    },
+    {
+      type: "system",
+      uuid: "system-unsupported",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      message: {
+        type: "system",
+        subtype: "compact_boundary",
+        content: [{ type: "text", text: "internal system text" }],
       },
     },
   ]);

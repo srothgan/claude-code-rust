@@ -327,7 +327,9 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         setSessionListingDir(matched.cwd ?? process.cwd());
         const historyMessages = await getSessionMessages(
           command.session_id,
-          matched.cwd ? { dir: matched.cwd } : undefined,
+          matched.cwd
+            ? { dir: matched.cwd, includeSystemMessages: true }
+            : { includeSystemMessages: true },
         );
         const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
         const staleSessions = Array.from(sessions.values());

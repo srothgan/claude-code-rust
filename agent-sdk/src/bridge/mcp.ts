@@ -411,6 +411,7 @@ export async function handleMcpSetServersCommand(
       },
       requestId,
     );
+    await handleMcpStatusCommand(session, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
