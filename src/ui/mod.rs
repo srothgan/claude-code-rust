@@ -18,6 +18,7 @@ mod session_picker;
 mod spinner_verbs;
 pub mod theme;
 mod tool_call;
+pub(crate) mod tool_display;
 mod trusted;
 mod two_column_list;
 mod welcome;

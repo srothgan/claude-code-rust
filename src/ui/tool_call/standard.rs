@@ -9,6 +9,7 @@ use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_oute
 use crate::ui::highlight;
 use crate::ui::markdown;
 use crate::ui::theme;
+use crate::ui::tool_display;
 use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -45,12 +46,12 @@ pub(super) fn render_tool_call_title(
     spinner_frame: usize,
 ) -> Line<'static> {
     let (icon, icon_color) = status_icon(tc.status, spinner_frame);
-    let (kind_icon, kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
+    let kind_label = tool_display::tool_name_label(&tc.sdk_tool_name);
     let kind_icon_span = if let Some((task_marker, task_marker_style)) = tasks::title_marker(tc) {
         Span::styled(format!("{task_marker} "), task_marker_style)
     } else {
         Span::styled(
-            format!("{kind_icon} "),
+            format!("{} ", kind_label.icon),
             Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
         )
     };
@@ -59,7 +60,7 @@ pub(super) fn render_tool_call_title(
         vec![Span::styled(format!("  {icon} "), Style::default().fg(icon_color)), kind_icon_span];
     if tc.is_execute_tool() {
         title_spans.push(Span::styled(
-            format!("{kind_name} "),
+            format!("{} ", kind_label.label.as_ref()),
             Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
         ));
     }

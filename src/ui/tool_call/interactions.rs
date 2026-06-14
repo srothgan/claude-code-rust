@@ -6,6 +6,7 @@
 use crate::agent::model::PermissionOptionKind;
 use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
 use crate::ui::theme;
+use crate::ui::tool_display;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -135,10 +136,16 @@ fn permission_display_lines(
 
 fn is_redundant_permission_header(tc: &ToolCallInfo, value: &str) -> bool {
     let normalized = normalize_permission_header(value);
-    let tool_label = normalize_permission_header(theme::tool_name_label(&tc.sdk_tool_name).1);
+    let tool_label = tool_display::tool_name_label(&tc.sdk_tool_name);
+    let tool_label = normalize_permission_header(tool_label.label.as_ref());
+    let display_title = tool_display::tool_title(&tc.sdk_tool_name, &tc.title);
+    let display_title = normalize_permission_header(display_title.as_ref());
     let sdk_name = normalize_permission_header(&tc.sdk_tool_name);
     let title = normalize_permission_header(&tc.title);
-    normalized == tool_label || normalized == sdk_name || normalized == title
+    normalized == tool_label
+        || normalized == display_title
+        || normalized == sdk_name
+        || normalized == title
 }
 
 fn normalize_permission_header(value: &str) -> String {
@@ -555,6 +562,29 @@ mod tests {
 
         assert!(!rendered.contains("\n  Bash\n"));
         assert!(rendered.contains("This command reads project files"));
+    }
+
+    #[test]
+    fn permission_display_metadata_hides_redundant_mcp_display_title() {
+        let mut tc = test_tool_call("mcp__claude_ai_Strava__list_activities");
+        tc.title = tc.sdk_tool_name.clone();
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.display = Some(
+            PermissionDisplay::new()
+                .title(Some("Strava: List activities".to_owned()))
+                .description(Some("This action reads activity metadata".to_owned())),
+        );
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("\n  Strava: List activities\n"));
+        assert!(rendered.contains("This action reads activity metadata"));
     }
 
     #[test]
