@@ -120,6 +120,9 @@ mod enabled {
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error.
         pub fn open(path: &Path, append: bool) -> Option<Self> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).ok()?;
+            }
             let mut options = OpenOptions::new();
             options.create(true).write(true);
             if append {

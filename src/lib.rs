@@ -68,7 +68,7 @@ pub struct Cli {
     #[arg(long)]
     pub bridge_script: Option<std::path::PathBuf>,
 
-    /// Enable runtime diagnostics using a default log path when `--log-file` is omitted.
+    /// Enable runtime diagnostics using a timestamped default log file when `--log-file` is omitted.
     #[arg(long)]
     pub enable_logs: bool,
 
@@ -80,8 +80,8 @@ pub struct Cli {
     /// Write tracing diagnostics to a file.
     ///
     /// When omitted but logging is otherwise enabled via `--enable-logs`,
-    /// `--diagnostics-preset`, `--log-filter`, `--log-append`, or `RUST_LOG`,
-    /// a default log path is used.
+    /// `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, a timestamped
+    /// default log path is used.
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
@@ -90,7 +90,9 @@ pub struct Cli {
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,
 
-    /// Append to the active log file instead of resetting the current log window on startup.
+    /// Append to an explicit `--log-file`.
+    ///
+    /// Without `--log-file`, appends to the legacy shared default log for compatibility.
     #[arg(long)]
     pub log_append: bool,
 
