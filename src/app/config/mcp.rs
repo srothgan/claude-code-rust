@@ -1,6 +1,8 @@
 use super::{ConfigOverlayState, ConfigState, ConfigTab};
 use crate::agent::{events::ClientEvent, model, types};
 use crate::app::App;
+use crate::app::plugins::InstalledPluginEntry;
+use crate::app::state::types::{RemovedMcpServerGuard, RemovedMcpServerKey};
 use crate::app::view::{self, FullscreenView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
@@ -13,6 +15,7 @@ pub(crate) enum McpServerActionKind {
     Reconnect,
     Enable,
     Disable,
+    ManagePlugin,
     RemoveUserConfig,
     RemoveLocalConfig,
     RemoveProjectConfig,
@@ -29,6 +32,7 @@ impl McpServerActionKind {
             Self::Reconnect => "Reconnect server",
             Self::Enable => "Enable server",
             Self::Disable => "Disable server",
+            Self::ManagePlugin => "Manage plugin",
             Self::RemoveUserConfig
             | Self::RemoveLocalConfig
             | Self::RemoveProjectConfig
@@ -48,7 +52,8 @@ impl McpServerActionKind {
             | Self::ClearAuth
             | Self::Reconnect
             | Self::Enable
-            | Self::Disable => None,
+            | Self::Disable
+            | Self::ManagePlugin => None,
         }
     }
 }
@@ -59,6 +64,15 @@ pub(crate) enum McpConfigScope {
     User,
     Project,
     Dynamic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpServerOwnership<'a> {
+    Persisted(McpConfigScope),
+    SdkDynamic,
+    PluginOwned(&'a InstalledPluginEntry),
+    PluginOwnedUnknown,
+    RuntimeOnly,
 }
 
 impl McpConfigScope {
@@ -412,6 +426,14 @@ pub(crate) fn remove_mcp_server_from_config(
     server_name: &str,
     scope: McpConfigScope,
 ) {
+    if !is_mcp_config_removal_available(app, server_name, scope) {
+        let message = format!(
+            "MCP server {server_name} is not removable from {} config. Plugin-owned MCP servers must be managed from the plugin action menu.",
+            scope.cli_arg()
+        );
+        apply_mcp_config_remove_failure(app, server_name, scope.cli_arg(), &message);
+        return;
+    }
     if scope == McpConfigScope::Dynamic {
         remove_dynamic_mcp_server_from_config(app, server_name);
         return;
@@ -562,7 +584,7 @@ fn dynamic_mcp_servers_without(
         .mcp
         .servers
         .iter()
-        .filter(|server| mcp_config_removal_scope(server) == Some(McpConfigScope::Dynamic))
+        .filter(|server| mcp_config_removal_scope(app, server) == Some(McpConfigScope::Dynamic))
     {
         if mcp_server_matches_removed_key(server, &removed_key) {
             found_removed_server = true;
@@ -675,23 +697,44 @@ pub(crate) fn apply_mcp_config_remove_success(
     let scope_name = McpConfigScope::from_status_scope(scope)
         .map_or_else(|| normalize_mcp_config_scope_key(scope), |scope| scope.cli_arg().to_owned());
     app.mcp.claude_path = Some(claude_path);
-    apply_mcp_config_remove_success_state(app, server_name, &scope_name);
-    crate::app::session_runtime::request_runtime_reload(app);
-    request_mcp_snapshot(app);
+    apply_mcp_config_remove_success_state(
+        app,
+        server_name,
+        &scope_name,
+        Some(types::McpSnapshotSource::ReloadPlugins),
+    );
+    match crate::app::session_runtime::request_runtime_reload(app) {
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Requested => {
+            app.mcp.in_flight = true;
+            app.mcp.last_error = None;
+        }
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Unavailable => {
+            app.mcp.in_flight = false;
+        }
+        crate::app::session_runtime::RuntimeReloadRequestOutcome::Failed => {
+            app.mcp.in_flight = false;
+            app.mcp.last_error = Some("failed to request session runtime plugin reload".to_owned());
+        }
+    }
 }
 
 fn apply_mcp_dynamic_config_remove_success(app: &mut App, server_name: &str) {
-    apply_mcp_config_remove_success_state(app, server_name, McpConfigScope::Dynamic.cli_arg());
-    request_mcp_snapshot(app);
+    apply_mcp_config_remove_success_state(
+        app,
+        server_name,
+        McpConfigScope::Dynamic.cli_arg(),
+        Some(types::McpSnapshotSource::McpSetServers),
+    );
 }
 
 pub(crate) fn handle_mcp_set_servers_result(app: &mut App, result: &types::McpSetServersResult) {
-    let Some(server_name) = app.mcp.pending_dynamic_config_removal.take() else {
+    let Some(server_name) = app.mcp.pending_dynamic_config_removal.clone() else {
         return;
     };
     if let Some((_, message)) =
         result.errors.iter().find(|(name, _)| name.eq_ignore_ascii_case(&server_name))
     {
+        app.mcp.pending_dynamic_config_removal = None;
         apply_mcp_config_remove_failure(
             app,
             &server_name,
@@ -701,6 +744,25 @@ pub(crate) fn handle_mcp_set_servers_result(app: &mut App, result: &types::McpSe
         return;
     }
 
+    if !result.removed.iter().any(|removed| mcp_server_name_eq(removed, &server_name)) {
+        tracing::info!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_dynamic_remove_pending_confirmation",
+            message = "dynamic MCP removal waiting for confirming snapshot",
+            outcome = "pending",
+            server_name = %server_name,
+            added_count = result.added.len(),
+            removed_count = result.removed.len(),
+            error_count = result.errors.len(),
+        );
+        app.mcp.in_flight = true;
+        app.config.status_message = Some(format!(
+            "Removing MCP server {server_name} from dynamic config... Waiting for SDK confirmation."
+        ));
+        return;
+    }
+
+    app.mcp.pending_dynamic_config_removal = None;
     tracing::info!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "mcp_dynamic_remove_completed",
@@ -714,19 +776,128 @@ pub(crate) fn handle_mcp_set_servers_result(app: &mut App, result: &types::McpSe
     apply_mcp_dynamic_config_remove_success(app, &server_name);
 }
 
-fn apply_mcp_config_remove_success_state(app: &mut App, server_name: &str, scope_name: &str) {
-    remember_removed_config_mcp_server(app, scope_name, server_name);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingDynamicMcpRemovalConfirmation {
+    Confirmed { server_name: String },
+    Failed { server_name: String, message: String },
+}
+
+pub(crate) fn pending_dynamic_mcp_removal_confirmation_from_snapshot(
+    app: &App,
+    source: Option<types::McpSnapshotSource>,
+    error: Option<&str>,
+    servers: &[crate::agent::model::McpServerStatus],
+) -> Option<PendingDynamicMcpRemovalConfirmation> {
+    if source != Some(types::McpSnapshotSource::McpSetServers) {
+        return None;
+    }
+
+    let server_name = app.mcp.pending_dynamic_config_removal.as_ref()?.clone();
+    if let Some(message) = error {
+        return Some(PendingDynamicMcpRemovalConfirmation::Failed {
+            server_name,
+            message: format!("SDK snapshot failed after setMcpServers: {message}"),
+        });
+    }
+
+    if servers.iter().any(|server| mcp_server_name_eq(&server.name, &server_name)) {
+        return Some(PendingDynamicMcpRemovalConfirmation::Failed {
+            server_name,
+            message: "SDK setMcpServers completed without reporting an error, but the confirming snapshot still contains the server.".to_owned(),
+        });
+    }
+
+    Some(PendingDynamicMcpRemovalConfirmation::Confirmed { server_name })
+}
+
+pub(crate) fn apply_pending_dynamic_mcp_removal_confirmation(
+    app: &mut App,
+    confirmation: Option<PendingDynamicMcpRemovalConfirmation>,
+) {
+    let Some(confirmation) = confirmation else {
+        return;
+    };
+
+    match confirmation {
+        PendingDynamicMcpRemovalConfirmation::Confirmed { server_name } => {
+            if app
+                .mcp
+                .pending_dynamic_config_removal
+                .as_deref()
+                .is_some_and(|pending| mcp_server_name_eq(pending, &server_name))
+            {
+                app.mcp.pending_dynamic_config_removal = None;
+            }
+            tracing::info!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_dynamic_remove_confirmed",
+                message = "dynamic MCP removal confirmed by snapshot",
+                outcome = "success",
+                server_name = %server_name,
+            );
+            apply_mcp_config_remove_success_state(
+                app,
+                &server_name,
+                McpConfigScope::Dynamic.cli_arg(),
+                None,
+            );
+        }
+        PendingDynamicMcpRemovalConfirmation::Failed { server_name, message } => {
+            if app
+                .mcp
+                .pending_dynamic_config_removal
+                .as_deref()
+                .is_some_and(|pending| mcp_server_name_eq(pending, &server_name))
+            {
+                app.mcp.pending_dynamic_config_removal = None;
+            }
+            tracing::warn!(
+                target: crate::logging::targets::APP_CONFIG,
+                event_name = "mcp_dynamic_remove_confirmation_failed",
+                message = "dynamic MCP removal was not confirmed",
+                outcome = "failure",
+                server_name = %server_name,
+                error_message = %message,
+            );
+            apply_mcp_config_remove_failure(
+                app,
+                &server_name,
+                McpConfigScope::Dynamic.cli_arg(),
+                &message,
+            );
+        }
+    }
+}
+
+fn apply_mcp_config_remove_success_state(
+    app: &mut App,
+    server_name: &str,
+    scope_name: &str,
+    expected_source: Option<types::McpSnapshotSource>,
+) {
+    if let Some(expected_source) = expected_source {
+        remember_removed_config_mcp_server(app, scope_name, server_name, expected_source);
+    }
     remove_matching_mcp_server_from_snapshot(app, scope_name, server_name);
     app.config.mcp_selected_server_index =
         app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
     app.mcp.last_error = None;
     app.config.last_error = None;
-    app.config.status_message =
-        Some(format!("Removed MCP server {server_name} from {scope_name} config."));
+    app.config.status_message = Some(format!(
+        "Removed MCP server {server_name} from {scope_name} config. You might need to run /new-session to apply MCP changes."
+    ));
 }
 
-fn remember_removed_config_mcp_server(app: &mut App, scope: &str, server_name: &str) {
-    app.mcp.removed_config_servers.insert(normalized_removed_config_key(scope, server_name));
+fn remember_removed_config_mcp_server(
+    app: &mut App,
+    scope: &str,
+    server_name: &str,
+    expected_source: types::McpSnapshotSource,
+) {
+    app.mcp.removed_config_servers.insert(
+        normalized_removed_config_key(scope, server_name),
+        RemovedMcpServerGuard { expected_source },
+    );
 }
 
 fn remove_matching_mcp_server_from_snapshot(app: &mut App, scope: &str, server_name: &str) {
@@ -744,28 +915,189 @@ pub(crate) fn filter_removed_config_mcp_servers(
     servers.retain(|server| !is_removed_config_mcp_server_suppressed(app, server));
 }
 
+pub(crate) fn filter_stale_plugin_mcp_servers(
+    app: &App,
+    source: Option<types::McpSnapshotSource>,
+    servers: &mut Vec<crate::agent::model::McpServerStatus>,
+) {
+    let stale_server_names = stale_plugin_mcp_server_names(app, servers);
+    suppress_stale_plugin_mcp_servers(source, servers, stale_server_names);
+}
+
+pub(crate) fn reconcile_stale_plugin_mcp_servers(app: &mut App) {
+    let stale_server_names = stale_plugin_mcp_server_names(app, &app.mcp.servers);
+    if stale_server_names.is_empty() {
+        return;
+    }
+
+    suppress_stale_plugin_mcp_servers(None, &mut app.mcp.servers, stale_server_names);
+    app.config.mcp_selected_server_index =
+        app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
+    clear_missing_mcp_server_overlays(app);
+}
+
+fn stale_plugin_mcp_server_names(
+    app: &App,
+    servers: &[crate::agent::model::McpServerStatus],
+) -> Vec<String> {
+    servers
+        .iter()
+        .filter(|server| crate::app::plugins::is_stale_plugin_mcp_runtime_server(app, &server.name))
+        .map(|server| server.name.clone())
+        .collect()
+}
+
+fn suppress_stale_plugin_mcp_servers(
+    source: Option<types::McpSnapshotSource>,
+    servers: &mut Vec<crate::agent::model::McpServerStatus>,
+    stale_server_names: Vec<String>,
+) {
+    if stale_server_names.is_empty() {
+        return;
+    }
+
+    servers.retain(|server| {
+        !stale_server_names.iter().any(|stale_name| mcp_server_name_eq(stale_name, &server.name))
+    });
+    for server_name in stale_server_names {
+        tracing::info!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name = "mcp_stale_plugin_runtime_server_suppressed",
+            message = "stale plugin-owned MCP server suppressed from MCP list",
+            outcome = "suppressed",
+            source = ?source,
+            server_name = %server_name,
+        );
+    }
+}
+
+fn clear_missing_mcp_server_overlays(app: &mut App) {
+    let missing_server_name = match app.config.overlay.as_ref() {
+        Some(ConfigOverlayState::McpDetails(overlay)) => Some(overlay.server_name.as_str()),
+        Some(ConfigOverlayState::McpCallbackUrl(overlay)) => Some(overlay.server_name.as_str()),
+        Some(ConfigOverlayState::McpAuthRedirect(overlay)) => {
+            Some(overlay.redirect.server_name.as_str())
+        }
+        Some(ConfigOverlayState::McpElicitation(overlay)) => {
+            Some(overlay.request.server_name.as_str())
+        }
+        Some(
+            ConfigOverlayState::ModelAndEffort(_)
+            | ConfigOverlayState::OutputStyle(_)
+            | ConfigOverlayState::Language(_)
+            | ConfigOverlayState::SessionRename(_)
+            | ConfigOverlayState::Confirmation(_)
+            | ConfigOverlayState::InstalledPluginActions(_)
+            | ConfigOverlayState::PluginInstallActions(_)
+            | ConfigOverlayState::MarketplaceActions(_)
+            | ConfigOverlayState::AddMarketplace(_),
+        )
+        | None => None,
+    }
+    .is_some_and(|server_name| {
+        !app.mcp.servers.iter().any(|server| mcp_server_name_eq(&server.name, server_name))
+    });
+
+    if missing_server_name {
+        app.config.clear_overlay();
+    }
+}
+
+pub(crate) fn reconcile_removed_config_mcp_server_guards(
+    app: &mut App,
+    source: Option<types::McpSnapshotSource>,
+    error: Option<&str>,
+    servers: &[crate::agent::model::McpServerStatus],
+) -> Vec<McpConfigRemoveConfirmationFailure> {
+    let mut failures = Vec::new();
+    if app.mcp.removed_config_servers.is_empty() || error.is_some() {
+        return failures;
+    }
+    let Some(source) = source else {
+        return failures;
+    };
+    app.mcp.removed_config_servers.retain(|removed_key, guard| {
+        if guard.expected_source != source {
+            return true;
+        }
+
+        if let Some(server) =
+            servers.iter().find(|server| mcp_server_matches_removed_key(server, removed_key))
+        {
+            failures.push(McpConfigRemoveConfirmationFailure {
+                server_name: server.name.clone(),
+                scope: removed_key.scope.clone(),
+                message: format!(
+                    "Removal was reported as successful, but the confirming {} snapshot still contains the server.",
+                    mcp_snapshot_source_label(source),
+                ),
+            });
+        }
+
+        false
+    });
+    failures
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpConfigRemoveConfirmationFailure {
+    server_name: String,
+    scope: String,
+    message: String,
+}
+
+pub(crate) fn apply_removed_config_mcp_server_confirmation_failures(
+    app: &mut App,
+    failures: Vec<McpConfigRemoveConfirmationFailure>,
+) {
+    for failure in failures {
+        apply_mcp_config_remove_failure(
+            app,
+            &failure.server_name,
+            &failure.scope,
+            &failure.message,
+        );
+    }
+}
+
 fn is_removed_config_mcp_server_suppressed(
     app: &App,
     server: &crate::agent::model::McpServerStatus,
 ) -> bool {
     app.mcp
         .removed_config_servers
-        .iter()
+        .keys()
         .any(|removed_key| mcp_server_matches_removed_key(server, removed_key))
 }
 
 fn mcp_server_matches_removed_key(
     server: &crate::agent::model::McpServerStatus,
-    removed_key: &(String, String),
+    removed_key: &RemovedMcpServerKey,
 ) -> bool {
-    server
-        .scope
-        .as_deref()
-        .is_some_and(|scope| normalized_removed_config_key(scope, &server.name) == *removed_key)
+    match server.scope.as_deref() {
+        Some(scope) => normalized_removed_config_key(scope, &server.name) == *removed_key,
+        None => mcp_server_name_eq(&server.name, &removed_key.server_name),
+    }
 }
 
-fn normalized_removed_config_key(scope: &str, server_name: &str) -> (String, String) {
-    (normalize_mcp_config_scope_key(scope), server_name.to_ascii_lowercase())
+fn mcp_server_name_eq(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+const fn mcp_snapshot_source_label(source: types::McpSnapshotSource) -> &'static str {
+    match source {
+        types::McpSnapshotSource::ReloadPlugins => "reload_plugins",
+        types::McpSnapshotSource::McpStatus => "mcp_status",
+        types::McpSnapshotSource::McpSetServers => "mcp_set_servers",
+        types::McpSnapshotSource::Init => "init",
+    }
+}
+
+fn normalized_removed_config_key(scope: &str, server_name: &str) -> RemovedMcpServerKey {
+    RemovedMcpServerKey::new(
+        normalize_mcp_config_scope_key(scope),
+        server_name.to_ascii_lowercase(),
+    )
 }
 
 fn normalize_mcp_config_scope_key(scope: &str) -> String {
@@ -912,7 +1244,9 @@ pub(crate) fn open_mcp_server_details(
         app.mcp.servers.iter().find(|server| server.name == server_name).map_or(0, |server| {
             preferred_action
                 .and_then(|action| {
-                    available_mcp_actions(server).iter().position(|candidate| *candidate == action)
+                    available_mcp_actions(app, server)
+                        .iter()
+                        .position(|candidate| *candidate == action)
                 })
                 .unwrap_or(0)
         });
@@ -923,14 +1257,41 @@ pub(crate) fn open_mcp_server_details(
 }
 
 #[must_use]
+pub(crate) fn mcp_server_ownership<'a>(
+    app: &'a App,
+    server: &'a crate::agent::model::McpServerStatus,
+) -> McpServerOwnership<'a> {
+    if crate::app::plugins::is_plugin_mcp_runtime_server_name(&server.name) {
+        return crate::app::plugins::installed_mcp_plugin_for_runtime_server(app, &server.name)
+            .map_or(McpServerOwnership::PluginOwnedUnknown, McpServerOwnership::PluginOwned);
+    }
+
+    match server.scope.as_deref().and_then(McpConfigScope::from_status_scope) {
+        Some(McpConfigScope::User) => McpServerOwnership::Persisted(McpConfigScope::User),
+        Some(McpConfigScope::Local) => McpServerOwnership::Persisted(McpConfigScope::Local),
+        Some(McpConfigScope::Project) => McpServerOwnership::Persisted(McpConfigScope::Project),
+        Some(McpConfigScope::Dynamic) => McpServerOwnership::SdkDynamic,
+        None => McpServerOwnership::RuntimeOnly,
+    }
+}
+
+#[must_use]
 pub(crate) fn mcp_config_removal_scope(
+    app: &App,
     server: &crate::agent::model::McpServerStatus,
 ) -> Option<McpConfigScope> {
-    server.scope.as_deref().and_then(McpConfigScope::from_status_scope)
+    match mcp_server_ownership(app, server) {
+        McpServerOwnership::Persisted(scope) => Some(scope),
+        McpServerOwnership::SdkDynamic => Some(McpConfigScope::Dynamic),
+        McpServerOwnership::PluginOwned(_)
+        | McpServerOwnership::PluginOwnedUnknown
+        | McpServerOwnership::RuntimeOnly => None,
+    }
 }
 
 #[must_use]
 pub(crate) fn available_mcp_actions(
+    app: &App,
     server: &crate::agent::model::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
     let mut actions = vec![McpServerActionKind::RefreshSnapshot];
@@ -949,14 +1310,24 @@ pub(crate) fn available_mcp_actions(
         actions.push(McpServerActionKind::Reconnect);
         actions.push(McpServerActionKind::Disable);
     }
-    if let Some(scope) = mcp_config_removal_scope(server) {
-        actions.push(remove_action_for_mcp_config_scope(scope));
+    match mcp_server_ownership(app, server) {
+        McpServerOwnership::Persisted(scope) => {
+            actions.push(remove_action_for_mcp_config_scope(scope));
+        }
+        McpServerOwnership::SdkDynamic => {
+            actions.push(McpServerActionKind::RemoveDynamicConfig);
+        }
+        McpServerOwnership::PluginOwned(_) => {
+            actions.push(McpServerActionKind::ManagePlugin);
+        }
+        McpServerOwnership::PluginOwnedUnknown | McpServerOwnership::RuntimeOnly => {}
     }
     actions
 }
 
 #[must_use]
 pub(crate) fn is_mcp_action_available(
+    app: &App,
     server: &crate::agent::model::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
@@ -969,7 +1340,10 @@ pub(crate) fn is_mcp_action_available(
         | McpServerActionKind::RemoveLocalConfig
         | McpServerActionKind::RemoveProjectConfig
         | McpServerActionKind::RemoveDynamicConfig => {
-            action.mcp_config_scope() == mcp_config_removal_scope(server)
+            action.mcp_config_scope() == mcp_config_removal_scope(app, server)
+        }
+        McpServerActionKind::ManagePlugin => {
+            matches!(mcp_server_ownership(app, server), McpServerOwnership::PluginOwned(_))
         }
         McpServerActionKind::RefreshSnapshot
         | McpServerActionKind::ClearAuth
@@ -977,6 +1351,33 @@ pub(crate) fn is_mcp_action_available(
         | McpServerActionKind::Enable
         | McpServerActionKind::Disable => true,
     }
+}
+
+#[must_use]
+pub(crate) fn mcp_server_owner_summary(
+    app: &App,
+    server: &crate::agent::model::McpServerStatus,
+) -> Option<String> {
+    match mcp_server_ownership(app, server) {
+        McpServerOwnership::PluginOwned(entry) => {
+            Some(format!("Managed by plugin: {}", crate::app::plugins::display_label(&entry.id)))
+        }
+        McpServerOwnership::PluginOwnedUnknown => Some(
+            "Managed by a plugin. Refresh plugin inventory from the Plugins tab to manage it here."
+                .to_owned(),
+        ),
+        McpServerOwnership::Persisted(_)
+        | McpServerOwnership::SdkDynamic
+        | McpServerOwnership::RuntimeOnly => None,
+    }
+}
+
+fn is_mcp_config_removal_available(app: &App, server_name: &str, scope: McpConfigScope) -> bool {
+    app.mcp
+        .servers
+        .iter()
+        .find(|server| mcp_server_name_eq(&server.name, server_name))
+        .is_some_and(|server| mcp_config_removal_scope(app, server) == Some(scope))
 }
 
 pub(crate) fn present_mcp_elicitation_request(

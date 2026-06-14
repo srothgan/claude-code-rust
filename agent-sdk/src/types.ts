@@ -538,6 +538,12 @@ export interface McpSetServersResult {
   errors: Record<string, string>;
 }
 
+export type McpSnapshotSource =
+  | "reload_plugins"
+  | "mcp_status"
+  | "mcp_set_servers"
+  | "init";
+
 export interface SessionLaunchSettings {
   language?: string;
   settings?: { [key: string]: Json };
@@ -773,5 +779,6 @@ export type BridgeEvent =
       event: "mcp_snapshot";
       session_id: string;
       servers: McpServerStatus[];
+      source?: McpSnapshotSource;
       error?: string;
     };

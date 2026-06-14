@@ -58,7 +58,7 @@ import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { emitCurrentModelUpdate, refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
-import { mapMcpServerStatus, summarizeMcpServersForDiagnostics } from "./mcp_metadata.js";
+import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 
 export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
   const chunks = command.chunks ?? [];
@@ -1009,27 +1009,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       }
 
       if (Array.isArray(msg.mcp_servers)) {
-        const servers = msg.mcp_servers.map((server) =>
-          mapMcpServerStatus(
-            server as import("@anthropic-ai/claude-agent-sdk").McpServerStatus,
-          ),
+        emitMcpSnapshotFromStatuses(
+          session,
+          msg.mcp_servers as import("@anthropic-ai/claude-agent-sdk").McpServerStatus[],
+          "init",
         );
-        bridgeLogger.info({
-          target: LOG_TARGETS.BRIDGE_MCP,
-          eventName: "mcp_init_snapshot_emitted",
-          message: "MCP init snapshot emitted",
-          outcome: "success",
-          sessionId: session.sessionId,
-          fields: {
-            server_count: servers.length,
-            servers: summarizeMcpServersForDiagnostics(servers),
-          },
-        });
-        writeEvent({
-          event: "mcp_snapshot",
-          session_id: session.sessionId,
-          servers,
-        });
       }
 
       if (session.lastAvailableAgentsSignature === undefined && Array.isArray(msg.agents)) {

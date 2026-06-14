@@ -64,7 +64,7 @@ fn move_mcp_details_overlay_selection(app: &mut App, delta: isize) {
     else {
         return;
     };
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     if actions.is_empty() {
         return;
     }
@@ -84,11 +84,11 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
         app.config.clear_overlay();
         return;
     };
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     let Some(action) = actions.get(overlay.selected_index).copied() else {
         return;
     };
-    if !is_mcp_action_available(server, action) {
+    if !is_mcp_action_available(app, server, action) {
         return;
     }
 
@@ -133,6 +133,15 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
         McpServerActionKind::Disable => {
             set_mcp_server_enabled(app, server_name, false);
         }
+        McpServerActionKind::ManagePlugin => {
+            if !crate::app::plugins::open_installed_actions_overlay_for_mcp_server(app, server_name)
+            {
+                app.config.set_overlay_error(
+                    "Refresh plugin inventory from the Plugins tab before managing this MCP server.",
+                );
+            }
+            return;
+        }
         McpServerActionKind::RemoveUserConfig
         | McpServerActionKind::RemoveLocalConfig
         | McpServerActionKind::RemoveProjectConfig
@@ -173,7 +182,7 @@ fn open_mcp_remove_confirmation(
         return;
     };
     let Some(_scope) = action.mcp_config_scope().filter(|scope| {
-        mcp_config_removal_scope(server).is_some_and(|server_scope| server_scope == *scope)
+        mcp_config_removal_scope(app, server).is_some_and(|server_scope| server_scope == *scope)
     }) else {
         app.config.set_overlay_error("This MCP server cannot be removed from live config.");
         return;

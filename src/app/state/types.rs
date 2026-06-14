@@ -142,9 +142,28 @@ pub struct McpState {
     pub in_flight: bool,
     pub last_error: Option<String>,
     pub claude_path: Option<std::path::PathBuf>,
-    pub removed_config_servers: std::collections::BTreeSet<(String, String)>,
+    pub removed_config_servers:
+        std::collections::BTreeMap<RemovedMcpServerKey, RemovedMcpServerGuard>,
     pub pending_dynamic_config_removal: Option<String>,
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RemovedMcpServerKey {
+    pub scope: String,
+    pub server_name: String,
+}
+
+impl RemovedMcpServerKey {
+    #[must_use]
+    pub fn new(scope: String, server_name: String) -> Self {
+        Self { scope, server_name }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemovedMcpServerGuard {
+    pub expected_source: crate::agent::types::McpSnapshotSource,
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

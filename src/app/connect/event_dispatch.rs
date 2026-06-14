@@ -174,10 +174,11 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
             let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
         }
-        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
+        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, source, error } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
                 session_id,
                 servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                source,
                 error,
             });
         }

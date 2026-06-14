@@ -1,7 +1,7 @@
 use super::theme;
 use crate::app::App;
 use crate::app::plugins::{
-    PluginCapability, PluginsViewTab, display_label, filtered_marketplace_plugins,
+    InstalledPluginEntry, PluginsViewTab, display_label, filtered_marketplace_plugins,
     ordered_installed, search_enabled, visible_marketplaces,
 };
 use ratatui::Frame;
@@ -171,7 +171,11 @@ fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> Rende
             let selected =
                 index == app.plugins.installed_selected_index && !app.plugins.search_focused;
             let mut lines = vec![
-                title_line_with_badge(&display_label(&entry.id), Some(entry.capability), selected),
+                title_line_with_badge(
+                    &display_label(&entry.id),
+                    Some(installed_plugin_badge(entry)),
+                    selected,
+                ),
                 meta_line(
                     &format!(
                         "{} | {}{}",
@@ -284,11 +288,14 @@ fn title_line(text: &str, selected: bool) -> Line<'static> {
     title_line_with_badge(text, None, selected)
 }
 
-fn title_line_with_badge(
-    text: &str,
-    capability: Option<PluginCapability>,
-    selected: bool,
-) -> Line<'static> {
+#[derive(Clone, Copy)]
+struct TitleBadge {
+    label: &'static str,
+    fg: Color,
+    bg: Color,
+}
+
+fn title_line_with_badge(text: &str, badge: Option<TitleBadge>, selected: bool) -> Line<'static> {
     let mut spans = vec![Span::styled(
         text.to_owned(),
         if selected {
@@ -297,12 +304,11 @@ fn title_line_with_badge(
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
         },
     )];
-    if let Some(capability) = capability {
+    if let Some(badge) = badge {
         spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-        let (fg, bg) = capability_badge_colors(capability);
         spans.push(Span::styled(
-            format!(" {} ", capability.label()),
-            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            format!(" {} ", badge.label),
+            Style::default().fg(badge.fg).bg(badge.bg).add_modifier(Modifier::BOLD),
         ));
     }
     Line::from(spans)
@@ -380,10 +386,11 @@ fn visual_line_height(line: &Line<'static>, viewport_width: u16) -> usize {
     visual_width.div_ceil(width)
 }
 
-fn capability_badge_colors(capability: PluginCapability) -> (Color, Color) {
-    match capability {
-        PluginCapability::Skill => (Color::White, Color::Rgb(64, 64, 64)),
-        PluginCapability::Mcp => (Color::White, Color::Rgb(34, 92, 124)),
+fn installed_plugin_badge(entry: &InstalledPluginEntry) -> TitleBadge {
+    if entry.mcp_server_names.is_empty() {
+        TitleBadge { label: "SKILL", fg: Color::White, bg: Color::Rgb(64, 64, 64) }
+    } else {
+        TitleBadge { label: "MCP", fg: Color::White, bg: Color::Rgb(34, 92, 124) }
     }
 }
 

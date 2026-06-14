@@ -42,6 +42,7 @@ import {
   resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
   updateAvailableCommands,
+  handleReloadPluginsCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -638,6 +639,7 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
       request_id: "req-mcp-set",
       event: "mcp_snapshot",
       session_id: "session-1",
+      source: "mcp_set_servers",
       servers: [
         {
           name: "docs",
@@ -777,6 +779,139 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
     command: "reload_plugins",
     session_id: "session-123",
   });
+});
+
+test("handleReloadPluginsCommand emits MCP snapshot from reload result", async () => {
+  const session = makeSessionState();
+  let mcpServerStatusCalls = 0;
+  session.query = {
+    reloadPlugins: async () => ({
+      commands: [],
+      agents: [],
+      plugins: [],
+      mcpServers: [
+        {
+          name: "docs",
+          status: "connected",
+          config: {
+            type: "http",
+            url: "https://example.test/mcp",
+          },
+          tools: [],
+        },
+      ],
+      error_count: 0,
+    }),
+    mcpServerStatus: async () => {
+      mcpServerStatusCalls += 1;
+      throw new Error("mcpServerStatus should not be called");
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleReloadPluginsCommand(session, "req-reload");
+  });
+
+  assert.equal(mcpServerStatusCalls, 0);
+  assert.deepEqual(
+    events.filter((event) => event.event === "mcp_snapshot"),
+    [
+      {
+        request_id: "req-reload",
+        event: "mcp_snapshot",
+        session_id: "session-1",
+        source: "reload_plugins",
+        servers: [
+          {
+            name: "docs",
+            status: "connected",
+            config: {
+              type: "http",
+              url: "https://example.test/mcp",
+            },
+            tools: [],
+          },
+        ],
+      },
+    ],
+  );
+  assert.deepEqual(
+    events.filter((event) => event.event === "runtime_reload_completed"),
+    [
+      {
+        request_id: "req-reload",
+        event: "runtime_reload_completed",
+        session_id: "session-1",
+      },
+    ],
+  );
+});
+
+test("handleReloadPluginsCommand revalidates stale MCP auth statuses", async () => {
+  const session = makeSessionState();
+  const serverName = "reload-auth-revalidation";
+  let reloadCalls = 0;
+  let mcpServerStatusCalls = 0;
+  const reconnectCalls: string[] = [];
+  const connectedServer = {
+    name: serverName,
+    status: "connected" as const,
+    config: {
+      type: "http" as const,
+      url: "https://example.test/mcp",
+    },
+    tools: [],
+  };
+
+  session.query = {
+    reloadPlugins: async () => {
+      reloadCalls += 1;
+      return {
+        commands: [],
+        agents: [],
+        plugins: [],
+        mcpServers:
+          reloadCalls === 1
+            ? [connectedServer]
+            : [
+                {
+                  ...connectedServer,
+                  status: "needs-auth" as const,
+                },
+              ],
+        error_count: 0,
+      };
+    },
+    reconnectMcpServer: async (name: string) => {
+      reconnectCalls.push(name);
+    },
+    mcpServerStatus: async () => {
+      mcpServerStatusCalls += 1;
+      return [connectedServer];
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await captureBridgeEventsAsync(async () => {
+    await handleReloadPluginsCommand(session, "req-reload-seed");
+  });
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleReloadPluginsCommand(session, "req-reload");
+  });
+
+  assert.deepEqual(reconnectCalls, [serverName]);
+  assert.equal(mcpServerStatusCalls, 1);
+  assert.deepEqual(
+    events.filter((event) => event.event === "mcp_snapshot"),
+    [
+      {
+        request_id: "req-reload",
+        event: "mcp_snapshot",
+        session_id: "session-1",
+        source: "reload_plugins",
+        servers: [connectedServer],
+      },
+    ],
+  );
 });
 
 test("parseCommandEnvelope validates get_context_usage command", () => {
@@ -2909,6 +3044,7 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
   assert.deepEqual(snapshot, {
     event: "mcp_snapshot",
     session_id: "session-1",
+    source: "init",
     servers: [
       {
         name: "docs",

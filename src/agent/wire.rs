@@ -372,6 +372,7 @@ pub enum BridgeEvent {
         session_id: String,
         #[serde(default)]
         servers: Vec<types::McpServerStatus>,
+        source: Option<types::McpSnapshotSource>,
         error: Option<String>,
     },
 }
@@ -660,6 +661,32 @@ mod tests {
                             "connection failed".to_owned()
                         )]),
                     },
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_event_deserializes_source() {
+        let json = serde_json::json!({
+            "request_id": "req-mcp-snapshot",
+            "event": "mcp_snapshot",
+            "session_id": "session-1",
+            "source": "reload_plugins",
+            "servers": []
+        });
+
+        let decoded: EventEnvelope = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(
+            decoded,
+            EventEnvelope {
+                request_id: Some("req-mcp-snapshot".to_owned()),
+                event: BridgeEvent::McpSnapshot {
+                    session_id: "session-1".to_owned(),
+                    servers: Vec::new(),
+                    source: Some(types::McpSnapshotSource::ReloadPlugins),
+                    error: None,
                 },
             }
         );

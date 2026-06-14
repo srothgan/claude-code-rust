@@ -592,6 +592,19 @@ mod tests {
         }
     }
 
+    fn installed_plugin_entry(id: &str) -> crate::app::plugins::InstalledPluginEntry {
+        crate::app::plugins::InstalledPluginEntry {
+            id: id.to_owned(),
+            version: None,
+            scope: "user".to_owned(),
+            enabled: true,
+            installed_at: None,
+            last_updated: None,
+            project_path: None,
+            mcp_server_names: Vec::new(),
+        }
+    }
+
     fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
         model::TaskItem {
             task_id: id.to_owned(),
@@ -1818,7 +1831,15 @@ mod tests {
             scope: None,
             tools: Vec::new(),
         });
-        app.mcp.removed_config_servers.insert(("user".to_owned(), "supabase".to_owned()));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "supabase".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
 
         handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -1968,16 +1989,7 @@ mod tests {
             api_key_source: None,
             api_provider: None,
         });
-        app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
-            id: "old-plugin".into(),
-            version: None,
-            scope: "user".into(),
-            enabled: true,
-            installed_at: None,
-            last_updated: None,
-            project_path: None,
-            capability: crate::app::plugins::PluginCapability::Skill,
-        });
+        app.plugins.installed.push(installed_plugin_entry("old-plugin"));
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
         app.config.pending_session_title_change =
             Some(crate::app::config::PendingSessionTitleChangeState {
@@ -2421,6 +2433,7 @@ mod tests {
                     scope: None,
                     tools: Vec::new(),
                 }],
+                source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
                 error: None,
             },
         );
@@ -2433,7 +2446,15 @@ mod tests {
     fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.removed_config_servers.insert(("user".to_owned(), "notion".to_owned()));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
 
         handle_client_event(
             &mut app,
@@ -2459,12 +2480,88 @@ mod tests {
                         tools: Vec::new(),
                     },
                 ],
+                source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
                 error: None,
             },
         );
 
         assert_eq!(app.mcp.servers.len(), 1);
         assert_eq!(app.mcp.servers[0].name, "fff");
+        assert_eq!(app.mcp.removed_config_servers.len(), 1);
+    }
+
+    #[test]
+    fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![crate::agent::model::McpServerStatus {
+                    name: "fff".into(),
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
+                    server_info: None,
+                    error: None,
+                    config: None,
+                    scope: Some("user".into()),
+                    tools: Vec::new(),
+                }],
+                source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
+                error: None,
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
+        assert!(app.mcp.removed_config_servers.is_empty());
+    }
+
+    #[test]
+    fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
+        let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("current-session"));
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".to_owned(),
+                "notion".to_owned(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: "current-session".into(),
+                servers: vec![crate::agent::model::McpServerStatus {
+                    name: "fff".into(),
+                    status: crate::agent::model::McpServerConnectionStatus::Connected,
+                    server_info: None,
+                    error: None,
+                    config: None,
+                    scope: Some("user".into()),
+                    tools: Vec::new(),
+                }],
+                source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
+                error: Some("reload failed".to_owned()),
+            },
+        );
+
+        assert_eq!(app.mcp.servers.len(), 1);
+        assert_eq!(app.mcp.servers[0].name, "fff");
+        assert_eq!(app.mcp.removed_config_servers.len(), 1);
     }
 
     #[test]
@@ -2501,16 +2598,7 @@ mod tests {
             ClientEvent::PluginsInventoryUpdated {
                 cwd_raw: "/old".into(),
                 snapshot: crate::app::plugins::PluginsInventorySnapshot {
-                    installed: vec![crate::app::plugins::InstalledPluginEntry {
-                        id: "stale-plugin".into(),
-                        version: None,
-                        scope: "user".into(),
-                        enabled: true,
-                        installed_at: None,
-                        last_updated: None,
-                        project_path: None,
-                        capability: crate::app::plugins::PluginCapability::Skill,
-                    }],
+                    installed: vec![installed_plugin_entry("stale-plugin")],
                     marketplace: Vec::new(),
                     marketplaces: Vec::new(),
                 },

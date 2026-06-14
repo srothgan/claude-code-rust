@@ -1,10 +1,10 @@
 use super::{
-    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginsInventorySnapshot,
+    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginsInventorySnapshot,
 };
 use crate::app::claude_cli;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -19,8 +19,8 @@ struct InstalledPluginJson {
     last_updated: Option<String>,
     #[serde(rename = "projectPath")]
     project_path: Option<String>,
-    #[serde(rename = "mcpServers")]
-    mcp_servers: Option<Value>,
+    #[serde(default, rename = "mcpServers")]
+    mcp_servers: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,23 +97,8 @@ fn refresh_inventory_blocking(
         &["plugin", "marketplace", "list", "--json"],
     )?;
 
-    let mut installed_entries = installed
-        .into_iter()
-        .map(|entry| InstalledPluginEntry {
-            id: entry.id,
-            version: entry.version,
-            scope: entry.scope,
-            enabled: entry.enabled,
-            installed_at: entry.installed_at,
-            last_updated: entry.last_updated,
-            project_path: entry.project_path,
-            capability: if entry.mcp_servers.is_some() {
-                PluginCapability::Mcp
-            } else {
-                PluginCapability::Skill
-            },
-        })
-        .collect::<Vec<_>>();
+    let mut installed_entries =
+        installed.into_iter().map(installed_entry_from_json).collect::<Vec<_>>();
     installed_entries.sort_by_cached_key(|entry| entry.id.to_ascii_lowercase());
 
     let mut marketplace_entries = available
@@ -151,6 +136,26 @@ fn refresh_inventory_blocking(
         marketplace: marketplace_entries,
         marketplaces: marketplace_sources,
     })
+}
+
+fn installed_entry_from_json(entry: InstalledPluginJson) -> InstalledPluginEntry {
+    let mcp_server_names = mcp_server_names_from_map(&entry.mcp_servers);
+    InstalledPluginEntry {
+        id: entry.id,
+        version: entry.version,
+        scope: entry.scope,
+        enabled: entry.enabled,
+        installed_at: entry.installed_at,
+        last_updated: entry.last_updated,
+        project_path: entry.project_path,
+        mcp_server_names,
+    }
+}
+
+fn mcp_server_names_from_map(servers: &BTreeMap<String, Value>) -> Vec<String> {
+    let mut names = servers.keys().cloned().collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_ascii_lowercase());
+    names
 }
 
 #[cfg(test)]
@@ -200,22 +205,9 @@ mod tests {
 "#;
 
         let parsed = serde_json::from_str::<Vec<InstalledPluginJson>>(json).expect("parse json");
-        let entry = InstalledPluginEntry {
-            id: parsed[0].id.clone(),
-            version: parsed[0].version.clone(),
-            scope: parsed[0].scope.clone(),
-            enabled: parsed[0].enabled,
-            installed_at: parsed[0].installed_at.clone(),
-            last_updated: parsed[0].last_updated.clone(),
-            project_path: parsed[0].project_path.clone(),
-            capability: if parsed[0].mcp_servers.is_some() {
-                PluginCapability::Mcp
-            } else {
-                PluginCapability::Skill
-            },
-        };
+        let entry = installed_entry_from_json(parsed.into_iter().next().expect("entry"));
 
-        assert_eq!(entry.capability, PluginCapability::Mcp);
+        assert_eq!(entry.mcp_server_names, vec!["supabase"]);
     }
 
     #[test]

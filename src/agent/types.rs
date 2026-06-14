@@ -855,6 +855,15 @@ pub struct McpSetServersResult {
     pub errors: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSnapshotSource {
+    ReloadPlugins,
+    McpStatus,
+    McpSetServers,
+    Init,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

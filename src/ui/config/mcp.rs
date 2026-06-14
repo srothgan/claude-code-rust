@@ -7,7 +7,9 @@ use super::theme;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
 use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
-use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use crate::app::config::{
+    available_mcp_actions, is_mcp_action_available, mcp_server_owner_summary,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -66,7 +68,8 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let server = app.mcp.servers.iter().find(|server| server.name == overlay.server_name);
-    let action_lines = server.map_or_else(Vec::new, |server| mcp_action_lines(server, overlay));
+    let action_lines =
+        server.map_or_else(Vec::new, |server| mcp_action_lines(app, server, overlay));
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -88,7 +91,8 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     if action_lines.is_empty() {
-        let body = server.map_or_else(server_missing_lines, server_detail_lines);
+        let body =
+            server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
         frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), rendered.body_area);
         return;
     }
@@ -103,7 +107,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
         .split(rendered.body_area);
 
-    let body = server.map_or_else(server_missing_lines, server_detail_lines);
+    let body = server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), sections[0]);
     render_overlay_separator(frame, sections[1]);
     let action_scroll =
@@ -350,7 +354,7 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
     ]
 }
 
-fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
+fn server_detail_lines(app: &App, server: &McpServerStatus) -> Vec<Line<'static>> {
     let mut lines = vec![
         section_heading("Status"),
         detail_kv("Status", status_label(server.status), status_color(server.status)),
@@ -363,6 +367,10 @@ fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
         detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
     ];
+
+    if let Some(owner) = mcp_server_owner_summary(app, server) {
+        lines.push(detail_kv("Owner", &owner, Color::White));
+    }
 
     if let Some(info) = server.server_info.as_ref() {
         lines.push(detail_kv("Server name", &info.name, Color::White));
@@ -399,10 +407,11 @@ fn server_missing_lines() -> Vec<Line<'static>> {
 }
 
 fn mcp_action_lines(
+    app: &App,
     server: &McpServerStatus,
     overlay: &crate::app::config::McpDetailsOverlayState,
 ) -> Vec<Line<'static>> {
-    let actions = available_mcp_actions(server);
+    let actions = available_mcp_actions(app, server);
     if actions.is_empty() {
         return vec![detail_value("No actions available.", theme::DIM)];
     }
@@ -414,7 +423,7 @@ fn mcp_action_lines(
             format!("{} {}", if selected { ">" } else { " " }, action.label()),
             overlay_line_style(selected, true),
         )];
-        if !is_mcp_action_available(server, action) {
+        if !is_mcp_action_available(app, server, action) {
             spans.push(Span::styled("  ", Style::default()));
             spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
         }

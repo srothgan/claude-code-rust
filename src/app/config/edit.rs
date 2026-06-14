@@ -271,7 +271,7 @@ fn confirm_confirmation_overlay(app: &mut App) {
                 app.config.clear_overlay();
                 return;
             };
-            let Some(scope) = super::mcp::mcp_config_removal_scope(server) else {
+            let Some(scope) = super::mcp::mcp_config_removal_scope(app, server) else {
                 app.config.set_overlay_error("This MCP server cannot be removed from live config.");
                 return;
             };

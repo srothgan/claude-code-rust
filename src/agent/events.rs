@@ -118,6 +118,7 @@ pub enum ClientEvent {
     McpSnapshotReceived {
         session_id: String,
         servers: Vec<model::McpServerStatus>,
+        source: Option<crate::agent::types::McpSnapshotSource>,
         error: Option<String>,
     },
     /// Usage refresh task started.
