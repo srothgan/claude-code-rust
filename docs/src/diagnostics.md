@@ -33,15 +33,23 @@ Use an explicit tracing filter for targeted debugging:
 claude-rs --log-filter "info,app.render=trace,bridge.protocol=debug"
 ```
 
-`--log-filter` overrides `--diagnostics-preset`. If `--log-file` is omitted but logging is enabled through `--enable-logs`, `--diagnostics-preset`, `--log-filter`, `--log-append`, or `RUST_LOG`, the app writes to the default diagnostics path.
+`--log-filter` overrides `--diagnostics-preset`. If `--log-file` is omitted but logging is enabled through `--enable-logs`, `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, the app writes to a timestamped default diagnostics file.
 
-The default path is under the platform local data directory:
+The default diagnostics directory is under the platform local data directory:
 
-- Windows: `%LOCALAPPDATA%\claude-code-rust\logs\claude-rs.log`
-- Linux: usually `$XDG_DATA_HOME/claude-code-rust/logs/claude-rs.log` or `~/.local/share/claude-code-rust/logs/claude-rs.log`
-- macOS: the platform data directory reported by the `dirs` crate, under `claude-code-rust/logs/claude-rs.log`
+- Windows: `%LOCALAPPDATA%\claude-code-rust\logs\runtime\`
+- Linux: usually `$XDG_DATA_HOME/claude-code-rust/logs/runtime/` or `~/.local/share/claude-code-rust/logs/runtime/`
+- macOS: the platform data directory reported by the `dirs` crate, under `claude-code-rust/logs/runtime/`
 
-Logs rotate at 10 MB and keep up to five rotated files.
+Default runtime log files include the UTC start timestamp, process id, and a short run id, for example:
+
+```text
+claude-rs-20260614T075924Z-p12345-r8f3a2c1.log
+```
+
+Logs rotate at 10 MB and keep up to five rotated files per run. Default runtime logs are retained up to 256 MB or 30 days, while always preserving at least 10 newest files. Retention only applies to app-managed timestamped files in the default runtime log directory; explicit `--log-file` paths are never cleaned up by the app.
+
+`--log-append` appends to an explicit `--log-file`. When used without `--log-file`, it appends to the legacy shared default file `claude-rs.log` for compatibility; prefer the normal timestamped defaults for new diagnostics.
 
 ## Bridge Diagnostics
 
@@ -84,6 +92,8 @@ claude-rs --perf-log claude-rs-perf.log
 ```
 
 If the binary was not built with `--features perf`, perf flags are rejected at startup.
+
+When `--perf-log` is omitted, default perf telemetry uses timestamped JSON-lines files under the sibling `logs/perf/` directory.
 
 ## Useful Issue Reports
 

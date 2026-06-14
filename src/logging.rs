@@ -5,10 +5,12 @@ use crate::{Cli, DiagnosticsPreset};
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
+use std::fs::{File, OpenOptions, create_dir_all, metadata, read_dir, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
+use time::{OffsetDateTime, macros::format_description};
 use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
@@ -37,9 +39,17 @@ const BRIDGE_LOG_SCHEMA: &str = "claude-rs-log/v1";
 const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "claude-code-rust";
 const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
-const DEFAULT_PERF_FILE_NAME: &str = "claude-rs-perf.log";
+const DEFAULT_RUNTIME_LOG_SUBDIR: &str = "runtime";
+const DEFAULT_PERF_LOG_SUBDIR: &str = "perf";
+const DEFAULT_RUNTIME_LOG_PREFIX: &str = "claude-rs";
+const DEFAULT_PERF_LOG_PREFIX: &str = "claude-rs-perf";
+const RUNTIME_LOG_EXTENSION: &str = "log";
+const PERF_LOG_EXTENSION: &str = "jsonl";
 const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const LOG_ROTATION_MAX_FILES: usize = 5;
+const LOG_RETENTION_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const LOG_RETENTION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const LOG_RETENTION_MIN_FILES: usize = 10;
 static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub struct LoggingRuntime {
@@ -58,7 +68,7 @@ impl LoggingRuntime {
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
         let writer = RollingFileWriter::new(
             &log_path.path,
-            cli.log_append,
+            log_path.open_mode,
             LOG_ROTATION_MAX_BYTES,
             LOG_ROTATION_MAX_FILES,
         )?;
@@ -83,11 +93,42 @@ impl LoggingRuntime {
             log_file = %log_path.path.display(),
             log_path_source = log_path.source.as_str(),
             log_filter = %directives,
-            log_append = cli.log_append,
+            log_open_mode = log_path.open_mode.as_str(),
             log_rotation_max_bytes = LOG_ROTATION_MAX_BYTES,
             log_rotation_max_files = LOG_ROTATION_MAX_FILES,
+            log_retention_max_bytes = LOG_RETENTION_MAX_BYTES,
+            log_retention_max_age_seconds = LOG_RETENTION_MAX_AGE.as_secs(),
+            log_retention_min_files = LOG_RETENTION_MIN_FILES,
             version = env!("CARGO_PKG_VERSION"),
         );
+        if let Some(retention) = &log_path.retention {
+            match enforce_log_retention(retention, Some(&log_path.path)) {
+                Ok(report) => {
+                    if report.removed_files > 0 {
+                        tracing::info!(
+                            target: targets::APP_LIFECYCLE,
+                            event_name = "log_retention_applied",
+                            message = "old diagnostic log files removed",
+                            removed_files = report.removed_files,
+                            removed_bytes = report.removed_bytes,
+                            retention_dir = %retention.directory.display(),
+                            retention_prefix = retention.prefix,
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: targets::APP_LIFECYCLE,
+                        event_name = "log_retention_failed",
+                        message = "failed to apply diagnostic log retention",
+                        outcome = "failure",
+                        error_message = %error,
+                        retention_dir = %retention.directory.display(),
+                        retention_prefix = retention.prefix,
+                    );
+                }
+            }
+        }
         BRIDGE_DIAGNOSTICS_ENABLED.store(true, Ordering::Relaxed);
 
         Ok(Self { _guard: Some(guard) })
@@ -121,6 +162,7 @@ fn build_filter_directives(cli: &Cli) -> String {
 enum LogPathSource {
     Explicit,
     Default,
+    DefaultLegacyAppend,
 }
 
 impl LogPathSource {
@@ -128,6 +170,24 @@ impl LogPathSource {
         match self {
             Self::Explicit => "explicit",
             Self::Default => "default",
+            Self::DefaultLegacyAppend => "default_legacy_append",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogOpenMode {
+    CreateNew,
+    Truncate,
+    Append,
+}
+
+impl LogOpenMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateNew => "create_new",
+            Self::Truncate => "truncate",
+            Self::Append => "append",
         }
     }
 }
@@ -136,17 +196,74 @@ impl LogPathSource {
 struct ResolvedLogPath {
     path: PathBuf,
     source: LogPathSource,
+    open_mode: LogOpenMode,
+    retention: Option<LogRetentionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogRetentionTarget {
+    directory: PathBuf,
+    prefix: &'static str,
+    extension: &'static str,
+    policy: LogRetentionPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogRetentionPolicy {
+    max_total_bytes: u64,
+    max_age: Duration,
+    min_files: usize,
+}
+
+impl Default for LogRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_total_bytes: LOG_RETENTION_MAX_BYTES,
+            max_age: LOG_RETENTION_MAX_AGE,
+            min_files: LOG_RETENTION_MIN_FILES,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct LogRetentionReport {
+    removed_files: usize,
+    removed_bytes: u64,
 }
 
 fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
     if let Some(path) = cli.log_file.clone() {
-        return Ok(Some(ResolvedLogPath { path, source: LogPathSource::Explicit }));
+        return Ok(Some(ResolvedLogPath {
+            path,
+            source: LogPathSource::Explicit,
+            open_mode: if cli.log_append { LogOpenMode::Append } else { LogOpenMode::Truncate },
+            retention: None,
+        }));
     }
     if !logging_enabled_without_explicit_path(cli) {
         return Ok(None);
     }
-    let path = default_log_path()?;
-    Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
+    if cli.log_append {
+        return Ok(Some(ResolvedLogPath {
+            path: default_legacy_log_path()?,
+            source: LogPathSource::DefaultLegacyAppend,
+            open_mode: LogOpenMode::Append,
+            retention: None,
+        }));
+    }
+    let directory = default_runtime_log_dir()?;
+    let path = generated_log_path(&directory, DEFAULT_RUNTIME_LOG_PREFIX, RUNTIME_LOG_EXTENSION);
+    Ok(Some(ResolvedLogPath {
+        path,
+        source: LogPathSource::Default,
+        open_mode: LogOpenMode::CreateNew,
+        retention: Some(LogRetentionTarget {
+            directory,
+            prefix: DEFAULT_RUNTIME_LOG_PREFIX,
+            extension: RUNTIME_LOG_EXTENSION,
+            policy: LogRetentionPolicy::default(),
+        }),
+    }))
 }
 
 fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
@@ -157,7 +274,7 @@ fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
         || std::env::var_os("RUST_LOG").is_some()
 }
 
-fn default_log_path() -> anyhow::Result<PathBuf> {
+fn default_legacy_log_path() -> anyhow::Result<PathBuf> {
     let base_dir = default_diagnostics_dir()?;
     Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
 }
@@ -169,7 +286,46 @@ pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
     if !perf_enabled_without_explicit_path(cli) {
         return Ok(None);
     }
-    Ok(Some(default_diagnostics_dir()?.join(DEFAULT_PERF_FILE_NAME)))
+    Ok(Some(generated_log_path(
+        &default_perf_log_dir()?,
+        DEFAULT_PERF_LOG_PREFIX,
+        PERF_LOG_EXTENSION,
+    )))
+}
+
+fn default_runtime_log_dir() -> anyhow::Result<PathBuf> {
+    Ok(default_diagnostics_dir()?.join(DEFAULT_RUNTIME_LOG_SUBDIR))
+}
+
+fn default_perf_log_dir() -> anyhow::Result<PathBuf> {
+    Ok(default_diagnostics_dir()?.join(DEFAULT_PERF_LOG_SUBDIR))
+}
+
+fn generated_log_path(directory: &Path, prefix: &str, extension: &str) -> PathBuf {
+    directory.join(generated_log_file_name(
+        prefix,
+        extension,
+        OffsetDateTime::now_utc(),
+        std::process::id(),
+        &short_run_id(),
+    ))
+}
+
+fn generated_log_file_name(
+    prefix: &str,
+    extension: &str,
+    timestamp: OffsetDateTime,
+    process_id: u32,
+    run_id: &str,
+) -> String {
+    let timestamp = timestamp
+        .format(format_description!("[year][month][day]T[hour][minute][second]Z"))
+        .unwrap_or_else(|_| "19700101T000000Z".to_owned());
+    format!("{prefix}-{timestamp}-p{process_id}-r{run_id}.{extension}")
+}
+
+fn short_run_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect()
 }
 
 fn perf_enabled_without_explicit_path(cli: &Cli) -> bool {
@@ -202,18 +358,30 @@ struct RollingFileWriter {
 }
 
 impl RollingFileWriter {
-    fn new(path: &Path, append: bool, max_bytes: u64, max_files: usize) -> anyhow::Result<Self> {
+    fn new(
+        path: &Path,
+        open_mode: LogOpenMode,
+        max_bytes: u64,
+        max_files: usize,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             create_dir_all(parent)
                 .with_context(|| format!("failed to create log directory {}", parent.display()))?;
         }
-        if append {
+        if open_mode == LogOpenMode::Append {
             let current_size = metadata(path).map_or(0, |m| m.len());
             if current_size >= max_bytes {
                 rotate_file_window(path, max_files)?;
-                return Self::new(path, false, max_bytes, max_files);
+                let file = open_log_file(path, LogOpenMode::Truncate)?;
+                return Ok(Self {
+                    base_path: path.to_path_buf(),
+                    max_bytes,
+                    max_files,
+                    file: BufWriter::new(file),
+                    current_size: 0,
+                });
             }
-            let file = open_log_file(path, true)?;
+            let file = open_log_file(path, LogOpenMode::Append)?;
             return Ok(Self {
                 base_path: path.to_path_buf(),
                 max_bytes,
@@ -223,8 +391,10 @@ impl RollingFileWriter {
             });
         }
 
-        clear_rotated_files(path, max_files)?;
-        let file = open_log_file(path, false)?;
+        if open_mode == LogOpenMode::Truncate {
+            clear_rotated_files(path, max_files)?;
+        }
+        let file = open_log_file(path, open_mode)?;
         Ok(Self {
             base_path: path.to_path_buf(),
             max_bytes,
@@ -241,7 +411,7 @@ impl RollingFileWriter {
         }
         self.file.flush()?;
         rotate_file_window(&self.base_path, self.max_files)?;
-        self.file = BufWriter::new(open_log_file(&self.base_path, false)?);
+        self.file = BufWriter::new(open_log_file(&self.base_path, LogOpenMode::Truncate)?);
         self.current_size = 0;
         Ok(())
     }
@@ -261,13 +431,19 @@ impl Write for RollingFileWriter {
     }
 }
 
-fn open_log_file(path: &Path, append: bool) -> std::io::Result<File> {
+fn open_log_file(path: &Path, open_mode: LogOpenMode) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
-    options.create(true).write(true);
-    if append {
-        options.append(true);
-    } else {
-        options.truncate(true);
+    options.write(true);
+    match open_mode {
+        LogOpenMode::CreateNew => {
+            options.create_new(true);
+        }
+        LogOpenMode::Truncate => {
+            options.create(true).truncate(true);
+        }
+        LogOpenMode::Append => {
+            options.create(true).append(true);
+        }
     }
     options.open(path)
 }
@@ -326,6 +502,120 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
         path.push(suffix);
         PathBuf::from(path)
     }
+}
+
+#[derive(Debug)]
+struct RetentionCandidate {
+    path: PathBuf,
+    modified: SystemTime,
+    size: u64,
+}
+
+fn enforce_log_retention(
+    target: &LogRetentionTarget,
+    protected_path: Option<&Path>,
+) -> std::io::Result<LogRetentionReport> {
+    enforce_log_retention_at(target, protected_path, SystemTime::now())
+}
+
+fn enforce_log_retention_at(
+    target: &LogRetentionTarget,
+    protected_path: Option<&Path>,
+    now: SystemTime,
+) -> std::io::Result<LogRetentionReport> {
+    let Ok(entries) = read_dir(&target.directory) else {
+        return Ok(LogRetentionReport::default());
+    };
+
+    let protected_path = protected_path.map(Path::to_path_buf);
+    let mut candidates = Vec::new();
+    let mut protected_size = 0;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if protected_path.as_ref().is_some_and(|protected| *protected == path) {
+            protected_size = metadata(&path).map_or(0, |meta| meta.len());
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_managed_log_file(name, target.prefix, target.extension) {
+            continue;
+        }
+        let metadata = metadata(&path)?;
+        if !metadata.is_file() {
+            continue;
+        }
+        candidates.push(RetentionCandidate {
+            path,
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            size: metadata.len(),
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        left.modified.cmp(&right.modified).then_with(|| left.path.cmp(&right.path))
+    });
+
+    let mut report = LogRetentionReport::default();
+    let mut total_size =
+        protected_size + candidates.iter().map(|candidate| candidate.size).sum::<u64>();
+    let mut remaining_files = candidates.len() + usize::from(protected_path.is_some());
+
+    let mut retained = Vec::new();
+    for candidate in candidates {
+        let expired =
+            now.duration_since(candidate.modified).is_ok_and(|age| age > target.policy.max_age);
+        if expired && remaining_files > target.policy.min_files {
+            remove_retention_candidate(&candidate, &mut report, &mut total_size)?;
+            remaining_files = remaining_files.saturating_sub(1);
+        } else {
+            retained.push(candidate);
+        }
+    }
+
+    for candidate in retained {
+        if total_size <= target.policy.max_total_bytes || remaining_files <= target.policy.min_files
+        {
+            break;
+        }
+        remove_retention_candidate(&candidate, &mut report, &mut total_size)?;
+        remaining_files = remaining_files.saturating_sub(1);
+    }
+
+    Ok(report)
+}
+
+fn remove_retention_candidate(
+    candidate: &RetentionCandidate,
+    report: &mut LogRetentionReport,
+    total_size: &mut u64,
+) -> std::io::Result<()> {
+    match remove_file(&candidate.path) {
+        Ok(()) => {
+            report.removed_files += 1;
+            report.removed_bytes = report.removed_bytes.saturating_add(candidate.size);
+            *total_size = total_size.saturating_sub(candidate.size);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_managed_log_file(name: &str, prefix: &str, extension: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')) else {
+        return false;
+    };
+    let extension_suffix = format!(".{extension}");
+    if rest.ends_with(&extension_suffix) {
+        return true;
+    }
+    rest.rsplit_once('.').is_some_and(|(base, suffix)| {
+        base.ends_with(&extension_suffix) && suffix.chars().all(|ch| ch.is_ascii_digit())
+    })
 }
 
 pub fn emit_bridge_stderr_line(line: &str) {
@@ -515,14 +805,17 @@ impl BridgeDiagnosticRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        BridgeDiagnosticRecord, RollingFileWriter, clear_rotated_files, preview_text,
-        resolve_log_path, resolve_perf_path, rotated_log_path,
+        BridgeDiagnosticRecord, LogOpenMode, LogPathSource, LogRetentionPolicy, LogRetentionTarget,
+        RollingFileWriter, clear_rotated_files, enforce_log_retention_at, generated_log_file_name,
+        is_managed_log_file, preview_text, resolve_log_path, resolve_perf_path, rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
+    use time::macros::datetime;
 
     #[test]
     fn parses_structured_bridge_diagnostic() {
@@ -561,6 +854,8 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.path, PathBuf::from("custom.log"));
         assert_eq!(resolved.source.as_str(), "explicit");
+        assert_eq!(resolved.open_mode, LogOpenMode::Truncate);
+        assert!(resolved.retention.is_none());
     }
 
     #[test]
@@ -582,8 +877,18 @@ mod tests {
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
+        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
+        assert!(resolved.retention.is_some());
         let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
+        assert!(path.contains("claude-code-rust/logs/runtime/claude-rs-"));
+        assert!(
+            resolved
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
+        );
+        assert!(!path.ends_with("claude-rs.log"));
     }
 
     #[test]
@@ -605,6 +910,7 @@ mod tests {
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
+        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
     }
 
     #[test]
@@ -626,6 +932,32 @@ mod tests {
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
+        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
+    }
+
+    #[test]
+    fn resolve_log_path_keeps_legacy_default_for_append_without_explicit_path() {
+        let cli = Cli {
+            command: None,
+            no_update_check: false,
+            dir: None,
+            bridge_script: None,
+            enable_logs: false,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            log_append: true,
+            enable_perf: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
+        assert_eq!(resolved.source, LogPathSource::DefaultLegacyAppend);
+        assert_eq!(resolved.open_mode, LogOpenMode::Append);
+        assert!(resolved.retention.is_none());
+        let path = resolved.path.to_string_lossy().replace('\\', "/");
+        assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
     }
 
     #[test]
@@ -647,14 +979,35 @@ mod tests {
 
         let resolved = resolve_perf_path(&cli).expect("resolve succeeds").expect("path exists");
         let path = resolved.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("claude-code-rust/logs/claude-rs-perf.log"));
+        assert!(path.contains("claude-code-rust/logs/perf/claude-rs-perf-"));
+        assert!(
+            resolved
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+        );
+    }
+
+    #[test]
+    fn generated_default_log_name_is_timestamped_and_filesystem_safe() {
+        let name = generated_log_file_name(
+            "claude-rs",
+            "log",
+            datetime!(2026-06-14 7:59:24 UTC),
+            12345,
+            "8f3a2c1",
+        );
+
+        assert_eq!(name, "claude-rs-20260614T075924Z-p12345-r8f3a2c1.log");
+        assert!(!name.contains(':'));
     }
 
     #[test]
     fn rolling_writer_rotates_by_size() {
         let dir = tempdir().expect("temp dir");
         let base = dir.path().join("runtime.log");
-        let mut writer = RollingFileWriter::new(&base, false, 10, 2).expect("writer");
+        let mut writer =
+            RollingFileWriter::new(&base, LogOpenMode::Truncate, 10, 2).expect("writer");
 
         writer.write_all(b"12345").expect("first write");
         writer.write_all(b"67890").expect("second write");
@@ -669,6 +1022,28 @@ mod tests {
     }
 
     #[test]
+    fn rolling_writer_append_rotates_full_startup_file_without_clearing_window() {
+        let dir = tempdir().expect("temp dir");
+        let base = dir.path().join("runtime.log");
+        fs::write(&base, "1234567890").expect("write base");
+        fs::write(rotated_log_path(&base, 1), "previous").expect("write rotated");
+
+        let mut writer = RollingFileWriter::new(&base, LogOpenMode::Append, 10, 2).expect("writer");
+        writer.write_all(b"abc").expect("write new base");
+        writer.flush().expect("flush");
+
+        assert_eq!(fs::read_to_string(&base).expect("current log"), "abc");
+        assert_eq!(
+            fs::read_to_string(rotated_log_path(&base, 1)).expect("first rotated"),
+            "1234567890"
+        );
+        assert_eq!(
+            fs::read_to_string(rotated_log_path(&base, 2)).expect("second rotated"),
+            "previous"
+        );
+    }
+
+    #[test]
     fn clear_rotated_files_removes_existing_window() {
         let dir = tempdir().expect("temp dir");
         let base = dir.path().join("runtime.log");
@@ -679,5 +1054,47 @@ mod tests {
 
         assert!(!rotated_log_path(&base, 1).exists());
         assert!(!rotated_log_path(&base, 2).exists());
+    }
+
+    #[test]
+    fn managed_log_file_detection_is_strict() {
+        assert!(is_managed_log_file("claude-rs-20260614T075924Z-p1-rabc.log", "claude-rs", "log"));
+        assert!(is_managed_log_file(
+            "claude-rs-20260614T075924Z-p1-rabc.log.2",
+            "claude-rs",
+            "log"
+        ));
+        assert!(!is_managed_log_file("claude-rs.log", "claude-rs", "log"));
+        assert!(!is_managed_log_file("other-20260614T075924Z-p1-rabc.log", "claude-rs", "log"));
+        assert!(!is_managed_log_file("claude-rs-20260614T075924Z-p1-rabc.txt", "claude-rs", "log"));
+    }
+
+    #[test]
+    fn retention_removes_only_managed_logs_and_preserves_protected_file() {
+        let dir = tempdir().expect("temp dir");
+        let protected = dir.path().join("claude-rs-20260614T080000Z-p1-ractive.log");
+        let removable = dir.path().join("claude-rs-20260614T070000Z-p1-rold.log");
+        let legacy = dir.path().join("claude-rs.log");
+        fs::write(&protected, "active").expect("write protected");
+        fs::write(&removable, "old").expect("write removable");
+        fs::write(&legacy, "legacy").expect("write legacy");
+        let target = LogRetentionTarget {
+            directory: dir.path().to_path_buf(),
+            prefix: "claude-rs",
+            extension: "log",
+            policy: LogRetentionPolicy {
+                max_total_bytes: 1,
+                max_age: Duration::from_secs(60),
+                min_files: 1,
+            },
+        };
+
+        let report = enforce_log_retention_at(&target, Some(&protected), SystemTime::now())
+            .expect("retention succeeds");
+
+        assert_eq!(report.removed_files, 1);
+        assert!(protected.exists());
+        assert!(!removable.exists());
+        assert!(legacy.exists());
     }
 }
