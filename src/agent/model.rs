@@ -605,6 +605,24 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
+    pub agent: Option<AgentOutputMetadata>,
+    pub web_fetch: Option<WebFetchOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentOutputMetadata {
+    pub resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchOutputMetadata {
+    pub artifact_read: Option<WebFetchArtifactReadMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchArtifactReadMetadata {
+    pub slug: String,
+    pub ver: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -616,6 +634,12 @@ pub struct TaskMetadata {
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
+    pub task_type: Option<String>,
+    pub workflow_name: Option<String>,
+    pub prompt: Option<String>,
+    pub output_file: Option<String>,
+    pub summary: Option<String>,
+    pub terminal_status: Option<String>,
 }
 
 impl TaskMetadata {
@@ -665,6 +689,42 @@ impl TaskMetadata {
         self.task_description = task_description;
         self
     }
+
+    #[must_use]
+    pub fn task_type(mut self, task_type: Option<String>) -> Self {
+        self.task_type = task_type;
+        self
+    }
+
+    #[must_use]
+    pub fn workflow_name(mut self, workflow_name: Option<String>) -> Self {
+        self.workflow_name = workflow_name;
+        self
+    }
+
+    #[must_use]
+    pub fn prompt(mut self, prompt: Option<String>) -> Self {
+        self.prompt = prompt;
+        self
+    }
+
+    #[must_use]
+    pub fn output_file(mut self, output_file: Option<String>) -> Self {
+        self.output_file = output_file;
+        self
+    }
+
+    #[must_use]
+    pub fn summary(mut self, summary: Option<String>) -> Self {
+        self.summary = summary;
+        self
+    }
+
+    #[must_use]
+    pub fn terminal_status(mut self, terminal_status: Option<String>) -> Self {
+        self.terminal_status = terminal_status;
+        self
+    }
 }
 
 impl ToolOutputMetadata {
@@ -677,6 +737,51 @@ impl ToolOutputMetadata {
     pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
         self.bash = bash;
         self
+    }
+
+    #[must_use]
+    pub fn agent(mut self, agent: Option<AgentOutputMetadata>) -> Self {
+        self.agent = agent;
+        self
+    }
+
+    #[must_use]
+    pub fn web_fetch(mut self, web_fetch: Option<WebFetchOutputMetadata>) -> Self {
+        self.web_fetch = web_fetch;
+        self
+    }
+}
+
+impl AgentOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn resolved_model(mut self, resolved_model: Option<String>) -> Self {
+        self.resolved_model = resolved_model;
+        self
+    }
+}
+
+impl WebFetchOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn artifact_read(mut self, artifact_read: Option<WebFetchArtifactReadMetadata>) -> Self {
+        self.artifact_read = artifact_read;
+        self
+    }
+}
+
+impl WebFetchArtifactReadMetadata {
+    #[must_use]
+    pub fn new(slug: impl Into<String>, ver: impl Into<String>) -> Self {
+        Self { slug: slug.into(), ver: ver.into() }
     }
 }
 

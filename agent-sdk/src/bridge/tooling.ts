@@ -29,6 +29,9 @@ const ENTER_PLAN_MODE_TOOL_NAME = "EnterPlanMode";
 const REPL_TOOL_NAME = "REPL";
 const MONITOR_TOOL_NAME = "Monitor";
 const WORKFLOW_TOOL_NAME = "Workflow";
+const PROJECTS_TOOL_NAME = "Projects";
+const ARTIFACT_TOOL_NAME = "Artifact";
+const SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME = "ShowOnboardingRolePicker";
 const SEARCH_OUTPUT_MODES = new Set(["content", "files_with_matches", "count"]);
 
 function isCronToolName(name: string): boolean {
@@ -59,6 +62,22 @@ function inputNumber(input: Record<string, unknown>, key: string): number | unde
 
 function inputBoolean(input: Record<string, unknown>, key: string): boolean | undefined {
   return typeof input[key] === "boolean" ? input[key] : undefined;
+}
+
+function isAgentLikeToolName(name: string): boolean {
+  return name === "Agent" || name === "Task";
+}
+
+function agentInputTitle(name: string, input: Record<string, unknown>): string | undefined {
+  if (!isAgentLikeToolName(name)) {
+    return undefined;
+  }
+  const agentName = nonEmptyString(input.name);
+  if (agentName) {
+    return `${name}: ${agentName}`;
+  }
+  const subagentType = nonEmptyString(input.subagent_type);
+  return subagentType ? `${name}: ${subagentType}` : undefined;
 }
 
 function searchModeLabel(value: unknown): string {
@@ -178,6 +197,9 @@ export function normalizeToolKind(name: string): string {
     case "REPL":
     case "Monitor":
     case "Workflow":
+    case "Projects":
+    case "Artifact":
+    case "ShowOnboardingRolePicker":
       return "other";
     case "Task":
     case "Agent":
@@ -195,6 +217,10 @@ export function toolTitle(
   input: Record<string, unknown>,
   context: TaskTitleContext = {},
 ): string {
+  const agentTitle = agentInputTitle(name, input);
+  if (agentTitle) {
+    return agentTitle;
+  }
   if (name === "Bash") {
     const command = typeof input.command === "string" ? input.command : "";
     return command || "Terminal";
@@ -249,6 +275,17 @@ export function toolTitle(
     const workflowName = nonEmptyString(input.name);
     return workflowName ? `${WORKFLOW_TOOL_NAME}: ${workflowName}` : WORKFLOW_TOOL_NAME;
   }
+  if (name === PROJECTS_TOOL_NAME) {
+    return formatProjectsTitle(input);
+  }
+  if (name === ARTIFACT_TOOL_NAME) {
+    const label = nonEmptyString(input.label) ?? nonEmptyString(input.file_path);
+    return label ? `${ARTIFACT_TOOL_NAME}: ${label}` : ARTIFACT_TOOL_NAME;
+  }
+  if (name === SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME) {
+    // TODO: The TUI accepts this SDK tool call but does not implement an onboarding role flow yet.
+    return SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME;
+  }
   if (name === "EnterWorktree") {
     const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
     return worktreeName || "EnterWorktree";
@@ -270,6 +307,14 @@ export function toolTitle(
     }
   }
   return name;
+}
+
+function formatProjectsTitle(input: Record<string, unknown>): string {
+  const method = nonEmptyString(input.method);
+  const action = method?.startsWith("project_") ? method.slice("project_".length) : method;
+  const suffix = nonEmptyString(input.path) ?? nonEmptyString(input.query);
+  const base = action ? `${PROJECTS_TOOL_NAME}: ${action}` : PROJECTS_TOOL_NAME;
+  return suffix ? `${base} ${suffix}` : base;
 }
 
 function editDiffContent(name: string, input: Record<string, unknown>): ToolCall["content"] {
@@ -460,7 +505,8 @@ function extractToolOutputMetadata(
   rawResult: unknown,
   rawContent: unknown,
 ): import("../types.js").ToolOutputMetadata | undefined {
-  const candidates = resultRecordCandidates(rawResult, rawContent);
+  const candidates = collectResultCandidates(rawResult, rawContent);
+  const metadata: import("../types.js").ToolOutputMetadata = {};
 
   if (toolName === "Bash") {
     for (const candidate of candidates) {
@@ -468,15 +514,41 @@ function extractToolOutputMetadata(
       if (hasAssistantAutoBackgrounded) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
         bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
-        return {
-          bash: bashMetadata,
-        };
+        metadata.bash = bashMetadata;
+        break;
       }
     }
-    return undefined;
   }
 
-  return undefined;
+  if (toolName === "Agent" || toolName === "Task") {
+    for (const candidate of candidates) {
+      const resolvedModel = nonEmptyString(candidate.resolvedModel);
+      if (resolvedModel) {
+        const agentMetadata: import("../types.js").AgentOutputMetadata = {
+          resolved_model: resolvedModel,
+        };
+        metadata.agent = agentMetadata;
+        break;
+      }
+    }
+  }
+
+  if (toolName === "WebFetch") {
+    for (const candidate of candidates) {
+      const artifactRead = asRecordOrNull(candidate.artifactRead);
+      const slug = nonEmptyString(artifactRead?.slug);
+      const ver = nonEmptyString(artifactRead?.ver);
+      if (slug && ver) {
+        const webFetchMetadata: import("../types.js").WebFetchOutputMetadata = {
+          artifact_read: { slug, ver },
+        };
+        metadata.web_fetch = webFetchMetadata;
+        break;
+      }
+    }
+  }
+
+  return metadata.bash || metadata.agent || metadata.web_fetch ? metadata : undefined;
 }
 
 export function extractText(value: unknown): string {
@@ -780,11 +852,15 @@ function fileUnchangedResultText(rawResult: unknown, rawContent: unknown): strin
   return "";
 }
 
-function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown): string {
+function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown, base?: ToolCall): string {
+  const inputAgentName = nonEmptyString(asRecordOrNull(base?.raw_input)?.name);
+  if (inputAgentName) {
+    return "";
+  }
   for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
     const agentType = typeof candidate.agentType === "string" ? candidate.agentType.trim() : "";
     if (agentType) {
-      return agentType;
+      return `Agent: ${agentType}`;
     }
   }
   return "";
@@ -1738,9 +1814,13 @@ function workflowResultFields(
     const taskId = nonEmptyString(candidate.taskId);
     const status = workflowStatusLabel(candidate.status);
     const error = nonEmptyString(candidate.error);
+    const taskType = nonEmptyString(candidate.taskType);
+    const workflowName = nonEmptyString(candidate.workflowName);
     const isStructuredWorkflowOutput =
       status !== undefined ||
       taskId !== undefined ||
+      taskType !== undefined ||
+      workflowName !== undefined ||
       "runId" in candidate ||
       "summary" in candidate ||
       "transcriptDir" in candidate ||
@@ -1758,6 +1838,12 @@ function workflowResultFields(
     }
     if (taskId) {
       lines.push(`Task ID: ${taskId}`);
+    }
+    if (taskType) {
+      lines.push(`Task type: ${taskType}`);
+    }
+    if (workflowName) {
+      lines.push(`Workflow name: ${workflowName}`);
     }
     const runId = nonEmptyString(candidate.runId);
     if (runId) {
@@ -1841,6 +1927,73 @@ function enterPlanModeStructuredOutputHandled(
   return false;
 }
 
+function readMcpResourceErrorText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  if (toolName !== "ReadMcpResource") {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const error = nonEmptyString(candidate.error);
+    if (error) {
+      return `Error: ${error}`;
+    }
+  }
+
+  return undefined;
+}
+
+function webFetchResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  if (toolName !== "WebFetch") {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const isStructuredWebFetchOutput =
+      "result" in candidate ||
+      "url" in candidate ||
+      "code" in candidate ||
+      "codeText" in candidate ||
+      "bytes" in candidate ||
+      "durationMs" in candidate ||
+      "artifactRead" in candidate;
+    if (!isStructuredWebFetchOutput) {
+      continue;
+    }
+
+    const result = nonEmptyString(candidate.result);
+    if (result) {
+      return result;
+    }
+
+    const lines: string[] = [];
+    const url = nonEmptyString(candidate.url);
+    if (url) {
+      lines.push(`URL: ${url}`);
+    }
+    if (typeof candidate.code === "number" && Number.isFinite(candidate.code)) {
+      const codeText = nonEmptyString(candidate.codeText);
+      lines.push(`Status: ${candidate.code}${codeText ? ` ${codeText}` : ""}`);
+    }
+    if (typeof candidate.bytes === "number" && Number.isFinite(candidate.bytes)) {
+      lines.push(`Bytes: ${Math.max(0, Math.trunc(candidate.bytes))}`);
+    }
+    if (typeof candidate.durationMs === "number" && Number.isFinite(candidate.durationMs)) {
+      lines.push(`Duration: ${Math.max(0, Math.trunc(candidate.durationMs))}ms`);
+    }
+    return lines.length > 0 ? lines.join("\n") : undefined;
+  }
+
+  return undefined;
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -1852,20 +2005,39 @@ export function buildToolResultFields(
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
   };
+  const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
+  if (outputMetadata) {
+    fields.output_metadata = outputMetadata;
+  }
   const fileUnchangedText = !isError && toolName === "Read" ? fileUnchangedResultText(rawResult, rawContent) : "";
   if (fileUnchangedText) {
     fields.raw_output = fileUnchangedText;
     fields.content = [{ type: "content", content: { type: "text", text: fileUnchangedText } }];
     return fields;
   }
-  const agentTitle = !isError && toolName === "Agent" ? agentTitleFromAgentOutput(rawResult, rawContent) : "";
+  const agentTitle = !isError && toolName === "Agent"
+    ? agentTitleFromAgentOutput(rawResult, rawContent, base)
+    : "";
   if (agentTitle) {
     fields.title = agentTitle;
+  }
+  const readMcpResourceError = readMcpResourceErrorText(toolName, rawResult, rawContent);
+  if (readMcpResourceError) {
+    fields.status = "failed";
+    fields.raw_output = readMcpResourceError;
+    fields.content = [{ type: "content", content: { type: "text", text: readMcpResourceError } }];
+    return fields;
   }
   const searchOutput = !isError ? searchResultText(toolName, rawResult, rawContent) : undefined;
   if (searchOutput !== undefined) {
     fields.raw_output = searchOutput;
     fields.content = [{ type: "content", content: { type: "text", text: searchOutput } }];
+    return fields;
+  }
+  const webFetchOutput = !isError ? webFetchResultText(toolName, rawResult, rawContent) : undefined;
+  if (webFetchOutput !== undefined) {
+    fields.raw_output = webFetchOutput;
+    fields.content = [{ type: "content", content: { type: "text", text: webFetchOutput } }];
     return fields;
   }
   const worktreeOutput = !isError
@@ -1965,11 +2137,6 @@ export function buildToolResultFields(
   if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
     fields.raw_output = rawOutput;
   }
-  const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
-  if (outputMetadata) {
-    fields.output_metadata = outputMetadata;
-  }
-
   if (!isError && isTaskToolName(toolName)) {
     if (toolName === "TaskUpdate" && taskUpdateSucceeded(rawResult, rawContent) === false) {
       fields.status = "failed";

@@ -31,6 +31,7 @@ import {
   emitToolSummaryUpdate,
   ensureToolCallVisible,
   resolveTaskToolUseId,
+  defersTaskNotificationCompletion,
   toolAcceptsTaskLifecycle,
   taskProgressText,
   taskUpdatedFields,
@@ -382,7 +383,8 @@ export function handleTaskSystemMessage(
   const status = typeof msg.status === "string" ? msg.status : "";
   const summary = typeof msg.summary === "string" ? msg.summary : "";
   const finalStatus = status === "completed" ? "completed" : status === "stopped" ? "killed" : "failed";
-  const fields: ToolCallUpdateFields = { status: finalStatus };
+  const deferCompletion = finalStatus === "completed" && defersTaskNotificationCompletion(toolCall);
+  const fields: ToolCallUpdateFields = deferCompletion ? {} : { status: finalStatus };
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
@@ -390,8 +392,10 @@ export function handleTaskSystemMessage(
     fields.raw_output = summary;
     fields.content = [{ type: "content", content: { type: "text", text: summary } }];
   }
-  emitToolCallUpdate(session, toolUseId, fields, "task_notification");
-  if (taskId) {
+  if (Object.keys(fields).length > 0) {
+    emitToolCallUpdate(session, toolUseId, fields, "task_notification");
+  }
+  if (taskId && !deferCompletion) {
     unlinkTaskToolUse(session, taskId);
   }
   return true;

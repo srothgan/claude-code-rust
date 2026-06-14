@@ -58,6 +58,9 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "REPL" => ("\u{03bb}", "REPL"),
         "Monitor" => ("\u{25c9}", "Monitor"),
         "Workflow" => ("\u{25c7}", "Workflow"),
+        "Projects" => ("\u{25a6}", "Projects"),
+        "Artifact" => ("\u{25c8}", "Artifact"),
+        "ShowOnboardingRolePicker" => ("\u{2299}", "Role"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
@@ -120,6 +123,13 @@ mod tests {
     fn monitor_and_workflow_tools_use_background_task_labels_and_icons() {
         assert_eq!(tool_name_label("Monitor"), ("\u{25c9}", "Monitor"));
         assert_eq!(tool_name_label("Workflow"), ("\u{25c7}", "Workflow"));
+    }
+
+    #[test]
+    fn project_artifact_and_role_tools_use_specific_labels_and_icons() {
+        assert_eq!(tool_name_label("Projects"), ("\u{25a6}", "Projects"));
+        assert_eq!(tool_name_label("Artifact"), ("\u{25c8}", "Artifact"));
+        assert_eq!(tool_name_label("ShowOnboardingRolePicker"), ("\u{2299}", "Role"));
     }
 
     #[test]

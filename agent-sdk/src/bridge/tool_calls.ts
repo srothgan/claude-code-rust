@@ -4,7 +4,7 @@ import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { applyTaskToolResult } from "./tasks.js";
-import { activeTaskIdForToolUse, linkTaskToolUse } from "./task_links.js";
+import { activeTaskIdForToolUse, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import {
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
@@ -74,6 +74,11 @@ export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
   return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
+}
+
+export function defersTaskNotificationCompletion(base: ToolCall | undefined): boolean {
+  const baseToolName = toolName(base);
+  return baseToolName === "Agent" || baseToolName === "Task";
 }
 
 function classifyFailureKind(rawOutput: string | undefined): "refused" | "timeout" | "failed" {
@@ -433,6 +438,12 @@ export function emitToolResultUpdate(
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
   applyTaskToolResult(session, toolUseId, isError, rawContent, rawResult);
+  if (baseToolName === "Agent" || baseToolName === "Task") {
+    const taskId = activeTaskIdForToolUse(session, toolUseId);
+    if (taskId) {
+      unlinkTaskToolUse(session, taskId);
+    }
+  }
 }
 
 export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {

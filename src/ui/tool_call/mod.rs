@@ -9,12 +9,14 @@
 //! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
+mod artifact;
 mod cron;
 mod errors;
 mod execute;
 mod fields;
 mod interactions;
 mod monitor;
+mod projects;
 mod push_notification;
 mod remote_trigger;
 mod repl;
@@ -176,6 +178,21 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
+    if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
+        if let Some(agent_type) = agent_requested_type_badge(tc) {
+            badges.push(Span::styled(
+                format!("  [type: {agent_type}]"),
+                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if let Some(model) = agent_display_model_badge(tc) {
+            badges.push(Span::styled(
+                format!("  [model: {model}]"),
+                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     if tc.task_is_backgrounded() {
         badges.push(Span::styled(
             "  [backgrounded]",
@@ -184,6 +201,37 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     }
 
     badges
+}
+
+fn tool_raw_input_string<'a>(tc: &'a ToolCallInfo, key: &str) -> Option<&'a str> {
+    tc.raw_input
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|input| input.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn agent_requested_type_badge(tc: &ToolCallInfo) -> Option<String> {
+    let name = tool_raw_input_string(tc, "name")?;
+    let subagent_type = tool_raw_input_string(tc, "subagent_type")?;
+    let expected_title = format!("{}: {name}", tc.sdk_tool_name);
+    if name == subagent_type || tc.title.trim() != expected_title {
+        return None;
+    }
+    Some(subagent_type.to_owned())
+}
+
+fn agent_display_model_badge(tc: &ToolCallInfo) -> Option<String> {
+    tc.output_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.agent.as_ref())
+        .and_then(|agent| agent.resolved_model.as_deref())
+        .map(str::trim)
+        .filter(|resolved_model| !resolved_model.is_empty())
+        .or_else(|| tool_raw_input_string(tc, "model"))
+        .map(str::to_owned)
 }
 
 fn tool_display_title<'a>(
@@ -352,6 +400,59 @@ mod tests {
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("[backgrounded]"));
+    }
+
+    #[test]
+    fn render_tool_call_title_shows_resolved_model_badge_for_subagents() {
+        let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
+        tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(
+            model::AgentOutputMetadata::new().resolved_model(Some("claude-sonnet-4-7".to_owned())),
+        )));
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+        let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(rendered.contains("reviewer"));
+        assert!(rendered.contains("[model: claude-sonnet-4-7]"));
+    }
+
+    #[test]
+    fn render_tool_call_title_shows_running_agent_type_and_requested_model_from_input() {
+        let mut tc =
+            test_tool_call("Agent: review-worker", "Agent", model::ToolCallStatus::InProgress);
+        tc.raw_input = Some(serde_json::json!({
+            "name": "review-worker",
+            "subagent_type": "general-purpose",
+            "model": "opus",
+        }));
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, 0);
+        let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(rendered.contains("Agent: review-worker"));
+        assert!(rendered.contains("[type: general-purpose]"));
+        assert!(rendered.contains("[model: opus]"));
+    }
+
+    #[test]
+    fn render_tool_call_title_prefers_resolved_model_over_requested_model() {
+        let mut tc =
+            test_tool_call("Agent: review-worker", "Agent", model::ToolCallStatus::Completed);
+        tc.raw_input = Some(serde_json::json!({
+            "name": "review-worker",
+            "subagent_type": "general-purpose",
+            "model": "opus",
+        }));
+        tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(
+            model::AgentOutputMetadata::new().resolved_model(Some("claude-opus-4-8".to_owned())),
+        )));
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, 0);
+        let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(rendered.contains("[type: general-purpose]"));
+        assert!(rendered.contains("[model: claude-opus-4-8]"));
+        assert!(!rendered.contains("[model: opus]"));
     }
 
     #[test]

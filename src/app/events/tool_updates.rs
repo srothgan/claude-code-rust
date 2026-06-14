@@ -247,6 +247,33 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.is_backgrounded.is_some() {
         merged.is_backgrounded = task_metadata.is_backgrounded;
     }
+    if task_metadata.request_id.is_some() {
+        merged.request_id.clone_from(&task_metadata.request_id);
+    }
+    if task_metadata.subagent_type.is_some() {
+        merged.subagent_type.clone_from(&task_metadata.subagent_type);
+    }
+    if task_metadata.task_description.is_some() {
+        merged.task_description.clone_from(&task_metadata.task_description);
+    }
+    if task_metadata.task_type.is_some() {
+        merged.task_type.clone_from(&task_metadata.task_type);
+    }
+    if task_metadata.workflow_name.is_some() {
+        merged.workflow_name.clone_from(&task_metadata.workflow_name);
+    }
+    if task_metadata.prompt.is_some() {
+        merged.prompt.clone_from(&task_metadata.prompt);
+    }
+    if task_metadata.output_file.is_some() {
+        merged.output_file.clone_from(&task_metadata.output_file);
+    }
+    if task_metadata.summary.is_some() {
+        merged.summary.clone_from(&task_metadata.summary);
+    }
+    if task_metadata.terminal_status.is_some() {
+        merged.terminal_status.clone_from(&task_metadata.terminal_status);
+    }
     if tc.task_metadata.as_ref() == Some(&merged) {
         return false;
     }
@@ -868,8 +895,17 @@ mod tests {
 
         let backgrounded_update = model::ToolCallUpdate::new(
             tool_id,
-            model::ToolCallUpdateFields::new()
-                .task_metadata(model::TaskMetadata::new().backgrounded(Some(true))),
+            model::ToolCallUpdateFields::new().task_metadata(
+                model::TaskMetadata::new()
+                    .backgrounded(Some(true))
+                    .request_id(Some("request-1".to_owned()))
+                    .subagent_type(Some("reviewer".to_owned()))
+                    .task_description(Some("Review branch".to_owned()))
+                    .task_type(Some("remote_agent".to_owned()))
+                    .workflow_name(Some("review-flow".to_owned()))
+                    .prompt(Some("Review the branch".to_owned()))
+                    .output_file(Some("C:/tmp/review.md".to_owned())),
+            ),
         );
         handle_tool_call_update_session(&mut app, &backgrounded_update);
 
@@ -884,6 +920,16 @@ mod tests {
         );
         handle_tool_call_update_session(&mut app, &timing_update);
 
+        let terminal_update = model::ToolCallUpdate::new(
+            tool_id,
+            model::ToolCallUpdateFields::new().task_metadata(
+                model::TaskMetadata::new()
+                    .summary(Some("Stopped after validation".to_owned()))
+                    .terminal_status(Some("killed".to_owned())),
+            ),
+        );
+        handle_tool_call_update_session(&mut app, &terminal_update);
+
         let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
@@ -894,7 +940,16 @@ mod tests {
                     .error(Some("Task stopped by parent agent".to_owned()))
                     .end_time(Some(1234))
                     .total_paused_ms(Some(250))
-                    .backgrounded(Some(true)),
+                    .backgrounded(Some(true))
+                    .request_id(Some("request-1".to_owned()))
+                    .subagent_type(Some("reviewer".to_owned()))
+                    .task_description(Some("Review branch".to_owned()))
+                    .task_type(Some("remote_agent".to_owned()))
+                    .workflow_name(Some("review-flow".to_owned()))
+                    .prompt(Some("Review the branch".to_owned()))
+                    .output_file(Some("C:/tmp/review.md".to_owned()))
+                    .summary(Some("Stopped after validation".to_owned()))
+                    .terminal_status(Some("killed".to_owned())),
             )
         );
     }

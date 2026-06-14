@@ -138,8 +138,23 @@ export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
 }
 
+export interface AgentOutputMetadata {
+  resolved_model?: string;
+}
+
+export interface WebFetchArtifactReadMetadata {
+  slug: string;
+  ver: string;
+}
+
+export interface WebFetchOutputMetadata {
+  artifact_read?: WebFetchArtifactReadMetadata;
+}
+
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
+  agent?: AgentOutputMetadata;
+  web_fetch?: WebFetchOutputMetadata;
 }
 
 export interface TaskMetadata {

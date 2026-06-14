@@ -1247,7 +1247,7 @@ test("handleTaskSystemMessage falls back to description and last tool when progr
   });
 });
 
-test("handleTaskSystemMessage final summary replaces prior task content and finalizes status", () => {
+test("handleTaskSystemMessage keeps Agent completed notification provisional until tool result", () => {
   const session = makeSessionState();
 
   const events = captureBridgeEvents(() => {
@@ -1276,7 +1276,6 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
     tool_call_update: {
       tool_call_id: "tool-1",
       fields: {
-        status: "completed",
         raw_output: "Found the auth bug and prepared the fix",
         content: [
           {
@@ -1291,7 +1290,59 @@ test("handleTaskSystemMessage final summary replaces prior task content and fina
       },
     },
   });
+  assert.equal(session.toolCalls.get("tool-1")?.status, "in_progress");
+  assert.equal(session.taskToolUseIds.get("task-1"), "tool-1");
+  assert.equal(session.taskIdsByToolUseId.get("tool-1"), "task-1");
+});
+
+test("emitToolResultUpdate finalizes deferred Agent completion and unlinks lifecycle task", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Initial task description",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-1",
+      status: "completed",
+      summary: "Found the auth bug and prepared the fix",
+    });
+    emitToolResultUpdate(session, "tool-1", false, {
+      agentId: "agent-1",
+      agentType: "general-purpose",
+      resolvedModel: "claude-opus-4-8",
+      content: [{ type: "text", text: "Done" }],
+      status: "completed",
+      prompt: "Review the branch",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  const update = lastEvent.update as Record<string, unknown>;
+  assert.equal(update.type, "tool_call_update");
+  const toolCallUpdate = update.tool_call_update as Record<string, unknown>;
+  const fields = toolCallUpdate.fields as Record<string, unknown>;
+  assert.equal(toolCallUpdate.tool_call_id, "tool-1");
+  assert.equal(fields.status, "completed");
+  assert.deepEqual(fields.output_metadata, {
+    agent: {
+      resolved_model: "claude-opus-4-8",
+    },
+  });
+
+  const toolCall = session.toolCalls.get("tool-1");
+  assert.equal(toolCall?.status, "completed");
+  assert.deepEqual(toolCall?.output_metadata, {
+    agent: {
+      resolved_model: "claude-opus-4-8",
+    },
+  });
   assert.equal(session.taskToolUseIds.has("task-1"), false);
+  assert.equal(session.taskIdsByToolUseId.has("tool-1"), false);
 });
 
 test("handleTaskSystemMessage ignores lifecycle content for concrete output tools", () => {
@@ -1724,6 +1775,94 @@ test("handleSdkMessage refreshes Grep title when final assistant snapshot carrie
       },
     },
   ]);
+});
+
+test("handleSdkMessage refreshes Agent title when final assistant snapshot carries input", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-stream",
+      session_id: "session-1",
+      event: {
+        type: "content_block_start",
+        content_block: {
+          type: "tool_use",
+          id: "tool-agent",
+          name: "Agent",
+          input: {},
+        },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-final",
+      session_id: "session-1",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-agent",
+            name: "Agent",
+            input: {
+              description: "review changes",
+              prompt: "Review the branch",
+              name: "review-worker",
+              subagent_type: "general-purpose",
+              model: "opus",
+            },
+          },
+        ],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "tool_call",
+      tool_call: {
+        tool_call_id: "tool-agent",
+        title: "Agent",
+        kind: "think",
+        status: "in_progress",
+        source_message_uuid: "assistant-stream",
+        content: [],
+        raw_input: {},
+        locations: [],
+        meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+      },
+    },
+    {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-agent",
+        source_message_uuid: "assistant-final",
+        fields: {
+          title: "Agent: review-worker",
+          kind: "think",
+          status: "in_progress",
+          raw_input: {
+            description: "review changes",
+            prompt: "Review the branch",
+            name: "review-worker",
+            subagent_type: "general-purpose",
+            model: "opus",
+          },
+          locations: [],
+          meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+        },
+      },
+    },
+  ]);
+  assert.deepEqual(session.toolCalls.get("tool-agent")?.raw_input, {
+    description: "review changes",
+    prompt: "Review the branch",
+    name: "review-worker",
+    subagent_type: "general-purpose",
+    model: "opus",
+  });
 });
 
 test("handleTaskSystemMessage applies task_updated description patches to the linked task", () => {
@@ -3092,6 +3231,9 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("REPL"), "other");
   assert.equal(normalizeToolKind("Monitor"), "other");
   assert.equal(normalizeToolKind("Workflow"), "other");
+  assert.equal(normalizeToolKind("Projects"), "other");
+  assert.equal(normalizeToolKind("Artifact"), "other");
+  assert.equal(normalizeToolKind("ShowOnboardingRolePicker"), "other");
   assert.equal(normalizeToolKind("TaskOutput"), "other");
   assert.equal(normalizeToolKind("TaskStop"), "other");
   assert.equal(normalizeToolKind("Task"), "think");
@@ -4025,6 +4167,30 @@ test("createToolCall includes search and webfetch context in title", () => {
   assert.equal(fetch.title, "WebFetch https://example.com");
 });
 
+test("createToolCall builds Agent title from name and type without description fallback", () => {
+  const named = createToolCall("tc-agent-name", "Agent", {
+    description: "review changes",
+    prompt: "Review the branch",
+    name: " review-worker ",
+    subagent_type: " general-purpose ",
+    model: " opus ",
+  });
+  const typed = createToolCall("tc-agent-type", "Agent", {
+    description: "inspect state",
+    prompt: "Inspect the runtime",
+    subagent_type: " general-purpose ",
+    model: " sonnet ",
+  });
+  const describedOnly = createToolCall("tc-agent-description", "Agent", {
+    description: "should not become title",
+    prompt: "Review",
+  });
+
+  assert.equal(named.title, "Agent: review-worker");
+  assert.equal(typed.title, "Agent: general-purpose");
+  assert.equal(describedOnly.title, "Agent");
+});
+
 test("createToolCall builds worktree titles from input rules", () => {
   const namedEnter = createToolCall("tc-enter-name", "EnterWorktree", { name: "feature-auth" });
   assert.equal(namedEnter.kind, "other");
@@ -4141,6 +4307,40 @@ test("createToolCall maps Workflow to other kind and name title", () => {
   assert.equal(namedWorkflow.title, "Workflow: spec");
   assert.equal(fallbackWorkflow.kind, "other");
   assert.equal(fallbackWorkflow.title, "Workflow");
+});
+
+test("createToolCall maps project and artifact tools to compact titles", () => {
+  const projectInfo = createToolCall("tc-project-info", "Projects", {
+    method: "project_info",
+  });
+  const projectRead = createToolCall("tc-project-read", "Projects", {
+    method: "project_read",
+    path: "claude/notes.md",
+  });
+  const projectSearch = createToolCall("tc-project-search", "Projects", {
+    method: "project_search",
+    query: "migration",
+  });
+  const artifactWithLabel = createToolCall("tc-artifact-label", "Artifact", {
+    file_path: "C:/work/report.html",
+    favicon: "R",
+    label: "report-v2",
+  });
+  const artifactFallback = createToolCall("tc-artifact-path", "Artifact", {
+    file_path: "C:/work/report.html",
+    favicon: "R",
+  });
+  const rolePicker = createToolCall("tc-role-picker", "ShowOnboardingRolePicker", {});
+
+  assert.equal(projectInfo.kind, "other");
+  assert.equal(projectInfo.title, "Projects: info");
+  assert.equal(projectRead.title, "Projects: read claude/notes.md");
+  assert.equal(projectSearch.title, "Projects: search migration");
+  assert.equal(artifactWithLabel.kind, "other");
+  assert.equal(artifactWithLabel.title, "Artifact: report-v2");
+  assert.equal(artifactFallback.title, "Artifact: C:/work/report.html");
+  assert.equal(rolePicker.kind, "other");
+  assert.equal(rolePicker.title, "ShowOnboardingRolePicker");
 });
 
 test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
@@ -4503,6 +4703,130 @@ test("buildToolResultFields restores ReadMcpResource blob paths from transcript 
       blob_saved_to: "C:\\tmp\\manual.pdf",
     },
   ]);
+});
+
+test("buildToolResultFields marks ReadMcpResource error output as failed", () => {
+  const base = createToolCall("tc-mcp-error", "ReadMcpResource", {
+    server: "docs",
+    uri: "file://missing.md",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      contents: [],
+      error: "resource not found",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Error: resource not found");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Error: resource not found" },
+    },
+  ]);
+});
+
+test("buildToolResultFields preserves WebFetch artifactRead only as metadata", () => {
+  const base = createToolCall("tc-web-fetch-artifact", "WebFetch", {
+    url: "https://artifact.local/dashboard",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      bytes: 128,
+      code: 200,
+      codeText: "OK",
+      durationMs: 42,
+      result: "Artifact content summary",
+      url: "https://artifact.local/dashboard",
+      artifactRead: {
+        slug: "dashboard",
+        ver: "v3",
+      },
+    },
+    base,
+  );
+
+  assert.equal(fields.raw_output, "Artifact content summary");
+  assert.equal(fields.raw_output?.includes("artifactRead"), false);
+  assert.deepEqual(fields.output_metadata, {
+    web_fetch: {
+      artifact_read: {
+        slug: "dashboard",
+        ver: "v3",
+      },
+    },
+  });
+});
+
+test("buildToolResultFields preserves Agent resolvedModel metadata", () => {
+  const base = createToolCall("tc-agent-model", "Agent", {
+    description: "review changes",
+    prompt: "Review the branch",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      agentId: "agent-1",
+      agentType: "reviewer",
+      resolvedModel: "claude-sonnet-4-7",
+      content: [{ type: "text", text: "Done" }],
+      totalToolUseCount: 1,
+      totalDurationMs: 100,
+      totalTokens: 25,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 15,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+        server_tool_use: null,
+        service_tier: null,
+        cache_creation: null,
+      },
+      status: "completed",
+      prompt: "Review the branch",
+    },
+    base,
+  );
+
+  assert.equal(fields.title, "Agent: reviewer");
+  assert.deepEqual(fields.output_metadata, {
+    agent: {
+      resolved_model: "claude-sonnet-4-7",
+    },
+  });
+});
+
+test("buildToolResultFields keeps Agent input name while preserving resolvedModel metadata", () => {
+  const base = createToolCall("tc-agent-named-model", "Agent", {
+    description: "review changes",
+    prompt: "Review the branch",
+    name: "review-worker",
+    subagent_type: "general-purpose",
+    model: "opus",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      agentId: "agent-1",
+      agentType: "general-purpose",
+      resolvedModel: "claude-opus-4-8",
+      content: [{ type: "text", text: "Done" }],
+      status: "completed",
+      prompt: "Review the branch",
+    },
+    base,
+  );
+
+  assert.equal(fields.title, undefined);
+  assert.deepEqual(fields.output_metadata, {
+    agent: {
+      resolved_model: "claude-opus-4-8",
+    },
+  });
 });
 
 test("unwrapToolUseResult extracts error/content payload", () => {
@@ -5353,7 +5677,7 @@ test("buildToolResultFields uses Agent output agentType as task title", () => {
     base,
   );
 
-  assert.equal(fields.title, "reviewer");
+  assert.equal(fields.title, "Agent: reviewer");
 });
 
 test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
@@ -5374,7 +5698,7 @@ test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
     },
   );
 
-  assert.equal(fields.title, "planner");
+  assert.equal(fields.title, "Agent: planner");
 });
 
 test("buildToolResultFields leaves worktree title unchanged on completed output", () => {
@@ -5903,6 +6227,8 @@ test("buildToolResultFields renders Workflow launch output as structured text", 
     {
       status: "async_launched",
       taskId: "workflow-1",
+      taskType: "local_workflow",
+      workflowName: "spec",
       runId: "run-1",
       summary: "Workflow started",
       transcriptDir: "C:/tmp/transcripts",
@@ -5915,7 +6241,7 @@ test("buildToolResultFields renders Workflow launch output as structured text", 
   assert.equal(fields.status, "in_progress");
   assert.equal(
     fields.raw_output,
-    "Status: async launched\nTask ID: workflow-1\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",
+    "Status: async launched\nTask ID: workflow-1\nTask type: local_workflow\nWorkflow name: spec\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",
   );
   assert.equal(fields.raw_output?.includes("{"), false);
   assert.equal(fields.raw_output?.includes('"status"'), false);

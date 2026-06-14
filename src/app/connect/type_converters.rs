@@ -743,10 +743,21 @@ pub(super) fn convert_tool_call_update_fields(
 fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
-    model::ToolOutputMetadata::new().bash(output_metadata.bash.map(|bash| {
-        model::BashOutputMetadata::new()
-            .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-    }))
+    model::ToolOutputMetadata::new()
+        .bash(output_metadata.bash.map(|bash| {
+            model::BashOutputMetadata::new()
+                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
+        }))
+        .agent(
+            output_metadata.agent.map(|agent| {
+                model::AgentOutputMetadata::new().resolved_model(agent.resolved_model)
+            }),
+        )
+        .web_fetch(output_metadata.web_fetch.map(|web_fetch| {
+            model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
+                |artifact| model::WebFetchArtifactReadMetadata::new(artifact.slug, artifact.ver),
+            ))
+        }))
 }
 
 fn convert_permission_display(
@@ -769,6 +780,12 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .request_id(task_metadata.request_id)
         .subagent_type(task_metadata.subagent_type)
         .task_description(task_metadata.task_description)
+        .task_type(task_metadata.task_type)
+        .workflow_name(task_metadata.workflow_name)
+        .prompt(task_metadata.prompt)
+        .output_file(task_metadata.output_file)
+        .summary(task_metadata.summary)
+        .terminal_status(task_metadata.terminal_status)
 }
 
 fn convert_tool_call_content(
@@ -1273,15 +1290,34 @@ mod tests {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
+                agent: Some(types::AgentOutputMetadata {
+                    resolved_model: Some("claude-sonnet-4-7".to_owned()),
+                }),
+                web_fetch: Some(types::WebFetchOutputMetadata {
+                    artifact_read: Some(types::WebFetchArtifactReadMetadata {
+                        slug: "dashboard".to_owned(),
+                        ver: "v2".to_owned(),
+                    }),
+                }),
             }),
             ..types::ToolCallUpdateFields::default()
         });
 
         assert_eq!(
             fields.output_metadata,
-            Some(model::ToolOutputMetadata::new().bash(Some(
-                model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
-            )))
+            Some(
+                model::ToolOutputMetadata::new()
+                    .bash(Some(
+                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+                    ))
+                    .agent(Some(
+                        model::AgentOutputMetadata::new()
+                            .resolved_model(Some("claude-sonnet-4-7".to_owned())),
+                    ))
+                    .web_fetch(Some(model::WebFetchOutputMetadata::new().artifact_read(Some(
+                        model::WebFetchArtifactReadMetadata::new("dashboard", "v2"),
+                    ))))
+            )
         );
     }
 
@@ -1335,6 +1371,12 @@ mod tests {
                 request_id: Some("request-1".to_owned()),
                 subagent_type: Some("tester".to_owned()),
                 task_description: Some("Validate changes".to_owned()),
+                task_type: Some("remote_agent".to_owned()),
+                workflow_name: Some("release-check".to_owned()),
+                prompt: Some("Run validation".to_owned()),
+                output_file: Some("C:/tmp/output.md".to_owned()),
+                summary: Some("Validation complete".to_owned()),
+                terminal_status: Some("completed".to_owned()),
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -1349,7 +1391,13 @@ mod tests {
                     .backgrounded(Some(true))
                     .request_id(Some("request-1".to_owned()))
                     .subagent_type(Some("tester".to_owned()))
-                    .task_description(Some("Validate changes".to_owned())),
+                    .task_description(Some("Validate changes".to_owned()))
+                    .task_type(Some("remote_agent".to_owned()))
+                    .workflow_name(Some("release-check".to_owned()))
+                    .prompt(Some("Run validation".to_owned()))
+                    .output_file(Some("C:/tmp/output.md".to_owned()))
+                    .summary(Some("Validation complete".to_owned()))
+                    .terminal_status(Some("completed".to_owned())),
             )
         );
     }
@@ -1374,6 +1422,12 @@ mod tests {
                 request_id: Some("request-2".to_owned()),
                 subagent_type: Some("reviewer".to_owned()),
                 task_description: Some("Review changes".to_owned()),
+                task_type: Some("local_workflow".to_owned()),
+                workflow_name: Some("review-flow".to_owned()),
+                prompt: Some("Review changes".to_owned()),
+                output_file: Some("C:/tmp/review.md".to_owned()),
+                summary: Some("Review stopped".to_owned()),
+                terminal_status: Some("killed".to_owned()),
             }),
             locations: Vec::new(),
             meta: None,
@@ -1391,7 +1445,13 @@ mod tests {
                     .backgrounded(Some(false))
                     .request_id(Some("request-2".to_owned()))
                     .subagent_type(Some("reviewer".to_owned()))
-                    .task_description(Some("Review changes".to_owned())),
+                    .task_description(Some("Review changes".to_owned()))
+                    .task_type(Some("local_workflow".to_owned()))
+                    .workflow_name(Some("review-flow".to_owned()))
+                    .prompt(Some("Review changes".to_owned()))
+                    .output_file(Some("C:/tmp/review.md".to_owned()))
+                    .summary(Some("Review stopped".to_owned()))
+                    .terminal_status(Some("killed".to_owned())),
             )
         );
     }

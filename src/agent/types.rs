@@ -236,6 +236,24 @@ pub struct BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
+    pub agent: Option<AgentOutputMetadata>,
+    pub web_fetch: Option<WebFetchOutputMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentOutputMetadata {
+    pub resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchOutputMetadata {
+    pub artifact_read: Option<WebFetchArtifactReadMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WebFetchArtifactReadMetadata {
+    pub slug: String,
+    pub ver: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -247,6 +265,12 @@ pub struct TaskMetadata {
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
+    pub task_type: Option<String>,
+    pub workflow_name: Option<String>,
+    pub prompt: Option<String>,
+    pub output_file: Option<String>,
+    pub summary: Option<String>,
+    pub terminal_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1034,7 +1058,13 @@ mod tests {
                     "task_metadata": {
                         "request_id": "request-1",
                         "subagent_type": "tester",
-                        "task_description": "Validate the branch"
+                        "task_description": "Validate the branch",
+                        "task_type": "remote_agent",
+                        "workflow_name": "review-flow",
+                        "prompt": "Validate everything",
+                        "output_file": "C:/tmp/output.md",
+                        "summary": "Validation complete",
+                        "terminal_status": "completed"
                     }
                 }
             }
@@ -1048,6 +1078,49 @@ mod tests {
         assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
         assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
         assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
+        assert_eq!(metadata.task_type.as_deref(), Some("remote_agent"));
+        assert_eq!(metadata.workflow_name.as_deref(), Some("review-flow"));
+        assert_eq!(metadata.prompt.as_deref(), Some("Validate everything"));
+        assert_eq!(metadata.output_file.as_deref(), Some("C:/tmp/output.md"));
+        assert_eq!(metadata.summary.as_deref(), Some("Validation complete"));
+        assert_eq!(metadata.terminal_status.as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn tool_output_metadata_deserializes_agent_and_artifact_read_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "tool_call_update",
+            "tool_call_update": {
+                "tool_call_id": "tool-1",
+                "fields": {
+                    "output_metadata": {
+                        "agent": {
+                            "resolved_model": "claude-sonnet-4-7"
+                        },
+                        "web_fetch": {
+                            "artifact_read": {
+                                "slug": "dashboard",
+                                "ver": "v3"
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("deserialize output metadata");
+
+        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
+            panic!("expected tool call update");
+        };
+        let metadata = tool_call_update.fields.output_metadata.expect("output metadata");
+        let resolved_model = metadata.agent.and_then(|agent| agent.resolved_model);
+        assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-7"));
+        let artifact_read = metadata
+            .web_fetch
+            .and_then(|web_fetch| web_fetch.artifact_read)
+            .expect("artifact read metadata");
+        assert_eq!(artifact_read.slug, "dashboard");
+        assert_eq!(artifact_read.ver, "v3");
     }
 
     #[test]
