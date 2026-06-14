@@ -21,6 +21,12 @@ const OPUS_MODEL_ALIAS = "opus";
 const MAX_MODEL_VERSION_PARTS = 2;
 const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
 
+function isUnavailableModelId(id: string): boolean {
+  const normalized = id.trim().toLowerCase();
+  // TODO: Revisit only after a product decision if Anthropic restores Fable 5 access.
+  return normalized === "fable" || normalized.startsWith("claude-fable-5");
+}
+
 function isEffortLevel(value: unknown): value is EffortLevel {
   return (
     value === "low" ||
@@ -225,6 +231,7 @@ export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableMo
       return (
         typeof entry?.value === "string" &&
         entry.value.trim().length > 0 &&
+        !isUnavailableModelId(entry.value) &&
         typeof entry.displayName === "string" &&
         entry.displayName.trim().length > 0
       );

@@ -6377,6 +6377,45 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
   ]);
 });
 
+test("mapAvailableModels filters unavailable Fable models while preserving unknown ids", () => {
+  const mapped = mapAvailableModels([
+    {
+      value: "fable",
+      displayName: "Claude Fable",
+      description: "Unavailable model alias",
+      supportsEffort: true,
+    },
+    {
+      value: "claude-fable-5",
+      displayName: "Claude Fable 5",
+      description: "Unavailable model",
+      supportsEffort: true,
+    },
+    {
+      value: "claude-fable-5-20260612",
+      displayName: "Claude Fable 5 dated",
+      description: "Unavailable dated model",
+      supportsEffort: true,
+    },
+    {
+      value: "claude-unknown-1",
+      displayName: "Claude Unknown",
+      description: "Unrecognized but available model",
+      supportsEffort: false,
+    },
+  ]);
+
+  assert.deepEqual(mapped, [
+    {
+      id: "claude-unknown-1",
+      display_name: "Claude Unknown",
+      description: "Unrecognized but available model",
+      supports_effort: false,
+      supported_effort_levels: [],
+    },
+  ]);
+});
+
 test("resolveCurrentModel keeps 1M context suffix in short and long display names", () => {
   const session = makeSessionState();
   session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
