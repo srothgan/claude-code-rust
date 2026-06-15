@@ -280,6 +280,7 @@ fn suspend_tui_process(
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn suspend_current_process() -> anyhow::Result<()> {
     // SAFETY: `raise` targets the current process with a constant signal and does
     // not dereference pointers or rely on external memory validity.
