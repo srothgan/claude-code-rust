@@ -1803,6 +1803,19 @@ mod tests {
     }
 
     #[test]
+    fn connected_session_preserves_inline_viewport_for_startup_welcome_transition() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
+        app.surface_dirty.chat.repaint = false;
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
     fn connected_keeps_subscription_placeholder_until_status_snapshot_arrives() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "old", "/test", "old"));

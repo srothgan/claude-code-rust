@@ -4,12 +4,19 @@
 use super::super::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ChatResetRenderMode {
+    PreserveInlineViewport,
+    ClearVisibleTranscript,
+}
+
 pub(super) fn reset_for_new_session(
     app: &mut App,
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
     preserve_current_welcome_tip: bool,
+    render_mode: ChatResetRenderMode,
 ) {
     crate::agent::events::kill_all_terminals(&app.terminals);
 
@@ -18,7 +25,7 @@ pub(super) fn reset_for_new_session(
     reset_input_state_for_new_session(app);
     reset_interaction_state_for_new_session(app);
     reset_render_state_for_new_session(app);
-    reset_cache_and_footer_state_for_new_session(app);
+    reset_cache_and_footer_state_for_new_session(app, render_mode);
     app.sync_git_context();
 }
 
@@ -94,12 +101,15 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.subagent = None;
 }
 
-fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
+fn reset_cache_and_footer_state_for_new_session(app: &mut App, render_mode: ChatResetRenderMode) {
     app.clear_terminal_tool_call_tracking();
     app.mcp = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
-    app.request_chat_visible_rebuild();
+    match render_mode {
+        ChatResetRenderMode::PreserveInlineViewport => app.request_chat_repaint(),
+        ChatResetRenderMode::ClearVisibleTranscript => app.request_chat_visible_rebuild(),
+    }
 }
 
 fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
@@ -171,9 +181,9 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
 
 #[cfg(test)]
 mod tests {
-    use super::reset_for_new_session;
+    use super::{ChatResetRenderMode, reset_for_new_session};
     use crate::agent::model;
-    use crate::app::{App, ChatMessage};
+    use crate::app::{App, ChatMessage, ChatRebuildKind};
 
     #[test]
     fn session_reset_clears_chat_render_measurement_state() {
@@ -191,6 +201,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             false,
+            ChatResetRenderMode::ClearVisibleTranscript,
         );
 
         assert_eq!(app.chat_render.terminal_width, 0);
@@ -198,5 +209,45 @@ mod tests {
         assert_eq!(app.chat_render.composer.total_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+    }
+
+    #[test]
+    fn startup_session_reset_preserves_inline_viewport_for_diffed_repaint() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
+        app.surface_dirty.chat.repaint = false;
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            true,
+            ChatResetRenderMode::PreserveInlineViewport,
+        );
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn replacement_session_reset_requests_visible_transcript_clear() {
+        let mut app = App::test_default();
+        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
+        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
+        app.surface_dirty.chat.repaint = false;
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            false,
+            ChatResetRenderMode::ClearVisibleTranscript,
+        );
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
+        assert!(app.surface_dirty.chat.repaint);
     }
 }
