@@ -1333,6 +1333,38 @@ mod tests {
     }
 
     #[test]
+    fn powershell_raw_input_update_does_not_populate_terminal_command() {
+        let mut app = make_test_app();
+        let tc = model::ToolCall::new("tc-pwsh", "Terminal")
+            .kind(model::ToolKind::Execute)
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode": {"toolName": "PowerShell"}}));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+        );
+
+        let fields = model::ToolCallUpdateFields::new()
+            .raw_input(serde_json::json!({ "command": "Get-ChildItem" }));
+        let update = model::ToolCallUpdate::new("tc-pwsh", fields);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        let Some((mi, bi)) = app.lookup_tool_call("tc-pwsh") else {
+            panic!("tool call not indexed");
+        };
+        let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+        else {
+            panic!("tool call block missing");
+        };
+        assert_eq!(tc.sdk_tool_name, "PowerShell");
+        assert_eq!(tc.terminal_command, None);
+        assert_eq!(tc.raw_input, Some(serde_json::json!({ "command": "Get-ChildItem" })));
+    }
+
+    #[test]
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
@@ -1800,6 +1832,19 @@ mod tests {
         };
         assert_eq!(welcome.session_id, "test-session");
         assert_eq!(welcome.tip_seed, 7);
+    }
+
+    #[test]
+    fn connected_session_preserves_inline_viewport_for_startup_welcome_transition() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
+        app.surface_dirty.chat.repaint = false;
+
+        handle_client_event(&mut app, connected_event("claude-updated"));
+
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]

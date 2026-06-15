@@ -19,7 +19,7 @@ pub struct ToolCallInfo {
     pub content: Vec<model::ToolCallContent>,
     /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
-    /// Terminal ID if this is a Bash-like SDK tool call with a running/completed terminal.
+    /// Terminal ID if this is a shell SDK tool call with a running/completed terminal.
     pub terminal_id: Option<String>,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
     pub terminal_command: Option<String>,
@@ -136,7 +136,7 @@ impl ToolCallInfo {
 
 #[must_use]
 pub fn is_execute_tool_name(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("bash")
+    tool_name.eq_ignore_ascii_case("bash") || tool_name.eq_ignore_ascii_case("powershell")
 }
 
 #[must_use]
@@ -173,4 +173,17 @@ pub struct InlineQuestion {
     pub focused: bool,
     pub question_index: usize,
     pub total_questions: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_execute_tool_name;
+
+    #[test]
+    fn execute_tool_names_include_supported_shells() {
+        assert!(is_execute_tool_name("Bash"));
+        assert!(is_execute_tool_name("PowerShell"));
+        assert!(is_execute_tool_name("powershell"));
+        assert!(!is_execute_tool_name("Shell"));
+    }
 }

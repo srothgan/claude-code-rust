@@ -7,7 +7,7 @@ use super::super::state::RecentSessionInfo;
 use super::super::view::{self, FullscreenView};
 use super::super::{App, AppStatus, LoginHint, SystemSeverity, UpdateNoticeState};
 use super::push_system_message_with_severity;
-use super::session_reset::{load_resume_history, reset_for_new_session};
+use super::session_reset::{ChatResetRenderMode, load_resume_history, reset_for_new_session};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ServiceStatusSeverity;
 use crate::agent::model;
@@ -34,7 +34,14 @@ pub(super) fn handle_connected_client_event(
         app.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
-    reset_for_new_session(app, session_id, current_model, mode, true);
+    reset_for_new_session(
+        app,
+        session_id,
+        current_model,
+        mode,
+        true,
+        ChatResetRenderMode::PreserveInlineViewport,
+    );
     app.available_models = available_models;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
@@ -299,7 +306,14 @@ pub(super) fn handle_session_replaced_event(
     app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
-    reset_for_new_session(app, session_id, current_model, mode, false);
+    reset_for_new_session(
+        app,
+        session_id,
+        current_model,
+        mode,
+        false,
+        ChatResetRenderMode::ClearVisibleTranscript,
+    );
     app.request_chat_session_boundary_rebuild();
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {

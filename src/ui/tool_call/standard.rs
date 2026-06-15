@@ -148,8 +148,7 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
         || tc.pending_permission.is_some()
         || tc.pending_question.is_some()
         || (tc.is_execute_tool()
-            && (tc.terminal_command.is_some()
-                || tc.terminal_output.is_some()
+            && (tc.terminal_output.is_some()
                 || matches!(tc.status, model::ToolCallStatus::InProgress)))
 }
 
@@ -446,9 +445,7 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 }
 
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
-    let mut count = if tc.is_execute_tool() && tc.terminal_command.is_some() {
-        1
-    } else if is_read_tool(tc) {
+    let mut count = if is_read_tool(tc) {
         READ_BODY_HEAD_LINES
     } else {
         leading_diff_metadata_line_count(lines)

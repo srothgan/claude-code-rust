@@ -41,7 +41,8 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "Glob" => ("\u{2315}", "Glob"),
         "Grep" => ("\u{2315}", "Grep"),
         "LS" => ("\u{2315}", "LS"),
-        "Bash" => ("\u{27e9}", "Bash"),
+        "Bash" => ("$ \u{27e9}", "Bash"),
+        "PowerShell" => ("PS \u{27e9}", "PowerShell"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
         "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
             ("\u{25a1}", "Task")
@@ -141,5 +142,11 @@ mod tests {
     #[test]
     fn unknown_tools_use_generic_fallback() {
         assert_eq!(tool_name_label("UnknownFutureTool"), ("\u{25cb}", "Tool"));
+    }
+
+    #[test]
+    fn shell_tools_use_distinct_shell_labels_and_icons() {
+        assert_eq!(tool_name_label("Bash"), ("$ \u{27e9}", "Bash"));
+        assert_eq!(tool_name_label("PowerShell"), ("PS \u{27e9}", "PowerShell"));
     }
 }

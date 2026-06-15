@@ -107,7 +107,8 @@ fn build_tool_info_from_tool_call(
     let terminal_command = terminal_id.as_ref().and_then(|terminal_id| {
         app.terminals.borrow().get(terminal_id).map(|terminal| terminal.command.clone())
     });
-    let initial_execute_output = if super::super::is_execute_tool_name(&sdk_tool_name) {
+    let is_execute_tool = super::super::is_execute_tool_name(&sdk_tool_name);
+    let initial_execute_output = if is_execute_tool {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
         None

@@ -69,6 +69,7 @@ export { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./bridge/cache_policy.
 export {
   buildToolResultFields,
   createToolCall,
+  isShellToolName,
   normalizeToolKind,
   normalizeToolResultText,
   unwrapToolUseResult,
