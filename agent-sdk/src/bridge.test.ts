@@ -18,6 +18,7 @@ import {
   emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
+  isShellToolName,
   mapSdkAccountInfo,
   mapAvailableAgents,
   mapAvailableModels,
@@ -3354,6 +3355,7 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
 
 test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Bash"), "execute");
+  assert.equal(normalizeToolKind("PowerShell"), "execute");
   assert.equal(normalizeToolKind("Delete"), "delete");
   assert.equal(normalizeToolKind("Move"), "move");
   assert.equal(normalizeToolKind("EnterWorktree"), "other");
@@ -3377,6 +3379,22 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("TodoWrite"), normalizeToolKind("FutureUnknownTool"));
+});
+
+test("isShellToolName recognizes only supported shell tools", () => {
+  assert.equal(isShellToolName("Bash"), true);
+  assert.equal(isShellToolName("PowerShell"), true);
+  assert.equal(isShellToolName("Shell"), false);
+  assert.equal(isShellToolName("bash"), false);
+});
+
+test("shell tool titles use input command", () => {
+  assert.equal(createToolCall("tc-bash-title", "Bash", { command: "git status" }).title, "git status");
+  assert.equal(
+    createToolCall("tc-powershell-title", "PowerShell", { command: "Get-ChildItem" }).title,
+    "Get-ChildItem",
+  );
+  assert.equal(createToolCall("tc-powershell-empty", "PowerShell", {}).title, "Terminal");
 });
 
 test("parseFastModeState accepts known values and rejects unknown values", () => {
@@ -4728,6 +4746,29 @@ test("buildToolResultFields ignores model-facing Bash stale read hints", () => {
   );
 
   assert.equal(fields.raw_output, "real stdout");
+  assert.equal(fields.output_metadata, undefined);
+});
+
+test("buildToolResultFields maps PowerShell structured output like shell output", () => {
+  const base = createToolCall("tc-powershell", "PowerShell", { command: "Get-ChildItem" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      stdout: "stdout line",
+      stderr: "stderr line",
+      interrupted: true,
+    },
+    base,
+    {
+      result: {
+        stdout: "stdout line",
+        stderr: "stderr line",
+        interrupted: true,
+      },
+    },
+  );
+
+  assert.equal(fields.raw_output, "stdout line\nstderr line\nCommand was aborted before completion.");
   assert.equal(fields.output_metadata, undefined);
 });
 

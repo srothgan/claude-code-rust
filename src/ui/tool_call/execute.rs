@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-//! Content rendering for Execute/Bash tool calls.
+//! Content rendering for Execute/shell tool calls.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
@@ -12,19 +12,12 @@ use ratatui::text::{Line, Span};
 
 use super::{TOOL_BODY_MAX_LINES, errors::render_failed_tool_text_content};
 
-/// Render Execute/Bash content lines WITHOUT any border decoration.
+/// Render Execute/shell content lines WITHOUT any border decoration.
 /// This is width-independent and safe to cache across resizes.
 /// Returns command and output lines only; permission/question controls are appended
 /// by the standard body renderer so they are never hidden by the content cap.
 pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-
-    if let Some(ref cmd) = tc.terminal_command {
-        let mut spans =
-            vec![Span::styled("$ ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))];
-        spans.push(Span::styled(cmd.clone(), Style::default().fg(theme::DIM)));
-        lines.push(Line::from(spans));
-    }
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 

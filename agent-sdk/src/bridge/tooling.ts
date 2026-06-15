@@ -68,6 +68,10 @@ function isAgentLikeToolName(name: string): boolean {
   return name === "Agent" || name === "Task";
 }
 
+export function isShellToolName(name: string): boolean {
+  return name === "Bash" || name === "PowerShell";
+}
+
 function agentInputTitle(name: string, input: Record<string, unknown>): string | undefined {
   if (!isAgentLikeToolName(name)) {
     return undefined;
@@ -162,9 +166,10 @@ function formatGrepTitle(input: Record<string, unknown>): string {
 }
 
 export function normalizeToolKind(name: string): string {
+  if (isShellToolName(name)) {
+    return "execute";
+  }
   switch (name) {
-    case "Bash":
-      return "execute";
     case "Read":
     case "ReadMcpResource":
       return "read";
@@ -221,7 +226,7 @@ export function toolTitle(
   if (agentTitle) {
     return agentTitle;
   }
-  if (name === "Bash") {
+  if (isShellToolName(name)) {
     const command = typeof input.command === "string" ? input.command : "";
     return command || "Terminal";
   }
@@ -789,7 +794,7 @@ function editDiffFromResult(rawResult: unknown, rawInput: Json | undefined): Too
   return editDiffFromInput(rawInput);
 }
 
-function findBashResultRecord(
+function findShellResultRecord(
   rawResult: unknown,
   rawContent: unknown,
 ): Record<string, unknown> | undefined {
@@ -803,7 +808,7 @@ function findBashResultRecord(
   );
 }
 
-function bashBackgroundMessage(record: Record<string, unknown>): string {
+function shellBackgroundMessage(record: Record<string, unknown>): string {
   const backgroundTaskId =
     typeof record.backgroundTaskId === "string" ? record.backgroundTaskId : "";
   if (!backgroundTaskId) {
@@ -818,7 +823,7 @@ function bashBackgroundMessage(record: Record<string, unknown>): string {
   return `Command is running in background with ID: ${backgroundTaskId}.`;
 }
 
-function buildBashDisplayOutput(record: Record<string, unknown>): string {
+function buildShellDisplayOutput(record: Record<string, unknown>): string {
   const segments: string[] = [];
   const stdout = typeof record.stdout === "string" ? record.stdout : "";
   const stderr = typeof record.stderr === "string" ? record.stderr : "";
@@ -831,7 +836,7 @@ function buildBashDisplayOutput(record: Record<string, unknown>): string {
   if (record.interrupted === true) {
     segments.push("Command was aborted before completion.");
   }
-  const backgroundMessage = bashBackgroundMessage(record);
+  const backgroundMessage = shellBackgroundMessage(record);
   if (backgroundMessage) {
     segments.push(backgroundMessage);
   }
@@ -2129,10 +2134,12 @@ export function buildToolResultFields(
     }
     return fields;
   }
-  const bashResultRecord = toolName === "Bash" ? findBashResultRecord(rawResult, rawContent) : undefined;
+  const shellResultRecord = isShellToolName(toolName)
+    ? findShellResultRecord(rawResult, rawContent)
+    : undefined;
   const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
-  const rawOutput = bashResultRecord
-    ? buildBashDisplayOutput(bashResultRecord)
+  const rawOutput = shellResultRecord
+    ? buildShellDisplayOutput(shellResultRecord)
     : normalizedRawOutput || JSON.stringify(rawContent);
   if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
     fields.raw_output = rawOutput;

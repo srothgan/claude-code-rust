@@ -599,15 +599,33 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert_eq!(rendered_text.len(), 3);
-        assert!(rendered_text[1].starts_with("      $ echo hi"));
-        assert!(rendered_text[2].starts_with("      hi"));
+        assert_eq!(rendered_text.len(), 2);
+        assert!(rendered_text[1].starts_with("      hi"));
+        assert!(!rendered_text.iter().any(|line| line.contains("echo hi")));
         assert!(
             rendered_text
                 .iter()
                 .all(|line| !line.contains('\u{256D}') && !line.contains('\u{2570}'))
         );
         assert!(rendered_text.iter().all(|line| !line.starts_with("  \u{2502}")));
+    }
+
+    #[test]
+    fn powershell_execute_body_omits_command_prompt() {
+        let mut tc =
+            test_tool_call("tc-powershell-prompt", "PowerShell", model::ToolCallStatus::Completed);
+        tc.terminal_command = Some("Get-ChildItem".to_owned());
+        tc.terminal_output = Some("Directory listing".to_owned());
+
+        let lines = execute::render_execute_content(&tc);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(rendered.first().map(String::as_str), Some("Directory listing"));
+        assert!(!rendered.iter().any(|line| line.contains("Get-ChildItem")));
+        assert!(!rendered.iter().any(|line| line.contains("PS>")));
     }
 
     #[test]
@@ -1237,10 +1255,10 @@ mod tests {
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert_eq!(rendered.len(), super::TOOL_BODY_MAX_LINES);
-        assert!(rendered[0].contains("$ cd path with spaces"));
-        assert!(rendered[1].contains("lines hidden"));
+        assert!(rendered[0].contains("lines hidden"));
         assert!(!rendered.iter().any(|line| line == "line 0"));
-        assert!(rendered.iter().any(|line| line == "line 23"));
+        assert!(!rendered.iter().any(|line| line.contains("cd path with spaces")));
+        assert!(rendered.iter().any(|line| line == "line 22"));
         assert_eq!(rendered.last().map(String::as_str), Some("line 29"));
     }
 
@@ -1260,7 +1278,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered[0].contains("$ cd path with spaces"));
+        assert!(!rendered.iter().any(|line| line.contains("$ cd path with spaces")));
         assert!(
             rendered
                 .iter()
