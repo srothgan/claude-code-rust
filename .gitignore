@@ -31,6 +31,7 @@ node_modules/
 /vendor/
 /agent-sdk/dist/
 /docs/book/
+/jscpd-report/
 
 # Local Claude Code config
 .claude/

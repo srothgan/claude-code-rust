@@ -48,6 +48,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  unsafe-code:
+    name: Unsafe Code Warning
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cargo rustc` applies `-W unsafe-code` only to the selected project target,
+      # avoiding dependency noise from low-level terminal/platform crates.
+      - name: Warn on unsafe in library target
+        continue-on-error: true
+        run: cargo rustc --lib --all-features -- -W unsafe-code
+      - name: Warn on unsafe in binary target
+        continue-on-error: true
+        run: cargo rustc --bin claude-rs --all-features -- -W unsafe-code
+
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest

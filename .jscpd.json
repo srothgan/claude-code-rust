@@ -1,0 +1,25 @@
+{
+  "reporters": ["console", "json", "html"],
+  "output": "jscpd-report",
+  "mode": "mild",
+  "minLines": 10,
+  "minTokens": 100,
+  "ignore": [
+    "**/target/**",
+    "**/node_modules/**",
+    "**/.npm-cache/**",
+    "**/vendor/**",
+    "**/agent-sdk/dist/**",
+    "**/docs/book/**",
+    "**/.claude/**",
+    "**/.codex/**",
+    "**/notes/**",
+    "**/analysis/**",
+    "**/jscpd-report/**",
+    "**/report/**",
+    "**/*.test.ts",
+    "**/tests.rs",
+    "**/*.lock",
+    "**/*.log"
+  ]
+}
