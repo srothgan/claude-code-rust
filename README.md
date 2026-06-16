@@ -38,12 +38,8 @@ claude-rs
 
 Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
 
-> [!WARNING]
-> **Agent SDK billing changes on June 15, 2026.** Anthropic says Agent SDK usage, `claude -p`, Claude Code GitHub Actions, and third-party Agent SDK apps will use a separate monthly Agent SDK credit instead of normal interactive Claude or Claude Code subscription limits. Because Claude Code Rust wraps the Agent SDK, treat usage through this project as Agent SDK usage. If that credit is exhausted, continued use may require enabling extra usage billed at standard API rates, or requests may pause until the credit refreshes.
->
-> Sources:
-> - [Anthropic support: Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
-> - [ClaudeDevs announcement](https://x.com/ClaudeDevs/status/2054610152817619388)
+> [!NOTE]
+> **Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage — including `claude -p` and third-party apps like this one — still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 ## Why
 
@@ -85,7 +81,7 @@ This project is not affiliated with, endorsed by, or supported by Anthropic.
 
 A quick note on where this project stands, since I know people worry about this kind of thing: claude-code-rust is a terminal UI that I wrote from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak -- it talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
 
-The project authenticates through your existing Claude Code account via the Agent SDK, and the Agent SDK's terms allow building on top of it. Billing, credits, limits, and overage behavior are controlled by Anthropic, including the Agent SDK credit change noted above. Other community projects do the same. As far as I can tell, using this project is fine -- but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
+The project authenticates through your existing Claude Code account via the Agent SDK, and the Agent SDK's terms allow building on top of it. Billing, credits, limits, and overage behavior are controlled by Anthropic, including any future changes Anthropic may make to how Agent SDK usage is metered. Other community projects do the same. As far as I can tell, using this project is fine -- but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
 
 This project's source code is licensed under [Apache-2.0](LICENSE). The Agent SDK itself is proprietary and governed by [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms).
 

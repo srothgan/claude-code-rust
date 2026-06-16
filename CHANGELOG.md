@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.3] - 2026-06-16 [Changes][v0.12.3]
+
+### Documentation
+
+- **Agent SDK billing notice** (@srothgan): Anthropic paused the Agent SDK credit change documented in (#165, @srothgan); SDK usage still draws from normal Claude subscription limits. Shrink the README warning to a compact note linking the [support article](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+
+### Fixes
+
+- **Startup repaint and PowerShell rendering** (#193, @srothgan): Smooth the startup repaint and fix PowerShell tool-call rendering.
+
+### CI and Dependencies
+
+- **SDK monitor and advisory checks** (#186, #187, @srothgan): Add an Agent SDK update monitor and advisory quality checks.
+- **Rust dependency updates** (#189, #190, #191, #192): Bump `uuid` to `1.23.3`, `time` to `0.3.49`, `ignore` to `0.4.26`, and `which` to `8.0.3`.
+- **Workflow action bump** (#188): Bump `actions/upload-artifact` to `7`.
+
 ## [0.12.2] - 2026-06-14 [Changes][v0.12.2]
 
 ### Features
@@ -589,6 +605,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.12.3]: https://github.com/srothgan/claude-code-rust/compare/v0.12.2...v0.12.3
 [v0.12.2]: https://github.com/srothgan/claude-code-rust/compare/v0.12.1...v0.12.2
 [v0.12.1]: https://github.com/srothgan/claude-code-rust/compare/v0.12.0...v0.12.1
 [v0.12.0]: https://github.com/srothgan/claude-code-rust/compare/v0.11.3...v0.12.0
