@@ -25,3 +25,41 @@ updates:
       - "area: ci"
     commit-message:
       prefix: "ci"
+
+  # npm dependencies (root package)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "type: dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # npm dependencies (agent-sdk bridge)
+  - package-ecosystem: "npm"
+    directory: "/agent-sdk"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "type: dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
