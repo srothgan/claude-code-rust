@@ -17,15 +17,15 @@
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.177",
-    "@anthropic-ai/sdk": "0.97.1",
+    "@anthropic-ai/claude-agent-sdk": "0.3.185",
+    "@anthropic-ai/sdk": "0.105.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.12",
+    "@biomejs/biome": "2.5.0",
     "@types/node": "25.3.3",
-    "knip": "6.4.1",
+    "knip": "6.17.2",
     "typescript": "5.9.3"
   }
 }
