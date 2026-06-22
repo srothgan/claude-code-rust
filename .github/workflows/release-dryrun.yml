@@ -11,7 +11,7 @@ jobs:
     name: Validate npm publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Fetch base branch for version comparison
         run: git fetch origin ${{ github.base_ref }} --depth=1
