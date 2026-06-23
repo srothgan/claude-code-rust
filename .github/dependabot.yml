@@ -29,6 +29,10 @@ updates:
   # npm dependencies (root package)
   - package-ecosystem: "npm"
     directory: "/"
+    # The Agent SDK is tracked by the Agent SDK Update Monitor workflow
+    # (issue-based), so exclude it here to avoid duplicate PRs.
+    ignore:
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -48,6 +52,10 @@ updates:
   # npm dependencies (agent-sdk bridge)
   - package-ecosystem: "npm"
     directory: "/agent-sdk"
+    # The Agent SDK is tracked by the Agent SDK Update Monitor workflow
+    # (issue-based), so exclude it here to avoid duplicate PRs.
+    ignore:
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
     schedule:
       interval: "weekly"
       day: "monday"

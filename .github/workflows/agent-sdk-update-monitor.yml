@@ -53,11 +53,11 @@ jobs:
           | Bridge package | \`${bridge_version}\` |
           | Latest npm | \`${latest_version}\` |
 
-          Suggested next step:
+          Suggested next steps:
 
-          - Recreate the SDK migration scratch workspace under \`tmp/\`.
-          - Follow \`notes/sdk-version-migration.md\`.
+          - Review the upstream release notes between \`${root_version}\`/\`${bridge_version}\` and \`${latest_version}\`.
           - Compare release notes and tarball diffs before changing package pins.
+          - Update the pins in \`package.json\` and \`agent-sdk/package.json\`, then rebuild the bridge.
 
           This issue was opened or refreshed by \`${GITHUB_WORKFLOW}\`.
           EOF
