@@ -119,6 +119,7 @@ fn apply_tool_call_update_to_indexed_block(
             &mut terminal_subscription,
         );
         changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+        changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
         changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
         changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
@@ -211,6 +212,16 @@ fn apply_tool_call_raw_input_update(
         return false;
     };
     tc.set_raw_input(Some(raw_input.clone()))
+}
+
+fn apply_tool_call_locations_update(
+    tc: &mut ToolCallInfo,
+    locations: Option<&Vec<model::ToolCallLocation>>,
+) -> bool {
+    let Some(locations) = locations else {
+        return false;
+    };
+    tc.set_locations(locations.clone())
 }
 
 fn apply_tool_call_output_metadata_update(
@@ -673,6 +684,7 @@ mod tests {
             sdk_tool_name: "Bash".to_owned(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status,
@@ -702,6 +714,7 @@ mod tests {
             sdk_tool_name: "Agent".to_owned(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status,

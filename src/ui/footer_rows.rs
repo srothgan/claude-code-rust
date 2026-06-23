@@ -554,6 +554,7 @@ mod tests {
                 sdk_tool_name: "Read".into(),
                 raw_input: None,
                 raw_input_bytes: 0,
+                locations: Vec::new(),
                 output_metadata: None,
                 task_metadata: None,
                 status: model::ToolCallStatus::Pending,

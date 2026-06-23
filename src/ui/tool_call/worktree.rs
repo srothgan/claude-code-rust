@@ -133,6 +133,7 @@ mod tests {
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Completed,

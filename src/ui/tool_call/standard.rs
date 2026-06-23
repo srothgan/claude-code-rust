@@ -13,6 +13,8 @@ use crate::ui::tool_display;
 use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::path::Path;
+use two_face::theme::EmbeddedThemeName;
 
 use super::errors::{
     debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
@@ -36,6 +38,7 @@ const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
+const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
@@ -493,6 +496,124 @@ fn render_plan_content(text: &str) -> Vec<Line<'static>> {
 }
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+    if is_read_tool(tc) {
+        render_read_text_content(tc, text, lines);
+    } else {
+        render_generic_text_content(tc, text, lines);
+    }
+}
+
+fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+    let fenced_language = outer_code_fence_language(text);
+    let stripped = strip_outer_code_fence(text);
+    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+        lines.extend(failed_lines);
+        return;
+    }
+    if read_content_is_markdown(tc) {
+        render_markdown_content(&stripped, lines);
+        return;
+    }
+
+    let clean = highlight::strip_ansi(&stripped);
+    let title_lang = lang_from_title(&tc.title);
+    if let Some(path) = read_syntax_path(tc) {
+        let language_fallback = (!title_lang.is_empty()).then_some(title_lang.as_str());
+        if let Some(numbered_lines) = parse_numbered_read_lines(&clean) {
+            let highlighted = highlight::highlight_code_for_path_with_theme(
+                &numbered_read_source(&numbered_lines),
+                path,
+                language_fallback,
+                READ_SYNTAX_THEME,
+            );
+            lines.extend(render_numbered_read_lines(numbered_lines, &highlighted));
+            return;
+        }
+        lines.extend(highlight::highlight_code_for_path_with_theme(
+            &clean,
+            path,
+            language_fallback,
+            READ_SYNTAX_THEME,
+        ));
+        return;
+    }
+
+    let fallback_lang = (!title_lang.is_empty()).then_some(title_lang.as_str()).or(fenced_language);
+    lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, READ_SYNTAX_THEME));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NumberedReadLine {
+    number: String,
+    source: String,
+}
+
+fn parse_numbered_read_lines(text: &str) -> Option<Vec<NumberedReadLine>> {
+    let parsed = text.lines().map(parse_numbered_read_line).collect::<Option<Vec<_>>>()?;
+    if parsed.len() < 2 || !line_numbers_are_monotonic(&parsed) {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn parse_numbered_read_line(line: &str) -> Option<NumberedReadLine> {
+    let trimmed = line.trim_start();
+    let digit_end = trimmed.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(trimmed.len());
+    if digit_end == 0 {
+        return None;
+    }
+    let (number, rest) = trimmed.split_at(digit_end);
+    let source = rest.strip_prefix('\t').unwrap_or(rest).to_owned();
+    Some(NumberedReadLine { number: number.to_owned(), source })
+}
+
+fn line_numbers_are_monotonic(lines: &[NumberedReadLine]) -> bool {
+    let mut previous = None;
+    for line in lines {
+        let Ok(number) = line.number.parse::<u32>() else {
+            return false;
+        };
+        if let Some(previous) = previous
+            && number != previous + 1
+        {
+            return false;
+        }
+        previous = Some(number);
+    }
+    true
+}
+
+fn numbered_read_source(lines: &[NumberedReadLine]) -> String {
+    lines.iter().map(|line| line.source.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+fn render_numbered_read_lines(
+    numbered_lines: Vec<NumberedReadLine>,
+    highlighted_lines: &[Line<'static>],
+) -> Vec<Line<'static>> {
+    let gutter_width = numbered_lines.iter().map(|line| line.number.len()).max().unwrap_or(1);
+    numbered_lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, numbered)| {
+            let mut spans = vec![
+                Span::styled(
+                    format!("{:>gutter_width$}", numbered.number),
+                    Style::default().fg(theme::DIM),
+                ),
+                Span::styled("  ".to_owned(), Style::default().fg(theme::DIM)),
+            ];
+            if let Some(highlighted) = highlighted_lines.get(idx) {
+                spans.extend(highlighted.spans.clone());
+            } else if !numbered.source.is_empty() {
+                spans.push(Span::raw(numbered.source));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn render_generic_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
         lines.extend(failed_lines);
@@ -508,11 +629,62 @@ fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'stat
         ));
         return;
     };
-    for line in markdown::render_markdown_safe(&md_source, None) {
+    render_markdown_content(&md_source, lines);
+}
+
+fn render_mcp_resource_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+    let stripped = strip_outer_code_fence(text);
+    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+        lines.extend(failed_lines);
+        return;
+    }
+    if is_markdown_file(&tc.title) {
+        render_markdown_content(&stripped, lines);
+    } else {
+        lines.extend(highlight::plain_text_lines(&stripped));
+    }
+}
+
+fn render_markdown_content(text: &str, lines: &mut Vec<Line<'static>>) {
+    for line in markdown::render_markdown_safe(text, None) {
         let owned: Vec<Span<'static>> =
             line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
         lines.push(Line::from(owned));
     }
+}
+
+fn read_content_is_markdown(tc: &ToolCallInfo) -> bool {
+    read_syntax_path(tc).is_some_and(path_is_markdown) || is_markdown_file(&tc.title)
+}
+
+fn read_syntax_path(tc: &ToolCallInfo) -> Option<&Path> {
+    tc.locations
+        .first()
+        .map(|location| location.path.as_path())
+        .or_else(|| raw_input_file_path(tc).map(Path::new))
+}
+
+fn raw_input_file_path(tc: &ToolCallInfo) -> Option<&str> {
+    tc.raw_input
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|input| input.get("file_path"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
+fn path_is_markdown(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+        matches!(extension.to_ascii_lowercase().as_str(), "md" | "mdx" | "markdown")
+    })
+}
+
+fn outer_code_fence_language(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    let after_opening = trimmed.strip_prefix("```")?;
+    let first_line = after_opening.lines().next()?.trim();
+    (!first_line.is_empty()).then_some(first_line)
 }
 
 fn render_mcp_resource_content(
@@ -521,7 +693,7 @@ fn render_mcp_resource_content(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(text) = resource.text.as_deref() {
-        render_text_content(tc, text, &mut lines);
+        render_mcp_resource_text_content(tc, text, &mut lines);
     }
     if let Some(blob_saved_to) = &resource.blob_saved_to {
         let saved_path = blob_saved_to.to_string_lossy().into_owned();

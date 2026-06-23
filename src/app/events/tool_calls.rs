@@ -125,6 +125,7 @@ fn build_tool_info_from_tool_call(
         sdk_tool_name,
         raw_input: tc.raw_input,
         raw_input_bytes: 0,
+        locations: tc.locations,
         output_metadata: tc.output_metadata,
         task_metadata: tc.task_metadata,
         status: tc.status,
@@ -216,6 +217,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
             changed |= existing.add_source_message_uuid(Some(source_message_uuid));
         }
         changed |= existing.set_raw_input(tool_info.raw_input.clone());
+        changed |= existing.set_locations(tool_info.locations.clone());
         changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
         changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
         if tool_info.terminal_id.is_some() {
