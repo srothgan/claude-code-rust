@@ -273,6 +273,7 @@ mod tests {
             sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status,
@@ -299,6 +300,34 @@ mod tests {
 
     fn rendered_line_texts_trimmed(lines: &[Line<'static>]) -> Vec<String> {
         rendered_line_texts(lines).into_iter().map(|line| line.trim_end().to_owned()).collect()
+    }
+
+    fn has_multiple_content_fg_colors(lines: &[Line<'static>]) -> bool {
+        let mut colors = Vec::new();
+        for color in
+            lines.iter().flat_map(|line| line.spans.iter().skip(1)).filter_map(|span| span.style.fg)
+        {
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors.len() > 1
+    }
+
+    fn read_tool_call(path: &str, text: &str) -> ToolCallInfo {
+        let mut tc = test_tool_call("Read opaque-title", "Read", model::ToolCallStatus::Completed);
+        tc.locations = vec![model::ToolCallLocation::new(path)];
+        tc.content = vec![model::ToolCallContent::from(text.to_owned())];
+        tc
+    }
+
+    fn assert_read_path_is_syntax_colored(path: &str, text: &str) {
+        let tc = read_tool_call(path, text);
+        let body = standard::render_tool_call_body(&tc, 120);
+        assert!(
+            has_multiple_content_fg_colors(&body),
+            "expected syntax coloring for path {path:?}"
+        );
     }
 
     // status_icon
@@ -556,6 +585,93 @@ mod tests {
     }
 
     #[test]
+    fn read_body_uses_preserved_location_for_rust_syntax() {
+        assert_read_path_is_syntax_colored(
+            "src/main.rs",
+            "fn main() {\n    println!(\"hi\");\n}\n",
+        );
+    }
+
+    #[test]
+    fn read_body_highlights_toml_from_two_face_syntaxes() {
+        assert_read_path_is_syntax_colored("Cargo.toml", "[package]\nname = \"demo\"\n");
+    }
+
+    #[test]
+    fn read_body_highlights_tsx_from_two_face_syntaxes() {
+        assert_read_path_is_syntax_colored(
+            "frontend/App.tsx",
+            "export function App() {\n    return <main>Hello</main>;\n}\n",
+        );
+    }
+
+    #[test]
+    fn read_body_highlights_dockerfile_by_filename() {
+        assert_read_path_is_syntax_colored("Dockerfile", "FROM rust:1\nRUN cargo build\n");
+    }
+
+    #[test]
+    fn read_body_strips_ansi_before_syntax_coloring() {
+        let tc = read_tool_call("src/main.rs", "\u{1b}[31mfn\u{1b}[0m main() {}\n");
+        let body = standard::render_tool_call_body(&tc, 120);
+        let rendered = rendered_line_texts(&body).join("\n");
+
+        assert!(rendered.contains("fn main"));
+        assert!(!rendered.contains('\u{1b}'));
+        assert!(has_multiple_content_fg_colors(&body));
+    }
+
+    #[test]
+    fn read_body_renders_sdk_line_numbers_as_dim_gutter() {
+        let tc = read_tool_call("Cargo.toml", "1[package]\n2name = \"demo\"\n3version = \"0.1.0\"");
+        let body = standard::render_tool_call_body(&tc, 120);
+        let rendered = rendered_line_texts(&body);
+
+        assert!(rendered[0].contains("1  [package]"));
+        assert!(rendered[1].contains("2  name = \"demo\""));
+        assert!(
+            body[0]
+                .spans
+                .iter()
+                .any(|span| span.content.contains('1') && span.style.fg == Some(theme::DIM))
+        );
+    }
+
+    #[test]
+    fn shell_terminal_output_still_renders_ansi_sequences() {
+        let rendered = crate::ui::highlight::render_terminal_output("\u{1b}[31mred\u{1b}[0m plain");
+
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
+        assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn mcp_resource_text_is_not_recolored_from_read_path() {
+        let mut tc = read_tool_call("src/main.rs", "");
+        tc.content = vec![model::ToolCallContent::McpResource(
+            model::McpResource::new("mcp://resource").text(Some("fn main() {}\n".to_owned())),
+        )];
+
+        let body = standard::render_tool_call_body(&tc, 120);
+        let rendered = rendered_line_texts(&body).join("\n");
+
+        assert!(rendered.contains("fn main"));
+        assert!(!has_multiple_content_fg_colors(&body));
+    }
+
+    #[test]
+    fn markdown_read_body_uses_markdown_renderer() {
+        let tc = read_tool_call("README.md", "# Heading\n\n**Body text**\n");
+        let body = standard::render_tool_call_body(&tc, 120);
+        let rendered = rendered_line_texts(&body).join("\n");
+
+        assert!(rendered.contains("Heading"));
+        assert!(rendered.contains("Body text"));
+        assert!(!rendered.contains("**"));
+    }
+
+    #[test]
     fn bash_title_does_not_wrap_for_long_title() {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
@@ -565,6 +681,7 @@ mod tests {
             sdk_tool_name: "Bash".into(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Pending,
@@ -1118,6 +1235,7 @@ mod tests {
             sdk_tool_name: "Bash".into(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Completed,
@@ -1145,6 +1263,7 @@ mod tests {
             sdk_tool_name: "Bash".into(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Failed,
@@ -1182,6 +1301,7 @@ mod tests {
             sdk_tool_name: "Bash".into(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Failed,
@@ -1231,6 +1351,7 @@ mod tests {
             sdk_tool_name: "Bash".into(),
             raw_input: None,
             raw_input_bytes: 0,
+            locations: Vec::new(),
             output_metadata: None,
             task_metadata: None,
             status: model::ToolCallStatus::Failed,

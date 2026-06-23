@@ -5,16 +5,17 @@ use super::diff;
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::path::Path;
 use std::sync::LazyLock;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color as SyntectColor, FontStyle, Theme, ThemeSet};
+use syntect::highlighting::{Color as SyntectColor, FontStyle, Theme};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
+use two_face::theme::EmbeddedThemeName;
 
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
-static FALLBACK_THEME: LazyLock<Theme> = LazyLock::new(Theme::default);
-
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+static THEME_SET: LazyLock<two_face::theme::EmbeddedLazyThemeSet> =
+    LazyLock::new(two_face::theme::extra);
 pub(crate) fn strip_ansi(text: &str) -> String {
     enum State {
         Normal,
@@ -78,15 +79,41 @@ pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
     let syntax =
         language.and_then(find_syntax).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    highlight_with_syntax(text, syntax)
+    highlight_with_syntax(text, syntax, highlight_theme())
 }
 
-fn highlight_with_syntax(text: &str, syntax: &SyntaxReference) -> Vec<Line<'static>> {
+pub(crate) fn highlight_code_with_theme(
+    text: &str,
+    language: Option<&str>,
+    theme_name: EmbeddedThemeName,
+) -> Vec<Line<'static>> {
+    let syntax =
+        language.and_then(find_syntax).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    highlight_with_syntax(text, syntax, theme(theme_name))
+}
+
+pub(crate) fn highlight_code_for_path_with_theme(
+    text: &str,
+    path: &Path,
+    language_fallback: Option<&str>,
+    theme_name: EmbeddedThemeName,
+) -> Vec<Line<'static>> {
+    let syntax = find_syntax_for_path(path)
+        .or_else(|| language_fallback.and_then(find_syntax))
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    highlight_with_syntax(text, syntax, theme(theme_name))
+}
+
+fn highlight_with_syntax(
+    text: &str,
+    syntax: &SyntaxReference,
+    theme: &'static Theme,
+) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
     }
 
-    let mut highlighter = HighlightLines::new(syntax, highlight_theme());
+    let mut highlighter = HighlightLines::new(syntax, theme);
     let mut lines = Vec::new();
 
     for raw_line in LinesWithEndings::from(text) {
@@ -132,7 +159,7 @@ fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'sta
     }
 }
 
-fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
+pub(crate) fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
     }
@@ -160,12 +187,29 @@ fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
         .or_else(|| SYNTAX_SET.find_syntax_by_name(token))
 }
 
+fn find_syntax_for_path(path: &Path) -> Option<&'static SyntaxReference> {
+    match SYNTAX_SET.find_syntax_for_file(path) {
+        Ok(syntax) => syntax,
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "syntax_detection_failed",
+                message = "syntax detection from file path failed; falling back",
+                outcome = "fallback",
+                path = %path.display(),
+                error_message = %err,
+            );
+            None
+        }
+    }
+}
+
 fn highlight_theme() -> &'static Theme {
-    THEME_SET
-        .themes
-        .get("base16-ocean.dark")
-        .or_else(|| THEME_SET.themes.values().next())
-        .unwrap_or(&FALLBACK_THEME)
+    theme(EmbeddedThemeName::Base16OceanDark)
+}
+
+fn theme(theme_name: EmbeddedThemeName) -> &'static Theme {
+    THEME_SET.get(theme_name)
 }
 
 fn ratatui_style(color: SyntectColor, font_style: FontStyle) -> Style {
@@ -206,6 +250,20 @@ mod tests {
         let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("fn"));
         assert!(text.contains("main"));
+    }
+
+    #[test]
+    fn highlight_code_accepts_explicit_theme() {
+        let rendered = highlight_code_with_theme(
+            "fn main() {}\n",
+            Some("rs"),
+            EmbeddedThemeName::MonokaiExtendedBright,
+        );
+        let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(text.contains("fn"));
+        assert!(text.contains("main"));
+        assert!(rendered[0].spans.iter().any(|span| span.style.fg.is_some()));
     }
 
     #[test]

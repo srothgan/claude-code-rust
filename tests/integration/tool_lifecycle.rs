@@ -9,6 +9,7 @@ use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
 use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
+use ratatui::text::Line;
 
 use crate::helpers::{send_client_event, test_app};
 
@@ -378,4 +379,51 @@ async fn title_shortened_relative_to_cwd() {
     } else {
         panic!("expected ToolCall block");
     }
+}
+
+#[tokio::test]
+async fn initial_tool_call_locations_survive_into_tool_call_info() {
+    let mut app = test_app();
+    let locations = vec![model::ToolCallLocation::new("src/main.rs").line(12)];
+    let tc = model::ToolCall::new("tc-located", "Read file")
+        .kind(model::ToolKind::Read)
+        .status(model::ToolCallStatus::Completed)
+        .locations(locations.clone());
+
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+
+    let tc = tool_call_block(&app, "tc-located");
+    assert_eq!(tc.locations, locations);
+}
+
+#[tokio::test]
+async fn tool_call_update_locations_replace_metadata_and_invalidate_render_cache() {
+    let mut app = test_app();
+    let tc = model::ToolCall::new("tc-location-update", "Read file")
+        .kind(model::ToolKind::Read)
+        .status(model::ToolCallStatus::Completed)
+        .content(vec![model::ToolCallContent::from("fn main() {}\n".to_owned())]);
+    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+
+    let (message_index, block_index) = app.tool_call_index["tc-location-update"];
+    if let MessageBlock::ToolCall(tc) = &mut app.messages[message_index].blocks[block_index] {
+        tc.cache.store(vec![Line::from("cached body")]);
+        assert!(tc.cache.get().is_some());
+    } else {
+        panic!("expected ToolCall block");
+    }
+
+    let updated_locations = vec![model::ToolCallLocation::new("src/main.rs")];
+    let update = model::ToolCallUpdate::new(
+        "tc-location-update",
+        model::ToolCallUpdateFields::new().locations(updated_locations.clone()),
+    );
+    send_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+    );
+
+    let tc = tool_call_block(&app, "tc-location-update");
+    assert_eq!(tc.locations, updated_locations);
+    assert!(tc.cache.get().is_none(), "location updates must invalidate cached rendering");
 }

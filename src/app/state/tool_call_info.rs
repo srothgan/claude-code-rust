@@ -13,6 +13,7 @@ pub struct ToolCallInfo {
     pub sdk_tool_name: String,
     pub raw_input: Option<serde_json::Value>,
     pub raw_input_bytes: usize,
+    pub locations: Vec<model::ToolCallLocation>,
     pub output_metadata: Option<model::ToolOutputMetadata>,
     pub task_metadata: Option<model::TaskMetadata>,
     pub status: model::ToolCallStatus,
@@ -130,6 +131,14 @@ impl ToolCallInfo {
         }
         self.raw_input_bytes = raw_input.as_ref().map_or(0, Self::estimate_json_value_bytes);
         self.raw_input = raw_input;
+        true
+    }
+
+    pub fn set_locations(&mut self, locations: Vec<model::ToolCallLocation>) -> bool {
+        if self.locations == locations {
+            return false;
+        }
+        self.locations = locations;
         true
     }
 }
