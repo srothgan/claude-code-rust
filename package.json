@@ -29,7 +29,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.177",
+    "@anthropic-ai/claude-agent-sdk": "0.3.190",
     "@anthropic-ai/sdk": "0.97.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.4.3"
