@@ -28,14 +28,13 @@ pub(super) fn upsert_turn_notice(
     message: &str,
 ) {
     prune_invalid_turn_notice_refs(app);
-    let Some(existing_ref_idx) =
-        app.turn_notice_refs.iter().position(|notice_ref| notice_ref.dedup_key == dedup_key)
+    let Some(existing) =
+        app.turn_notice_refs.iter().find(|notice_ref| notice_ref.dedup_key == dedup_key).cloned()
     else {
         insert_new_notice(app, dedup_key, stage, severity, message);
         return;
     };
 
-    let existing = app.turn_notice_refs[existing_ref_idx].clone();
     if stage < existing.stage {
         return;
     }
@@ -43,10 +42,10 @@ pub(super) fn upsert_turn_notice(
     match existing.location {
         TurnNoticeLocation::Inline { msg_idx, block_idx } => {
             if update_inline_notice(app, msg_idx, block_idx, &dedup_key, severity, message) {
-                app.turn_notice_refs[existing_ref_idx].stage = stage;
+                update_turn_notice_ref_stage(app, &dedup_key, stage);
                 return;
             }
-            app.turn_notice_refs.remove(existing_ref_idx);
+            remove_turn_notice_refs(app, &dedup_key);
             insert_new_notice(app, dedup_key, stage, severity, message);
         }
         TurnNoticeLocation::Standalone { msg_idx } => {
@@ -54,7 +53,7 @@ pub(super) fn upsert_turn_notice(
                 && remove_standalone_notice(app, msg_idx)
                 && let Some(owner_idx) = app.active_turn_assistant_idx()
             {
-                app.turn_notice_refs.remove(existing_ref_idx);
+                remove_turn_notice_refs(app, &dedup_key);
                 insert_inline_notice(
                     app,
                     owner_idx,
@@ -66,14 +65,26 @@ pub(super) fn upsert_turn_notice(
             }
 
             if update_standalone_notice(app, msg_idx, &dedup_key, severity, message) {
-                app.turn_notice_refs[existing_ref_idx].stage = stage;
+                update_turn_notice_ref_stage(app, &dedup_key, stage);
                 return;
             }
 
-            app.turn_notice_refs.remove(existing_ref_idx);
+            remove_turn_notice_refs(app, &dedup_key);
             insert_new_notice(app, dedup_key, stage, severity, message);
         }
     }
+}
+
+fn update_turn_notice_ref_stage(app: &mut App, dedup_key: &NoticeDedupKey, stage: NoticeStage) {
+    if let Some(notice_ref) =
+        app.turn_notice_refs.iter_mut().find(|notice_ref| &notice_ref.dedup_key == dedup_key)
+    {
+        notice_ref.stage = stage;
+    }
+}
+
+fn remove_turn_notice_refs(app: &mut App, dedup_key: &NoticeDedupKey) {
+    app.turn_notice_refs.retain(|notice_ref| &notice_ref.dedup_key != dedup_key);
 }
 
 fn insert_new_notice(
@@ -245,7 +256,10 @@ fn prune_invalid_turn_notice_refs(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{update_inline_notice, upsert_turn_notice};
-    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, NoticeStage, SystemSeverity};
+    use crate::app::{
+        App, ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, NoticeStage, SystemSeverity,
+        TurnNoticeLocation,
+    };
 
     #[test]
     fn inline_notice_insert_updates_canonical_assistant_message() {
@@ -296,5 +310,43 @@ mod tests {
         };
         assert_eq!(notice.severity, SystemSeverity::Error);
         assert_eq!(notice.text.text, "failed");
+    }
+
+    #[test]
+    fn standalone_notice_migrates_inline_without_double_removing_tracking() {
+        let mut app = App::test_default();
+
+        upsert_turn_notice(
+            &mut app,
+            NoticeDedupKey::ApiRetry,
+            NoticeStage::Warning,
+            SystemSeverity::Warning,
+            "retrying before assistant",
+        );
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.turn_notice_refs.len(), 1);
+
+        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(1);
+
+        upsert_turn_notice(
+            &mut app,
+            NoticeDedupKey::ApiRetry,
+            NoticeStage::Warning,
+            SystemSeverity::Warning,
+            "retrying with assistant",
+        );
+
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Assistant));
+        let Some(MessageBlock::Notice(notice)) = app.messages[0].blocks.first() else {
+            panic!("expected migrated inline notice");
+        };
+        assert_eq!(notice.text.text, "retrying with assistant");
+        assert_eq!(app.turn_notice_refs.len(), 1);
+        assert!(matches!(
+            app.turn_notice_refs[0].location,
+            TurnNoticeLocation::Inline { msg_idx: 0, block_idx: 0 }
+        ));
     }
 }

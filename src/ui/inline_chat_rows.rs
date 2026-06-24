@@ -44,12 +44,27 @@ pub(crate) struct SerializedLiveRows {
 }
 
 impl SerializedLiveRows {
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        rows: Vec<Line<'static>>,
+        segments: Vec<LiveRowSegment>,
+    ) -> Self {
+        Self { rows, segments }
+    }
+
     pub(crate) fn rows(&self) -> &[Line<'static>] {
         &self.rows
     }
 
     pub(crate) fn segments(&self) -> &[LiveRowSegment] {
         &self.segments
+    }
+
+    pub(crate) fn segment_rows(&self, segment: &LiveRowSegment) -> Option<&[Line<'static>]> {
+        if segment.start_row > segment.end_row || segment.end_row > self.rows.len() {
+            return None;
+        }
+        Some(&self.rows[segment.start_row..segment.end_row])
     }
 
     pub(crate) fn rows_excluding_ids(
@@ -61,7 +76,10 @@ impl SerializedLiveRows {
             if segment.ids.iter().all(|id| excluded_ids.contains(id)) {
                 continue;
             }
-            rows.extend(self.rows[segment.start_row..segment.end_row].iter().cloned());
+            let Some(segment_rows) = self.segment_rows(segment) else {
+                continue;
+            };
+            rows.extend(segment_rows.iter().cloned());
         }
         rows
     }
@@ -70,7 +88,7 @@ impl SerializedLiveRows {
         self.segments
             .iter()
             .find(|segment| !segment.commit_ready)
-            .map_or(self.rows.len(), |segment| segment.start_row)
+            .map_or(self.rows.len(), |segment| segment.start_row.min(self.rows.len()))
     }
 
     pub(crate) fn first_mutable_boundary_kind(&self) -> Option<LiveRowBoundaryKind> {
@@ -78,7 +96,10 @@ impl SerializedLiveRows {
     }
 
     pub(crate) fn first_mutable_boundary_start(&self) -> Option<usize> {
-        self.segments.iter().find(|segment| !segment.commit_ready).map(|segment| segment.start_row)
+        self.segments
+            .iter()
+            .find(|segment| !segment.commit_ready)
+            .map(|segment| segment.start_row.min(self.rows.len()))
     }
 
     pub(crate) fn first_mutable_boundary_msg_idx(&self) -> Option<usize> {
@@ -1202,13 +1223,13 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveRowBoundaryKind, SerializedLiveRows, serialize_live_rows_with_boundaries_excluding,
-        thinking_line,
+        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
+        serialize_live_rows_with_boundaries_excluding, thinking_line,
     };
     use crate::agent::model;
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, HistoryOutputId, MessageBlock, MessageRole,
-        NoticeBlock, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
+        App, AppStatus, BlockCache, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
+        MessageRole, NoticeBlock, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1238,12 +1259,47 @@ mod tests {
         serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new())
     }
 
+    fn live_segment(start_row: usize, end_row: usize, commit_ready: bool) -> LiveRowSegment {
+        LiveRowSegment {
+            ids: vec![HistoryOutputId::AssistantLabel(ChatMessageId::new())],
+            msg_idx: 0,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::AssistantLabel,
+            start_row,
+            end_row,
+            commit_ready,
+        }
+    }
+
     #[test]
     fn thinking_line_uses_selected_verb() {
         let text = line_text(&thinking_line(0, "Pondering"));
 
         assert!(text.contains("Pondering..."));
         assert!(!text.contains("Thinking..."));
+    }
+
+    #[test]
+    fn serialized_live_rows_skip_invalid_segment_ranges() {
+        let rows = vec![Line::from("first"), Line::from("second")];
+        let serialized = SerializedLiveRows::from_parts_for_test(
+            rows,
+            vec![live_segment(0, 1, true), live_segment(1, 3, true)],
+        );
+
+        assert_eq!(line_texts(&serialized.rows_excluding_ids(&BTreeSet::new())), vec!["first"]);
+        assert!(serialized.segment_rows(&serialized.segments()[1]).is_none());
+    }
+
+    #[test]
+    fn serialized_live_rows_clamp_stable_boundary_to_rows_len() {
+        let serialized = SerializedLiveRows::from_parts_for_test(
+            vec![Line::from("only")],
+            vec![live_segment(4, 5, false)],
+        );
+
+        assert_eq!(serialized.stable_row_count(), 1);
+        assert_eq!(serialized.first_mutable_boundary_start(), Some(1));
     }
 
     fn user_text_message(text: &str) -> ChatMessage {
