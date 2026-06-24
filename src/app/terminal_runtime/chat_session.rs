@@ -153,6 +153,7 @@ impl ChatTerminalSession {
         serialized_rows: &SerializedLiveRows,
         base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> anyhow::Result<()> {
+        app.surface_dirty.chat.take_repaint();
         let composer = Self::build_composer_surface(app, width);
         let mut history_plan = self.prepare_history_flush(
             serialized_rows,
@@ -241,8 +242,6 @@ impl ChatTerminalSession {
                 scrollback_inserted_rows: outcome.flushed_history.flushed_rows,
             },
         );
-
-        app.surface_dirty.chat.take_repaint();
         Ok(())
     }
 
@@ -692,7 +691,10 @@ fn build_static_history_batches(
             push_history_batch(&mut batches, HistoryBatchKind::Normal, width, &mut rows, &mut ids);
         }
 
-        rows.extend(serialized_rows.rows()[segment.start_row..segment.end_row].iter().cloned());
+        let Some(segment_rows) = serialized_rows.segment_rows(segment) else {
+            continue;
+        };
+        rows.extend(segment_rows.iter().cloned());
         ids.extend(segment_ids);
         expected_start = Some(segment.end_row);
     }
@@ -711,6 +713,7 @@ fn build_replay_history_batches(
         .segments()
         .iter()
         .filter(|segment| segment.commit_ready && segment.start_row < stable_row_count)
+        .filter(|segment| serialized_rows.segment_rows(segment).is_some())
         .collect::<Vec<_>>();
     let confirm_ids = unique_ids(stable_segments.iter().flat_map(|segment| segment.ids.iter()));
 
@@ -718,7 +721,10 @@ fn build_replay_history_batches(
         let mut rows = 0usize;
         let mut start = stable_segments.len();
         for (idx, segment) in stable_segments.iter().enumerate().rev() {
-            let segment_rows = segment.end_row.saturating_sub(segment.start_row);
+            let segment_rows = match serialized_rows.segment_rows(segment) {
+                Some(segment_rows) => segment_rows.len(),
+                None => 0,
+            };
             if rows > 0 && rows.saturating_add(segment_rows) > cap {
                 break;
             }
@@ -745,7 +751,10 @@ fn build_replay_history_batches(
             queued_rows = queued_rows.saturating_add(rows.len());
             push_history_batch(&mut batches, HistoryBatchKind::Replay, width, &mut rows, &mut ids);
         }
-        rows.extend(serialized_rows.rows()[segment.start_row..segment.end_row].iter().cloned());
+        let Some(segment_rows) = serialized_rows.segment_rows(segment) else {
+            continue;
+        };
+        rows.extend(segment_rows.iter().cloned());
         ids.extend(segment_ids);
         expected_start = Some(segment.end_row);
     }
@@ -800,7 +809,10 @@ fn excluded_row_count(
         .segments()
         .iter()
         .filter(|segment| segment.ids.iter().all(|id| excluded_ids.contains(id)))
-        .map(|segment| segment.end_row.saturating_sub(segment.start_row))
+        .map(|segment| match serialized_rows.segment_rows(segment) {
+            Some(rows) => rows.len(),
+            None => 0,
+        })
         .sum()
 }
 
@@ -896,7 +908,9 @@ impl RowWindow {
     }
 
     fn slice<T>(self, rows: &[T]) -> &[T] {
-        &rows[self.start..self.end()]
+        let start = self.start.min(rows.len());
+        let end = self.end().min(rows.len());
+        if start > end { &[] } else { &rows[start..end] }
     }
 }
 
@@ -1154,7 +1168,8 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminalSession, ComposerEditor, ComposerSurface, HistoryCommitState, MutableLayoutPlan,
+        ChatTerminalSession, ComposerEditor, ComposerSurface, HistoryCommitState,
+        MutableLayoutPlan, RowWindow,
     };
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
@@ -1162,7 +1177,10 @@ mod tests {
         App, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole, TextBlock,
         TextBlockSpacing,
     };
-    use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
+    use crate::ui::inline_chat_rows::{
+        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
+        serialize_live_rows_with_boundaries_excluding,
+    };
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1189,6 +1207,18 @@ mod tests {
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect::<String>().trim_end().into()
+    }
+
+    fn live_segment(start_row: usize, end_row: usize, id: HistoryOutputId) -> LiveRowSegment {
+        LiveRowSegment {
+            ids: vec![id],
+            msg_idx: 0,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::AssistantLabel,
+            start_row,
+            end_row,
+            commit_ready: true,
+        }
     }
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
@@ -1236,6 +1266,28 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_replay_requests_follow_up_repaint() {
+        let mut app = App::test_default();
+        let mut session = session_with_history(HistoryCommitState::default());
+
+        app.surface_dirty.chat.take_repaint();
+        session.complete_history_flush(
+            &mut app,
+            120,
+            &super::super::chat_terminal::ChatDrawOutcome {
+                viewport_area: Rect::new(0, 27, 120, 3),
+                flushed_history: super::super::chat_terminal::FlushedHistory {
+                    flushed_rows: 160,
+                    replay_incomplete: true,
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
     fn static_history_batches_do_not_reinsert_confirmed_text_blocks() {
         let first = TextBlock::from_complete("first paragraph\n\n")
             .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
@@ -1271,6 +1323,34 @@ mod tests {
                 .any(|batch| batch.confirm_ids.contains(&HistoryOutputId::Block(second_id)))
         );
         assert_eq!(inserted_text, vec!["second paragraph"]);
+    }
+
+    #[test]
+    fn history_batches_skip_invalid_live_row_segments() {
+        let invalid_id = output_id();
+        let serialized = SerializedLiveRows::from_parts_for_test(
+            rows(2),
+            vec![live_segment(0, 3, invalid_id.clone())],
+        );
+
+        let static_batches =
+            super::build_static_history_batches(&serialized, 120, &BTreeSet::new());
+        let replay = super::build_replay_history_batches(&serialized, 120, None);
+        let excluded_rows = super::excluded_row_count(&serialized, &BTreeSet::from([invalid_id]));
+
+        assert!(static_batches.is_empty());
+        assert!(replay.batches.is_empty());
+        assert!(replay.confirm_ids.is_empty());
+        assert_eq!(replay.rows, 0);
+        assert_eq!(excluded_rows, 0);
+    }
+
+    #[test]
+    fn row_window_slice_returns_empty_for_stale_ranges() {
+        let rows = rows(2);
+        let stale = RowWindow { start: 4, visible_len: 2 };
+
+        assert!(stale.slice(&rows).is_empty());
     }
 
     #[test]
@@ -1387,7 +1467,7 @@ mod tests {
 
         let plan = plan_inline_geometry(Some(old_area), 4, 120, 37);
 
-        assert_eq!(plan.target_area, Some(Rect::new(0, 34, 120, 4)));
+        assert_eq!(plan.target_area, Some(Rect::new(0, 33, 120, 4)));
         assert_eq!(plan.height, 4);
     }
 

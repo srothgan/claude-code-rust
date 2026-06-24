@@ -1015,7 +1015,8 @@ pub(crate) fn plan_inline_geometry(
     let height = desired_height.max(1).min(screen_height);
     let old_area = last_frame_area.filter(|area| !area.is_empty());
     let target_area = old_area.map(|area| {
-        Rect::new(0, area.y.min(screen_height.saturating_sub(1)), terminal_width.max(1), height)
+        let max_top = screen_height.saturating_sub(height);
+        Rect::new(0, area.y.min(max_top), terminal_width.max(1), height)
     });
     InlineGeometryPlan { old_area, target_area, height }
 }
@@ -1424,6 +1425,14 @@ mod tests {
 
         assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
         assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
+    }
+
+    #[test]
+    fn geometry_plan_clamps_shrink_target_inside_terminal() {
+        let plan = plan_inline_geometry(Some(Rect::new(0, 34, 120, 6)), 11, 80, 20);
+
+        assert_eq!(plan.height, 11);
+        assert_eq!(plan.target_area, Some(Rect::new(0, 9, 80, 11)));
     }
 
     #[test]
