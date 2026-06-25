@@ -32,6 +32,8 @@ const WORKFLOW_TOOL_NAME = "Workflow";
 const PROJECTS_TOOL_NAME = "Projects";
 const ARTIFACT_TOOL_NAME = "Artifact";
 const SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME = "ShowOnboardingRolePicker";
+const READ_MCP_RESOURCE_TOOL_NAME = "ReadMcpResource";
+const READ_MCP_RESOURCE_DIR_TOOL_NAME = "ReadMcpResourceDir";
 const SEARCH_OUTPUT_MODES = new Set(["content", "files_with_matches", "count"]);
 
 function isCronToolName(name: string): boolean {
@@ -70,6 +72,10 @@ function isAgentLikeToolName(name: string): boolean {
 
 export function isShellToolName(name: string): boolean {
   return name === "Bash" || name === "PowerShell";
+}
+
+function isMcpResourceReadToolName(name: string): boolean {
+  return name === READ_MCP_RESOURCE_TOOL_NAME || name === READ_MCP_RESOURCE_DIR_TOOL_NAME;
 }
 
 function agentInputTitle(name: string, input: Record<string, unknown>): string | undefined {
@@ -171,7 +177,8 @@ export function normalizeToolKind(name: string): string {
   }
   switch (name) {
     case "Read":
-    case "ReadMcpResource":
+    case READ_MCP_RESOURCE_TOOL_NAME:
+    case READ_MCP_RESOURCE_DIR_TOOL_NAME:
       return "read";
     case "Write":
     case "Edit":
@@ -301,14 +308,14 @@ export function toolTitle(
   if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
     return `${name} ${input.file_path}`;
   }
-  if (name === "ReadMcpResource") {
+  if (isMcpResourceReadToolName(name)) {
     const uri = typeof input.uri === "string" ? input.uri : "";
     const server = typeof input.server === "string" ? input.server : "";
     if (server && uri) {
-      return `ReadMcpResource ${server} ${uri}`;
+      return `${name} ${server} ${uri}`;
     }
     if (uri) {
-      return `ReadMcpResource ${uri}`;
+      return `${name} ${uri}`;
     }
   }
   return name;
@@ -503,6 +510,47 @@ function mcpResourceContentFromResult(rawResult: unknown, rawContent: unknown): 
   }
 
   return [];
+}
+
+function mcpResourceDirTextFromResult(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
+  if (toolName !== READ_MCP_RESOURCE_DIR_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    if (!Array.isArray(candidate.resources)) {
+      continue;
+    }
+
+    const lines: string[] = [];
+    for (const entry of candidate.resources) {
+      const record = asRecordOrNull(entry);
+      if (!record) {
+        continue;
+      }
+      const name = nonEmptyString(record.name);
+      const uri = nonEmptyString(record.uri);
+      if (!name || !uri) {
+        continue;
+      }
+
+      const mimeType = nonEmptyString(record.mimeType);
+      const suffix = mimeType
+        ? mimeType === "inode/directory"
+          ? " (directory)"
+          : ` (${mimeType})`
+        : "";
+      lines.push(`${name} - ${uri}${suffix}`);
+    }
+
+    return lines.length > 0 ? lines.join("\n") : "No resources found.";
+  }
+
+  return undefined;
 }
 
 function extractToolOutputMetadata(
@@ -1932,12 +1980,12 @@ function enterPlanModeStructuredOutputHandled(
   return false;
 }
 
-function readMcpResourceErrorText(
+function mcpResourceReadErrorText(
   toolName: string,
   rawResult: unknown,
   rawContent: unknown,
 ): string | undefined {
-  if (toolName !== "ReadMcpResource") {
+  if (!isMcpResourceReadToolName(toolName)) {
     return undefined;
   }
 
@@ -2026,11 +2074,21 @@ export function buildToolResultFields(
   if (agentTitle) {
     fields.title = agentTitle;
   }
-  const readMcpResourceError = readMcpResourceErrorText(toolName, rawResult, rawContent);
+  const readMcpResourceError = mcpResourceReadErrorText(toolName, rawResult, rawContent);
   if (readMcpResourceError) {
     fields.status = "failed";
     fields.raw_output = readMcpResourceError;
     fields.content = [{ type: "content", content: { type: "text", text: readMcpResourceError } }];
+    return fields;
+  }
+  const readMcpResourceDirOutput = !isError
+    ? mcpResourceDirTextFromResult(toolName, rawResult, rawContent)
+    : undefined;
+  if (readMcpResourceDirOutput !== undefined) {
+    fields.raw_output = readMcpResourceDirOutput;
+    fields.content = [
+      { type: "content", content: { type: "text", text: readMcpResourceDirOutput } },
+    ];
     return fields;
   }
   const searchOutput = !isError ? searchResultText(toolName, rawResult, rawContent) : undefined;
@@ -2182,7 +2240,7 @@ export function buildToolResultFields(
     }
   }
 
-  if (!isError && toolName === "ReadMcpResource") {
+  if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
     const structuredResourceContent = mcpResourceContentFromResult(rawResult, rawContent);
     if (structuredResourceContent.length > 0) {
       fields.content = structuredResourceContent;

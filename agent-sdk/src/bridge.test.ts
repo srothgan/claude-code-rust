@@ -3374,6 +3374,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("ShowOnboardingRolePicker"), "other");
   assert.equal(normalizeToolKind("TaskOutput"), "other");
   assert.equal(normalizeToolKind("TaskStop"), "other");
+  assert.equal(normalizeToolKind("ReadMcpResourceDir"), "read");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
@@ -3395,6 +3396,26 @@ test("shell tool titles use input command", () => {
     "Get-ChildItem",
   );
   assert.equal(createToolCall("tc-powershell-empty", "PowerShell", {}).title, "Terminal");
+});
+
+test("ReadMcpResourceDir titles include server and URI context", () => {
+  assert.equal(
+    createToolCall("tc-mcp-dir-title", "ReadMcpResourceDir", {
+      server: "docs",
+      uri: "file://manuals/",
+    }).title,
+    "ReadMcpResourceDir docs file://manuals/",
+  );
+  assert.equal(
+    createToolCall("tc-mcp-dir-uri-title", "ReadMcpResourceDir", {
+      uri: "file://manuals/",
+    }).title,
+    "ReadMcpResourceDir file://manuals/",
+  );
+  assert.equal(
+    createToolCall("tc-mcp-dir-fallback-title", "ReadMcpResourceDir", {}).title,
+    "ReadMcpResourceDir",
+  );
 });
 
 test("parseFastModeState accepts known values and rejects unknown values", () => {
@@ -4912,6 +4933,156 @@ test("buildToolResultFields marks ReadMcpResource error output as failed", () =>
     {
       type: "content",
       content: { type: "text", text: "Error: resource not found" },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders structured ReadMcpResourceDir listings", () => {
+  const base = createToolCall("tc-mcp-dir", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [
+        {
+          name: "guide.md",
+          uri: "file://manuals/guide.md",
+          mimeType: "text/markdown",
+        },
+        {
+          name: "images",
+          uri: "file://manuals/images",
+          mimeType: "inode/directory",
+        },
+        {
+          name: "readme",
+          uri: "file://manuals/readme",
+        },
+      ],
+    },
+    base,
+  );
+
+  const expected =
+    "guide.md - file://manuals/guide.md (text/markdown)\n" +
+    "images - file://manuals/images (directory)\n" +
+    "readme - file://manuals/readme";
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, expected);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: expected },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders empty ReadMcpResourceDir listings", () => {
+  const base = createToolCall("tc-mcp-dir-empty", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://empty/",
+  });
+  const fields = buildToolResultFields(false, { resources: [] }, base);
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "No resources found.");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "No resources found." },
+    },
+  ]);
+});
+
+test("buildToolResultFields marks ReadMcpResourceDir error output as failed", () => {
+  const base = createToolCall("tc-mcp-dir-error", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://missing/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [],
+      error: "directory not found",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Error: directory not found");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Error: directory not found" },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses ReadMcpResourceDir transcript JSON", () => {
+  const base = createToolCall("tc-mcp-dir-history", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const transcriptJson = JSON.stringify({
+    resources: [
+      {
+        name: "api.json",
+        uri: "file://manuals/api.json",
+        mimeType: "application/json",
+      },
+    ],
+  });
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-mcp-dir-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output, "api.json - file://manuals/api.json (application/json)");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "api.json - file://manuals/api.json (application/json)",
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields skips invalid ReadMcpResourceDir entries", () => {
+  const base = createToolCall("tc-mcp-dir-invalid", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [
+        { name: "missing-uri" },
+        { uri: "file://manuals/missing-name" },
+        null,
+        {
+          name: "valid.txt",
+          uri: "file://manuals/valid.txt",
+          mimeType: "text/plain",
+        },
+      ],
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "valid.txt - file://manuals/valid.txt (text/plain)");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "valid.txt - file://manuals/valid.txt (text/plain)",
+      },
     },
   ]);
 });
