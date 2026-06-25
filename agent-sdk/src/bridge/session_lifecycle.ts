@@ -129,6 +129,10 @@ export type PendingElicitation = {
   elicitationId?: string;
 };
 
+export type PendingWorkerShutdown = {
+  reason: string;
+};
+
 export type SessionState = {
   sessionId: string;
   cwd: string;
@@ -156,6 +160,8 @@ export type SessionState = {
   pendingQuestions: Map<string, PendingQuestion>;
   pendingUserDialogs: Map<string, PendingUserDialog>;
   pendingElicitations: Map<string, PendingElicitation>;
+  informationalDedupKeys: Set<string>;
+  pendingWorkerShutdown?: PendingWorkerShutdown;
   mcpStatusRevalidatedAt: Map<string, number>;
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
@@ -515,6 +521,7 @@ export async function createSession(params: {
     pendingQuestions: new Map<string, PendingQuestion>(),
     pendingUserDialogs: new Map<string, PendingUserDialog>(),
     pendingElicitations: new Map<string, PendingElicitation>(),
+    informationalDedupKeys: new Set<string>(),
     mcpStatusRevalidatedAt: new Map<string, number>(),
     hiddenToolUseIds: new Set<string>(),
     authHintSent: false,
@@ -631,6 +638,11 @@ export async function createSession(params: {
         // Lazy import to break circular dependency at module-evaluation time.
         const { handleSdkMessage } = await import("./message_handlers.js");
         handleSdkMessage(session, message);
+      }
+      {
+        // Lazy import to break circular dependency at module-evaluation time.
+        const { flushPendingWorkerShutdown } = await import("./message_handlers.js");
+        flushPendingWorkerShutdown(session);
       }
       if (!session.connected) {
         bridgeLogger.error({

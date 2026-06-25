@@ -152,6 +152,128 @@ function emitSystemNoticeUpdate(
   emitSessionUpdate(session.sessionId, { type: "system_notice_update", severity, message: trimmed });
 }
 
+const MAX_INFORMATIONAL_DEDUP_KEYS = 256;
+
+function shouldEmitInformationalMessage(
+  session: SessionState,
+  level: string,
+  content: string,
+  toolUseId: string,
+): boolean {
+  if (!toolUseId) {
+    return true;
+  }
+  const key = `${toolUseId}\u0000${level}\u0000${content}`;
+  if (session.informationalDedupKeys.has(key)) {
+    return false;
+  }
+  session.informationalDedupKeys.add(key);
+  while (session.informationalDedupKeys.size > MAX_INFORMATIONAL_DEDUP_KEYS) {
+    const first = session.informationalDedupKeys.values().next().value;
+    if (typeof first !== "string") {
+      break;
+    }
+    session.informationalDedupKeys.delete(first);
+  }
+  return true;
+}
+
+function handleInformationalSystemMessage(session: SessionState, msg: Record<string, unknown>): void {
+  const content = typeof msg.content === "string" ? msg.content.trim() : "";
+  if (!content) {
+    return;
+  }
+  const level = typeof msg.level === "string" ? msg.level : "info";
+  const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
+  if (!shouldEmitInformationalMessage(session, level, content, toolUseId)) {
+    return;
+  }
+
+  switch (level) {
+    case "notice":
+      emitSystemNoticeUpdate(session, "info", content);
+      return;
+    case "suggestion":
+      emitSystemNoticeUpdate(session, "info", `Suggestion: ${content}`);
+      return;
+    case "warning":
+      emitSystemNoticeUpdate(session, "warning", content);
+      return;
+    case "info":
+      if (msg.prevent_continuation === true) {
+        emitSystemNoticeUpdate(session, "warning", content);
+      }
+      return;
+    default:
+      bridgeLogger.debug({
+        target: LOG_TARGETS.BRIDGE_SDK,
+        eventName: "sdk_informational_level_unhandled",
+        message: "SDK informational message ignored for unknown level",
+        outcome: "ignored",
+        sessionId: session.sessionId,
+        toolCallId: toolUseId || undefined,
+        fields: {
+          informational_level: level,
+        },
+      });
+  }
+}
+
+function workerShutdownMessage(reason: string): string {
+  const trimmed = reason.trim();
+  return trimmed ? `Claude worker is shutting down: ${trimmed}` : "Claude worker is shutting down.";
+}
+
+function handleWorkerShuttingDownSystemMessage(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): void {
+  const reason = typeof msg.reason === "string" ? msg.reason.trim() : "";
+  if (!session.connected) {
+    bridgeLogger.debug({
+      target: LOG_TARGETS.BRIDGE_SDK,
+      eventName: "sdk_worker_shutdown_preconnect_ignored",
+      message: "SDK worker shutdown ignored before session connect",
+      outcome: "ignored",
+      sessionId: session.sessionId,
+      fields: {
+        reason: reason || undefined,
+      },
+    });
+    return;
+  }
+  session.pendingWorkerShutdown = { reason };
+}
+
+function cancelPendingWorkerShutdown(session: SessionState): void {
+  if (!session.pendingWorkerShutdown) {
+    return;
+  }
+  bridgeLogger.debug({
+    target: LOG_TARGETS.BRIDGE_SDK,
+    eventName: "sdk_worker_shutdown_cancelled",
+    message: "SDK worker shutdown ignored after later stream activity",
+    outcome: "ignored",
+    sessionId: session.sessionId,
+    fields: {
+      reason: session.pendingWorkerShutdown.reason || undefined,
+    },
+  });
+  session.pendingWorkerShutdown = undefined;
+}
+
+export function flushPendingWorkerShutdown(session: SessionState): void {
+  const pending = session.pendingWorkerShutdown;
+  if (!pending) {
+    return;
+  }
+  session.pendingWorkerShutdown = undefined;
+  if (!session.connected) {
+    return;
+  }
+  emitSystemNoticeUpdate(session, "warning", workerShutdownMessage(pending.reason));
+}
+
 function notificationSeverity(priority: unknown): SystemNoticeSeverity {
   return priority === "high" || priority === "immediate" ? "warning" : "info";
 }
@@ -850,10 +972,13 @@ function terminalReasonFromValue(value: unknown): TerminalReason | undefined {
 export function handleSdkMessage(session: SessionState, message: SDKMessage): void {
   const msg = message as unknown as Record<string, unknown>;
   const type = typeof msg.type === "string" ? msg.type : "";
+  const subtype = type === "system" && typeof msg.subtype === "string" ? msg.subtype : "";
+  if (subtype !== "worker_shutting_down") {
+    cancelPendingWorkerShutdown(session);
+  }
   logSdkMessageOrigin(session, msg);
 
   if (type === "system") {
-    const subtype = typeof msg.subtype === "string" ? msg.subtype : "";
     if (handleFallbackRetractionMessage(session, subtype, msg)) {
       return;
     }
@@ -866,6 +991,16 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     if (subtype === "notification") {
       const text = typeof msg.text === "string" ? msg.text : "";
       emitSystemNoticeUpdate(session, notificationSeverity(msg.priority), text);
+      return;
+    }
+
+    if (subtype === "informational") {
+      handleInformationalSystemMessage(session, msg);
+      return;
+    }
+
+    if (subtype === "worker_shutting_down") {
+      handleWorkerShuttingDownSystemMessage(session, msg);
       return;
     }
 

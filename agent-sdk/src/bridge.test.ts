@@ -68,7 +68,7 @@ import { classifyTurnErrorKind } from "./bridge/error_classification.js";
 import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
-import { handleResultMessage } from "./bridge/message_handlers.js";
+import { flushPendingWorkerShutdown, handleResultMessage } from "./bridge/message_handlers.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
   process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
@@ -104,6 +104,7 @@ function makeSessionState(): SessionState {
     pendingQuestions: new Map(),
     pendingUserDialogs: new Map(),
     pendingElicitations: new Map(),
+    informationalDedupKeys: new Set(),
     mcpStatusRevalidatedAt: new Map(),
     hiddenToolUseIds: new Set(),
     authHintSent: false,
@@ -3850,6 +3851,213 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
     { type: "system_notice_update", severity: "info", message: "Sync completed" },
     { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
   ]);
+});
+
+test("handleSdkMessage maps informational system messages to notices by level", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "  Sync ready  ",
+      level: "notice",
+      uuid: "message-info-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Try /compact",
+      level: "suggestion",
+      uuid: "message-info-suggestion",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Hook blocked continuation",
+      level: "warning",
+      uuid: "message-info-warning",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Sync ready" },
+    { type: "system_notice_update", severity: "info", message: "Suggestion: Try /compact" },
+    { type: "system_notice_update", severity: "warning", message: "Hook blocked continuation" },
+  ]);
+});
+
+test("handleSdkMessage keeps informational info log-only unless continuation is prevented", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Transcript-only progress",
+      level: "info",
+      uuid: "message-info-log-only",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Stop hook denied continuation",
+      level: "info",
+      prevent_continuation: true,
+      uuid: "message-info-prevented",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message: "Stop hook denied continuation",
+    },
+  ]);
+});
+
+test("handleSdkMessage deduplicates informational messages by tool use, level, and content", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Progress",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-1",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: " Progress ",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-2",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Progress updated",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-3",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Progress" },
+    { type: "system_notice_update", severity: "info", message: "Progress updated" },
+  ]);
+});
+
+test("handleSdkMessage does not deduplicate informational messages without a tool use id", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const uuid of ["message-info-1", "message-info-2"]) {
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "informational",
+        content: "Repeated global notice",
+        level: "notice",
+        uuid,
+        session_id: "session-1",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
+    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
+  ]);
+});
+
+test("handleSdkMessage treats worker shutdown before connect as log-only", () => {
+  const session = makeSessionState();
+  session.connected = false;
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(session.pendingWorkerShutdown, undefined);
+});
+
+test("handleSdkMessage flushes connected worker shutdown only when stream ends", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message: "Claude worker is shutting down: host_exit",
+    },
+  ]);
+});
+
+test("handleSdkMessage cancels pending worker shutdown after later SDK activity", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "notification",
+      text: "Still running",
+      priority: "low",
+      uuid: "message-notification",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Still running" },
+  ]);
+});
+
+test("handleSdkMessage ignores unknown future system subtypes", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "future_subtype",
+      content: "Unknown",
+      uuid: "message-future",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
 });
 
 test("handleSdkMessage treats mirror errors as log-only diagnostics", () => {
