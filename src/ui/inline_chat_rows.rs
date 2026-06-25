@@ -1401,6 +1401,7 @@ mod tests {
             tool.pending_permission = Some(crate::app::InlinePermission {
                 options: Vec::new(),
                 display: None,
+                subagent_context: None,
                 response_tx,
                 selected_index: 0,
                 focused: true,
@@ -1429,6 +1430,53 @@ mod tests {
         }
 
         MessageBlock::ToolCall(Box::new(tool))
+    }
+
+    fn tool_call_block_with_pending_permission(
+        id: &str,
+        hidden: bool,
+        focused: bool,
+    ) -> MessageBlock {
+        let mut block = tool_call_block(id, hidden);
+        let MessageBlock::ToolCall(tool) = &mut block else {
+            unreachable!("tool_call_block always returns a tool call");
+        };
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        tool.pending_permission = Some(crate::app::InlinePermission {
+            options: Vec::new(),
+            display: None,
+            subagent_context: None,
+            response_tx,
+            selected_index: 0,
+            focused,
+        });
+        block
+    }
+
+    fn tool_call_block_with_subagent_pending_permission(id: &str) -> MessageBlock {
+        let mut block = tool_call_block_with_pending_permission(id, true, true);
+        let MessageBlock::ToolCall(tool) = &mut block else {
+            unreachable!("tool_call_block_with_pending_permission returns a tool call");
+        };
+        let permission = tool.pending_permission.as_mut().expect("pending permission");
+        permission.options = vec![
+            model::PermissionOption::new(
+                "allow",
+                "Allow once",
+                model::PermissionOptionKind::AllowOnce,
+            ),
+            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
+        ];
+        permission.subagent_context = Some(crate::app::SubagentPermissionContext {
+            subagent_label: "general-purpose".to_owned(),
+            child_tool_name: "Bash".to_owned(),
+            child_tool_title: "Child Tool".to_owned(),
+            parent_tool_call_id: "agent-1".to_owned(),
+            parent_tool_title: Some("Agent: general-purpose".to_owned()),
+            parent_model: Some("claude-opus-4-8".to_owned()),
+            parent_raw_input: None,
+        });
+        block
     }
 
     #[test]
@@ -1882,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_canonical_tool_with_focused_permission_renders_interaction_rows() {
+    fn hidden_canonical_tool_with_focused_permission_without_subagent_context_has_no_header() {
         let mut app = App::test_default();
         app.messages.push(assistant_blocks_message(vec![tool_call_block_with_interaction(
             "child-1", true, true, false,
@@ -1897,6 +1945,82 @@ mod tests {
                 text.iter().any(|line| line.contains("Child Tool")),
                 "missing tool title at width {width}: {text:?}"
             );
+            assert!(
+                !text.iter().any(|line| line.contains("Subagent:")),
+                "unexpected subagent header at width {width}: {text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.contains("Subagent ·")),
+                "unexpected subagent title prefix at width {width}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_canonical_tool_with_unfocused_permission_renders_interaction_rows() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_pending_permission(
+            "child-1", true, false,
+        )]));
+
+        for width in [32, 120, 32] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
+
+            assert!(text.iter().any(|line| line == "Claude"), "missing label at width {width}");
+            assert!(
+                text.iter().any(|line| line.contains("Child Tool")),
+                "missing tool title at width {width}: {text:?}"
+            );
+            assert!(
+                text.iter().any(|line| line.contains("Waiting for input")),
+                "missing waiting row at width {width}: {text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.contains("Subagent:")),
+                "unexpected subagent header at width {width}: {text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.contains("Subagent ·")),
+                "unexpected subagent title prefix at width {width}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_canonical_tool_with_subagent_permission_prefixes_child_tool_title() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_subagent_pending_permission("child-1"),
+        ]));
+
+        for width in [80, 120, 80] {
+            let rows = serialize_live_rows(&mut app, width);
+            let text = line_texts(&rows);
+
+            let child_idx = text
+                .iter()
+                .position(|line| line.contains("Subagent ·") && line.contains("Child Tool"))
+                .expect("missing prefixed child tool line");
+            assert!(
+                !text[child_idx].contains("general-purpose"),
+                "subagent label should not render at width {width}: {text:?}"
+            );
+            let permission_idx = text
+                .iter()
+                .position(|line| line.contains("Allow once"))
+                .expect("missing permission options");
+
+            assert!(child_idx < permission_idx, "permission rendered before child: {text:?}");
+            assert_eq!(
+                text.iter().filter(|line| line.contains("Subagent ·")).count(),
+                1,
+                "expected one prefixed subagent title at width {width}: {text:?}"
+            );
+            assert!(!text.iter().any(|line| line.contains("Subagent:")));
+            assert!(!text.iter().any(|line| line.contains("[model:")));
+            assert!(!text.iter().any(|line| line.contains("Agent:")));
+            assert!(!text.iter().any(|line| line.contains("general-purpose")));
         }
     }
 

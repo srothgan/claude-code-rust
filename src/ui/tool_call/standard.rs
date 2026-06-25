@@ -68,11 +68,25 @@ pub(super) fn render_tool_call_title(
         ));
     }
 
+    if let Some(prefix) = hidden_subagent_permission_title_prefix(tc) {
+        title_spans.push(prefix);
+    }
+
     let display_title = tool_display_title(tc, render_context);
     title_spans.extend(markdown_inline_spans(display_title.as_ref()));
     title_spans.extend(tool_output_badge_spans(tc));
 
     Line::from(truncate_spans_to_width(title_spans, usize::from(width)))
+}
+
+fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'static>> {
+    let has_subagent_permission = tc
+        .pending_permission
+        .as_ref()
+        .is_some_and(|permission| permission.subagent_context.is_some());
+    (tc.hidden && has_subagent_permission).then(|| {
+        Span::styled("Subagent · ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))
+    })
 }
 
 /// Render the body lines (everything after the title) for a tool call.

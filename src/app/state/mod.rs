@@ -24,7 +24,8 @@ pub use messages::{
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
-    InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
+    InlinePermission, InlineQuestion, SubagentPermissionContext, TerminalSnapshotMode,
+    ToolCallInfo, is_execute_tool_name,
 };
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
@@ -1659,6 +1660,7 @@ mod tests {
                         model::PermissionOptionKind::AllowOnce,
                     )],
                     display: None,
+                    subagent_context: None,
                     response_tx: tx,
                     selected_index: 0,
                     focused: false,

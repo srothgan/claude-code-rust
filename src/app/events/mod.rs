@@ -4828,6 +4828,7 @@ mod tests {
         tc.pending_permission = Some(InlinePermission {
             options,
             display: None,
+            subagent_context: None,
             response_tx,
             selected_index: 0,
             focused,
