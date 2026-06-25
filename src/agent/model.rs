@@ -1360,6 +1360,7 @@ pub enum SystemNoticeSeverity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
+    pub error_code: Option<String>,
     pub resets_at: Option<f64>,
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
@@ -1368,6 +1369,8 @@ pub struct RateLimitUpdate {
     pub overage_disabled_reason: Option<String>,
     pub is_using_overage: Option<bool>,
     pub surpassed_threshold: Option<f64>,
+    pub can_user_purchase_credits: Option<bool>,
+    pub has_chargeable_saved_payment_method: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

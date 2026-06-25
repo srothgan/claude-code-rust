@@ -3882,6 +3882,7 @@ mod tests {
 
         let warning_update = model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
+            error_code: None,
             resets_at: Some(123.0),
             utilization: Some(0.92),
             rate_limit_type: Some("five_hour".to_owned()),
@@ -3890,6 +3891,8 @@ mod tests {
             overage_disabled_reason: None,
             is_using_overage: None,
             surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
         };
 
         handle_client_event(
@@ -3942,6 +3945,7 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
                 model::RateLimitUpdate {
                     status: model::RateLimitStatus::AllowedWarning,
+                    error_code: None,
                     resets_at: Some(1_741_280_000.0),
                     utilization: Some(0.95),
                     rate_limit_type: Some("five_hour".to_owned()),
@@ -3950,6 +3954,8 @@ mod tests {
                     overage_disabled_reason: None,
                     is_using_overage: None,
                     surpassed_threshold: None,
+                    can_user_purchase_credits: None,
+                    has_chargeable_saved_payment_method: None,
                 },
             )),
         );
@@ -3985,6 +3991,7 @@ mod tests {
         let mut app = make_test_app();
         app.last_rate_limit_update = Some(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
+            error_code: None,
             resets_at: Some(1_741_280_000.0),
             utilization: Some(0.95),
             rate_limit_type: Some("five_hour".to_owned()),
@@ -3993,6 +4000,8 @@ mod tests {
             overage_disabled_reason: None,
             is_using_overage: None,
             surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
         });
         app.status = AppStatus::Thinking;
         app.messages.push(user_msg("first"));
@@ -4024,6 +4033,7 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
                 model::RateLimitUpdate {
                     status: model::RateLimitStatus::Rejected,
+                    error_code: None,
                     resets_at: Some(1_741_290_000.0),
                     utilization: None,
                     rate_limit_type: Some("daily".to_owned()),
@@ -4032,6 +4042,8 @@ mod tests {
                     overage_disabled_reason: None,
                     is_using_overage: None,
                     surpassed_threshold: None,
+                    can_user_purchase_credits: None,
+                    has_chargeable_saved_payment_method: None,
                 },
             )),
         );
@@ -4061,6 +4073,7 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
                 model::RateLimitUpdate {
                     status: model::RateLimitStatus::AllowedWarning,
+                    error_code: None,
                     resets_at: Some(123.0),
                     utilization: Some(0.91),
                     rate_limit_type: Some("five_hour".to_owned()),
@@ -4069,6 +4082,8 @@ mod tests {
                     overage_disabled_reason: None,
                     is_using_overage: None,
                     surpassed_threshold: None,
+                    can_user_purchase_credits: None,
+                    has_chargeable_saved_payment_method: None,
                 },
             )),
         );
@@ -4086,6 +4101,7 @@ mod tests {
             ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
                 model::RateLimitUpdate {
                     status: model::RateLimitStatus::AllowedWarning,
+                    error_code: None,
                     resets_at: Some(456.0),
                     utilization: Some(0.92),
                     rate_limit_type: Some("daily".to_owned()),
@@ -4094,6 +4110,8 @@ mod tests {
                     overage_disabled_reason: None,
                     is_using_overage: None,
                     surpassed_threshold: None,
+                    can_user_purchase_credits: None,
+                    has_chargeable_saved_payment_method: None,
                 },
             )),
         );

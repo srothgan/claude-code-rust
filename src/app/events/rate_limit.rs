@@ -192,6 +192,7 @@ mod tests {
     fn org_level_disabled_without_primary_context_uses_extra_usage_message() {
         let update = RateLimitUpdate {
             status: RateLimitStatus::Rejected,
+            error_code: None,
             resets_at: None,
             utilization: None,
             rate_limit_type: None,
@@ -200,6 +201,8 @@ mod tests {
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
             is_using_overage: Some(false),
             surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
         };
 
         assert_eq!(
@@ -212,6 +215,7 @@ mod tests {
     fn org_level_disabled_with_primary_context_keeps_normal_rate_limit_message() {
         let update = RateLimitUpdate {
             status: RateLimitStatus::Rejected,
+            error_code: None,
             resets_at: Some(1_741_280_000.0),
             utilization: None,
             rate_limit_type: Some("five_hour".to_owned()),
@@ -220,6 +224,8 @@ mod tests {
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
             is_using_overage: Some(false),
             surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
         };
 
         let summary = format_rate_limit_summary(&update);

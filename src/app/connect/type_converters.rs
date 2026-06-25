@@ -18,6 +18,7 @@ pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::Ra
 pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
     model::RateLimitUpdate {
         status: map_rate_limit_status(update.status),
+        error_code: update.error_code,
         resets_at: update.resets_at,
         utilization: update.utilization,
         rate_limit_type: update.rate_limit_type,
@@ -26,6 +27,8 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
         overage_disabled_reason: update.overage_disabled_reason,
         is_using_overage: update.is_using_overage,
         surpassed_threshold: update.surpassed_threshold,
+        can_user_purchase_credits: update.can_user_purchase_credits,
+        has_chargeable_saved_payment_method: update.has_chargeable_saved_payment_method,
     }
 }
 
@@ -342,6 +345,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }
         types::SessionUpdate::RateLimitUpdate {
             status,
+            error_code,
             resets_at,
             utilization,
             rate_limit_type,
@@ -350,9 +354,12 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             overage_disabled_reason,
             is_using_overage,
             surpassed_threshold,
+            can_user_purchase_credits,
+            has_chargeable_saved_payment_method,
         } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
             types::RateLimitUpdate {
                 status,
+                error_code,
                 resets_at,
                 utilization,
                 rate_limit_type,
@@ -361,6 +368,8 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 overage_disabled_reason,
                 is_using_overage,
                 surpassed_threshold,
+                can_user_purchase_credits,
+                has_chargeable_saved_payment_method,
             },
         ))),
         types::SessionUpdate::ApiRetryUpdate {
@@ -1131,6 +1140,33 @@ mod tests {
             panic!("expected agent message chunk");
         };
         assert_eq!(chunk.source_message_uuid.as_deref(), Some("assistant-1"));
+    }
+
+    #[test]
+    fn map_session_update_preserves_rate_limit_credits_metadata() {
+        let mapped = map_session_update(types::SessionUpdate::RateLimitUpdate {
+            status: types::RateLimitStatus::Rejected,
+            error_code: Some("credits_required".to_owned()),
+            resets_at: None,
+            utilization: None,
+            rate_limit_type: None,
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+            can_user_purchase_credits: Some(true),
+            has_chargeable_saved_payment_method: Some(false),
+        })
+        .expect("rate limit update should map");
+
+        let model::SessionUpdate::RateLimitUpdate(update) = mapped else {
+            panic!("expected rate limit update");
+        };
+        assert_eq!(update.status, model::RateLimitStatus::Rejected);
+        assert_eq!(update.error_code.as_deref(), Some("credits_required"));
+        assert_eq!(update.can_user_purchase_credits, Some(true));
+        assert_eq!(update.has_chargeable_saved_payment_method, Some(false));
     }
 
     #[test]

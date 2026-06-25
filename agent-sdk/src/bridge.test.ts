@@ -3432,11 +3432,15 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     overageDisabledReason: "out_of_credits",
     isUsingOverage: false,
     surpassedThreshold: 0.9,
+    errorCode: "credits_required",
+    canUserPurchaseCredits: true,
+    hasChargeableSavedPaymentMethod: false,
   });
 
   assert.deepEqual(update, {
     type: "rate_limit_update",
     status: "allowed_warning",
+    error_code: "credits_required",
     resets_at: 1_741_280_000,
     utilization: 0.92,
     rate_limit_type: "five_hour",
@@ -3445,6 +3449,8 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     overage_disabled_reason: "out_of_credits",
     is_using_overage: false,
     surpassed_threshold: 0.9,
+    can_user_purchase_credits: true,
+    has_chargeable_saved_payment_method: false,
   });
 });
 
@@ -3480,6 +3486,10 @@ test("buildRateLimitUpdate rejects invalid payloads", () => {
     }),
     { type: "rate_limit_update", status: "rejected" },
   );
+  assert.deepEqual(buildRateLimitUpdate({ status: "rejected", errorCode: "other" }), {
+    type: "rate_limit_update",
+    status: "rejected",
+  });
 });
 
 test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {

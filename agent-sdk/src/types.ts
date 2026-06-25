@@ -81,6 +81,7 @@ export type TerminalReason =
 
 export interface RateLimitUpdate {
   status: RateLimitStatus;
+  error_code?: "credits_required";
   resets_at?: number;
   utilization?: number;
   rate_limit_type?: string;
@@ -89,6 +90,8 @@ export interface RateLimitUpdate {
   overage_disabled_reason?: string;
   is_using_overage?: boolean;
   surpassed_threshold?: number;
+  can_user_purchase_credits?: boolean;
+  has_chargeable_saved_payment_method?: boolean;
 }
 
 export type ApiRetryError =
