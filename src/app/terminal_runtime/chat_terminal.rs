@@ -313,6 +313,7 @@ impl ChatTerminal {
                 );
                 log_inline_geometry_plan(&geometry_plan);
 
+                self.apply_inline_geometry_scroll(&geometry_plan, chat_frame.terminal_height)?;
                 self.ensure_inline_terminal_height(
                     geometry_plan.height,
                     geometry_plan.target_area,
@@ -404,18 +405,9 @@ impl ChatTerminal {
             return Ok(());
         }
 
-        if self.terminal.is_some()
-            && let Some(area) = current_anchor
-        {
-            self.clear_owned_area(area, "viewport_reconfigure")?;
-        }
-
         let cursor_before = crossterm::cursor::position()
             .context("failed to read cursor before inline terminal ensure")?;
         let anchor = anchor_area.or(self.state.area);
-        if let Some(area) = anchor {
-            move_cursor_to(area).context("failed to restore inline viewport anchor")?;
-        }
         let cursor_y = anchor.map_or(cursor_before.1, |area| area.y);
         let predicted_area = Rect::new(
             0,
@@ -423,6 +415,19 @@ impl ChatTerminal {
             terminal_width.max(1),
             next_height,
         );
+
+        if self.terminal.is_some()
+            && let Some(area) = current_anchor
+        {
+            self.clear_owned_area(
+                inline_viewport_reconfigure_clear_area(area, predicted_area),
+                "viewport_reconfigure",
+            )?;
+        }
+
+        if let Some(area) = anchor {
+            move_cursor_to(area).context("failed to restore inline viewport anchor")?;
+        }
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -448,8 +453,44 @@ impl ChatTerminal {
         );
         self.terminal = Some(terminal);
         self.state.area = Some(predicted_area);
-        self.request_native_inline_clear("inline_terminal_ensure");
         self.mark_area_owned(predicted_area, screen_height, "inline_terminal_ensure");
+        self.clear_ratatui_inline_viewport("inline_terminal_ensure")?;
+        Ok(())
+    }
+
+    fn apply_inline_geometry_scroll(
+        &mut self,
+        geometry_plan: &InlineGeometryPlan,
+        terminal_height: u16,
+    ) -> anyhow::Result<()> {
+        if geometry_plan.scroll_rows_before_resize == 0 {
+            return Ok(());
+        }
+
+        let area_after_scroll = geometry_plan.old_area_after_scroll.ok_or_else(|| {
+            anyhow!("inline viewport resize scroll missing shifted area: plan={geometry_plan:?}")
+        })?;
+        self.append_blank_lines_for_owned_region(
+            geometry_plan.scroll_rows_before_resize,
+            terminal_height,
+        )?;
+        self.state.area = Some(area_after_scroll);
+        self.terminal = None;
+
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "inline_chat_resize_scroll_applied",
+            message = "terminal scrolled before expanding inline viewport",
+            outcome = "success",
+            rows = geometry_plan.scroll_rows_before_resize,
+            old_top = geometry_plan.old_area.map(Rect::top),
+            shifted_top = area_after_scroll.top(),
+            target_top = geometry_plan.target_area.map(Rect::top),
+            target_height = geometry_plan.height,
+            owned_top = self.state.owned_top,
+            owned_bottom = self.state.owned_bottom,
+        );
+
         Ok(())
     }
 
@@ -996,8 +1037,10 @@ fn replay_batch_row_budget(terminal_height: u16) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InlineGeometryPlan {
     pub(crate) old_area: Option<Rect>,
+    pub(crate) old_area_after_scroll: Option<Rect>,
     pub(crate) target_area: Option<Rect>,
     pub(crate) height: u16,
+    pub(crate) scroll_rows_before_resize: u16,
 }
 
 pub(crate) fn plan_inline_geometry(
@@ -1009,11 +1052,24 @@ pub(crate) fn plan_inline_geometry(
     let screen_height = terminal_height.max(1);
     let height = desired_height.max(1).min(screen_height);
     let old_area = last_frame_area.filter(|area| !area.is_empty());
-    let target_area = old_area.map(|area| {
+    let scroll_rows_before_resize =
+        old_area.filter(|area| height > area.height).map_or(0, |area| {
+            let growth = height.saturating_sub(area.height);
+            let available_below = screen_height.saturating_sub(area.bottom());
+            growth.saturating_sub(available_below)
+        });
+    let old_area_after_scroll = old_area.map(|area| shift_area_up(area, scroll_rows_before_resize));
+    let target_area = old_area_after_scroll.map(|area| {
         let max_top = screen_height.saturating_sub(height);
         Rect::new(0, area.y.min(max_top), terminal_width.max(1), height)
     });
-    InlineGeometryPlan { old_area, target_area, height }
+    InlineGeometryPlan {
+        old_area,
+        old_area_after_scroll,
+        target_area,
+        height,
+        scroll_rows_before_resize,
+    }
 }
 
 fn inline_viewport_top_after_create(cursor_y: u16, height: u16, terminal_height: u16) -> u16 {
@@ -1036,6 +1092,18 @@ fn inline_viewport_scroll_rows_after_create(
 
 fn shift_area_up(area: Rect, rows: u16) -> Rect {
     Rect::new(area.x, area.y.saturating_sub(rows), area.width, area.height)
+}
+
+fn inline_viewport_reconfigure_clear_area(current_area: Rect, predicted_area: Rect) -> Rect {
+    union_rect(current_area, predicted_area)
+}
+
+fn union_rect(first: Rect, second: Rect) -> Rect {
+    let left = first.x.min(second.x);
+    let top = first.y.min(second.y);
+    let right = first.x.saturating_add(first.width).max(second.x.saturating_add(second.width));
+    let bottom = first.y.saturating_add(first.height).max(second.y.saturating_add(second.height));
+    Rect::new(left, top, right.saturating_sub(left), bottom.saturating_sub(top))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1173,8 +1241,10 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
         outcome = "prepared",
         old_top = plan.old_area.map(Rect::top),
         old_height = plan.old_area.map(|area| area.height),
+        shifted_top = plan.old_area_after_scroll.map(Rect::top),
         target_top = plan.target_area.map(Rect::top),
         target_height = plan.target_area.map(|area| area.height),
+        scroll_rows_before_resize = plan.scroll_rows_before_resize,
     );
 }
 
@@ -1182,9 +1252,9 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 mod tests {
     use super::{
         ChatDrawRequest, ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch,
-        RenderedHistoryRows, ScrollbackInsertAction, inline_viewport_scroll_rows_after_create,
-        inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert, shift_area_up,
-        viewport_area_after_insert_exact,
+        RenderedHistoryRows, ScrollbackInsertAction, inline_viewport_reconfigure_clear_area,
+        inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
+        plan_inline_geometry, plan_owned_insert, shift_area_up, viewport_area_after_insert_exact,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1375,6 +1445,44 @@ mod tests {
     fn inline_viewport_scroll_rows_track_bottom_reconfigure_scroll() {
         assert_eq!(inline_viewport_scroll_rows_after_create(31, 8, 37), 2);
         assert_eq!(inline_viewport_scroll_rows_after_create(23, 11, 37), 0);
+    }
+
+    #[test]
+    fn geometry_plan_scrolls_before_bottom_expansion_claims_transcript_rows() {
+        let plan = plan_inline_geometry(Some(Rect::new(0, 32, 133, 4)), 8, 133, 37);
+
+        assert_eq!(plan.scroll_rows_before_resize, 3);
+        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 29, 133, 4)));
+        assert_eq!(plan.target_area, Some(Rect::new(0, 29, 133, 8)));
+    }
+
+    #[test]
+    fn geometry_plan_expands_downward_when_room_exists_below_viewport() {
+        let plan = plan_inline_geometry(Some(Rect::new(0, 22, 120, 4)), 8, 120, 37);
+
+        assert_eq!(plan.scroll_rows_before_resize, 0);
+        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 22, 120, 4)));
+        assert_eq!(plan.target_area, Some(Rect::new(0, 22, 120, 8)));
+    }
+
+    #[test]
+    fn reconfigure_clear_area_includes_shifted_old_rows_and_new_live_rows() {
+        let clear_area = inline_viewport_reconfigure_clear_area(
+            Rect::new(0, 29, 120, 4),
+            Rect::new(0, 29, 120, 8),
+        );
+
+        assert_eq!(clear_area, Rect::new(0, 29, 120, 8));
+    }
+
+    #[test]
+    fn reconfigure_clear_area_keeps_old_rows_when_viewport_shrinks() {
+        let clear_area = inline_viewport_reconfigure_clear_area(
+            Rect::new(0, 17, 120, 20),
+            Rect::new(0, 17, 120, 4),
+        );
+
+        assert_eq!(clear_area, Rect::new(0, 17, 120, 20));
     }
 
     #[test]
