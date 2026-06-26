@@ -6,7 +6,7 @@ use super::overlays::{
 };
 use super::prelude::*;
 use super::selection::clamp_selection;
-use super::text::{display_label, normalize_project_path};
+use super::text::display_label;
 
 pub(super) fn execute_selected_installed_overlay_action(app: &mut App) {
     let Some(overlay) = app.config.installed_plugin_actions_overlay().cloned() else {
@@ -394,29 +394,30 @@ pub(super) fn action_cwd(app: &App, overlay: &InstalledPluginActionOverlayState)
 pub(super) fn installed_overlay_actions(
     entry: &InstalledPluginEntry,
 ) -> Vec<InstalledPluginActionKind> {
-    let mut actions = vec![
-        InstalledPluginActionKind::Update,
+    vec![
         if entry.enabled {
             InstalledPluginActionKind::Disable
         } else {
             InstalledPluginActionKind::Enable
         },
-    ];
-    actions.push(InstalledPluginActionKind::Uninstall);
-    actions
+        InstalledPluginActionKind::Update,
+        InstalledPluginActionKind::Uninstall,
+    ]
 }
 
 pub(super) fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> String {
-    match entry.scope.as_str() {
-        "project" => entry
-            .project_path
-            .as_deref()
-            .map_or_else(|| format!("Project plugin for {}", app.cwd_raw), normalize_project_path),
-        "local" => entry.project_path.as_deref().map_or_else(
-            || "Local plugin".to_owned(),
-            |path| format!("Local plugin at {}", normalize_project_path(path)),
-        ),
-        "user" => "User plugin".to_owned(),
-        other => format!("{other} plugin"),
+    if let Some(description) = app
+        .plugins
+        .marketplace
+        .iter()
+        .find(|candidate| candidate.plugin_id == entry.id)
+        .and_then(|candidate| candidate.description.as_deref())
+    {
+        return description.to_owned();
+    }
+
+    match entry.project_path.as_deref() {
+        Some(project_path) => format!("Installed in {} scope for {}.", entry.scope, project_path),
+        None => format!("Installed in {} scope.", entry.scope),
     }
 }
