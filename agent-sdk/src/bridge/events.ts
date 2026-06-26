@@ -12,7 +12,9 @@ export function buildSessionListOptions(
   dir: string | undefined,
   limit = SESSION_LIST_LIMIT,
 ): ListSessionsOptions {
-  return dir ? { dir, includeWorktrees: true, limit } : { limit };
+  return dir
+    ? { dir, includeProgrammatic: true, includeWorktrees: true, limit }
+    : { includeProgrammatic: true, limit };
 }
 
 export function setSessionListingDir(dir: string | undefined): void {

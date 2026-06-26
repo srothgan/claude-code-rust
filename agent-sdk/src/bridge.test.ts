@@ -6395,13 +6395,15 @@ test("mapSdkSessions normalizes and sorts sessions", () => {
   ]);
 });
 
-test("buildSessionListOptions scopes repo-local listings to worktrees", () => {
+test("buildSessionListOptions includes SDK-created sessions for resume listings", () => {
   assert.deepEqual(buildSessionListOptions("C:/repo"), {
     dir: "C:/repo",
+    includeProgrammatic: true,
     includeWorktrees: true,
     limit: 50,
   });
   assert.deepEqual(buildSessionListOptions(undefined), {
+    includeProgrammatic: true,
     limit: 50,
   });
 });
