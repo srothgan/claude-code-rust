@@ -15,6 +15,7 @@ fn format_rate_limit_type(raw: &str) -> &str {
         "seven_day" => "7-day",
         "seven_day_opus" => "7-day Opus",
         "seven_day_sonnet" => "7-day Sonnet",
+        "seven_day_overage_included" => "7-day overage-included",
         "overage" => "overage",
         other => other,
     }
@@ -232,5 +233,27 @@ mod tests {
         assert!(summary.contains("Rate limit reached"));
         assert!(summary.contains("5-hour rate limit"));
         assert!(!summary.contains("Extra usage is required for 1M context"));
+    }
+
+    #[test]
+    fn seven_day_overage_included_rate_limit_type_renders_readable_label() {
+        let update = RateLimitUpdate {
+            status: RateLimitStatus::AllowedWarning,
+            error_code: None,
+            resets_at: None,
+            utilization: Some(0.92),
+            rate_limit_type: Some("seven_day_overage_included".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
+        };
+
+        let summary = format_rate_limit_summary(&update);
+        assert!(summary.contains("7-day overage-included rate limit"));
+        assert!(!summary.contains("seven_day_overage_included"));
     }
 }
