@@ -1922,6 +1922,112 @@ test("handleSdkMessage emits transcript retraction for model_refusal_fallback", 
   );
 });
 
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with explanation", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      api_refusal_category: "cyber",
+      api_refusal_explanation: "policy text",
+      refused_user_message_uuid: "user-1",
+      content: "raw content",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Reason: policy text.",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with category only", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      api_refusal_category: "cyber",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refusal category: cyber.",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with content detail", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      content: "Refused by policy!",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refused by policy!",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits readable model_refusal_no_fallback notice for empty metadata", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: " ",
+      request_id: null,
+      api_refusal_category: " ",
+      api_refusal_explanation: null,
+      refused_user_message_uuid: null,
+      content: " ",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with the selected model: model refused the request and no fallback model is configured.",
+    },
+  ]);
+});
+
 test("handleSdkMessage emits tolerant transcript retraction for model_fallback", () => {
   const session = makeSessionState();
 

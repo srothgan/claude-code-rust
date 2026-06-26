@@ -219,6 +219,60 @@ function handleInformationalSystemMessage(session: SessionState, msg: Record<str
   }
 }
 
+function trimmedStringField(msg: Record<string, unknown>, field: string): string | undefined {
+  const value = msg[field];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function ensureSentencePunctuation(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function modelRefusalNoFallbackMessage(msg: Record<string, unknown>): string {
+  const model = trimmedStringField(msg, "original_model") ?? "the selected model";
+  const base = `Could not continue with ${model}: model refused the request and no fallback model is configured.`;
+  const explanation = trimmedStringField(msg, "api_refusal_explanation");
+  const category = trimmedStringField(msg, "api_refusal_category");
+  const content = trimmedStringField(msg, "content");
+  const detail = explanation
+    ? `Reason: ${explanation}`
+    : category
+      ? `Refusal category: ${category}`
+      : content;
+  const detailSentence = detail ? ensureSentencePunctuation(detail) : "";
+  return detailSentence ? `${base} ${detailSentence}` : base;
+}
+
+function handleModelRefusalNoFallbackMessage(session: SessionState, msg: Record<string, unknown>): void {
+  const message = modelRefusalNoFallbackMessage(msg);
+  emitSystemNoticeUpdate(session, "warning", message);
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "sdk_model_refusal_no_fallback_received",
+    message: "SDK model refusal without fallback received",
+    outcome: "success",
+    sessionId: session.sessionId,
+    requestId: trimmedStringField(msg, "request_id"),
+    fields: {
+      original_model: trimmedStringField(msg, "original_model"),
+      api_refusal_category: trimmedStringField(msg, "api_refusal_category"),
+      refused_user_message_uuid: trimmedStringField(msg, "refused_user_message_uuid"),
+      sdk_message_uuid: trimmedStringField(msg, "uuid"),
+      sdk_message_session_id: trimmedStringField(msg, "session_id"),
+      has_api_refusal_explanation: trimmedStringField(msg, "api_refusal_explanation") !== undefined,
+      has_content: trimmedStringField(msg, "content") !== undefined,
+    },
+  });
+}
+
 function workerShutdownMessage(reason: string): string {
   const trimmed = reason.trim();
   return trimmed ? `Claude worker is shutting down: ${trimmed}` : "Claude worker is shutting down.";
@@ -980,6 +1034,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
   if (type === "system") {
     if (handleFallbackRetractionMessage(session, subtype, msg)) {
+      return;
+    }
+
+    if (subtype === "model_refusal_no_fallback") {
+      handleModelRefusalNoFallbackMessage(session, msg);
       return;
     }
 
