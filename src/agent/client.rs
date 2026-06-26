@@ -442,6 +442,31 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetRewindTargets { session_id },
+        })
+    }
+
+    pub fn rewind(
+        &self,
+        session_id: String,
+        target_user_message_id: String,
+        restore_mode: crate::agent::types::RewindRestoreMode,
+        launch_settings: SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::Rewind {
+                session_id,
+                target_user_message_id,
+                restore_mode,
+                launch_settings,
+            },
+        })
+    }
+
     pub fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -698,6 +723,45 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn get_rewind_targets_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.get_rewind_targets("session-1".to_owned()).expect("rewind targets");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::GetRewindTargets { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn rewind_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.rewind(
+            "session-1".to_owned(),
+            "user-1".to_owned(),
+            crate::agent::types::RewindRestoreMode::Code,
+            crate::agent::wire::SessionLaunchSettings::default(),
+        )
+        .expect("rewind");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::Rewind {
+                session_id: "session-1".to_owned(),
+                target_user_message_id: "user-1".to_owned(),
+                restore_mode: crate::agent::types::RewindRestoreMode::Code,
+                launch_settings: crate::agent::wire::SessionLaunchSettings::default(),
+            }
         );
     }
 

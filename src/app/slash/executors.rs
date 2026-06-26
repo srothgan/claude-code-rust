@@ -8,8 +8,11 @@ use super::{
     require_connection, set_command_pending,
 };
 use crate::agent::events::ClientEvent;
+use crate::agent::types::RewindRestoreMode;
 use crate::app::config::{self, SettingFile, store};
-use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
+use crate::app::connect::{
+    SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
+};
 use crate::app::events::push_system_message_with_severity;
 use crate::app::{App, AppStatus, CancelOrigin, ReleaseReason, SystemSeverity};
 use std::fmt::Write as _;
@@ -55,6 +58,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Model => handle_model_submit(app, &parsed.args),
         AppSlashCommand::NewSession => handle_new_session_submit(app, &parsed.args),
         AppSlashCommand::Resume => handle_resume_submit(app, &parsed.args),
+        AppSlashCommand::Rewind => handle_rewind_submit(app, &parsed.args),
     }
 }
 
@@ -875,6 +879,48 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
         let _ = app
             .event_tx
             .send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
+    }
+    true
+}
+
+fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
+    let [target_uuid, restore_mode_arg] = args else {
+        push_system_message(app, usage(AppSlashCommand::Rewind));
+        return true;
+    };
+    let target_uuid = target_uuid.trim();
+    let restore_mode_arg = restore_mode_arg.trim();
+    if target_uuid.is_empty() || restore_mode_arg.is_empty() || args.len() != 2 {
+        push_system_message(app, usage(AppSlashCommand::Rewind));
+        return true;
+    }
+    let Some(restore_mode) = RewindRestoreMode::from_stored(restore_mode_arg) else {
+        push_system_message(app, usage(AppSlashCommand::Rewind));
+        return true;
+    };
+    let Some(target) = app.rewind_targets.iter().find(|target| target.uuid == target_uuid) else {
+        push_system_message(app, format!("Unknown rewind target: {target_uuid}"));
+        return true;
+    };
+    let target_uuid = target.uuid.clone();
+    let Some((conn, session_id)) = require_active_session(
+        app,
+        "Cannot rewind: not connected yet.",
+        "Cannot rewind: no active session.",
+    ) else {
+        return true;
+    };
+
+    let pending_label = match restore_mode {
+        RewindRestoreMode::Conversation => "Rewinding conversation...",
+        RewindRestoreMode::Code => "Restoring code...",
+        RewindRestoreMode::Both => "Restoring code and conversation...",
+    };
+    set_command_pending(app, pending_label, None);
+    if let Err(e) = begin_rewind(app, &conn, session_id.to_string(), target_uuid, restore_mode) {
+        let _ = app
+            .event_tx
+            .send(ClientEvent::SlashCommandError(format!("Failed to run /rewind: {e}")));
     }
     true
 }

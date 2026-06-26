@@ -124,12 +124,12 @@ fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {
             app.chat_render.invalidate_live_anchor();
             match app.terminal_lifecycle {
                 super::TerminalLifecycleState::Running(super::SurfaceMode::Chat) => {
-                    app.request_chat_resize_purge_replay_rebuild();
+                    app.request_chat_purge_replay_rebuild(super::ChatPurgeReplayOptions::resize());
                     if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
                         app.chat_render.mark_resize_purge_replay_during_turn();
                     }
                     active_surface_repaint = true;
-                    "request_chat_resize_purge_replay"
+                    "request_chat_purge_replay"
                 }
                 super::TerminalLifecycleState::Running(super::SurfaceMode::Fullscreen(_)) => {
                     app.request_fullscreen_repaint();
@@ -1679,7 +1679,10 @@ mod tests {
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
         assert!(!app.surface_dirty.fullscreen.redraw);
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert_eq!(
+            app.surface_dirty.chat.rebuild,
+            ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
+        );
         assert!(app.surface_dirty.chat.repaint);
         assert_resize_measurements_cleared(&app, 120, 40);
     }
@@ -1792,7 +1795,10 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Resize(120, 40));
 
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert_eq!(
+            app.surface_dirty.chat.rebuild,
+            ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
+        );
         assert!(app.chat_render.resize_purge_replay_after_turn);
     }
 
@@ -2258,6 +2264,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                restored_input: None,
             },
         );
 
@@ -2285,7 +2292,10 @@ mod tests {
         };
         assert_eq!(welcome.cwd, "/replacement");
         assert_ne!(welcome.tip_seed, 5);
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::SessionBoundary);
+        assert_eq!(
+            app.surface_dirty.chat.rebuild,
+            ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::session_replacement())
+        );
     }
 
     #[test]
@@ -2311,6 +2321,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                restored_input: None,
             },
         );
 
@@ -2665,6 +2676,28 @@ mod tests {
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
+    }
+
+    #[test]
+    fn slash_command_error_clears_rewind_target_loading_state() {
+        let mut app = make_test_app();
+        app.rewind_targets_in_flight = true;
+        app.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".into(),
+            first_text: "hello".into(),
+            input_text: "hello".into(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SlashCommandError("failed to load rewind targets".into()),
+        );
+
+        assert!(!app.rewind_targets_in_flight);
+        assert!(app.rewind_targets_session_id.is_none());
     }
 
     #[test]
@@ -3083,6 +3116,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                restored_input: None,
             },
         );
 
@@ -3113,6 +3147,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates,
+                restored_input: None,
             },
         );
 
@@ -3148,6 +3183,35 @@ mod tests {
         );
 
         assert!(!session_overview_has_welcome(&app));
+    }
+
+    #[test]
+    fn session_replaced_restores_input_after_loading_history() {
+        let mut app = make_test_app();
+        app.pending_command_label = Some("Rewinding conversation...".to_owned());
+        app.status = AppStatus::CommandPending;
+        let history_updates =
+            vec![model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("assistant reply")),
+            ))];
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("rewound"),
+                cwd: "/replacement".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates,
+                restored_input: Some("selected prompt".to_owned()),
+            },
+        );
+
+        assert_eq!(app.input.text(), "selected prompt");
+        assert!(app.pending_command_label.is_none());
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert!(canonical_messages_contain_text(&app, "assistant reply"));
     }
 
     #[test]
@@ -3268,6 +3332,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates,
+                restored_input: None,
             },
         );
 
@@ -3310,6 +3375,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
+                restored_input: None,
             },
         );
 
@@ -3340,6 +3406,7 @@ mod tests {
                         "assistant reply",
                     ))),
                 )],
+                restored_input: None,
             },
         );
 
@@ -3363,6 +3430,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
+                restored_input: None,
             },
         );
 
@@ -4795,6 +4863,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                restored_input: None,
             },
         );
 
@@ -4989,6 +5058,7 @@ mod tests {
                 primary: "/config".into(),
                 secondary: Some("Open settings".into()),
             }],
+            placeholder: None,
             dialog: crate::app::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);
@@ -5272,6 +5342,7 @@ mod tests {
                 primary: "/config".into(),
                 secondary: Some("Open settings".into()),
             }],
+            placeholder: None,
             dialog: crate::app::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);

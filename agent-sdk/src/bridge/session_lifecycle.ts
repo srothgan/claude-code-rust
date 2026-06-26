@@ -18,6 +18,7 @@ import type {
   CurrentModel,
   AvailableModel,
   BridgeCommand,
+  BridgeEvent,
   ElicitationAction,
   ElicitationRequest,
   FastModeState,
@@ -78,6 +79,11 @@ export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 
 export type ConnectEventKind = "connected" | "session_replaced";
+
+export type PendingRewindResult = Omit<
+  Extract<BridgeEvent, { event: "rewind_result" }>,
+  "session_id"
+>;
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
   process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
@@ -170,6 +176,8 @@ export type SessionState = {
   lastAssistantError?: ApiRetryError;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
+  restoredInput?: string;
+  pendingRewindResult?: PendingRewindResult;
 };
 
 export const sessions = new Map<string, SessionState>();
@@ -337,6 +345,29 @@ export async function closeSessionWithLogging(
   });
 }
 
+export async function closeSessionsBeforeRegister(
+  replacementSession: SessionState,
+  staleSessions: SessionState[] | undefined,
+  requestId?: string,
+): Promise<void> {
+  if (!staleSessions || staleSessions.length === 0) {
+    return;
+  }
+
+  for (const stale of staleSessions) {
+    if (stale === replacementSession) {
+      continue;
+    }
+    if (sessions.get(stale.sessionId) === stale) {
+      sessions.delete(stale.sessionId);
+    }
+    await closeSessionWithLogging(stale, {
+      reason: "stale_before_register",
+      requestId,
+    });
+  }
+}
+
 export async function closeAllSessions(options: CloseSessionOptions = {}): Promise<void> {
   const active = Array.from(sessions.values());
   sessions.clear();
@@ -362,12 +393,16 @@ export async function closeAllSessions(options: CloseSessionOptions = {}): Promi
 export async function createSession(params: {
   cwd: string;
   resume?: string;
+  resumeSessionAt?: string;
   launchSettings: SessionLaunchSettings;
   connectEvent: ConnectEventKind;
   requestId?: string;
+  sessionsToCloseBeforeRegister?: SessionState[];
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
-}): Promise<void> {
+  restoredInput?: string;
+  pendingRewindResult?: PendingRewindResult;
+}): Promise<SessionState> {
   const input = new AsyncQueue<SDKUserMessage>();
   const provisionalSessionId = params.resume ?? randomUUID();
   const initialModel = initialSessionModel(params.launchSettings);
@@ -376,6 +411,7 @@ export async function createSession(params: {
     startupPermissionModeOptions(params.launchSettings).allowDangerouslySkipPermissions === true;
   const historyUpdateCount = params.resumeUpdates?.length ?? 0;
   const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
+  const staleSessionBeforeRegisterCount = params.sessionsToCloseBeforeRegister?.length ?? 0;
 
   let session!: SessionState;
   const sessionIdForLogs = () => session?.sessionId ?? provisionalSessionId;
@@ -453,8 +489,10 @@ export async function createSession(params: {
       cwd: params.cwd,
       connect_event: params.connectEvent,
       resume_requested: params.resume !== undefined,
+      resume_session_at: params.resumeSessionAt ?? "<none>",
       history_update_count: historyUpdateCount,
       stale_session_count: staleSessionCount,
+      stale_session_before_register_count: staleSessionBeforeRegisterCount,
     },
   });
   try {
@@ -463,6 +501,7 @@ export async function createSession(params: {
       options: buildQueryOptions({
         cwd: params.cwd,
         resume: params.resume,
+        resumeSessionAt: params.resumeSessionAt,
         launchSettings: params.launchSettings,
         provisionalSessionId,
         input,
@@ -486,6 +525,7 @@ export async function createSession(params: {
       fields: {
         cwd: params.cwd,
         resume_requested: params.resume !== undefined,
+        resume_session_at: params.resumeSessionAt ?? "<none>",
         error_message: message,
       },
     });
@@ -528,6 +568,10 @@ export async function createSession(params: {
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
       : {}),
+    ...(params.restoredInput !== undefined ? { restoredInput: params.restoredInput } : {}),
+    ...(params.pendingRewindResult !== undefined
+      ? { pendingRewindResult: params.pendingRewindResult }
+      : {}),
     ...(params.sessionsToCloseAfterConnect
       ? { sessionsToCloseAfterConnect: params.sessionsToCloseAfterConnect }
       : {}),
@@ -535,6 +579,7 @@ export async function createSession(params: {
   refreshCurrentModel(session);
   const { refreshSupportedModesForSession } = await import("./commands.js");
   refreshSupportedModesForSession(session);
+  await closeSessionsBeforeRegister(session, params.sessionsToCloseBeforeRegister, params.requestId);
   sessions.set(provisionalSessionId, session);
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
@@ -547,6 +592,7 @@ export async function createSession(params: {
       cwd: session.cwd,
       connect_event: session.connectEvent,
       resume_requested: params.resume !== undefined,
+      resume_session_at: params.resumeSessionAt ?? "<none>",
     },
   });
   bridgeLogger.info({
@@ -669,11 +715,14 @@ export async function createSession(params: {
       failConnection(`agent stream failed: ${message}`, params.requestId);
     }
   })();
+
+  return session;
 }
 
 type QueryOptionsBuilderParams = {
   cwd: string;
   resume?: string;
+  resumeSessionAt?: string;
   launchSettings: SessionLaunchSettings;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
@@ -839,6 +888,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     cwd: params.cwd,
     includePartialMessages: true,
     promptSuggestions: true,
+    enableFileCheckpointing: true,
     executable: "node" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(settings ? { settings } : {}),
@@ -896,6 +946,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // --setting-sources argument.
     settingSources: DEFAULT_SETTING_SOURCES,
     resume: params.resume,
+    ...(params.resumeSessionAt ? { resumeSessionAt: params.resumeSessionAt } : {}),
     canUseTool: params.canUseTool,
     onElicitation: async (request: {
       mode?: string;

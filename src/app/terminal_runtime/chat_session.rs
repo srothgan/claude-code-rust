@@ -3,7 +3,7 @@
 
 use super::chat_terminal::{ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch};
 use super::history_insert::RenderedHistoryRows;
-use crate::app::{App, HistoryOutputId};
+use crate::app::{App, ChatPurgeReplayOptions, HistoryOutputId};
 use crate::ui::footer_rows::serialize_footer_rows;
 use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
 use crate::ui::inline_chat_rows::{
@@ -59,32 +59,23 @@ impl ChatTerminalSession {
         self.history.reset();
     }
 
-    pub(super) fn clear_session_boundary(&mut self, app: &mut App) {
-        if let Err(err) = self.terminal.reset_session_boundary() {
+    pub(super) fn clear_for_purge_replay(
+        &mut self,
+        app: &mut App,
+        options: ChatPurgeReplayOptions,
+    ) {
+        if let Err(err) = self.terminal.reset_purge_replay(options.reason.label()) {
             tracing::warn!(
                 target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_session_boundary_clear_failed",
-                message = "failed to clear inline terminal for session boundary",
+                event_name = "inline_chat_purge_replay_failed",
+                message = "failed to purge terminal before transcript replay",
                 outcome = "failure",
+                reason = %options.reason.label(),
                 error_message = %err,
             );
         }
         app.chat_render.invalidate_live_anchor();
-        self.history.reset();
-    }
-
-    pub(super) fn clear_for_resize_purge_replay(&mut self, app: &mut App) {
-        if let Err(err) = self.terminal.reset_resize_purge_replay() {
-            tracing::warn!(
-                target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_resize_purge_replay_failed",
-                message = "failed to purge terminal before resize replay",
-                outcome = "failure",
-                error_message = %err,
-            );
-        }
-        app.chat_render.invalidate_live_anchor();
-        self.history.reset_for_resize_purge_replay();
+        self.history.reset_for_purge_replay(options.max_replay_rows);
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
@@ -453,7 +444,7 @@ impl ChatTerminalSession {
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
-    app.request_chat_resize_purge_replay_rebuild();
+    app.request_chat_purge_replay_rebuild(ChatPurgeReplayOptions::terminal_history_out_of_sync());
 }
 
 fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {
@@ -549,19 +540,12 @@ struct HistoryCommitState {
     width: u16,
     confirmed: BTreeSet<HistoryOutputId>,
     history_in_sync: bool,
-    cap_next_purge_replay: bool,
+    replay_row_cap: Option<usize>,
 }
-
-const RESIZE_PURGE_REPLAY_MAX_ROWS: usize = 9_000;
 
 impl Default for HistoryCommitState {
     fn default() -> Self {
-        Self {
-            width: 0,
-            confirmed: BTreeSet::new(),
-            history_in_sync: true,
-            cap_next_purge_replay: false,
-        }
+        Self { width: 0, confirmed: BTreeSet::new(), history_in_sync: true, replay_row_cap: None }
     }
 }
 
@@ -570,8 +554,8 @@ impl HistoryCommitState {
         *self = Self::default();
     }
 
-    fn reset_for_resize_purge_replay(&mut self) {
-        *self = Self { history_in_sync: false, cap_next_purge_replay: true, ..Self::default() };
+    fn reset_for_purge_replay(&mut self, max_replay_rows: Option<usize>) {
+        *self = Self { history_in_sync: false, replay_row_cap: max_replay_rows, ..Self::default() };
     }
 
     fn confirmed_ids(&self) -> &BTreeSet<HistoryOutputId> {
@@ -587,21 +571,21 @@ impl HistoryCommitState {
     }
 
     fn cap_replay_rows(&self) -> Option<usize> {
-        self.cap_next_purge_replay.then_some(RESIZE_PURGE_REPLAY_MAX_ROWS)
+        self.replay_row_cap
     }
 
     fn confirm(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
         self.width = width.max(1);
         self.confirmed.extend(ids);
         self.history_in_sync = true;
-        self.cap_next_purge_replay = false;
+        self.replay_row_cap = None;
     }
 
     fn mark_terminal_history_synced(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
         self.width = width.max(1);
         self.confirmed.extend(ids);
         self.history_in_sync = true;
-        self.cap_next_purge_replay = false;
+        self.replay_row_cap = None;
     }
 
     fn mark_out_of_sync(&mut self) {
@@ -1245,11 +1229,23 @@ mod tests {
         let mut state = HistoryCommitState::default();
         state.confirm(80, vec![output_id()]);
 
-        state.reset_for_resize_purge_replay();
+        state.reset_for_purge_replay(Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
 
         assert!(!state.is_synced());
         assert_eq!(state.confirmed_len(), 0);
-        assert_eq!(state.cap_replay_rows(), Some(super::RESIZE_PURGE_REPLAY_MAX_ROWS));
+        assert_eq!(state.cap_replay_rows(), Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
+    }
+
+    #[test]
+    fn session_replacement_purge_replay_marks_history_unsynced_without_cap() {
+        let mut state = HistoryCommitState::default();
+        state.confirm(80, vec![output_id()]);
+
+        state.reset_for_purge_replay(None);
+
+        assert!(!state.is_synced());
+        assert_eq!(state.confirmed_len(), 0);
+        assert_eq!(state.cap_replay_rows(), None);
     }
 
     #[test]
@@ -1257,7 +1253,7 @@ mod tests {
         let mut state = HistoryCommitState::default();
         let id = output_id();
 
-        state.reset_for_resize_purge_replay();
+        state.reset_for_purge_replay(Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
         state.mark_terminal_history_synced(80, vec![id.clone()]);
 
         assert!(state.is_synced());

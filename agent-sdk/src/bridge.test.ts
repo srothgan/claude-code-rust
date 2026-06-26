@@ -5,6 +5,7 @@ import {
   CACHE_SPLIT_POLICY,
   buildApiRetryUpdate,
   buildRateLimitUpdate,
+  buildRewindConversationPlan,
   buildQueryOptions,
   canGenerateSessionTitle,
   generatePersistedSessionTitle,
@@ -41,12 +42,13 @@ import {
   previewKilobyteLabel,
   staleMcpAuthCandidates,
   resolveInstalledAgentSdkVersion,
+  rewindTargetsFromSessionMessages,
   unwrapToolUseResult,
   updateAvailableCommands,
   handleReloadPluginsCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   availableModesForSession,
   buildModeState,
@@ -58,6 +60,7 @@ import { handleMcpSetServersCommand } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
   handleUserDialogResponse,
+  closeSessionsBeforeRegister,
   refreshCurrentModel,
   resolveCurrentModel,
   sessions,
@@ -110,6 +113,33 @@ function makeSessionState(): SessionState {
     authHintSent: false,
   };
 }
+
+test("closeSessionsBeforeRegister closes same-key stale session before replacement registration", async () => {
+  sessions.clear();
+  let staleClosed = 0;
+  const stale = makeSessionState();
+  stale.sessionId = "session-1";
+  stale.query = {
+    close: () => {
+      staleClosed += 1;
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+  const replacement = makeSessionState();
+  replacement.sessionId = "session-1";
+
+  sessions.set(stale.sessionId, stale);
+  await closeSessionsBeforeRegister(replacement, [stale], "req-1");
+
+  assert.equal(staleClosed, 1);
+  assert.equal(sessions.has("session-1"), false);
+
+  sessions.set(replacement.sessionId, replacement);
+  await closeSessionsBeforeRegister(replacement, [stale], "req-2");
+
+  assert.equal(staleClosed, 2);
+  assert.equal(sessions.get("session-1"), replacement);
+  sessions.clear();
+});
 
 test("availableModesForSession omits conditional modes when unsupported", () => {
   const session = makeSessionState();
@@ -932,6 +962,178 @@ test("parseCommandEnvelope validates get_context_usage command", () => {
   });
 });
 
+test("parseCommandEnvelope validates get_rewind_targets command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-rewind-targets",
+      command: "get_rewind_targets",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-rewind-targets");
+  assert.deepEqual(parsed.command, {
+    command: "get_rewind_targets",
+    session_id: "session-123",
+  });
+});
+
+test("parseCommandEnvelope validates rewind command modes", () => {
+  for (const restoreMode of ["both", "conversation", "code"] as const) {
+    const parsed = parseCommandEnvelope(
+      JSON.stringify({
+        request_id: "req-rewind",
+        command: "rewind",
+        session_id: "session-123",
+        target_user_message_id: "user-1",
+        restore_mode: restoreMode,
+        launch_settings: {
+          language: "German",
+        },
+      }),
+    );
+
+    assert.equal(parsed.requestId, "req-rewind");
+    assert.deepEqual(parsed.command, {
+      command: "rewind",
+      session_id: "session-123",
+      target_user_message_id: "user-1",
+      restore_mode: restoreMode,
+      launch_settings: { language: "German" },
+    });
+  }
+});
+
+test("parseCommandEnvelope rejects invalid rewind mode", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "rewind",
+          session_id: "session-123",
+          target_user_message_id: "user-1",
+          restore_mode: "files",
+        }),
+      ),
+    /rewind\.restore_mode must be one of both, conversation, code/,
+  );
+});
+
+test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: [{ type: "text", text: " first prompt\nline " }] },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "ignored" }] },
+    },
+    {
+      type: "user",
+      uuid: "tool-result",
+      message: { role: "user", content: [{ type: "tool_result", content: "ignored" }] },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: [{ type: "text", text: "second prompt" }] },
+    },
+  ] as unknown as SessionMessage[];
+
+  assert.deepEqual(rewindTargetsFromSessionMessages(messages), [
+    {
+      uuid: "user-2",
+      first_text: "second prompt",
+      input_text: "second prompt",
+      index: 3,
+      previous_assistant_uuid: "assistant-1",
+    },
+    {
+      uuid: "user-1",
+      first_text: "first prompt line",
+      input_text: "first prompt\nline",
+      index: 0,
+    },
+  ]);
+});
+
+test("buildRewindConversationPlan anchors at previous assistant message", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  const plan = buildRewindConversationPlan(messages, "user-2");
+
+  assert.ok(plan);
+  assert.equal(plan.inputText, "second prompt");
+  assert.equal(plan.previousAssistantUuid, "assistant-1");
+  assert.equal(plan.targetIndex, 2);
+  assert.deepEqual(
+    plan.retainedMessages.map((message) => message.uuid),
+    ["user-1", "assistant-1"],
+  );
+  assert.ok(plan.resumeUpdates.length > 0);
+});
+
+test("buildRewindConversationPlan treats first user message as fresh replacement", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: " first prompt\nline " },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    },
+  ] as unknown as SessionMessage[];
+
+  const plan = buildRewindConversationPlan(messages, "user-1");
+
+  assert.ok(plan);
+  assert.equal(plan.inputText, " first prompt\nline ");
+  assert.equal(plan.previousAssistantUuid, undefined);
+  assert.equal(plan.targetIndex, 0);
+  assert.deepEqual(plan.retainedMessages, []);
+  assert.deepEqual(plan.resumeUpdates, []);
+});
+
+test("buildRewindConversationPlan rejects stale or inconsistent targets", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  assert.equal(buildRewindConversationPlan(messages, "missing-user"), null);
+  assert.equal(buildRewindConversationPlan(messages, "user-2"), null);
+});
+
 test("staleMcpAuthCandidates selects previously connected servers that regressed to needs-auth", () => {
   const candidates = staleMcpAuthCandidates(
     [
@@ -1069,11 +1271,32 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal("effort" in options, false);
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.promptSuggestions, true);
+  assert.equal(options.enableFileCheckpointing, true);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.deepEqual(options.toolConfig, {
     askUserQuestion: { previewFormat: "markdown" },
   });
+});
+
+test("buildQueryOptions includes resumeSessionAt when provided", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    resume: "session-1",
+    resumeSessionAt: "assistant-1",
+    launchSettings: {},
+    provisionalSessionId: "session-1",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-1",
+  });
+
+  assert.equal(options.resume, "session-1");
+  assert.equal(options.resumeSessionAt, "assistant-1");
+  assert.equal("sessionId" in options, false);
 });
 
 test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {

@@ -449,6 +449,8 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.finalize_turn_runtime_artifacts(tool_status);
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
+    app.rewind_targets_session_id = None;
+    app.rewind_targets_in_flight = false;
     app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
@@ -648,7 +650,9 @@ fn request_post_turn_resize_purge_replay_if_needed(app: &mut App) {
         app.terminal_lifecycle,
         super::super::TerminalLifecycleState::Running(super::super::SurfaceMode::Chat)
     ) {
-        app.request_chat_resize_purge_replay_rebuild();
+        app.request_chat_purge_replay_rebuild(
+            super::super::ChatPurgeReplayOptions::post_turn_resize(),
+        );
     }
 }
 
@@ -760,7 +764,9 @@ fn push_turn_error_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, ChatRebuildKind, SurfaceMode, TerminalLifecycleState};
+    use crate::app::{
+        App, ChatPurgeReplayOptions, ChatRebuildKind, SurfaceMode, TerminalLifecycleState,
+    };
 
     fn empty_assistant_message() -> ChatMessage {
         ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
@@ -949,7 +955,10 @@ mod tests {
 
         handle_turn_complete_event(&mut app, None);
 
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert_eq!(
+            app.surface_dirty.chat.rebuild,
+            ChatRebuildKind::PurgeReplay(ChatPurgeReplayOptions::post_turn_resize())
+        );
         assert!(app.surface_dirty.chat.repaint);
         assert!(!app.chat_render.resize_purge_replay_after_turn);
     }

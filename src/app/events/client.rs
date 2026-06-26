@@ -203,15 +203,19 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             available_models,
             mode,
             history_updates,
+            restored_input,
         } => {
             session::handle_session_replaced_event(
                 app,
-                session_id,
-                cwd,
-                current_model,
-                available_models,
-                mode,
-                &history_updates,
+                session::SessionReplacedEventData {
+                    session_id,
+                    cwd,
+                    current_model,
+                    available_models,
+                    mode,
+                    history_updates,
+                    restored_input,
+                },
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -281,6 +285,28 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 return;
             }
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
+        }
+        ClientEvent::RewindTargetsReceived { session_id, targets } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "rewind_targets_dropped",
+                    message = "rewind targets dropped for a stale session",
+                    outcome = "dropped",
+                    session_id = %session_id,
+                    reason = "stale_session",
+                );
+                return;
+            }
+            app.rewind_targets = targets;
+            app.rewind_targets_session_id = Some(crate::agent::model::SessionId::new(session_id));
+            app.rewind_targets_in_flight = false;
+            crate::app::slash::sync_with_cursor(app);
+        }
+        ClientEvent::RewindResultReceived { result } => {
+            session::handle_rewind_result_event(app, &result);
         }
         ClientEvent::McpSnapshotReceived { session_id, mut servers, source, error } => {
             if app.session_id.as_ref().map(ToString::to_string).as_deref()

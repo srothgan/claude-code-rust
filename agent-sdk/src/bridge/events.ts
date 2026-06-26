@@ -164,6 +164,7 @@ function buildConnectBridgeEvent(
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+        ...(session.restoredInput !== undefined ? { restored_input: session.restoredInput } : {}),
       }
     : {
         event: "connected",
@@ -192,6 +193,7 @@ function logConnectEventEmission(
       history_update_count: session.resumeUpdates?.length ?? 0,
       available_model_count: session.availableModels.length,
       stale_session_count: session.sessionsToCloseAfterConnect?.length ?? 0,
+      has_restored_input: session.restoredInput !== undefined,
     },
   });
 }
@@ -200,10 +202,18 @@ export function emitConnectEvent(session: SessionState): void {
   const bridgeEvent = buildConnectBridgeEvent(session, session.connectEvent);
   logConnectEventEmission(session, session.connectEvent, session.connectRequestId);
   writeEvent(bridgeEvent, session.connectRequestId);
+  if (session.pendingRewindResult) {
+    writeEvent(
+      { ...session.pendingRewindResult, session_id: session.sessionId },
+      session.connectRequestId,
+    );
+    session.pendingRewindResult = undefined;
+  }
   session.connectRequestId = undefined;
   session.connected = true;
   session.authHintSent = false;
   session.resumeUpdates = undefined;
+  session.restoredInput = undefined;
 
   const staleSessions = session.sessionsToCloseAfterConnect;
   session.sessionsToCloseAfterConnect = undefined;
@@ -231,7 +241,12 @@ export function emitSessionReplacedEvent(session: SessionState, requestId?: stri
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
+  if (session.pendingRewindResult) {
+    writeEvent({ ...session.pendingRewindResult, session_id: session.sessionId }, requestId);
+    session.pendingRewindResult = undefined;
+  }
   session.resumeUpdates = undefined;
+  session.restoredInput = undefined;
   refreshSessionsList();
 }
 

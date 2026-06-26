@@ -24,15 +24,74 @@ pub struct FullscreenSurfaceDirtyState {
     pub redraw: bool,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub const RESIZE_PURGE_REPLAY_MAX_ROWS: usize = 9_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatPurgeReplayReason {
+    Resize,
+    ChatReturnAfterResize,
+    PostTurnResize,
+    SessionReplacement,
+    TerminalHistoryOutOfSync,
+}
+
+impl ChatPurgeReplayReason {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Resize => "resize",
+            Self::ChatReturnAfterResize => "chat_return_after_resize",
+            Self::PostTurnResize => "post_turn_resize",
+            Self::SessionReplacement => "session_replacement",
+            Self::TerminalHistoryOutOfSync => "terminal_history_out_of_sync",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatPurgeReplayOptions {
+    pub reason: ChatPurgeReplayReason,
+    pub max_replay_rows: Option<usize>,
+}
+
+impl ChatPurgeReplayOptions {
+    pub const fn resize() -> Self {
+        Self {
+            reason: ChatPurgeReplayReason::Resize,
+            max_replay_rows: Some(RESIZE_PURGE_REPLAY_MAX_ROWS),
+        }
+    }
+
+    pub const fn chat_return_after_resize() -> Self {
+        Self {
+            reason: ChatPurgeReplayReason::ChatReturnAfterResize,
+            max_replay_rows: Some(RESIZE_PURGE_REPLAY_MAX_ROWS),
+        }
+    }
+
+    pub const fn post_turn_resize() -> Self {
+        Self {
+            reason: ChatPurgeReplayReason::PostTurnResize,
+            max_replay_rows: Some(RESIZE_PURGE_REPLAY_MAX_ROWS),
+        }
+    }
+
+    pub const fn session_replacement() -> Self {
+        Self { reason: ChatPurgeReplayReason::SessionReplacement, max_replay_rows: None }
+    }
+
+    pub const fn terminal_history_out_of_sync() -> Self {
+        Self { reason: ChatPurgeReplayReason::TerminalHistoryOutOfSync, max_replay_rows: None }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRebuildKind {
     #[default]
     None,
     MutableViewport,
     FullscreenReturn,
     VisibleScreen,
-    ResizePurgeReplay,
-    SessionBoundary,
+    PurgeReplay(ChatPurgeReplayOptions),
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -47,28 +106,29 @@ impl ChatSurfaceDirtyState {
     }
 
     pub fn request_mutable_rebuild(&mut self) {
-        self.rebuild = self.rebuild.max(ChatRebuildKind::MutableViewport);
+        self.request_rebuild(ChatRebuildKind::MutableViewport);
         self.repaint = true;
     }
 
     pub fn request_visible_screen_rebuild(&mut self) {
-        self.rebuild = self.rebuild.max(ChatRebuildKind::VisibleScreen);
+        self.request_rebuild(ChatRebuildKind::VisibleScreen);
         self.repaint = true;
     }
 
     pub fn request_fullscreen_return_rebuild(&mut self) {
-        self.rebuild = self.rebuild.max(ChatRebuildKind::FullscreenReturn);
+        self.request_rebuild(ChatRebuildKind::FullscreenReturn);
         self.repaint = true;
     }
 
-    pub fn request_resize_purge_replay_rebuild(&mut self) {
-        self.rebuild = self.rebuild.max(ChatRebuildKind::ResizePurgeReplay);
+    pub fn request_purge_replay_rebuild(&mut self, options: ChatPurgeReplayOptions) {
+        self.request_rebuild(ChatRebuildKind::PurgeReplay(options));
         self.repaint = true;
     }
 
-    pub fn request_session_boundary_rebuild(&mut self) {
-        self.rebuild = self.rebuild.max(ChatRebuildKind::SessionBoundary);
-        self.repaint = true;
+    fn request_rebuild(&mut self, next: ChatRebuildKind) {
+        if should_replace_rebuild(self.rebuild, next) {
+            self.rebuild = next;
+        }
     }
 
     pub fn take_rebuild(&mut self) -> ChatRebuildKind {
@@ -82,6 +142,38 @@ impl ChatSurfaceDirtyState {
         self.repaint = false;
         repaint
     }
+}
+
+const fn rebuild_priority(kind: ChatRebuildKind) -> u8 {
+    match kind {
+        ChatRebuildKind::None => 0,
+        ChatRebuildKind::MutableViewport | ChatRebuildKind::FullscreenReturn => 1,
+        ChatRebuildKind::VisibleScreen => 2,
+        ChatRebuildKind::PurgeReplay(_) => 3,
+    }
+}
+
+fn should_replace_rebuild(current: ChatRebuildKind, next: ChatRebuildKind) -> bool {
+    let current_priority = rebuild_priority(current);
+    let next_priority = rebuild_priority(next);
+
+    if next_priority != current_priority {
+        return next_priority > current_priority;
+    }
+
+    match (current, next) {
+        (ChatRebuildKind::PurgeReplay(current), ChatRebuildKind::PurgeReplay(next)) => {
+            should_replace_purge_replay(current, next)
+        }
+        _ => true,
+    }
+}
+
+fn should_replace_purge_replay(
+    current: ChatPurgeReplayOptions,
+    next: ChatPurgeReplayOptions,
+) -> bool {
+    !matches!((current.max_replay_rows, next.max_replay_rows), (None, Some(_)))
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -216,30 +308,58 @@ mod tests {
     }
 
     #[test]
-    fn chat_resize_purge_replay_rebuild_dominates_visible_rebuild() {
+    fn chat_purge_replay_rebuild_dominates_visible_rebuild() {
         let mut dirty = ChatSurfaceDirtyState::default();
+        let options = ChatPurgeReplayOptions::resize();
 
         dirty.request_visible_screen_rebuild();
-        dirty.request_resize_purge_replay_rebuild();
+        dirty.request_purge_replay_rebuild(options);
         dirty.request_mutable_rebuild();
         dirty.request_visible_screen_rebuild();
 
-        assert_eq!(dirty.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(options));
         assert!(dirty.repaint);
     }
 
     #[test]
-    fn chat_session_boundary_rebuild_dominates_visible_rebuild() {
+    fn later_chat_purge_replay_request_replaces_options() {
         let mut dirty = ChatSurfaceDirtyState::default();
+        let resize_options = ChatPurgeReplayOptions::resize();
+        let replacement_options = ChatPurgeReplayOptions::session_replacement();
 
         dirty.request_visible_screen_rebuild();
-        dirty.request_resize_purge_replay_rebuild();
-        dirty.request_session_boundary_rebuild();
+        dirty.request_purge_replay_rebuild(resize_options);
         dirty.request_mutable_rebuild();
         dirty.request_visible_screen_rebuild();
-        dirty.request_resize_purge_replay_rebuild();
+        dirty.request_purge_replay_rebuild(replacement_options);
 
-        assert_eq!(dirty.rebuild, ChatRebuildKind::SessionBoundary);
+        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(replacement_options));
+        assert!(dirty.repaint);
+    }
+
+    #[test]
+    fn session_replacement_purge_replay_survives_later_resize_request() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+        let replacement_options = ChatPurgeReplayOptions::session_replacement();
+
+        dirty.request_purge_replay_rebuild(replacement_options);
+        dirty.request_mutable_rebuild();
+        dirty.request_visible_screen_rebuild();
+        dirty.request_purge_replay_rebuild(ChatPurgeReplayOptions::resize());
+
+        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(replacement_options));
+        assert!(dirty.repaint);
+    }
+
+    #[test]
+    fn terminal_history_out_of_sync_purge_replay_survives_later_post_turn_resize_request() {
+        let mut dirty = ChatSurfaceDirtyState::default();
+        let out_of_sync_options = ChatPurgeReplayOptions::terminal_history_out_of_sync();
+
+        dirty.request_purge_replay_rebuild(out_of_sync_options);
+        dirty.request_purge_replay_rebuild(ChatPurgeReplayOptions::post_turn_resize());
+
+        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(out_of_sync_options));
         assert!(dirty.repaint);
     }
 

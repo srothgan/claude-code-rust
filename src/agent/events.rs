@@ -99,6 +99,7 @@ pub enum ClientEvent {
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
         history_updates: Vec<model::SessionUpdate>,
+        restored_input: Option<String>,
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
@@ -114,6 +115,10 @@ pub enum ClientEvent {
     StatusSnapshotReceived { session_id: String, account: model::AccountInfo },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
+    /// Rewind target candidates loaded from persisted SDK session history.
+    RewindTargetsReceived { session_id: String, targets: Vec<model::RewindTarget> },
+    /// Result of a rewind operation that touched files.
+    RewindResultReceived { result: model::RewindResult },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,

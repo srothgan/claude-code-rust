@@ -211,6 +211,12 @@ pub struct App {
     pub keymap: ResolvedKeymap,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
+    /// Rewind candidates loaded from persisted SDK session history.
+    pub rewind_targets: Vec<model::RewindTarget>,
+    /// Session id that owns `rewind_targets`.
+    pub rewind_targets_session_id: Option<model::SessionId>,
+    /// True while a rewind target refresh request is in flight.
+    pub rewind_targets_in_flight: bool,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
     /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
@@ -408,12 +414,11 @@ impl App {
         self.surface_dirty.chat.request_fullscreen_return_rebuild();
     }
 
-    pub(crate) fn request_chat_resize_purge_replay_rebuild(&mut self) {
-        self.surface_dirty.chat.request_resize_purge_replay_rebuild();
-    }
-
-    pub(crate) fn request_chat_session_boundary_rebuild(&mut self) {
-        self.surface_dirty.chat.request_session_boundary_rebuild();
+    pub(crate) fn request_chat_purge_replay_rebuild(
+        &mut self,
+        options: super::ChatPurgeReplayOptions,
+    ) {
+        self.surface_dirty.chat.request_purge_replay_rebuild(options);
     }
 
     pub(crate) fn request_fullscreen_repaint(&mut self) {
@@ -866,6 +871,9 @@ impl App {
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
             available_commands: Vec::new(),
+            rewind_targets: Vec::new(),
+            rewind_targets_session_id: None,
+            rewind_targets_in_flight: false,
             plugins: PluginsState::default(),
             available_agents: Vec::new(),
             available_models: Vec::new(),
@@ -1035,6 +1043,9 @@ impl App {
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;
         self.session_usage = SessionUsageState::default();
+        self.rewind_targets.clear();
+        self.rewind_targets_session_id = None;
+        self.rewind_targets_in_flight = false;
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
@@ -2496,6 +2507,7 @@ mod tests {
                 primary: "/config".into(),
                 secondary: Some("Open settings".into()),
             }],
+            placeholder: None,
             dialog: crate::app::dialog::DialogState::default(),
         });
         app

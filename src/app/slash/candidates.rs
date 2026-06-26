@@ -168,11 +168,15 @@ fn is_builtin_variable_input_command(command_name: &str) -> bool {
                     | AppSlashCommand::Mode
                     | AppSlashCommand::Model
                     | AppSlashCommand::Resume
+                    | AppSlashCommand::Rewind
             )
     })
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
+    if command_name == "/rewind" {
+        return arg_index == 1;
+    }
     arg_index == 0 && is_builtin_variable_input_command(command_name)
 }
 
@@ -358,7 +362,7 @@ pub(super) fn argument_candidates(
     command_name: &str,
     arg_index: usize,
 ) -> Vec<SlashCandidate> {
-    if arg_index > 0 {
+    if arg_index > 0 && !(command_name == "/rewind" && arg_index == 1) {
         return Vec::new();
     }
 
@@ -380,6 +384,23 @@ pub(super) fn argument_candidates(
                 }
             })
             .collect(),
+        "/rewind" => {
+            if arg_index == 1 {
+                return rewind_restore_mode_candidates();
+            }
+            if app.session_id.as_ref() == app.rewind_targets_session_id.as_ref() {
+                app.rewind_targets
+                    .iter()
+                    .map(|target| SlashCandidate {
+                        insert_value: target.uuid.clone(),
+                        primary: truncate_rewind_label(&target.first_text),
+                        secondary: Some(target.uuid.clone()),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
         "/mode" => app
             .mode
             .as_ref()
@@ -407,6 +428,84 @@ pub(super) fn argument_candidates(
     }
 }
 
+fn rewind_restore_mode_candidates() -> Vec<SlashCandidate> {
+    vec![
+        SlashCandidate {
+            insert_value: "both".to_owned(),
+            primary: "Restore code and conversation".to_owned(),
+            secondary: Some("revert both code and conversation to that point".to_owned()),
+        },
+        SlashCandidate {
+            insert_value: "conversation".to_owned(),
+            primary: "Restore conversation".to_owned(),
+            secondary: Some("rewind to that message while keeping current code".to_owned()),
+        },
+        SlashCandidate {
+            insert_value: "code".to_owned(),
+            primary: "Restore code".to_owned(),
+            secondary: Some("revert file changes while keeping the conversation".to_owned()),
+        },
+    ]
+}
+
+fn rewind_placeholder(app: &App, query: &str) -> String {
+    if app.rewind_targets_in_flight {
+        return "Loading messages".to_owned();
+    }
+
+    let Some(session_id) = app.session_id.as_ref() else {
+        return "Connect to load messages".to_owned();
+    };
+
+    if app.rewind_targets_session_id.as_ref() != Some(session_id) {
+        if app.conn.is_none() {
+            return "Connect to load messages".to_owned();
+        }
+        return "Loading messages".to_owned();
+    }
+
+    if app.rewind_targets.is_empty() || query.trim().is_empty() {
+        "No previous user messages".to_owned()
+    } else {
+        "No matching messages".to_owned()
+    }
+}
+
+fn placeholder_for_empty_candidates(
+    app: &App,
+    detection: &SlashDetection,
+    candidates: &[SlashCandidate],
+) -> Option<String> {
+    if !candidates.is_empty() {
+        return None;
+    }
+
+    match &detection.context {
+        SlashContext::Argument { command, arg_index, .. }
+            if command == "/rewind" && *arg_index == 0 =>
+        {
+            Some(rewind_placeholder(app, &detection.query))
+        }
+        SlashContext::Argument { command, arg_index, .. }
+            if command == "/rewind" && *arg_index == 1 =>
+        {
+            Some("Select restore mode".to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn truncate_rewind_label(text: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let text = text.trim();
+    let mut chars = text.chars();
+    let mut label: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        label.push_str("...");
+    }
+    if label.is_empty() { "(empty user message)".to_owned() } else { label }
+}
+
 pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
     let detection =
         detect_slash_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())?;
@@ -425,12 +524,14 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
             )
         }
     };
+    let placeholder = placeholder_for_empty_candidates(app, &detection, &candidates);
     Some(SlashState {
         trigger_row: detection.trigger_row,
         trigger_col: detection.trigger_col,
         query: detection.query,
         context: detection.context,
         candidates,
+        placeholder,
         dialog: DialogState::default(),
     })
 }

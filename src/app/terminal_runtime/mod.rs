@@ -196,12 +196,8 @@ impl TerminalRuntime {
                     session.clear(app);
                     Ok(())
                 }
-                ChatRebuildKind::ResizePurgeReplay => {
-                    session.clear_for_resize_purge_replay(app);
-                    Ok(())
-                }
-                ChatRebuildKind::SessionBoundary => {
-                    session.clear_session_boundary(app);
+                ChatRebuildKind::PurgeReplay(options) => {
+                    session.clear_for_purge_replay(app, options);
                     Ok(())
                 }
             },
@@ -311,7 +307,9 @@ fn plan_surface_transition(from: SurfaceMode, to: SurfaceMode) -> SurfaceTransit
 
 fn request_chat_rebuild_after_fullscreen_exit(app: &mut App, reused_chat_session: bool) {
     if app.chat_render.take_resize_purge_replay_on_chat_return() {
-        app.request_chat_resize_purge_replay_rebuild();
+        app.request_chat_purge_replay_rebuild(
+            crate::app::ChatPurgeReplayOptions::chat_return_after_resize(),
+        );
     } else if reused_chat_session {
         app.request_chat_fullscreen_return_rebuild();
     } else {
@@ -424,7 +422,12 @@ mod tests {
 
         request_chat_rebuild_after_fullscreen_exit(&mut app, true);
 
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::ResizePurgeReplay);
+        assert_eq!(
+            app.surface_dirty.chat.rebuild,
+            ChatRebuildKind::PurgeReplay(
+                crate::app::ChatPurgeReplayOptions::chat_return_after_resize()
+            )
+        );
         assert!(app.surface_dirty.chat.repaint);
         assert!(!app.chat_render.resize_purge_replay_on_chat_return);
     }

@@ -213,6 +213,61 @@ pub(super) fn map_available_agents_update(
     )
 }
 
+pub(super) fn map_rewind_targets(targets: Vec<types::RewindTarget>) -> Vec<model::RewindTarget> {
+    targets
+        .into_iter()
+        .map(|target| model::RewindTarget {
+            uuid: target.uuid,
+            first_text: target.first_text,
+            input_text: target.input_text,
+            index: target.index,
+            previous_assistant_uuid: target.previous_assistant_uuid,
+        })
+        .collect()
+}
+
+fn map_rewind_restore_mode(mode: types::RewindRestoreMode) -> model::RewindRestoreMode {
+    match mode {
+        types::RewindRestoreMode::Both => model::RewindRestoreMode::Both,
+        types::RewindRestoreMode::Conversation => model::RewindRestoreMode::Conversation,
+        types::RewindRestoreMode::Code => model::RewindRestoreMode::Code,
+    }
+}
+
+fn map_rewind_result_status(status: types::RewindResultStatus) -> model::RewindResultStatus {
+    match status {
+        types::RewindResultStatus::Success => model::RewindResultStatus::Success,
+        types::RewindResultStatus::Failure => model::RewindResultStatus::Failure,
+        types::RewindResultStatus::PartialFailure => model::RewindResultStatus::PartialFailure,
+    }
+}
+
+fn map_rewind_files_result(result: types::RewindFilesResult) -> model::RewindFilesResult {
+    model::RewindFilesResult {
+        can_rewind: result.can_rewind,
+        error: result.error,
+        files_changed: result.files_changed,
+        insertions: result.insertions,
+        deletions: result.deletions,
+    }
+}
+
+pub(super) fn map_rewind_result(
+    session_id: String,
+    restore_mode: types::RewindRestoreMode,
+    status: types::RewindResultStatus,
+    file_result: Option<types::RewindFilesResult>,
+    message: Option<String>,
+) -> model::RewindResult {
+    model::RewindResult {
+        session_id,
+        restore_mode: map_rewind_restore_mode(restore_mode),
+        status: map_rewind_result_status(status),
+        file_result: file_result.map(map_rewind_files_result),
+        message,
+    }
+}
+
 pub(super) fn map_available_models(
     models: Vec<types::AvailableModel>,
 ) -> Vec<model::AvailableModel> {

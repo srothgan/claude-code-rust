@@ -54,6 +54,8 @@ pub struct SlashState {
     pub context: SlashContext,
     /// Filtered list of supported candidates.
     pub candidates: Vec<SlashCandidate>,
+    /// Non-selectable line rendered when no candidates are available.
+    pub placeholder: Option<String>,
     /// Shared autocomplete dialog navigation state.
     pub dialog: DialogState,
 }
@@ -193,6 +195,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
         assert!(names.iter().any(|n| n == "/opus-version"), "missing /opus-version");
         assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
+        assert!(names.iter().any(|n| n == "/rewind"), "missing /rewind");
         assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
     }
 
@@ -834,6 +837,139 @@ mod tests {
     }
 
     #[test]
+    fn rewind_argument_candidates_use_cached_targets() {
+        let mut app = App::test_default();
+        let session_id = model::SessionId::new("session-1");
+        app.session_id = Some(session_id.clone());
+        app.rewind_targets_session_id = Some(session_id);
+        app.rewind_targets = vec![
+            model::RewindTarget {
+                uuid: "user-1".to_owned(),
+                first_text: "first prompt".to_owned(),
+                input_text: "first prompt".to_owned(),
+                index: 0,
+                previous_assistant_uuid: None,
+            },
+            model::RewindTarget {
+                uuid: "user-2".to_owned(),
+                first_text: "second prompt".to_owned(),
+                input_text: "second prompt".to_owned(),
+                index: 3,
+                previous_assistant_uuid: Some("assistant-1".to_owned()),
+            },
+        ];
+        app.input.set_text("/rewind second");
+        let _ = app.input.set_cursor(0, "/rewind second".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(matches!(slash.context, SlashContext::Argument { .. }));
+        assert_eq!(
+            slash
+                .candidates
+                .iter()
+                .map(|candidate| (
+                    candidate.insert_value.as_str(),
+                    candidate.primary.as_str(),
+                    candidate.secondary.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("user-2", "second prompt", Some("user-2"))]
+        );
+    }
+
+    #[test]
+    fn rewind_argument_candidates_hide_stale_targets() {
+        let mut app = App::test_default();
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".to_owned(),
+            first_text: "first prompt".to_owned(),
+            input_text: "first prompt".to_owned(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+
+        let candidates = argument_candidates(&app, "/rewind", 0);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn rewind_argument_context_requests_targets_when_cache_is_stale() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.input.set_text("/rewind ");
+        let _ = app.input.set_cursor(0, "/rewind ".chars().count());
+
+        sync_with_cursor(&mut app);
+
+        assert!(app.rewind_targets_in_flight);
+        let envelope = rx.try_recv().expect("rewind target request");
+        assert!(matches!(
+            envelope.command,
+            crate::agent::wire::BridgeCommand::GetRewindTargets { session_id }
+                if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
+        let mut app = App::test_default();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.input.set_text("/rewind ");
+        let _ = app.input.set_cursor(0, "/rewind ".chars().count());
+
+        sync_with_cursor(&mut app);
+
+        let slash = app.slash.as_ref().expect("slash state");
+        assert!(slash.candidates.is_empty());
+        assert_eq!(slash.placeholder.as_deref(), Some("Loading messages"));
+    }
+
+    #[test]
+    fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
+        let mut app = App::test_default();
+        let session_id = model::SessionId::new("session-1");
+        app.session_id = Some(session_id.clone());
+        app.rewind_targets_session_id = Some(session_id);
+        app.input.set_text("/rewind ");
+        let _ = app.input.set_cursor(0, "/rewind ".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(slash.candidates.is_empty());
+        assert_eq!(slash.placeholder.as_deref(), Some("No previous user messages"));
+    }
+
+    #[test]
+    fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result() {
+        let mut app = App::test_default();
+        let session_id = model::SessionId::new("session-1");
+        app.session_id = Some(session_id.clone());
+        app.rewind_targets_session_id = Some(session_id);
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".to_owned(),
+            first_text: "first prompt".to_owned(),
+            input_text: "first prompt".to_owned(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+        app.input.set_text("/rewind missing");
+        let _ = app.input.set_cursor(0, "/rewind missing".chars().count());
+
+        let slash = super::candidates::build_slash_state(&app).expect("slash state");
+
+        assert!(slash.candidates.is_empty());
+        assert_eq!(slash.placeholder.as_deref(), Some("No matching messages"));
+    }
+
+    #[test]
     fn effort_argument_candidates_include_session_only_max() {
         let mut app = App::test_default();
         app.current_model = Some(
@@ -962,6 +1098,7 @@ mod tests {
         assert!(block.text.contains("/model"));
         assert!(block.text.contains("/new-session"));
         assert!(block.text.contains("/resume"));
+        assert!(block.text.contains("/rewind"));
     }
 
     #[test]
@@ -1056,6 +1193,7 @@ mod tests {
                 primary: "New".to_owned(),
                 secondary: None,
             }],
+            placeholder: None,
             dialog: DialogState::default(),
         });
 
@@ -1121,6 +1259,79 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /resume <session_id>");
+    }
+
+    #[test]
+    fn rewind_with_missing_target_returns_usage() {
+        let mut app = App::test_default();
+
+        let consumed = try_handle_submit(&mut app, "/rewind");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /rewind <user_message_uuid> <both|conversation|code>");
+    }
+
+    #[test]
+    fn rewind_with_cached_target_requires_connection() {
+        let mut app = App::test_default();
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".to_owned(),
+            first_text: "first prompt".to_owned(),
+            input_text: "first prompt".to_owned(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+
+        let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
+
+        assert!(consumed);
+        let Some(last) = app.messages.last() else {
+            panic!("expected selection message");
+        };
+        assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Cannot rewind: not connected yet.");
+    }
+
+    #[test]
+    fn rewind_with_cached_target_sends_bridge_command() {
+        let mut app = App::test_default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".to_owned(),
+            first_text: "first prompt".to_owned(),
+            input_text: "first prompt".to_owned(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+
+        let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
+
+        assert!(consumed);
+        assert_eq!(app.pending_command_label.as_deref(), Some("Rewinding conversation..."));
+        let envelope = rx.try_recv().expect("rewind command");
+        let crate::agent::wire::BridgeCommand::Rewind {
+            session_id,
+            target_user_message_id,
+            restore_mode,
+            ..
+        } = envelope.command
+        else {
+            panic!("expected rewind command");
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(target_user_message_id, "user-1");
+        assert_eq!(restore_mode, crate::agent::types::RewindRestoreMode::Conversation);
     }
 
     #[test]
@@ -1665,6 +1876,7 @@ mod tests {
                 primary: "/mode".into(),
                 secondary: None,
             }],
+            placeholder: None,
             dialog: DialogState::default(),
         });
 
@@ -1688,6 +1900,7 @@ mod tests {
                 primary: "/docs".into(),
                 secondary: Some("Show in-chat help topics".into()),
             }],
+            placeholder: None,
             dialog: DialogState::default(),
         });
 
@@ -1734,6 +1947,7 @@ mod tests {
                     primary: value.to_owned(),
                     secondary: None,
                 }],
+                placeholder: None,
                 dialog: DialogState::default(),
             });
 

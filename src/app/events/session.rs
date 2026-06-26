@@ -18,6 +18,16 @@ const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
 const UPDATE_INSTALL_COMMAND: &str = "npm install -g claude-code-rust";
 
+pub(super) struct SessionReplacedEventData {
+    pub session_id: model::SessionId,
+    pub cwd: String,
+    pub current_model: model::CurrentModel,
+    pub available_models: Vec<model::AvailableModel>,
+    pub mode: Option<super::super::ModeState>,
+    pub history_updates: Vec<model::SessionUpdate>,
+    pub restored_input: Option<String>,
+}
+
 pub(super) fn handle_connected_client_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -192,6 +202,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+    app.rewind_targets_in_flight = false;
+    app.rewind_targets_session_id = None;
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
@@ -289,15 +301,16 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     }
 }
 
-pub(super) fn handle_session_replaced_event(
-    app: &mut App,
-    session_id: model::SessionId,
-    cwd: String,
-    current_model: model::CurrentModel,
-    available_models: Vec<model::AvailableModel>,
-    mode: Option<super::super::ModeState>,
-    history_updates: &[model::SessionUpdate],
-) {
+pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplacedEventData) {
+    let SessionReplacedEventData {
+        session_id,
+        cwd,
+        current_model,
+        available_models,
+        mode,
+        history_updates,
+        restored_input,
+    } = event;
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
@@ -312,18 +325,23 @@ pub(super) fn handle_session_replaced_event(
         current_model,
         mode,
         false,
-        ChatResetRenderMode::ClearVisibleTranscript,
+        ChatResetRenderMode::DeferTranscriptRender,
     );
-    app.request_chat_session_boundary_rebuild();
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
-        load_resume_history(app, history_updates);
+        load_resume_history(app, &history_updates);
     }
     ensure_update_notice_message(app);
     clear_pending_command(app);
+    if let Some(restored_input) = restored_input.as_deref() {
+        app.input.set_text(restored_input);
+    }
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
+    // After session replacement, terminal scrollback is stale. Rebuild from
+    // app.messages, which was rebuilt only from bridge-reported session history.
+    app.request_chat_purge_replay_rebuild(crate::app::ChatPurgeReplayOptions::session_replacement());
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
@@ -334,7 +352,67 @@ pub(super) fn handle_session_replaced_event(
         current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
+        restored_input = restored_input.is_some(),
     );
+}
+
+pub(super) fn handle_rewind_result_event(app: &mut App, result: &model::RewindResult) {
+    if app.session_id.as_ref().map(ToString::to_string).as_deref()
+        != Some(result.session_id.as_str())
+    {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "rewind_result_dropped",
+            message = "rewind result dropped for a stale session",
+            outcome = "dropped",
+            session_id = %result.session_id,
+            reason = "stale_session",
+        );
+        return;
+    }
+
+    let severity = match result.status {
+        model::RewindResultStatus::Success => SystemSeverity::Info,
+        model::RewindResultStatus::Failure | model::RewindResultStatus::PartialFailure => {
+            SystemSeverity::Error
+        }
+    };
+    let message = rewind_result_message(result);
+    super::notices::emit_system_notice(app, severity, &message);
+    clear_pending_command(app);
+}
+
+fn rewind_result_message(result: &model::RewindResult) -> String {
+    if let Some(message) = result.message.as_deref()
+        && !message.trim().is_empty()
+        && !matches!(result.status, model::RewindResultStatus::Success)
+    {
+        return message.to_owned();
+    }
+
+    let Some(file_result) = result.file_result.as_ref() else {
+        return result
+            .message
+            .clone()
+            .unwrap_or_else(|| format!("Rewind {} completed.", result.restore_mode.label()));
+    };
+    let file_count = file_result.files_changed.len();
+    let insertions = file_result.insertions.unwrap_or(0);
+    let deletions = file_result.deletions.unwrap_or(0);
+    let file_word = if file_count == 1 { "file" } else { "files" };
+    match result.status {
+        model::RewindResultStatus::Success => format!(
+            "Restored code for {file_count} {file_word} ({insertions} insertions, {deletions} deletions)."
+        ),
+        model::RewindResultStatus::Failure => file_result
+            .error
+            .clone()
+            .or_else(|| result.message.clone())
+            .unwrap_or_else(|| "Failed to restore code.".to_owned()),
+        model::RewindResultStatus::PartialFailure => result.message.clone().unwrap_or_else(|| {
+            "Code was restored, but the conversation could not be rewound.".to_owned()
+        }),
+    }
 }
 
 pub(super) fn handle_update_available_event(
@@ -578,12 +656,16 @@ mod tests {
 
         handle_session_replaced_event(
             &mut app,
-            model::SessionId::new("session-2"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
+            SessionReplacedEventData {
+                session_id: model::SessionId::new("session-2"),
+                cwd: dir.path().to_string_lossy().into_owned(),
+                current_model: model::CurrentModel::new("model", "model", "model")
+                    .authoritative(true),
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: Vec::new(),
+                restored_input: None,
+            },
         );
 
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));

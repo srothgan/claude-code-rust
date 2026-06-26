@@ -54,8 +54,9 @@ pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use lifecycle::{
-    ChatRebuildKind, ChatSurfaceDirtyState, FullscreenSurfaceDirtyState, ReleaseReason,
-    SurfaceDirtyState, TerminalLifecycleState,
+    ChatPurgeReplayOptions, ChatPurgeReplayReason, ChatRebuildKind, ChatSurfaceDirtyState,
+    FullscreenSurfaceDirtyState, RESIZE_PURGE_REPLAY_MAX_ROWS, ReleaseReason, SurfaceDirtyState,
+    TerminalLifecycleState,
 };
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
