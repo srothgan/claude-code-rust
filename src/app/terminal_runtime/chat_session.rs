@@ -1464,6 +1464,8 @@ mod tests {
         let plan = plan_inline_geometry(Some(old_area), 4, 120, 37);
 
         assert_eq!(plan.target_area, Some(Rect::new(0, 33, 120, 4)));
+        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 33, 120, 3)));
+        assert_eq!(plan.scroll_rows_before_resize, 1);
         assert_eq!(plan.height, 4);
     }
 
