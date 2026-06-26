@@ -3,6 +3,8 @@
 
 use crossterm::event::KeyModifiers;
 
+#[cfg(unix)]
+use super::action::TerminalAction;
 use super::action::{AppAction, AutocompleteAction, InputAction, InteractionAction, KeyAction};
 use super::binding::{KeyBinding, KeyContext};
 use super::spec::{KeyCodeSpec, KeySpec};
