@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- **Inline viewport bottom growth** (#214, @srothgan): Scroll the terminal before autocomplete and composer expansion at the screen bottom so handed-off transcript rows are pushed up instead of overwritten.
 - **Runtime resize and notice hardening** (#211, @srothgan): Prevent notice migration and terminal row-range panics, preserve resize replay repaint requests, and clamp inline geometry after terminal shrinks.
 
 ### CI and Dependencies
