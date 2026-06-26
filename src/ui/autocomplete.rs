@@ -107,7 +107,7 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
         }
         Dropdown::Slash(s) => {
             if s.candidates.is_empty() {
-                lines.push(hint_line("Type a command name after /"));
+                lines.push(slash_placeholder_line(s));
             } else {
                 for (i, candidate) in s.candidates[meta.start..meta.end].iter().enumerate() {
                     lines.push(slash_candidate_line(s, candidate, meta.start + i));
@@ -130,6 +130,11 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
 fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
     let message = mention.placeholder_message().unwrap_or_default();
     hint_line(&message)
+}
+
+fn slash_placeholder_line(slash: &slash::SlashState) -> Line<'static> {
+    let message = slash.placeholder.as_deref().unwrap_or("Type a command name after /");
+    hint_line(message)
 }
 
 fn hint_line(message: &str) -> Line<'static> {
@@ -189,7 +194,7 @@ fn slash_candidate_line(
     }
 
     if let Some(secondary) = &candidate.secondary {
-        spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled("  | ", Style::default().fg(theme::DIM)));
         spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::DIM)));
     }
 
@@ -382,6 +387,23 @@ mod tests {
         assert_eq!(composer_hint_height(&app), 5);
         assert_eq!(rows.len(), 5);
         assert!(line_text(&rows[0]).contains("/1m-context"));
+    }
+
+    #[test]
+    fn slash_empty_state_renders_command_placeholder() {
+        let mut app = App::test_default();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.input.set_text("/rewind ");
+        let _ = app.input.set_cursor(0, "/rewind ".chars().count());
+        slash::sync_with_cursor(&mut app);
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]), "  [ Loading messages");
     }
 
     #[test]

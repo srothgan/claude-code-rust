@@ -54,8 +54,9 @@ pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use lifecycle::{
-    ChatRebuildKind, ChatSurfaceDirtyState, FullscreenSurfaceDirtyState, ReleaseReason,
-    SurfaceDirtyState, TerminalLifecycleState,
+    ChatPurgeReplayOptions, ChatPurgeReplayReason, ChatRebuildKind, ChatSurfaceDirtyState,
+    FullscreenSurfaceDirtyState, RESIZE_PURGE_REPLAY_MAX_ROWS, ReleaseReason, SurfaceDirtyState,
+    TerminalLifecycleState,
 };
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
@@ -66,11 +67,12 @@ pub use state::{
     InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
-    RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState, SystemSeverity,
-    TerminalSize, TerminalSizeChange, TerminalSnapshotMode, TextBlock, TextBlockSpacing,
-    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock,
-    WelcomeBlock, hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
+    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange,
+    TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

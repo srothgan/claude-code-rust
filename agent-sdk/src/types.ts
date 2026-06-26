@@ -81,6 +81,7 @@ export type TerminalReason =
 
 export interface RateLimitUpdate {
   status: RateLimitStatus;
+  error_code?: "credits_required";
   resets_at?: number;
   utilization?: number;
   rate_limit_type?: string;
@@ -89,6 +90,8 @@ export interface RateLimitUpdate {
   overage_disabled_reason?: string;
   is_using_overage?: boolean;
   surpassed_threshold?: number;
+  can_user_purchase_credits?: boolean;
+  has_chargeable_saved_payment_method?: boolean;
 }
 
 export type ApiRetryError =
@@ -550,6 +553,25 @@ export interface SessionLaunchSettings {
   agent_progress_summaries?: boolean;
 }
 
+export interface RewindTarget {
+  uuid: string;
+  first_text: string;
+  input_text: string;
+  index: number;
+  previous_assistant_uuid?: string;
+}
+
+export type RewindRestoreMode = "both" | "conversation" | "code";
+export type RewindResultStatus = "success" | "failure" | "partial_failure";
+
+export interface RewindFilesResult {
+  can_rewind: boolean;
+  error?: string;
+  files_changed: string[];
+  insertions?: number;
+  deletions?: number;
+}
+
 export interface BridgeCommandEnvelope {
   request_id?: string;
   command: string;
@@ -651,6 +673,17 @@ export type BridgeCommand =
   | {
       command: "get_context_usage";
       session_id: string;
+    }
+  | {
+      command: "get_rewind_targets";
+      session_id: string;
+    }
+  | {
+      command: "rewind";
+      session_id: string;
+      target_user_message_id: string;
+      restore_mode: RewindRestoreMode;
+      launch_settings: SessionLaunchSettings;
     }
   | {
       command: "reload_plugins";
@@ -766,6 +799,7 @@ export type BridgeEvent =
       available_models: AvailableModel[];
       mode: ModeState | null;
       history_updates?: SessionUpdate[];
+      restored_input?: string;
     }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: SessionListEntry[] }
@@ -774,6 +808,19 @@ export type BridgeEvent =
       event: "context_usage";
       session_id: string;
       percentage?: number;
+    }
+  | {
+      event: "rewind_targets";
+      session_id: string;
+      targets: RewindTarget[];
+    }
+  | {
+      event: "rewind_result";
+      session_id: string;
+      restore_mode: RewindRestoreMode;
+      status: RewindResultStatus;
+      file_result?: RewindFilesResult;
+      message?: string;
     }
   | {
       event: "mcp_snapshot";

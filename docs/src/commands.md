@@ -26,6 +26,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
 | `/resume` | `/resume <session_id>` | Resume a recent or manually supplied session id. |
+| `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 
 ## SDK-Advertised Commands
 

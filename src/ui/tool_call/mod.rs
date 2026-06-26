@@ -800,6 +800,7 @@ mod tests {
                 ),
             ],
             display: None,
+            subagent_context: None,
             response_tx,
             selected_index: 0,
             focused: true,
@@ -810,6 +811,81 @@ mod tests {
 
         assert!(rendered.iter().any(|line| line.contains("wrapped")));
         assert!(rendered.iter().any(|line| line.contains("Allow")));
+    }
+
+    #[test]
+    fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
+        let mut tc = test_tool_call(
+            "Write probe text to result file",
+            "Write",
+            model::ToolCallStatus::InProgress,
+        );
+        tc.hidden = true;
+        tc.content = vec![model::ToolCallContent::from("running...".to_owned())];
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        tc.pending_permission = Some(crate::app::InlinePermission {
+            options: vec![
+                model::PermissionOption::new(
+                    "allow_once",
+                    "Allow once",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "allow_always",
+                    "Always allow",
+                    model::PermissionOptionKind::AllowAlways,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            display: Some(
+                model::PermissionDisplay::new()
+                    .display_name(Some("Write".to_owned()))
+                    .description(Some("probe file".to_owned())),
+            ),
+            subagent_context: Some(crate::app::SubagentPermissionContext {
+                subagent_label: "general-purpose".to_owned(),
+                child_tool_name: "Write".to_owned(),
+                child_tool_title: "Write probe text to result file".to_owned(),
+                parent_tool_call_id: "agent-1".to_owned(),
+                parent_tool_title: Some("Agent: general-purpose".to_owned()),
+                parent_model: Some("claude-opus-4-8".to_owned()),
+                parent_raw_input: None,
+            }),
+            response_tx,
+            selected_index: 0,
+            focused: true,
+        });
+
+        let mut rendered = Vec::new();
+        render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 100, 0, &mut rendered);
+        let text = rendered_line_texts_trimmed(&rendered);
+
+        let first = text.first().expect("missing tool title row");
+        assert!(first.contains("Subagent ·"), "missing inline subagent marker: {text:?}");
+        assert!(
+            first.contains("Write probe text to result file"),
+            "first row should be the child tool title: {text:?}"
+        );
+        let child_idx = text
+            .iter()
+            .position(|line| line.contains("Write probe text to result file"))
+            .expect("missing child tool title");
+        let content_idx =
+            text.iter().position(|line| line.contains("running...")).expect("missing content");
+        let permission_idx =
+            text.iter().position(|line| line.contains("Allow once")).expect("missing permission");
+
+        assert_eq!(child_idx, 0, "child title should be the first row: {text:?}");
+        assert!(child_idx < content_idx, "content should follow child title: {text:?}");
+        assert!(content_idx < permission_idx, "permission should follow child content: {text:?}");
+        assert!(!text.iter().any(|line| line.contains("general-purpose")));
+        assert!(!text.iter().any(|line| line.contains("[model:")));
+        assert!(!text.iter().any(|line| line.contains("Agent:")));
+        assert!(!text.iter().any(|line| line.contains("probe file")));
     }
 
     #[test]

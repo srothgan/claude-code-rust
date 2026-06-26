@@ -4,7 +4,9 @@
 //! Slash command autocomplete navigation: activate, deactivate, sync,
 //! move selection, and confirm.
 
-use super::candidates::{build_slash_state, builtin_argument_confirmation_closes};
+use super::candidates::{
+    build_slash_state, builtin_argument_confirmation_closes, detect_slash_at_cursor,
+};
 use super::{SlashContext, SlashState};
 use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget};
 
@@ -55,7 +57,46 @@ fn replacement_range(slash: &SlashState, chars: &[char]) -> Option<(usize, usize
     }
 }
 
+fn request_rewind_targets_for_active_argument(app: &mut App) {
+    let Some(detection) =
+        detect_slash_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())
+    else {
+        return;
+    };
+    let SlashContext::Argument { command, arg_index, .. } = detection.context else {
+        return;
+    };
+    if command != "/rewind" || arg_index != 0 || app.rewind_targets_in_flight {
+        return;
+    }
+    let Some(session_id) = app.session_id.clone() else {
+        return;
+    };
+    if app.rewind_targets_session_id.as_ref() == Some(&session_id) {
+        return;
+    }
+    let Some(conn) = app.conn.clone() else {
+        return;
+    };
+    let session_id_text = session_id.to_string();
+    app.rewind_targets_in_flight = true;
+    app.rewind_targets.clear();
+    app.rewind_targets_session_id = None;
+    if let Err(err) = conn.get_rewind_targets(session_id_text.clone()) {
+        app.rewind_targets_in_flight = false;
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "rewind_targets_request_failed",
+            message = "failed to request rewind targets",
+            outcome = "failure",
+            session_id = %session_id_text,
+            error_message = %err,
+        );
+    }
+}
+
 pub fn activate(app: &mut App) {
+    request_rewind_targets_for_active_argument(app);
     let Some(state) = build_slash_state(app) else {
         return;
     };
@@ -67,6 +108,7 @@ pub fn activate(app: &mut App) {
 }
 
 pub fn update_query(app: &mut App) {
+    request_rewind_targets_for_active_argument(app);
     let Some(next_state) = build_slash_state(app) else {
         deactivate(app);
         return;
@@ -80,6 +122,7 @@ pub fn update_query(app: &mut App) {
         slash.query = next_state.query;
         slash.context = next_state.context;
         slash.candidates = next_state.candidates;
+        slash.placeholder = next_state.placeholder;
         slash.dialog = dialog;
         slash.dialog.clamp(slash.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     } else {
@@ -89,6 +132,7 @@ pub fn update_query(app: &mut App) {
 }
 
 pub fn sync_with_cursor(app: &mut App) {
+    request_rewind_targets_for_active_argument(app);
     match (build_slash_state(app), app.slash.is_some()) {
         (Some(_), true) => update_query(app),
         (Some(_), false) => activate(app),

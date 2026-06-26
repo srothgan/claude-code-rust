@@ -10,6 +10,7 @@ import type {
   PermissionOutcome,
   QuestionOutcome,
   RefusalFallbackPromptChoice,
+  RewindRestoreMode,
   SessionLaunchSettings,
   UserDialogOutcome,
 } from "../types.js";
@@ -142,6 +143,18 @@ function expectEffortLevel(
     throw new Error(`${context}.${key} must be one of low, medium, high, xhigh, max`);
   }
   return value;
+}
+
+function expectRewindRestoreMode(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): RewindRestoreMode {
+  const value = expectString(record, key, context);
+  if (value === "both" || value === "conversation" || value === "code") {
+    return value;
+  }
+  throw new Error(`${context}.${key} must be one of both, conversation, code`);
 }
 
 function expectNonEmptyStringOrNull(
@@ -379,6 +392,23 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "get_context_usage",
           session_id: expectString(raw, "session_id", "get_context_usage"),
+        };
+      case "get_rewind_targets":
+        return {
+          command: "get_rewind_targets",
+          session_id: expectString(raw, "session_id", "get_rewind_targets"),
+        };
+      case "rewind":
+        return {
+          command: "rewind",
+          session_id: expectString(raw, "session_id", "rewind"),
+          target_user_message_id: expectString(
+            raw,
+            "target_user_message_id",
+            "rewind",
+          ),
+          restore_mode: expectRewindRestoreMode(raw, "restore_mode", "rewind"),
+          launch_settings: optionalLaunchSettings(raw, "launch_settings", "rewind"),
         };
       case "reload_plugins":
         return {

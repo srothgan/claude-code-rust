@@ -41,6 +41,17 @@ pub struct ToolCallInfo {
     pub pending_question: Option<InlineQuestion>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentPermissionContext {
+    pub subagent_label: String,
+    pub child_tool_name: String,
+    pub child_tool_title: String,
+    pub parent_tool_call_id: String,
+    pub parent_tool_title: Option<String>,
+    pub parent_model: Option<String>,
+    pub parent_raw_input: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSnapshotMode {
     AppendOnly,
@@ -101,16 +112,12 @@ impl ToolCallInfo {
 
     #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
-        self.hidden
-            && !self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            && !self.pending_question.as_ref().is_some_and(|question| question.focused)
+        self.hidden && self.pending_permission.is_none() && self.pending_question.is_none()
     }
 
     #[must_use]
     pub fn is_hidden_focused_interaction(&self) -> bool {
-        self.hidden
-            && (self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-                || self.pending_question.as_ref().is_some_and(|question| question.focused))
+        self.hidden && (self.pending_permission.is_some() || self.pending_question.is_some())
     }
 
     #[must_use]
@@ -163,6 +170,7 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
 pub struct InlinePermission {
     pub options: Vec<model::PermissionOption>,
     pub display: Option<model::PermissionDisplay>,
+    pub subagent_context: Option<SubagentPermissionContext>,
     pub response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     pub selected_index: usize,
     /// Whether this permission currently has keyboard focus.

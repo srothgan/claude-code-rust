@@ -30,6 +30,7 @@ fn busy_view_test_app() -> App {
         query: "/co".to_owned(),
         context: SlashContext::CommandName,
         candidates: vec![],
+        placeholder: None,
         dialog: DialogState::default(),
     });
     app.subagent = Some(SubagentState {

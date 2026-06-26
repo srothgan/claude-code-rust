@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
     convert_account_info, convert_current_model, convert_mode_state, map_available_models,
-    map_mcp_server_status, map_permission_request, map_question_request, map_session_update,
-    map_user_dialog_request,
+    map_mcp_server_status, map_permission_request, map_question_request, map_rewind_result,
+    map_rewind_targets, map_session_update, map_user_dialog_request,
 };
 
 struct ConnectedEventData {
@@ -146,6 +146,7 @@ pub(super) fn handle_bridge_event(
             available_models,
             mode,
             history_updates,
+            restored_input,
         } => {
             let history_updates = history_updates
                 .unwrap_or_default()
@@ -159,6 +160,7 @@ pub(super) fn handle_bridge_event(
                 available_models: map_available_models(available_models),
                 mode: mode.map(convert_mode_state),
                 history_updates,
+                restored_input,
             });
         }
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
@@ -173,6 +175,23 @@ pub(super) fn handle_bridge_event(
         }
         crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
             let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
+        }
+        crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets } => {
+            let _ = event_tx.send(ClientEvent::RewindTargetsReceived {
+                session_id,
+                targets: map_rewind_targets(targets),
+            });
+        }
+        crate::agent::wire::BridgeEvent::RewindResult {
+            session_id,
+            restore_mode,
+            status,
+            file_result,
+            message,
+        } => {
+            let _ = event_tx.send(ClientEvent::RewindResultReceived {
+                result: map_rewind_result(session_id, restore_mode, status, file_result, message),
+            });
         }
         crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, source, error } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
@@ -205,6 +224,7 @@ fn handle_connected_event(
             available_models: map_available_models(event.available_models),
             mode,
             history_updates,
+            restored_input: None,
         });
     } else {
         *connected_once = true;

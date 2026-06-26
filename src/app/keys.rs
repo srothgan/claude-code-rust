@@ -982,6 +982,7 @@ mod tests {
                     secondary: None,
                 },
             ],
+            placeholder: None,
             dialog: crate::app::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);

@@ -23,19 +23,19 @@ pub(super) fn render_permission_lines(
         return render_plan_approval_lines(tc, perm);
     }
 
-    // Unfocused permissions: show a dimmed "waiting for focus" line
+    let mut lines = vec![Line::default()];
+    // Unfocused permissions: show a dimmed "waiting for focus" line.
     if !perm.focused {
-        return vec![
-            Line::default(),
-            Line::from(Span::styled(
-                "  \u{25cb} Waiting for input... (Tab to focus)",
-                Style::default().fg(theme::DIM),
-            )),
-        ];
+        lines.push(Line::from(Span::styled(
+            "  \u{25cb} Waiting for input... (Tab to focus)",
+            Style::default().fg(theme::DIM),
+        )));
+        return lines;
     }
 
-    let mut lines = vec![Line::default()];
-    if let Some(display) = permission_display_lines(tc, perm) {
+    if perm.subagent_context.is_none()
+        && let Some(display) = permission_display_lines(tc, perm)
+    {
         lines.extend(display);
     }
 
@@ -474,6 +474,7 @@ mod tests {
                 PermissionOption::new("deny", "Deny", reject_kind),
             ],
             display: None,
+            subagent_context: None,
             response_tx,
             selected_index: 0,
             focused: true,
@@ -586,6 +587,91 @@ mod tests {
 
         assert!(!rendered.contains("\n  Strava: List activities\n"));
         assert!(rendered.contains("This action reads activity metadata"));
+    }
+
+    #[test]
+    fn subagent_permission_context_does_not_render_metadata_rows() {
+        let tc = test_tool_call("Bash");
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
+            subagent_label: "reviewer".to_owned(),
+            child_tool_name: "Bash".to_owned(),
+            child_tool_title: "Bash".to_owned(),
+            parent_tool_call_id: "agent-1".to_owned(),
+            parent_tool_title: Some("Agent: reviewer".to_owned()),
+            parent_model: None,
+            parent_raw_input: None,
+        });
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!rendered.iter().any(|line| line.contains("Subagent:")));
+        assert!(!rendered.iter().any(|line| line.contains("Tool:")));
+        assert!(rendered.iter().any(|line| line.contains("Allow")));
+    }
+
+    #[test]
+    fn unfocused_subagent_permission_keeps_normal_waiting_row() {
+        let tc = test_tool_call("Bash");
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.focused = false;
+        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
+            subagent_label: "reviewer".to_owned(),
+            child_tool_name: "Bash".to_owned(),
+            child_tool_title: "Bash".to_owned(),
+            parent_tool_call_id: "agent-1".to_owned(),
+            parent_tool_title: Some("Agent: reviewer".to_owned()),
+            parent_model: None,
+            parent_raw_input: None,
+        });
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!rendered.iter().any(|line| line.contains("Subagent:")));
+        assert!(!rendered.iter().any(|line| line.contains("Tool:")));
+        assert!(rendered.iter().any(|line| line.contains("Waiting for input")));
+    }
+
+    #[test]
+    fn subagent_permission_suppresses_sdk_display_metadata() {
+        let tc = test_tool_call("Write");
+        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
+        perm.display = Some(
+            PermissionDisplay::new()
+                .display_name(Some("Write".to_owned()))
+                .description(Some("subagent_one_probe.txt".to_owned())),
+        );
+        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
+            subagent_label: "general-purpose".to_owned(),
+            child_tool_name: "Write".to_owned(),
+            child_tool_title: "Write subagent_one_probe.txt".to_owned(),
+            parent_tool_call_id: "agent-1".to_owned(),
+            parent_tool_title: Some("Agent: general-purpose".to_owned()),
+            parent_model: None,
+            parent_raw_input: None,
+        });
+
+        let rendered = render_permission_lines(&tc, &perm)
+            .into_iter()
+            .map(|line| {
+                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("subagent_one_probe.txt"));
+        assert!(!rendered.contains("\n  Write\n"));
+        assert!(rendered.contains("Allow"));
     }
 
     #[test]

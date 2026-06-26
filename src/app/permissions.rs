@@ -343,6 +343,7 @@ mod tests {
             tc.pending_permission = Some(InlinePermission {
                 options,
                 display: None,
+                subagent_context: None,
                 response_tx: tx,
                 selected_index: 0,
                 focused,
@@ -350,6 +351,12 @@ mod tests {
         }
         app.pending_interaction_ids.push(tool_id.to_owned());
         rx
+    }
+
+    fn add_tool_without_permission(app: &mut App, tool_id: &str) {
+        let msg_idx = app.messages.len();
+        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
     }
 
     fn permission_focused(app: &App, tool_id: &str) -> bool {
@@ -468,5 +475,31 @@ mod tests {
 
         let resp = rx.try_recv().expect("permission should be cancelled");
         assert!(matches!(resp.outcome, model::RequestPermissionOutcome::Cancelled));
+    }
+
+    #[test]
+    fn permission_response_for_subagent_child_uses_child_tool_id() {
+        let mut app = App::test_default();
+        add_tool_without_permission(&mut app, "agent-1");
+        let mut child_rx = add_permission(&mut app, "bash-1", allow_options(), true);
+        app.register_tool_call_scope("agent-1".to_owned(), crate::app::ToolCallScope::SubagentRoot);
+        app.register_tool_call_scope(
+            "bash-1".to_owned(),
+            crate::app::ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
+        );
+
+        let consumed = execute_permission_action(
+            &mut app,
+            InteractionAction::Confirm,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(consumed, KeyOutcome::Handled(true));
+        let response = child_rx.try_recv().expect("child permission should receive response");
+        let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id, "allow-once");
+        assert_eq!(app.pending_interaction_ids, Vec::<String>::new());
     }
 }

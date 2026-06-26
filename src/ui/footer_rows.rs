@@ -570,6 +570,7 @@ mod tests {
                 pending_permission: Some(InlinePermission {
                     options: vec![],
                     display: None,
+                    subagent_context: None,
                     response_tx,
                     selected_index: 0,
                     focused: true,

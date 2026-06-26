@@ -5,6 +5,7 @@ import {
   CACHE_SPLIT_POLICY,
   buildApiRetryUpdate,
   buildRateLimitUpdate,
+  buildRewindConversationPlan,
   buildQueryOptions,
   canGenerateSessionTitle,
   generatePersistedSessionTitle,
@@ -41,12 +42,13 @@ import {
   previewKilobyteLabel,
   staleMcpAuthCandidates,
   resolveInstalledAgentSdkVersion,
+  rewindTargetsFromSessionMessages,
   unwrapToolUseResult,
   updateAvailableCommands,
   handleReloadPluginsCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   availableModesForSession,
   buildModeState,
@@ -58,6 +60,7 @@ import { handleMcpSetServersCommand } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
   handleUserDialogResponse,
+  closeSessionsBeforeRegister,
   refreshCurrentModel,
   resolveCurrentModel,
   sessions,
@@ -68,7 +71,7 @@ import { classifyTurnErrorKind } from "./bridge/error_classification.js";
 import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
-import { handleResultMessage } from "./bridge/message_handlers.js";
+import { flushPendingWorkerShutdown, handleResultMessage } from "./bridge/message_handlers.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
   process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
@@ -104,11 +107,39 @@ function makeSessionState(): SessionState {
     pendingQuestions: new Map(),
     pendingUserDialogs: new Map(),
     pendingElicitations: new Map(),
+    informationalDedupKeys: new Set(),
     mcpStatusRevalidatedAt: new Map(),
     hiddenToolUseIds: new Set(),
     authHintSent: false,
   };
 }
+
+test("closeSessionsBeforeRegister closes same-key stale session before replacement registration", async () => {
+  sessions.clear();
+  let staleClosed = 0;
+  const stale = makeSessionState();
+  stale.sessionId = "session-1";
+  stale.query = {
+    close: () => {
+      staleClosed += 1;
+    },
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+  const replacement = makeSessionState();
+  replacement.sessionId = "session-1";
+
+  sessions.set(stale.sessionId, stale);
+  await closeSessionsBeforeRegister(replacement, [stale], "req-1");
+
+  assert.equal(staleClosed, 1);
+  assert.equal(sessions.has("session-1"), false);
+
+  sessions.set(replacement.sessionId, replacement);
+  await closeSessionsBeforeRegister(replacement, [stale], "req-2");
+
+  assert.equal(staleClosed, 2);
+  assert.equal(sessions.get("session-1"), replacement);
+  sessions.clear();
+});
 
 test("availableModesForSession omits conditional modes when unsupported", () => {
   const session = makeSessionState();
@@ -931,6 +962,178 @@ test("parseCommandEnvelope validates get_context_usage command", () => {
   });
 });
 
+test("parseCommandEnvelope validates get_rewind_targets command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-rewind-targets",
+      command: "get_rewind_targets",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-rewind-targets");
+  assert.deepEqual(parsed.command, {
+    command: "get_rewind_targets",
+    session_id: "session-123",
+  });
+});
+
+test("parseCommandEnvelope validates rewind command modes", () => {
+  for (const restoreMode of ["both", "conversation", "code"] as const) {
+    const parsed = parseCommandEnvelope(
+      JSON.stringify({
+        request_id: "req-rewind",
+        command: "rewind",
+        session_id: "session-123",
+        target_user_message_id: "user-1",
+        restore_mode: restoreMode,
+        launch_settings: {
+          language: "German",
+        },
+      }),
+    );
+
+    assert.equal(parsed.requestId, "req-rewind");
+    assert.deepEqual(parsed.command, {
+      command: "rewind",
+      session_id: "session-123",
+      target_user_message_id: "user-1",
+      restore_mode: restoreMode,
+      launch_settings: { language: "German" },
+    });
+  }
+});
+
+test("parseCommandEnvelope rejects invalid rewind mode", () => {
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "rewind",
+          session_id: "session-123",
+          target_user_message_id: "user-1",
+          restore_mode: "files",
+        }),
+      ),
+    /rewind\.restore_mode must be one of both, conversation, code/,
+  );
+});
+
+test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: [{ type: "text", text: " first prompt\nline " }] },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "ignored" }] },
+    },
+    {
+      type: "user",
+      uuid: "tool-result",
+      message: { role: "user", content: [{ type: "tool_result", content: "ignored" }] },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: [{ type: "text", text: "second prompt" }] },
+    },
+  ] as unknown as SessionMessage[];
+
+  assert.deepEqual(rewindTargetsFromSessionMessages(messages), [
+    {
+      uuid: "user-2",
+      first_text: "second prompt",
+      input_text: "second prompt",
+      index: 3,
+      previous_assistant_uuid: "assistant-1",
+    },
+    {
+      uuid: "user-1",
+      first_text: "first prompt line",
+      input_text: "first prompt\nline",
+      index: 0,
+    },
+  ]);
+});
+
+test("buildRewindConversationPlan anchors at previous assistant message", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  const plan = buildRewindConversationPlan(messages, "user-2");
+
+  assert.ok(plan);
+  assert.equal(plan.inputText, "second prompt");
+  assert.equal(plan.previousAssistantUuid, "assistant-1");
+  assert.equal(plan.targetIndex, 2);
+  assert.deepEqual(
+    plan.retainedMessages.map((message) => message.uuid),
+    ["user-1", "assistant-1"],
+  );
+  assert.ok(plan.resumeUpdates.length > 0);
+});
+
+test("buildRewindConversationPlan treats first user message as fresh replacement", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: " first prompt\nline " },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    },
+  ] as unknown as SessionMessage[];
+
+  const plan = buildRewindConversationPlan(messages, "user-1");
+
+  assert.ok(plan);
+  assert.equal(plan.inputText, " first prompt\nline ");
+  assert.equal(plan.previousAssistantUuid, undefined);
+  assert.equal(plan.targetIndex, 0);
+  assert.deepEqual(plan.retainedMessages, []);
+  assert.deepEqual(plan.resumeUpdates, []);
+});
+
+test("buildRewindConversationPlan rejects stale or inconsistent targets", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  assert.equal(buildRewindConversationPlan(messages, "missing-user"), null);
+  assert.equal(buildRewindConversationPlan(messages, "user-2"), null);
+});
+
 test("staleMcpAuthCandidates selects previously connected servers that regressed to needs-auth", () => {
   const candidates = staleMcpAuthCandidates(
     [
@@ -1068,11 +1271,32 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal("effort" in options, false);
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.promptSuggestions, true);
+  assert.equal(options.enableFileCheckpointing, true);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.deepEqual(options.toolConfig, {
     askUserQuestion: { previewFormat: "markdown" },
   });
+});
+
+test("buildQueryOptions includes resumeSessionAt when provided", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    resume: "session-1",
+    resumeSessionAt: "assistant-1",
+    launchSettings: {},
+    provisionalSessionId: "session-1",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-1",
+  });
+
+  assert.equal(options.resume, "session-1");
+  assert.equal(options.resumeSessionAt, "assistant-1");
+  assert.equal("sessionId" in options, false);
 });
 
 test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
@@ -1696,6 +1920,112 @@ test("handleSdkMessage emits transcript retraction for model_refusal_fallback", 
     ),
     false,
   );
+});
+
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with explanation", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      api_refusal_category: "cyber",
+      api_refusal_explanation: "policy text",
+      refused_user_message_uuid: "user-1",
+      content: "raw content",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Reason: policy text.",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with category only", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      api_refusal_category: "cyber",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refusal category: cyber.",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits warning notice for model_refusal_no_fallback with content detail", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: "claude-opus-4-1",
+      request_id: "req-1",
+      content: "Refused by policy!",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refused by policy!",
+    },
+  ]);
+});
+
+test("handleSdkMessage emits readable model_refusal_no_fallback notice for empty metadata", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "model_refusal_no_fallback",
+      original_model: " ",
+      request_id: null,
+      api_refusal_category: " ",
+      api_refusal_explanation: null,
+      refused_user_message_uuid: null,
+      content: " ",
+      uuid: "refusal-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message:
+        "Could not continue with the selected model: model refused the request and no fallback model is configured.",
+    },
+  ]);
 });
 
 test("handleSdkMessage emits tolerant transcript retraction for model_fallback", () => {
@@ -3374,6 +3704,7 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("ShowOnboardingRolePicker"), "other");
   assert.equal(normalizeToolKind("TaskOutput"), "other");
   assert.equal(normalizeToolKind("TaskStop"), "other");
+  assert.equal(normalizeToolKind("ReadMcpResourceDir"), "read");
   assert.equal(normalizeToolKind("Task"), "think");
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
@@ -3395,6 +3726,26 @@ test("shell tool titles use input command", () => {
     "Get-ChildItem",
   );
   assert.equal(createToolCall("tc-powershell-empty", "PowerShell", {}).title, "Terminal");
+});
+
+test("ReadMcpResourceDir titles include server and URI context", () => {
+  assert.equal(
+    createToolCall("tc-mcp-dir-title", "ReadMcpResourceDir", {
+      server: "docs",
+      uri: "file://manuals/",
+    }).title,
+    "ReadMcpResourceDir docs file://manuals/",
+  );
+  assert.equal(
+    createToolCall("tc-mcp-dir-uri-title", "ReadMcpResourceDir", {
+      uri: "file://manuals/",
+    }).title,
+    "ReadMcpResourceDir file://manuals/",
+  );
+  assert.equal(
+    createToolCall("tc-mcp-dir-fallback-title", "ReadMcpResourceDir", {}).title,
+    "ReadMcpResourceDir",
+  );
 });
 
 test("parseFastModeState accepts known values and rejects unknown values", () => {
@@ -3432,11 +3783,15 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     overageDisabledReason: "out_of_credits",
     isUsingOverage: false,
     surpassedThreshold: 0.9,
+    errorCode: "credits_required",
+    canUserPurchaseCredits: true,
+    hasChargeableSavedPaymentMethod: false,
   });
 
   assert.deepEqual(update, {
     type: "rate_limit_update",
     status: "allowed_warning",
+    error_code: "credits_required",
     resets_at: 1_741_280_000,
     utilization: 0.92,
     rate_limit_type: "five_hour",
@@ -3445,6 +3800,8 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     overage_disabled_reason: "out_of_credits",
     is_using_overage: false,
     surpassed_threshold: 0.9,
+    can_user_purchase_credits: true,
+    has_chargeable_saved_payment_method: false,
   });
 });
 
@@ -3480,6 +3837,10 @@ test("buildRateLimitUpdate rejects invalid payloads", () => {
     }),
     { type: "rate_limit_update", status: "rejected" },
   );
+  assert.deepEqual(buildRateLimitUpdate({ status: "rejected", errorCode: "other" }), {
+    type: "rate_limit_update",
+    status: "rejected",
+  });
 });
 
 test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
@@ -3819,6 +4180,213 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
     { type: "system_notice_update", severity: "info", message: "Sync completed" },
     { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
   ]);
+});
+
+test("handleSdkMessage maps informational system messages to notices by level", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "  Sync ready  ",
+      level: "notice",
+      uuid: "message-info-notice",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Try /compact",
+      level: "suggestion",
+      uuid: "message-info-suggestion",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Hook blocked continuation",
+      level: "warning",
+      uuid: "message-info-warning",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Sync ready" },
+    { type: "system_notice_update", severity: "info", message: "Suggestion: Try /compact" },
+    { type: "system_notice_update", severity: "warning", message: "Hook blocked continuation" },
+  ]);
+});
+
+test("handleSdkMessage keeps informational info log-only unless continuation is prevented", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Transcript-only progress",
+      level: "info",
+      uuid: "message-info-log-only",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Stop hook denied continuation",
+      level: "info",
+      prevent_continuation: true,
+      uuid: "message-info-prevented",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message: "Stop hook denied continuation",
+    },
+  ]);
+});
+
+test("handleSdkMessage deduplicates informational messages by tool use, level, and content", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Progress",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-1",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: " Progress ",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-2",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "informational",
+      content: "Progress updated",
+      level: "notice",
+      tool_use_id: "tool-1",
+      uuid: "message-info-3",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Progress" },
+    { type: "system_notice_update", severity: "info", message: "Progress updated" },
+  ]);
+});
+
+test("handleSdkMessage does not deduplicate informational messages without a tool use id", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const uuid of ["message-info-1", "message-info-2"]) {
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "informational",
+        content: "Repeated global notice",
+        level: "notice",
+        uuid,
+        session_id: "session-1",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
+    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
+  ]);
+});
+
+test("handleSdkMessage treats worker shutdown before connect as log-only", () => {
+  const session = makeSessionState();
+  session.connected = false;
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(session.pendingWorkerShutdown, undefined);
+});
+
+test("handleSdkMessage flushes connected worker shutdown only when stream ends", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    {
+      type: "system_notice_update",
+      severity: "warning",
+      message: "Claude worker is shutting down: host_exit",
+    },
+  ]);
+});
+
+test("handleSdkMessage cancels pending worker shutdown after later SDK activity", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "worker_shutting_down",
+      reason: "host_exit",
+      uuid: "message-worker-shutdown",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "notification",
+      text: "Still running",
+      priority: "low",
+      uuid: "message-notification",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    flushPendingWorkerShutdown(session);
+  });
+
+  assert.deepEqual(events.map((event) => event.update), [
+    { type: "system_notice_update", severity: "info", message: "Still running" },
+  ]);
+});
+
+test("handleSdkMessage ignores unknown future system subtypes", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "future_subtype",
+      content: "Unknown",
+      uuid: "message-future",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
 });
 
 test("handleSdkMessage treats mirror errors as log-only diagnostics", () => {
@@ -4906,6 +5474,156 @@ test("buildToolResultFields marks ReadMcpResource error output as failed", () =>
   ]);
 });
 
+test("buildToolResultFields renders structured ReadMcpResourceDir listings", () => {
+  const base = createToolCall("tc-mcp-dir", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [
+        {
+          name: "guide.md",
+          uri: "file://manuals/guide.md",
+          mimeType: "text/markdown",
+        },
+        {
+          name: "images",
+          uri: "file://manuals/images",
+          mimeType: "inode/directory",
+        },
+        {
+          name: "readme",
+          uri: "file://manuals/readme",
+        },
+      ],
+    },
+    base,
+  );
+
+  const expected =
+    "guide.md - file://manuals/guide.md (text/markdown)\n" +
+    "images - file://manuals/images (directory)\n" +
+    "readme - file://manuals/readme";
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, expected);
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: expected },
+    },
+  ]);
+});
+
+test("buildToolResultFields renders empty ReadMcpResourceDir listings", () => {
+  const base = createToolCall("tc-mcp-dir-empty", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://empty/",
+  });
+  const fields = buildToolResultFields(false, { resources: [] }, base);
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "No resources found.");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "No resources found." },
+    },
+  ]);
+});
+
+test("buildToolResultFields marks ReadMcpResourceDir error output as failed", () => {
+  const base = createToolCall("tc-mcp-dir-error", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://missing/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [],
+      error: "directory not found",
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Error: directory not found");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Error: directory not found" },
+    },
+  ]);
+});
+
+test("buildToolResultFields parses ReadMcpResourceDir transcript JSON", () => {
+  const base = createToolCall("tc-mcp-dir-history", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const transcriptJson = JSON.stringify({
+    resources: [
+      {
+        name: "api.json",
+        uri: "file://manuals/api.json",
+        mimeType: "application/json",
+      },
+    ],
+  });
+  const fields = buildToolResultFields(false, transcriptJson, base, {
+    type: "tool_result",
+    tool_use_id: "tc-mcp-dir-history",
+    content: transcriptJson,
+  });
+
+  assert.equal(fields.raw_output, "api.json - file://manuals/api.json (application/json)");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "api.json - file://manuals/api.json (application/json)",
+      },
+    },
+  ]);
+});
+
+test("buildToolResultFields skips invalid ReadMcpResourceDir entries", () => {
+  const base = createToolCall("tc-mcp-dir-invalid", "ReadMcpResourceDir", {
+    server: "docs",
+    uri: "file://manuals/",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      resources: [
+        { name: "missing-uri" },
+        { uri: "file://manuals/missing-name" },
+        null,
+        {
+          name: "valid.txt",
+          uri: "file://manuals/valid.txt",
+          mimeType: "text/plain",
+        },
+      ],
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.raw_output, "valid.txt - file://manuals/valid.txt (text/plain)");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "valid.txt - file://manuals/valid.txt (text/plain)",
+      },
+    },
+  ]);
+});
+
 test("buildToolResultFields preserves WebFetch artifactRead only as metadata", () => {
   const base = createToolCall("tc-web-fetch-artifact", "WebFetch", {
     url: "https://artifact.local/dashboard",
@@ -5196,7 +5914,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.177");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.193");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -5783,13 +6501,15 @@ test("mapSdkSessions normalizes and sorts sessions", () => {
   ]);
 });
 
-test("buildSessionListOptions scopes repo-local listings to worktrees", () => {
+test("buildSessionListOptions includes SDK-created sessions for resume listings", () => {
   assert.deepEqual(buildSessionListOptions("C:/repo"), {
     dir: "C:/repo",
+    includeProgrammatic: true,
     includeWorktrees: true,
     limit: 50,
   });
   assert.deepEqual(buildSessionListOptions(undefined), {
+    includeProgrammatic: true,
     limit: 50,
   });
 });

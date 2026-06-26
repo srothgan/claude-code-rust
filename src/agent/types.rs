@@ -26,6 +26,62 @@ pub struct AvailableCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindTarget {
+    pub uuid: String,
+    pub first_text: String,
+    pub input_text: String,
+    pub index: u64,
+    pub previous_assistant_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindRestoreMode {
+    Both,
+    Conversation,
+    Code,
+}
+
+impl RewindRestoreMode {
+    #[must_use]
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Conversation => "conversation",
+            Self::Code => "code",
+        }
+    }
+
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "both" => Some(Self::Both),
+            "conversation" => Some(Self::Conversation),
+            "code" => Some(Self::Code),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindResultStatus {
+    Success,
+    Failure,
+    PartialFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RewindFilesResult {
+    pub can_rewind: bool,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    pub insertions: Option<u64>,
+    pub deletions: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgent {
     pub name: String,
     pub description: String,
@@ -130,6 +186,7 @@ pub struct SettingsParseErrorUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
+    pub error_code: Option<String>,
     pub resets_at: Option<f64>,
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
@@ -138,6 +195,8 @@ pub struct RateLimitUpdate {
     pub overage_disabled_reason: Option<String>,
     pub is_using_overage: Option<bool>,
     pub surpassed_threshold: Option<f64>,
+    pub can_user_purchase_credits: Option<bool>,
+    pub has_chargeable_saved_payment_method: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,6 +452,7 @@ pub enum SessionUpdate {
     },
     RateLimitUpdate {
         status: RateLimitStatus,
+        error_code: Option<String>,
         resets_at: Option<f64>,
         utilization: Option<f64>,
         rate_limit_type: Option<String>,
@@ -401,6 +461,8 @@ pub enum SessionUpdate {
         overage_disabled_reason: Option<String>,
         is_using_overage: Option<bool>,
         surpassed_threshold: Option<f64>,
+        can_user_purchase_credits: Option<bool>,
+        has_chargeable_saved_payment_method: Option<bool>,
     },
     ApiRetryUpdate {
         attempt: u64,
@@ -868,8 +930,8 @@ pub enum McpSnapshotSource {
 mod tests {
     use super::{
         AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
-        McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, SessionStatus,
-        SessionUpdate, SystemNoticeSeverity, TranscriptRetractionReason,
+        McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, RateLimitStatus,
+        SessionStatus, SessionUpdate, SystemNoticeSeverity, TranscriptRetractionReason,
     };
 
     #[test]
@@ -953,6 +1015,29 @@ mod tests {
                 SessionUpdate::ApiRetryUpdate { error, .. } if error == expected
             ));
         }
+    }
+
+    #[test]
+    fn rate_limit_update_deserializes_credits_metadata() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "rate_limit_update",
+            "status": "rejected",
+            "error_code": "credits_required",
+            "can_user_purchase_credits": true,
+            "has_chargeable_saved_payment_method": false
+        }))
+        .expect("deserialize rate limit update");
+
+        assert!(matches!(
+            update,
+            SessionUpdate::RateLimitUpdate {
+                status: RateLimitStatus::Rejected,
+                ref error_code,
+                can_user_purchase_credits: Some(true),
+                has_chargeable_saved_payment_method: Some(false),
+                ..
+            } if error_code.as_deref() == Some("credits_required")
+        ));
     }
 
     #[test]

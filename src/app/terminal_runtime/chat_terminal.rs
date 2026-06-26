@@ -19,7 +19,7 @@ use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
-pub(super) const RESIZE_PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
+pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const MIN_REPLAY_BATCH_ROWS: usize = 32;
 const MAX_REPLAY_BATCH_ROWS: usize = 160;
 
@@ -153,27 +153,22 @@ impl ChatTerminal {
         self.reset_visible_with_reason("visible_reset")
     }
 
-    pub(super) fn reset_session_boundary(&mut self) -> anyhow::Result<()> {
-        let cleared_area = self.clear_owned_region("session_boundary_reset")?;
-        self.reset_after_owned_region_clear(cleared_area);
-        Ok(())
-    }
-
-    pub(super) fn reset_resize_purge_replay(&mut self) -> anyhow::Result<()> {
+    pub(super) fn reset_purge_replay(&mut self, reason: &'static str) -> anyhow::Result<()> {
         let (terminal_width, terminal_height) = crossterm::terminal::size()
-            .context("failed to read terminal size before resize purge")?;
+            .context("failed to read terminal size before purge replay")?;
         let mut stdout = std::io::stdout();
         stdout
-            .write_all(RESIZE_PURGE_REPLAY_CLEAR_ANSI.as_bytes())
-            .context("failed to queue resize purge replay clear")?;
-        stdout.flush().context("failed to flush resize purge replay clear")?;
+            .write_all(PURGE_REPLAY_CLEAR_ANSI.as_bytes())
+            .context("failed to queue purge replay clear")?;
+        stdout.flush().context("failed to flush purge replay clear")?;
 
-        self.reset_after_resize_purge_replay_clear(terminal_width, terminal_height);
+        self.reset_after_purge_replay_clear(terminal_width, terminal_height);
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_resize_purge_replay_cleared",
-            message = "terminal scrollback and visible screen cleared before resize replay",
+            event_name = "inline_chat_purge_replay_cleared",
+            message = "terminal scrollback and visible screen cleared before transcript replay",
             outcome = "success",
+            reason,
             terminal_width = terminal_width.max(1),
             terminal_height = terminal_height.max(1),
             owned_top = self.state.owned_top,
@@ -204,7 +199,7 @@ impl ChatTerminal {
         }
     }
 
-    fn reset_after_resize_purge_replay_clear(&mut self, terminal_width: u16, terminal_height: u16) {
+    fn reset_after_purge_replay_clear(&mut self, terminal_width: u16, terminal_height: u16) {
         let screen_height = terminal_height.max(1);
         self.terminal = None;
         self.pending_history.clear();
@@ -1436,20 +1431,17 @@ mod tests {
     }
 
     #[test]
-    fn resize_purge_replay_uses_codex_clear_sequence() {
-        assert_eq!(
-            super::RESIZE_PURGE_REPLAY_CLEAR_ANSI,
-            "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H"
-        );
+    fn purge_replay_uses_codex_clear_sequence() {
+        assert_eq!(super::PURGE_REPLAY_CLEAR_ANSI, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
     }
 
     #[test]
-    fn resize_purge_replay_reset_anchors_viewport_at_top() {
+    fn purge_replay_reset_anchors_viewport_at_top() {
         let mut terminal = ChatTerminal::new(12);
         terminal.state.owned_bottom = 29;
         terminal.state.area = Some(Rect::new(0, 17, 120, 6));
 
-        terminal.reset_after_resize_purge_replay_clear(120, 39);
+        terminal.reset_after_purge_replay_clear(120, 39);
 
         assert!(terminal.terminal.is_none());
         assert_eq!(terminal.state.owned_top, 0);
@@ -1460,7 +1452,7 @@ mod tests {
     #[test]
     fn scrollback_preflight_rejects_full_height_resize_replay_insert() {
         let mut terminal = ChatTerminal::new(0);
-        terminal.reset_after_resize_purge_replay_clear(124, 32);
+        terminal.reset_after_purge_replay_clear(124, 32);
 
         let can_insert = terminal.can_insert_scrollback_rows(
             ChatDrawRequest {

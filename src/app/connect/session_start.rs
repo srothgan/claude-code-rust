@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::client::AgentConnection;
+use crate::agent::types::RewindRestoreMode;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::app::App;
 use crate::app::config::{language_input_validation_message, store};
@@ -12,6 +13,7 @@ pub(crate) enum SessionStartReason {
     Startup,
     NewSession,
     Resume,
+    Rewind,
     Login,
     Logout,
 }
@@ -22,6 +24,7 @@ impl SessionStartReason {
             Self::Startup => "startup",
             Self::NewSession => "new_session",
             Self::Resume => "resume",
+            Self::Rewind => "rewind",
             Self::Login => "login",
             Self::Logout => "logout",
         }
@@ -30,7 +33,7 @@ impl SessionStartReason {
     fn event_name(self) -> &'static str {
         match self {
             Self::Startup => "session_start_requested",
-            Self::Resume => "session_resume_requested",
+            Self::Resume | Self::Rewind => "session_resume_requested",
             Self::NewSession | Self::Login | Self::Logout => "session_restart_requested",
         }
     }
@@ -45,6 +48,7 @@ pub(crate) fn session_launch_settings_for_reason(
         SessionStartReason::Startup
         | SessionStartReason::NewSession
         | SessionStartReason::Resume
+        | SessionStartReason::Rewind
         | SessionStartReason::Login => {
             let language = store::language(&app.config.committed_settings_document)
                 .ok()
@@ -187,6 +191,18 @@ pub(crate) fn begin_resume_session(
     app.resuming_session_id = Some(session_id.clone());
     app.show_session_overview = false;
     resume_session(app, conn, session_id)
+}
+
+pub(crate) fn begin_rewind(
+    app: &App,
+    conn: &AgentConnection,
+    session_id: String,
+    target_user_message_id: String,
+    restore_mode: RewindRestoreMode,
+) -> anyhow::Result<()> {
+    let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Rewind);
+    log_session_request(app, SessionStartReason::Rewind, &launch_settings, Some(&session_id));
+    conn.rewind(session_id, target_user_message_id, restore_mode, launch_settings)
 }
 
 #[cfg(test)]

@@ -65,7 +65,9 @@ struct StartConnectionParams {
     session_launch_settings: SessionLaunchSettings,
 }
 
-pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
+pub(crate) use session_start::{
+    SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
+};
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 #[allow(clippy::too_many_lines)]
@@ -177,6 +179,9 @@ pub fn create_app(cli: &Cli) -> App {
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
         available_commands: Vec::new(),
+        rewind_targets: Vec::new(),
+        rewind_targets_session_id: None,
+        rewind_targets_in_flight: false,
         plugins: PluginsState::default(),
         available_agents: Vec::new(),
         available_models: Vec::new(),

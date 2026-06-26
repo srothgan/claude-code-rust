@@ -24,6 +24,7 @@ pub(crate) enum AppSlashCommand {
     Model,
     NewSession,
     Resume,
+    Rewind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +233,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         long_description: "Resume a recent or manually supplied session ID.",
         args: NO_ARGS,
     },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Rewind,
+        name: "/rewind",
+        usage: "Usage: /rewind <user_message_uuid> <both|conversation|code>",
+        short_description: "Restore conversation or code",
+        long_description: "Restore conversation, code, or both to a previous user message.",
+        args: NO_ARGS,
+    },
 ];
 
 impl AppSlashCommand {
@@ -260,6 +269,7 @@ impl AppSlashCommand {
             Self::Model => "/model",
             Self::NewSession => "/new-session",
             Self::Resume => "/resume",
+            Self::Rewind => "/rewind",
         }
     }
 

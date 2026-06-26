@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Claude Agent SDK 0.3.193 migration** (#212, @srothgan): Refresh the bridge for the current SDK, add `/rewind` with conversation and code restore modes, render MCP resource directory listings, and surface new SDK system notices, rate-limit credit metadata, and SDK-created resume sessions.
+- **Deterministic Read syntax highlighting** (#210, @srothgan): Preserve tool locations for Read output, add broader syntax coverage, and render a brighter dark-terminal theme with a dim line-number gutter.
+
+### Fixes
+
+- **Runtime resize and notice hardening** (#211, @srothgan): Prevent notice migration and terminal row-range panics, preserve resize replay repaint requests, and clamp inline geometry after terminal shrinks.
+
+### CI and Dependencies
+
+- **Dependabot and Agent SDK monitor cleanup** (#201, #207, @srothgan): Add npm version updates for root and bridge packages, make the SDK monitor the single Agent SDK update path, bump the bridge TypeScript toolchain, and clear Hono advisories.
+- **Dependency updates** (#196, #197, #198, #199, #200): Bump `which` to `8.0.4`, `ratatui` to `0.30.2`, `time` to `0.3.51`, `hono` through `4.12.27`, and `rand` to `0.8.6`.
+- **Workflow action bump** (#195): Bump `actions/checkout` to `7`.
+
 ## [0.12.3] - 2026-06-16 [Changes][v0.12.3]
 
 ### Documentation
@@ -605,6 +622,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[Unreleased]: https://github.com/srothgan/claude-code-rust/compare/v0.12.3...main
 [v0.12.3]: https://github.com/srothgan/claude-code-rust/compare/v0.12.2...v0.12.3
 [v0.12.2]: https://github.com/srothgan/claude-code-rust/compare/v0.12.1...v0.12.2
 [v0.12.1]: https://github.com/srothgan/claude-code-rust/compare/v0.12.0...v0.12.1

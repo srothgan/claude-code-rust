@@ -18,6 +18,7 @@ pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::Ra
 pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
     model::RateLimitUpdate {
         status: map_rate_limit_status(update.status),
+        error_code: update.error_code,
         resets_at: update.resets_at,
         utilization: update.utilization,
         rate_limit_type: update.rate_limit_type,
@@ -26,6 +27,8 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
         overage_disabled_reason: update.overage_disabled_reason,
         is_using_overage: update.is_using_overage,
         surpassed_threshold: update.surpassed_threshold,
+        can_user_purchase_credits: update.can_user_purchase_credits,
+        has_chargeable_saved_payment_method: update.has_chargeable_saved_payment_method,
     }
 }
 
@@ -210,6 +213,61 @@ pub(super) fn map_available_agents_update(
     )
 }
 
+pub(super) fn map_rewind_targets(targets: Vec<types::RewindTarget>) -> Vec<model::RewindTarget> {
+    targets
+        .into_iter()
+        .map(|target| model::RewindTarget {
+            uuid: target.uuid,
+            first_text: target.first_text,
+            input_text: target.input_text,
+            index: target.index,
+            previous_assistant_uuid: target.previous_assistant_uuid,
+        })
+        .collect()
+}
+
+fn map_rewind_restore_mode(mode: types::RewindRestoreMode) -> model::RewindRestoreMode {
+    match mode {
+        types::RewindRestoreMode::Both => model::RewindRestoreMode::Both,
+        types::RewindRestoreMode::Conversation => model::RewindRestoreMode::Conversation,
+        types::RewindRestoreMode::Code => model::RewindRestoreMode::Code,
+    }
+}
+
+fn map_rewind_result_status(status: types::RewindResultStatus) -> model::RewindResultStatus {
+    match status {
+        types::RewindResultStatus::Success => model::RewindResultStatus::Success,
+        types::RewindResultStatus::Failure => model::RewindResultStatus::Failure,
+        types::RewindResultStatus::PartialFailure => model::RewindResultStatus::PartialFailure,
+    }
+}
+
+fn map_rewind_files_result(result: types::RewindFilesResult) -> model::RewindFilesResult {
+    model::RewindFilesResult {
+        can_rewind: result.can_rewind,
+        error: result.error,
+        files_changed: result.files_changed,
+        insertions: result.insertions,
+        deletions: result.deletions,
+    }
+}
+
+pub(super) fn map_rewind_result(
+    session_id: String,
+    restore_mode: types::RewindRestoreMode,
+    status: types::RewindResultStatus,
+    file_result: Option<types::RewindFilesResult>,
+    message: Option<String>,
+) -> model::RewindResult {
+    model::RewindResult {
+        session_id,
+        restore_mode: map_rewind_restore_mode(restore_mode),
+        status: map_rewind_result_status(status),
+        file_result: file_result.map(map_rewind_files_result),
+        message,
+    }
+}
+
 pub(super) fn map_available_models(
     models: Vec<types::AvailableModel>,
 ) -> Vec<model::AvailableModel> {
@@ -342,6 +400,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }
         types::SessionUpdate::RateLimitUpdate {
             status,
+            error_code,
             resets_at,
             utilization,
             rate_limit_type,
@@ -350,9 +409,12 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             overage_disabled_reason,
             is_using_overage,
             surpassed_threshold,
+            can_user_purchase_credits,
+            has_chargeable_saved_payment_method,
         } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
             types::RateLimitUpdate {
                 status,
+                error_code,
                 resets_at,
                 utilization,
                 rate_limit_type,
@@ -361,6 +423,8 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 overage_disabled_reason,
                 is_using_overage,
                 surpassed_threshold,
+                can_user_purchase_credits,
+                has_chargeable_saved_payment_method,
             },
         ))),
         types::SessionUpdate::ApiRetryUpdate {
@@ -1131,6 +1195,33 @@ mod tests {
             panic!("expected agent message chunk");
         };
         assert_eq!(chunk.source_message_uuid.as_deref(), Some("assistant-1"));
+    }
+
+    #[test]
+    fn map_session_update_preserves_rate_limit_credits_metadata() {
+        let mapped = map_session_update(types::SessionUpdate::RateLimitUpdate {
+            status: types::RateLimitStatus::Rejected,
+            error_code: Some("credits_required".to_owned()),
+            resets_at: None,
+            utilization: None,
+            rate_limit_type: None,
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+            can_user_purchase_credits: Some(true),
+            has_chargeable_saved_payment_method: Some(false),
+        })
+        .expect("rate limit update should map");
+
+        let model::SessionUpdate::RateLimitUpdate(update) = mapped else {
+            panic!("expected rate limit update");
+        };
+        assert_eq!(update.status, model::RateLimitStatus::Rejected);
+        assert_eq!(update.error_code.as_deref(), Some("credits_required"));
+        assert_eq!(update.can_user_purchase_credits, Some(true));
+        assert_eq!(update.has_chargeable_saved_payment_method, Some(false));
     }
 
     #[test]

@@ -82,6 +82,10 @@ export function buildRateLimitUpdate(
     status,
   };
 
+  if (info.errorCode === "credits_required") {
+    update.error_code = "credits_required";
+  }
+
   const resetsAt = numberField(info, "resetsAt");
   if (resetsAt !== undefined) {
     update.resets_at = resetsAt;
@@ -119,6 +123,14 @@ export function buildRateLimitUpdate(
   const surpassedThreshold = numberField(info, "surpassedThreshold");
   if (surpassedThreshold !== undefined) {
     update.surpassed_threshold = surpassedThreshold;
+  }
+
+  if (typeof info.canUserPurchaseCredits === "boolean") {
+    update.can_user_purchase_credits = info.canUserPurchaseCredits;
+  }
+
+  if (typeof info.hasChargeableSavedPaymentMethod === "boolean") {
+    update.has_chargeable_saved_payment_method = info.hasChargeableSavedPaymentMethod;
   }
 
   return update;

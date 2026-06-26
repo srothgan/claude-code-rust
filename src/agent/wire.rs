@@ -119,6 +119,16 @@ pub enum BridgeCommand {
     GetContextUsage {
         session_id: String,
     },
+    GetRewindTargets {
+        session_id: String,
+    },
+    Rewind {
+        session_id: String,
+        target_user_message_id: String,
+        restore_mode: types::RewindRestoreMode,
+        #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
+        launch_settings: SessionLaunchSettings,
+    },
     ReloadPlugins {
         session_id: String,
     },
@@ -177,6 +187,8 @@ impl BridgeCommand {
             Self::ElicitationResponse { .. } => "elicitation_response",
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
+            Self::GetRewindTargets { .. } => "get_rewind_targets",
+            Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
             Self::McpReconnect { .. } => "mcp_reconnect",
@@ -207,6 +219,8 @@ impl BridgeCommand {
             | Self::ElicitationResponse { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
+            | Self::GetRewindTargets { session_id }
+            | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id }
             | Self::GetMcpSnapshot { session_id }
             | Self::McpReconnect { session_id, .. }
@@ -241,6 +255,8 @@ impl BridgeCommand {
             | Self::ElicitationResponse { .. }
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
+            | Self::GetRewindTargets { .. }
+            | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
             | Self::GetMcpSnapshot { .. }
             | Self::McpReconnect { .. }
@@ -353,6 +369,7 @@ pub enum BridgeEvent {
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
+        restored_input: Option<String>,
     },
     Initialized {
         result: types::InitializeResult,
@@ -367,6 +384,19 @@ pub enum BridgeEvent {
     ContextUsage {
         session_id: String,
         percentage: Option<u8>,
+    },
+    RewindTargets {
+        session_id: String,
+        targets: Vec<types::RewindTarget>,
+    },
+    RewindResult {
+        session_id: String,
+        restore_mode: types::RewindRestoreMode,
+        status: types::RewindResultStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_result: Option<types::RewindFilesResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     McpSnapshot {
         session_id: String,
@@ -403,6 +433,8 @@ impl BridgeEvent {
             Self::SessionsListed { .. } => "sessions_listed",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
+            Self::RewindTargets { .. } => "rewind_targets",
+            Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
         }
     }
@@ -428,6 +460,8 @@ impl BridgeEvent {
             | Self::SessionReplaced { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
+            | Self::RewindTargets { session_id, .. }
+            | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
@@ -463,6 +497,8 @@ impl BridgeEvent {
             | Self::SessionsListed { .. }
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
+            | Self::RewindTargets { .. }
+            | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
         }
     }
@@ -554,6 +590,89 @@ mod tests {
     }
 
     #[test]
+    fn get_rewind_targets_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetRewindTargets { session_id: "s1".to_owned() },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "get_rewind_targets",
+                "session_id": "s1"
+            })
+        );
+    }
+
+    #[test]
+    fn rewind_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::Rewind {
+                session_id: "s1".to_owned(),
+                target_user_message_id: "user-1".to_owned(),
+                restore_mode: types::RewindRestoreMode::Both,
+                launch_settings: SessionLaunchSettings {
+                    language: Some("German".to_owned()),
+                    ..SessionLaunchSettings::default()
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "rewind",
+                "session_id": "s1",
+                "target_user_message_id": "user-1",
+                "restore_mode": "both",
+                "launch_settings": {
+                    "language": "German"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn rewind_result_event_deserializes() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "rewind_result",
+            "session_id": "session-1",
+            "restore_mode": "code",
+            "status": "success",
+            "file_result": {
+                "can_rewind": true,
+                "files_changed": ["src/main.rs"],
+                "insertions": 2,
+                "deletions": 1
+            }
+        }))
+        .expect("deserialize rewind result");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::RewindResult {
+                session_id: "session-1".to_owned(),
+                restore_mode: types::RewindRestoreMode::Code,
+                status: types::RewindResultStatus::Success,
+                file_result: Some(types::RewindFilesResult {
+                    can_rewind: true,
+                    error: None,
+                    files_changed: vec!["src/main.rs".to_owned()],
+                    insertions: Some(2),
+                    deletions: Some(1),
+                }),
+                message: None,
+            }
+        );
+    }
+
+    #[test]
     fn mcp_set_servers_command_serializes_latest_fields_as_snake_case() {
         let env = CommandEnvelope {
             request_id: None,
@@ -631,6 +750,38 @@ mod tests {
     }
 
     #[test]
+    fn session_replaced_event_deserializes_restored_input() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_replaced",
+            "session_id": "session-2",
+            "cwd": "C:/work",
+            "current_model": {
+                "requested_id": null,
+                "resolved_id": "opus",
+                "display_name_short": "Opus",
+                "display_name_long": "Claude Opus",
+                "catalog_id": null,
+                "supports_effort": false,
+                "supported_effort_levels": [],
+                "supports_fast_mode": false,
+                "supports_auto_mode": false,
+                "supports_adaptive_thinking": false,
+                "is_authoritative": true
+            },
+            "available_models": [],
+            "mode": null,
+            "history_updates": [],
+            "restored_input": "selected prompt"
+        }))
+        .expect("deserialize session replaced");
+
+        let BridgeEvent::SessionReplaced { restored_input, .. } = decoded.event else {
+            panic!("expected session_replaced");
+        };
+        assert_eq!(restored_input.as_deref(), Some("selected prompt"));
+    }
+
+    #[test]
     fn mcp_set_servers_result_event_deserializes() {
         let json = serde_json::json!({
             "request_id": "req-mcp-set",
@@ -688,6 +839,53 @@ mod tests {
                     source: Some(types::McpSnapshotSource::ReloadPlugins),
                     error: None,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn rewind_targets_event_deserializes() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "rewind_targets",
+            "session_id": "session-1",
+            "targets": [
+                {
+                    "uuid": "user-2",
+                    "first_text": "second prompt",
+                    "input_text": "second prompt",
+                    "previous_assistant_uuid": "assistant-1",
+                    "index": 3
+                },
+                {
+                    "uuid": "user-1",
+                    "first_text": "first prompt",
+                    "input_text": "first prompt",
+                    "index": 0
+                }
+            ]
+        }))
+        .expect("deserialize rewind targets");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::RewindTargets {
+                session_id: "session-1".to_owned(),
+                targets: vec![
+                    types::RewindTarget {
+                        uuid: "user-2".to_owned(),
+                        first_text: "second prompt".to_owned(),
+                        input_text: "second prompt".to_owned(),
+                        index: 3,
+                        previous_assistant_uuid: Some("assistant-1".to_owned()),
+                    },
+                    types::RewindTarget {
+                        uuid: "user-1".to_owned(),
+                        first_text: "first prompt".to_owned(),
+                        input_text: "first prompt".to_owned(),
+                        index: 0,
+                        previous_assistant_uuid: None,
+                    },
+                ],
             }
         );
     }

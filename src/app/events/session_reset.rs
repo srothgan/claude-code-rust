@@ -7,7 +7,7 @@ use crate::agent::model;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ChatResetRenderMode {
     PreserveInlineViewport,
-    ClearVisibleTranscript,
+    DeferTranscriptRender,
 }
 
 pub(super) fn reset_for_new_session(
@@ -46,6 +46,9 @@ fn reset_session_identity_state(
     app.login_hint = None;
     super::clear_compaction_state(app, false);
     app.session_usage = super::super::SessionUsageState::default();
+    app.rewind_targets.clear();
+    app.rewind_targets_session_id = None;
+    app.rewind_targets_in_flight = false;
     app.status = super::super::AppStatus::Ready;
     app.fast_mode_state = model::FastModeState::Off;
     app.runtime_session_state = None;
@@ -108,7 +111,7 @@ fn reset_cache_and_footer_state_for_new_session(app: &mut App, render_mode: Chat
     crate::app::plugins::reset_for_session_change(app);
     match render_mode {
         ChatResetRenderMode::PreserveInlineViewport => app.request_chat_repaint(),
-        ChatResetRenderMode::ClearVisibleTranscript => app.request_chat_visible_rebuild(),
+        ChatResetRenderMode::DeferTranscriptRender => {}
     }
 }
 
@@ -201,7 +204,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             false,
-            ChatResetRenderMode::ClearVisibleTranscript,
+            ChatResetRenderMode::DeferTranscriptRender,
         );
 
         assert_eq!(app.chat_render.terminal_width, 0);
@@ -232,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_session_reset_requests_visible_transcript_clear() {
+    fn replacement_session_reset_defers_transcript_render() {
         let mut app = App::test_default();
         app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
         app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
@@ -244,10 +247,36 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             false,
-            ChatResetRenderMode::ClearVisibleTranscript,
+            ChatResetRenderMode::DeferTranscriptRender,
         );
 
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
-        assert!(app.surface_dirty.chat.repaint);
+        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+    }
+
+    #[test]
+    fn session_reset_clears_rewind_target_state() {
+        let mut app = App::test_default();
+        app.rewind_targets = vec![model::RewindTarget {
+            uuid: "user-1".to_owned(),
+            first_text: "prompt".to_owned(),
+            input_text: "prompt".to_owned(),
+            index: 0,
+            previous_assistant_uuid: None,
+        }];
+        app.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
+        app.rewind_targets_in_flight = true;
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            false,
+            ChatResetRenderMode::DeferTranscriptRender,
+        );
+
+        assert!(app.rewind_targets.is_empty());
+        assert!(app.rewind_targets_session_id.is_none());
+        assert!(!app.rewind_targets_in_flight);
     }
 }
