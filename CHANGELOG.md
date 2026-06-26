@@ -14,6 +14,10 @@ All notable changes to this project will be documented in this file.
 - **Inline viewport bottom growth** (#214, @srothgan): Scroll the terminal before autocomplete and composer expansion at the screen bottom so handed-off transcript rows are pushed up instead of overwritten.
 - **Runtime resize and notice hardening** (#211, @srothgan): Prevent notice migration and terminal row-range panics, preserve resize replay repaint requests, and clamp inline geometry after terminal shrinks.
 
+### Maintenance
+
+- **Production module split** (#215, @srothgan): Move inline module tests into sibling files and split keymap, agent model, app state, plugins, config, and MCP config code into focused child modules while preserving facade exports.
+
 ### CI and Dependencies
 
 - **Dependabot and Agent SDK monitor cleanup** (#201, #207, @srothgan): Add npm version updates for root and bridge packages, make the SDK monitor the single Agent SDK update path, bump the bridge TypeScript toolchain, and clear Hono advisories.

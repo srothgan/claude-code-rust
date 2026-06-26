@@ -1,9 +1,10 @@
+use super::resolve::resolve_setting_document;
 use super::*;
 use crate::agent::model::{
     AvailableModel, EffortLevel, McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig,
 };
 use crate::agent::wire::BridgeCommand;
-use crate::app::AppStatus;
+use crate::app::{App, AppStatus, FullscreenView, SurfaceMode};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::collections::BTreeMap;
