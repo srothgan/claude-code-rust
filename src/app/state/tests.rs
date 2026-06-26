@@ -3,10 +3,13 @@
 // =====
 
 use super::*;
+use crate::agent::model;
+use crate::app::focus::{FocusOwner, FocusTarget};
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use pretty_assertions::assert_eq;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use std::time::Instant;
 
 // BlockCache
 
