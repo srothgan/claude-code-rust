@@ -5808,7 +5808,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.190");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.193");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
