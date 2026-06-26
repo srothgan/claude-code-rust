@@ -1,6 +1,10 @@
+use super::actions::{installed_action_success_message, plugin_install_success_message};
 use super::*;
 use crate::agent::model;
 use crate::agent::wire::BridgeCommand;
+use crate::app::App;
+use crate::app::config::{InstalledPluginActionKind, PluginInstallActionKind};
+use std::time::Instant;
 
 fn app_with_connection()
 -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
