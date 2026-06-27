@@ -1,7 +1,10 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use super::chat_terminal::{ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch};
+use super::chat_terminal::{
+    ChatDrawOutcome, ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch,
+    TerminalResizeDuringDraw, TerminalSnapshot,
+};
 use super::history_insert::RenderedHistoryRows;
 use crate::app::{App, ChatPurgeReplayOptions, HistoryOutputId};
 use crate::ui::footer_rows::serialize_footer_rows;
@@ -180,8 +183,7 @@ impl ChatTerminalSession {
         let visible_live_row_count = visible_live_rows.len();
         let chat_frame = ChatDrawRequest {
             requested_inline_height: requested_layout_plan.viewport_height,
-            terminal_width: width,
-            terminal_height,
+            terminal: TerminalSnapshot::new(width, terminal_height),
         };
         let history_action = history_plan.take_action();
         self.queue_history_plan(history_action);
@@ -200,13 +202,8 @@ impl ChatTerminalSession {
                 frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
             }
         });
-        let outcome = match outcome_result {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                self.history.mark_out_of_sync();
-                mark_chat_terminal_history_out_of_sync(app);
-                return Err(err);
-            }
+        let Some(outcome) = self.resolve_chat_draw_outcome(app, outcome_result)? else {
+            return Ok(());
         };
         self.complete_history_flush(app, width, &outcome);
         let viewport_area = outcome.viewport_area;
@@ -234,6 +231,25 @@ impl ChatTerminalSession {
             },
         );
         Ok(())
+    }
+
+    fn resolve_chat_draw_outcome(
+        &mut self,
+        app: &mut App,
+        outcome_result: anyhow::Result<ChatDrawOutcome>,
+    ) -> anyhow::Result<Option<ChatDrawOutcome>> {
+        match outcome_result {
+            Ok(outcome) => Ok(Some(outcome)),
+            Err(err) => {
+                self.history.mark_out_of_sync();
+                mark_chat_terminal_history_out_of_sync(app);
+                if let Some(interrupt) = err.downcast_ref::<TerminalResizeDuringDraw>() {
+                    log_resize_interrupted_draw(*interrupt);
+                    return Ok(None);
+                }
+                Err(err)
+            }
+        }
     }
 
     fn prepare_history_flush(
@@ -330,8 +346,7 @@ impl ChatTerminalSession {
             MutableLayoutPlan::new(&candidate_live_rows, composer, terminal_height);
         let candidate_frame = ChatDrawRequest {
             requested_inline_height: candidate_layout.viewport_height,
-            terminal_width: width,
-            terminal_height,
+            terminal: TerminalSnapshot::new(width, terminal_height),
         };
         let candidate_rows = candidate_batches.iter().map(|batch| batch.rows.len()).sum();
         if self.terminal.can_insert_scrollback_rows(candidate_frame, candidate_rows) {
@@ -445,6 +460,20 @@ impl ChatTerminalSession {
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
     app.request_chat_purge_replay_rebuild(ChatPurgeReplayOptions::terminal_history_out_of_sync());
+}
+
+fn log_resize_interrupted_draw(interrupt: TerminalResizeDuringDraw) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = "inline_chat_draw_interrupted_by_resize",
+        message = "inline chat draw skipped because terminal size changed during transaction",
+        outcome = "interrupted",
+        phase = interrupt.phase(),
+        expected_width = interrupt.expected().width,
+        expected_height = interrupt.expected().height,
+        actual_width = interrupt.actual().width,
+        actual_height = interrupt.actual().height,
+    );
 }
 
 fn log_prepared_draw(prepared: &PreparedDrawLog<'_>) {

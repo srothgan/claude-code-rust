@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Documentation
+
+- **README banner** (#217, @srothgan): Add a project screenshot banner to the README.
+
+### Fixes
+
+- **Inline chat resize transactions** (#217, @srothgan): Treat terminal size as a draw-transaction snapshot, recover from mid-draw resizes with purge/replay, and clip stale inline viewport geometry before owned-region clears.
+
 ## [0.12.4] - 2026-06-26 [Changes][v0.12.4]
 
 ### Features
