@@ -15,6 +15,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
 use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
@@ -22,6 +24,60 @@ type StdoutTerminal = Terminal<StdoutBackend>;
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const MIN_REPLAY_BATCH_ROWS: usize = 32;
 const MAX_REPLAY_BATCH_ROWS: usize = 160;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TerminalSnapshot {
+    pub width: u16,
+    pub height: u16,
+}
+
+impl TerminalSnapshot {
+    pub(super) fn new(width: u16, height: u16) -> Self {
+        Self { width: width.max(1), height: height.max(1) }
+    }
+
+    fn current(context: &'static str) -> anyhow::Result<Self> {
+        let (width, height) = crossterm::terminal::size().with_context(|| context)?;
+        Ok(Self::new(width, height))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TerminalResizeDuringDraw {
+    expected: TerminalSnapshot,
+    actual: TerminalSnapshot,
+    phase: &'static str,
+}
+
+impl TerminalResizeDuringDraw {
+    fn new(expected: TerminalSnapshot, actual: TerminalSnapshot, phase: &'static str) -> Self {
+        Self { expected, actual, phase }
+    }
+
+    pub(super) fn expected(self) -> TerminalSnapshot {
+        self.expected
+    }
+
+    pub(super) fn actual(self) -> TerminalSnapshot {
+        self.actual
+    }
+
+    pub(super) fn phase(self) -> &'static str {
+        self.phase
+    }
+}
+
+impl fmt::Display for TerminalResizeDuringDraw {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "terminal resized during inline chat draw at {}: expected {:?}, actual {:?}",
+            self.phase, self.expected, self.actual
+        )
+    }
+}
+
+impl Error for TerminalResizeDuringDraw {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HistoryBatchKind {
@@ -62,8 +118,7 @@ impl PendingHistoryBatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatDrawRequest {
     pub requested_inline_height: u16,
-    pub terminal_width: u16,
-    pub terminal_height: u16,
+    pub terminal: TerminalSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,27 +360,28 @@ impl ChatTerminal {
         let mut stdout = std::io::stdout();
         stdout
             .sync_update(|_| -> anyhow::Result<ChatDrawOutcome> {
+                let snapshot = chat_frame.terminal;
+                ensure_terminal_snapshot(snapshot, "draw_start")?;
                 let geometry_plan = plan_inline_geometry(
                     self.state.area,
                     chat_frame.requested_inline_height,
-                    chat_frame.terminal_width,
-                    chat_frame.terminal_height,
+                    snapshot.width,
+                    snapshot.height,
                 );
                 log_inline_geometry_plan(&geometry_plan);
 
-                self.apply_inline_geometry_scroll(&geometry_plan, chat_frame.terminal_height)?;
+                self.state.area = geometry_plan.old_area;
+                self.apply_inline_geometry_scroll(&geometry_plan, snapshot)?;
                 self.ensure_inline_terminal_height(
                     geometry_plan.height,
                     geometry_plan.target_area,
-                    chat_frame.terminal_width,
-                    chat_frame.terminal_height,
+                    snapshot,
                 )?;
-                let flushed_history = self
-                    .flush_queued_history(chat_frame.terminal_width, chat_frame.terminal_height)?;
-                let viewport_area = self.draw_mutable_viewport(render_mutable)?;
+                let flushed_history = self.flush_queued_history(snapshot)?;
+                let viewport_area = self.draw_mutable_viewport(snapshot, render_mutable)?;
 
                 self.state.area = Some(viewport_area);
-                self.mark_area_owned(viewport_area, chat_frame.terminal_height, "viewport_draw");
+                self.mark_area_owned(viewport_area, snapshot.height, "viewport_draw");
                 tracing::debug!(
                     target: crate::logging::targets::APP_RENDER,
                     event_name = "inline_chat_terminal_draw_transaction",
@@ -364,7 +420,7 @@ impl ChatTerminal {
             viewport_area,
             self.state.owned_top,
             inserted_rows,
-            chat_frame.terminal_height.max(1),
+            chat_frame.terminal.height,
         );
 
         !matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows)
@@ -374,16 +430,16 @@ impl ChatTerminal {
         let geometry_plan = plan_inline_geometry(
             self.state.area,
             chat_frame.requested_inline_height,
-            chat_frame.terminal_width,
-            chat_frame.terminal_height,
+            chat_frame.terminal.width,
+            chat_frame.terminal.height,
         );
         let anchor = geometry_plan.target_area.or(self.state.area)?;
-        let screen_height = chat_frame.terminal_height.max(1);
+        let screen_height = chat_frame.terminal.height;
 
         Some(Rect::new(
             0,
             inline_viewport_top_after_create(anchor.y, geometry_plan.height, screen_height),
-            chat_frame.terminal_width.max(1),
+            chat_frame.terminal.width,
             geometry_plan.height,
         ))
     }
@@ -392,10 +448,10 @@ impl ChatTerminal {
         &mut self,
         desired_height: u16,
         anchor_area: Option<Rect>,
-        terminal_width: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
-        let screen_height = terminal_height.max(1);
+        ensure_terminal_snapshot(snapshot, "ensure_inline_terminal_height")?;
+        let screen_height = snapshot.height;
         let next_height = desired_height.max(1).min(screen_height);
         let current_anchor = self.state.area;
         let anchor_changed = anchor_area.zip(current_anchor).is_some_and(|(next, current)| {
@@ -412,7 +468,7 @@ impl ChatTerminal {
         let predicted_area = Rect::new(
             0,
             inline_viewport_top_after_create(cursor_y, next_height, screen_height),
-            terminal_width.max(1),
+            snapshot.width,
             next_height,
         );
 
@@ -422,6 +478,7 @@ impl ChatTerminal {
             self.clear_owned_area(
                 inline_viewport_reconfigure_clear_area(area, predicted_area),
                 "viewport_reconfigure",
+                snapshot,
             )?;
         }
 
@@ -454,14 +511,14 @@ impl ChatTerminal {
         self.terminal = Some(terminal);
         self.state.area = Some(predicted_area);
         self.mark_area_owned(predicted_area, screen_height, "inline_terminal_ensure");
-        self.clear_ratatui_inline_viewport("inline_terminal_ensure")?;
+        self.clear_ratatui_inline_viewport("inline_terminal_ensure", Some(snapshot))?;
         Ok(())
     }
 
     fn apply_inline_geometry_scroll(
         &mut self,
         geometry_plan: &InlineGeometryPlan,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
         if geometry_plan.scroll_rows_before_resize == 0 {
             return Ok(());
@@ -472,7 +529,7 @@ impl ChatTerminal {
         })?;
         self.append_blank_lines_for_owned_region(
             geometry_plan.scroll_rows_before_resize,
-            terminal_height,
+            snapshot,
         )?;
         self.state.area = Some(area_after_scroll);
         self.terminal = None;
@@ -495,14 +552,15 @@ impl ChatTerminal {
     }
 
     fn clear_inline_terminal_viewport(&mut self, reason: &'static str) -> anyhow::Result<()> {
-        if self.clear_ratatui_inline_viewport(reason)? {
+        if self.clear_ratatui_inline_viewport(reason, None)? {
             return Ok(());
         }
 
         let Some(area) = self.state.area else {
             return Ok(());
         };
-        self.clear_owned_area(area, reason)
+        let snapshot = TerminalSnapshot::current("failed to read terminal size before clear")?;
+        self.clear_owned_area(area, reason, snapshot)
     }
 
     fn clear_owned_region(&mut self, reason: &'static str) -> anyhow::Result<Option<Rect>> {
@@ -515,18 +573,27 @@ impl ChatTerminal {
         }
 
         let area = Rect::new(0, top, terminal_width.max(1), bottom - top);
-        self.clear_owned_area(area, reason)?;
+        self.clear_owned_area(
+            area,
+            reason,
+            TerminalSnapshot::new(terminal_width, terminal_height),
+        )?;
         Ok(Some(area))
     }
 
-    fn draw_mutable_viewport<F>(&mut self, render_mutable: F) -> anyhow::Result<Rect>
+    fn draw_mutable_viewport<F>(
+        &mut self,
+        snapshot: TerminalSnapshot,
+        render_mutable: F,
+    ) -> anyhow::Result<Rect>
     where
         F: FnOnce(&mut ratatui::Frame<'_>, Rect),
     {
         if let Some(reason) = self.pending_native_clear_reason {
-            self.clear_ratatui_inline_viewport(reason)?;
+            self.clear_ratatui_inline_viewport(reason, Some(snapshot))?;
         }
 
+        ensure_terminal_snapshot(snapshot, "draw_mutable_viewport")?;
         let terminal = self
             .terminal
             .as_mut()
@@ -539,6 +606,8 @@ impl ChatTerminal {
                 render_mutable(frame, viewport_area);
             })
             .context("failed to draw ratatui inline chat viewport")?;
+        ensure_terminal_snapshot(snapshot, "draw_mutable_viewport_complete")?;
+        ensure_area_inside_snapshot(viewport_area, snapshot, "draw_mutable_viewport_area")?;
 
         Ok(viewport_area)
     }
@@ -547,20 +616,39 @@ impl ChatTerminal {
         self.pending_native_clear_reason = Some(reason);
     }
 
-    fn clear_ratatui_inline_viewport(&mut self, reason: &'static str) -> anyhow::Result<bool> {
+    fn clear_ratatui_inline_viewport(
+        &mut self,
+        reason: &'static str,
+        expected_snapshot: Option<TerminalSnapshot>,
+    ) -> anyhow::Result<bool> {
         let Some(terminal) = self.terminal.as_mut() else {
             return Ok(false);
         };
-        let terminal_height = terminal
-            .size()
-            .context("failed to read terminal size before ratatui inline clear")?
-            .height
-            .max(1);
+        if let Some(snapshot) = expected_snapshot {
+            ensure_terminal_snapshot(snapshot, "ratatui_inline_clear_start")?;
+        }
+        let terminal_size =
+            terminal.size().context("failed to read terminal size before ratatui inline clear")?;
+        let terminal_snapshot = TerminalSnapshot::new(terminal_size.width, terminal_size.height);
+        if let Some(snapshot) = expected_snapshot
+            && terminal_snapshot != snapshot
+        {
+            return Err(TerminalResizeDuringDraw::new(
+                snapshot,
+                terminal_snapshot,
+                "ratatui_inline_clear_size",
+            )
+            .into());
+        }
         terminal.clear().context("failed to clear ratatui inline viewport")?;
+        if let Some(snapshot) = expected_snapshot {
+            ensure_terminal_snapshot(snapshot, "ratatui_inline_clear_complete")?;
+        }
         self.pending_native_clear_reason = None;
         if let Some(area) = self.state.area {
-            self.state.owned_top = self.state.owned_top.min(area.top().min(terminal_height));
-            self.state.owned_bottom = terminal_height;
+            self.state.owned_top =
+                self.state.owned_top.min(area.top().min(terminal_snapshot.height));
+            self.state.owned_bottom = terminal_snapshot.height;
         }
 
         tracing::debug!(
@@ -580,20 +668,17 @@ impl ChatTerminal {
 
     fn flush_queued_history(
         &mut self,
-        terminal_width: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<FlushedHistory> {
         if self.replay.is_some() {
-            return self.flush_replay_history(terminal_width, terminal_height);
+            return self.flush_replay_history(snapshot);
         }
 
         let mut flushed = FlushedHistory::default();
         while let Some(mut batch) = self.pending_history.pop_front() {
-            flushed.flushed_rows = flushed.flushed_rows.saturating_add(self.insert_history_batch(
-                &mut batch,
-                terminal_width,
-                terminal_height,
-            )?);
+            flushed.flushed_rows = flushed
+                .flushed_rows
+                .saturating_add(self.insert_history_batch(&mut batch, snapshot)?);
 
             if batch.is_complete() {
                 flushed.confirmed_ids.extend(batch.confirm_ids);
@@ -607,25 +692,21 @@ impl ChatTerminal {
 
     fn flush_replay_history(
         &mut self,
-        terminal_width: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<FlushedHistory> {
         if self.replay.is_none() {
             return Ok(FlushedHistory::default());
         }
 
-        let budget = replay_batch_row_budget(terminal_height);
+        let budget = replay_batch_row_budget(snapshot.height);
         let mut flushed_rows = 0usize;
         let mut drained_rows = 0usize;
         while let Some(mut batch) =
             self.replay.as_mut().and_then(|replay| replay.pending_batches.pop_front())
         {
             let target_rows = batch.remaining_len();
-            flushed_rows = flushed_rows.saturating_add(self.insert_history_batch(
-                &mut batch,
-                terminal_width,
-                terminal_height,
-            )?);
+            flushed_rows =
+                flushed_rows.saturating_add(self.insert_history_batch(&mut batch, snapshot)?);
             drained_rows =
                 drained_rows.saturating_add(target_rows.saturating_sub(batch.remaining_len()));
 
@@ -662,8 +743,7 @@ impl ChatTerminal {
     fn insert_history_batch(
         &mut self,
         batch: &mut PendingHistoryBatch,
-        terminal_width: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<usize> {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -681,12 +761,11 @@ impl ChatTerminal {
             return Ok(0);
         }
 
-        let terminal_width = terminal_width.max(1);
-        if batch.rows.width != terminal_width {
+        if batch.rows.width != snapshot.width {
             bail!(
                 "refusing inline history insert rendered at stale width: rendered_width={}, terminal_width={}, rows={}",
                 batch.rows.width,
-                terminal_width,
+                snapshot.width,
                 batch.rows.len()
             );
         }
@@ -694,7 +773,7 @@ impl ChatTerminal {
         let mut inserted_rows = 0usize;
         while !batch.is_complete() {
             let remaining_rows = u16::try_from(batch.remaining_len()).unwrap_or(u16::MAX);
-            let plan = self.prepare_scrollback_insert_plan(remaining_rows, terminal_height)?;
+            let plan = self.prepare_scrollback_insert_plan(remaining_rows, snapshot)?;
             if matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows) {
                 tracing::debug!(
                     target: crate::logging::targets::APP_RENDER,
@@ -704,7 +783,7 @@ impl ChatTerminal {
                     rows_remaining = batch.remaining_len(),
                     inserted_rows,
                     viewport = ?self.state.area,
-                    terminal_height,
+                    terminal_height = snapshot.height,
                     max_insert_rows = plan.max_insert_rows_for_viewport,
                     batch_kind = ?batch.kind,
                 );
@@ -717,18 +796,13 @@ impl ChatTerminal {
                     "refusing inline history insert without a safe chunk: rows_remaining={}, viewport={:?}, terminal_height={}",
                     batch.remaining_len(),
                     self.state.area,
-                    terminal_height
+                    snapshot.height
                 );
             }
 
             let start = batch.next_row;
             let end = start.saturating_add(chunk_len).min(batch.rows.len());
-            self.insert_scrollback_chunk(
-                batch.rows.slice(start..end),
-                plan,
-                terminal_width,
-                terminal_height,
-            )?;
+            self.insert_scrollback_chunk(batch.rows.slice(start..end), plan, snapshot)?;
             batch.next_row = end;
             inserted_rows = inserted_rows.saturating_add(end.saturating_sub(start));
         }
@@ -739,12 +813,12 @@ impl ChatTerminal {
     fn prepare_scrollback_insert_plan(
         &self,
         row_count: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<ScrollbackInsertPlan> {
         let area = self.state.area.ok_or_else(|| {
             anyhow!("inline chat viewport missing before scrollback insert guard")
         })?;
-        let plan = plan_owned_insert(area, self.state.owned_top, row_count, terminal_height.max(1));
+        let plan = plan_owned_insert(area, self.state.owned_top, row_count, snapshot.height);
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -759,7 +833,7 @@ impl ChatTerminal {
             viewport_after_insert_top = plan.viewport_after_insert.top(),
             owned_top = self.state.owned_top,
             owned_bottom = self.state.owned_bottom,
-            terminal_height,
+            terminal_height = snapshot.height,
             available_below = plan.available_below,
             max_insert_rows_for_viewport = plan.max_insert_rows_for_viewport,
             scroll_rows_before_insert = plan.scroll_rows_before_insert,
@@ -772,23 +846,20 @@ impl ChatTerminal {
         &mut self,
         rows: &[Line<'static>],
         plan: ScrollbackInsertPlan,
-        terminal_width: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
+        ensure_terminal_snapshot(snapshot, "scrollback_insert_start")?;
         if plan.scroll_rows_before_insert > 0 {
-            self.append_blank_lines_for_owned_region(
-                plan.scroll_rows_before_insert,
-                terminal_height,
-            )?;
+            self.append_blank_lines_for_owned_region(plan.scroll_rows_before_insert, snapshot)?;
             self.state.area = Some(plan.viewport_after_scroll);
             self.terminal = None;
             self.ensure_inline_terminal_height(
                 plan.viewport_after_scroll.height,
                 Some(plan.viewport_after_scroll),
-                terminal_width,
-                terminal_height,
+                snapshot,
             )?;
         }
+        ensure_terminal_snapshot(snapshot, "scrollback_insert_before_insert")?;
 
         let before_area = self
             .state
@@ -813,16 +884,17 @@ impl ChatTerminal {
                 Paragraph::new(rendered_rows).render(buffer.area, buffer);
             })
             .context("failed to insert committed chat rows above inline viewport")?;
+        ensure_terminal_snapshot(snapshot, "scrollback_insert_complete")?;
         self.request_native_inline_clear("scrollback_insert");
 
         let after_area =
-            viewport_area_after_insert_exact(before_area, plan.inserted_rows, terminal_height)
+            viewport_area_after_insert_exact(before_area, plan.inserted_rows, snapshot.height)
                 .ok_or_else(|| {
                     anyhow!(
                         "inline scrollback insert could not move viewport exactly: viewport={:?}, rows={}, terminal_height={}",
                         before_area,
                         plan.inserted_rows,
-                        terminal_height
+                        snapshot.height
                     )
                 })?;
         if after_area != plan.viewport_after_insert {
@@ -839,10 +911,10 @@ impl ChatTerminal {
             Rect::new(
                 0,
                 before_area.top().min(after_area.top()),
-                terminal_width.max(1),
+                snapshot.width,
                 after_area.bottom().saturating_sub(before_area.top().min(after_area.top())),
             ),
-            terminal_height,
+            snapshot.height,
             "scrollback_insert",
         );
         tracing::debug!(
@@ -866,25 +938,27 @@ impl ChatTerminal {
     fn append_blank_lines_for_owned_region(
         &mut self,
         rows: u16,
-        terminal_height: u16,
+        snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
         if rows == 0 {
             return Ok(());
         }
 
-        let bottom = terminal_height.saturating_sub(1);
+        ensure_terminal_snapshot(snapshot, "owned_region_growth_start")?;
+        let bottom = snapshot.height.saturating_sub(1);
         let mut stdout = std::io::stdout();
         queue!(stdout, MoveTo(0, bottom)).context("failed to move cursor before owned growth")?;
         for _ in 0..rows {
             queue!(stdout, Print("\r\n")).context("failed to queue owned growth newline")?;
         }
         stdout.flush().context("failed to flush owned growth newlines")?;
+        ensure_terminal_snapshot(snapshot, "owned_region_growth_complete")?;
         self.request_native_inline_clear("owned_region_growth");
 
         let old_top = self.state.owned_top;
         let old_bottom = self.state.owned_bottom;
         self.state.owned_top = self.state.owned_top.saturating_sub(rows);
-        self.state.owned_bottom = terminal_height.max(1);
+        self.state.owned_bottom = snapshot.height;
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_owned_region_expanded",
@@ -895,7 +969,7 @@ impl ChatTerminal {
             old_owned_bottom = old_bottom,
             owned_top = self.state.owned_top,
             owned_bottom = self.state.owned_bottom,
-            terminal_height,
+            terminal_height = snapshot.height,
         );
 
         Ok(())
@@ -940,21 +1014,25 @@ impl ChatTerminal {
         );
     }
 
-    fn clear_owned_area(&mut self, area: Rect, reason: &'static str) -> anyhow::Result<()> {
+    fn clear_owned_area(
+        &mut self,
+        area: Rect,
+        reason: &'static str,
+        snapshot: TerminalSnapshot,
+    ) -> anyhow::Result<()> {
         if area.is_empty() {
             return Ok(());
         }
 
-        let (_terminal_width, terminal_height) =
-            crossterm::terminal::size().context("failed to read terminal size before clear")?;
-        let visible_bottom = self.state.owned_bottom.min(terminal_height);
+        ensure_terminal_snapshot(snapshot, "clear_owned_area")?;
+        let visible_bottom = self.state.owned_bottom.min(snapshot.height);
         if area.top() < self.state.owned_top || area.bottom() > visible_bottom {
             bail!(
                 "refusing to clear outside inline chat owned region: clear={:?}, owned={}..{}, terminal_height={}",
                 area,
                 self.state.owned_top,
                 self.state.owned_bottom,
-                terminal_height
+                snapshot.height
             );
         }
 
@@ -1028,6 +1106,27 @@ fn move_cursor_to(area: Rect) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn ensure_terminal_snapshot(expected: TerminalSnapshot, phase: &'static str) -> anyhow::Result<()> {
+    let actual = TerminalSnapshot::current("failed to read terminal size during inline draw")?;
+    if actual != expected {
+        return Err(TerminalResizeDuringDraw::new(expected, actual, phase).into());
+    }
+    Ok(())
+}
+
+fn ensure_area_inside_snapshot(
+    area: Rect,
+    snapshot: TerminalSnapshot,
+    phase: &'static str,
+) -> anyhow::Result<()> {
+    if area.right() > snapshot.width || area.bottom() > snapshot.height {
+        bail!(
+            "inline chat viewport area outside terminal snapshot at {phase}: area={area:?}, snapshot={snapshot:?}",
+        );
+    }
+    Ok(())
+}
+
 fn replay_batch_row_budget(terminal_height: u16) -> usize {
     usize::from(terminal_height)
         .saturating_mul(4)
@@ -1050,8 +1149,11 @@ pub(crate) fn plan_inline_geometry(
     terminal_height: u16,
 ) -> InlineGeometryPlan {
     let screen_height = terminal_height.max(1);
+    let screen_width = terminal_width.max(1);
     let height = desired_height.max(1).min(screen_height);
-    let old_area = last_frame_area.filter(|area| !area.is_empty());
+    let previous_area = last_frame_area.filter(|area| !area.is_empty());
+    let old_area =
+        previous_area.and_then(|area| clip_rect_to_terminal(area, screen_width, screen_height));
     let scroll_rows_before_resize =
         old_area.filter(|area| height > area.height).map_or(0, |area| {
             let growth = height.saturating_sub(area.height);
@@ -1059,9 +1161,11 @@ pub(crate) fn plan_inline_geometry(
             growth.saturating_sub(available_below)
         });
     let old_area_after_scroll = old_area.map(|area| shift_area_up(area, scroll_rows_before_resize));
-    let target_area = old_area_after_scroll.map(|area| {
+    let anchor_area = old_area_after_scroll
+        .or_else(|| previous_area.map(|area| Rect::new(0, area.y, screen_width, height)));
+    let target_area = anchor_area.map(|area| {
         let max_top = screen_height.saturating_sub(height);
-        Rect::new(0, area.y.min(max_top), terminal_width.max(1), height)
+        Rect::new(0, area.y.min(max_top), screen_width, height)
     });
     InlineGeometryPlan {
         old_area,
@@ -1092,6 +1196,19 @@ fn inline_viewport_scroll_rows_after_create(
 
 fn shift_area_up(area: Rect, rows: u16) -> Rect {
     Rect::new(area.x, area.y.saturating_sub(rows), area.width, area.height)
+}
+
+fn clip_rect_to_terminal(area: Rect, terminal_width: u16, terminal_height: u16) -> Option<Rect> {
+    if area.is_empty() || area.x >= terminal_width || area.y >= terminal_height {
+        return None;
+    }
+
+    let right = area.right().min(terminal_width);
+    let bottom = area.bottom().min(terminal_height);
+    let width = right.saturating_sub(area.x);
+    let height = bottom.saturating_sub(area.y);
+    let clipped = Rect::new(area.x, area.y, width, height);
+    (!clipped.is_empty()).then_some(clipped)
 }
 
 fn inline_viewport_reconfigure_clear_area(current_area: Rect, predicted_area: Rect) -> Rect {
@@ -1252,9 +1369,10 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 mod tests {
     use super::{
         ChatDrawRequest, ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch,
-        RenderedHistoryRows, ScrollbackInsertAction, inline_viewport_reconfigure_clear_area,
-        inline_viewport_scroll_rows_after_create, inline_viewport_top_after_create,
-        plan_inline_geometry, plan_owned_insert, shift_area_up, viewport_area_after_insert_exact,
+        RenderedHistoryRows, ScrollbackInsertAction, TerminalSnapshot,
+        inline_viewport_reconfigure_clear_area, inline_viewport_scroll_rows_after_create,
+        inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert, shift_area_up,
+        viewport_area_after_insert_exact,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1457,6 +1575,16 @@ mod tests {
     }
 
     #[test]
+    fn geometry_plan_clips_stale_bottom_viewport_before_resize_clear() {
+        let plan = plan_inline_geometry(Some(Rect::new(0, 32, 144, 8)), 8, 133, 37);
+
+        assert_eq!(plan.old_area, Some(Rect::new(0, 32, 133, 5)));
+        assert_eq!(plan.scroll_rows_before_resize, 3);
+        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 29, 133, 5)));
+        assert_eq!(plan.target_area, Some(Rect::new(0, 29, 133, 8)));
+    }
+
+    #[test]
     fn geometry_plan_expands_downward_when_room_exists_below_viewport() {
         let plan = plan_inline_geometry(Some(Rect::new(0, 22, 120, 4)), 8, 120, 37);
 
@@ -1535,6 +1663,7 @@ mod tests {
         let plan = plan_inline_geometry(Some(Rect::new(0, 34, 120, 6)), 11, 80, 20);
 
         assert_eq!(plan.height, 11);
+        assert_eq!(plan.old_area, None);
         assert_eq!(plan.target_area, Some(Rect::new(0, 9, 80, 11)));
     }
 
@@ -1565,8 +1694,7 @@ mod tests {
         let can_insert = terminal.can_insert_scrollback_rows(
             ChatDrawRequest {
                 requested_inline_height: 32,
-                terminal_width: 124,
-                terminal_height: 32,
+                terminal: TerminalSnapshot::new(124, 32),
             },
             19,
         );
@@ -1587,7 +1715,8 @@ mod tests {
             Vec::new(),
         );
 
-        let inserted = terminal.insert_history_batch(&mut batch, 124, 32).unwrap();
+        let inserted =
+            terminal.insert_history_batch(&mut batch, TerminalSnapshot::new(124, 32)).unwrap();
 
         assert_eq!(inserted, 0);
         assert_eq!(batch.next_row, 0);
