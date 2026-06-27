@@ -9,6 +9,10 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
+<p align="center">
+  <img src="assets/banner.png" alt="Claude Code Rust running a Read tool call with syntax-highlighted output" width="900">
+</p>
+
 ## About
 
 Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
