@@ -5,6 +5,7 @@ use crate::agent::model;
 use crate::app::{
     App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
     NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo, WelcomeBlock,
+    markdown_table_tail_is_open, starts_with_markdown_table_row,
 };
 use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
 use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
@@ -731,7 +732,8 @@ fn assistant_render_items_from_message(
                 if text.text.is_empty() {
                     continue;
                 }
-                let commit_ready = active_tail_block_idx != Some(block_idx);
+                let commit_ready =
+                    assistant_text_block_commit_ready(message, block_idx, active_tail_block_idx);
                 if let Some(pending) = pending_text.as_mut()
                     && pending.can_merge(commit_ready)
                 {
@@ -804,6 +806,51 @@ fn assistant_render_items_from_message(
 
     flush_pending_text_run(&mut pending_text, &mut items);
     items
+}
+
+fn assistant_text_block_commit_ready(
+    message: &ChatMessage,
+    block_idx: usize,
+    active_tail_block_idx: Option<usize>,
+) -> bool {
+    let Some(active_tail_block_idx) = active_tail_block_idx else {
+        return true;
+    };
+    if active_tail_block_idx == block_idx {
+        return false;
+    }
+    if active_tail_block_idx < block_idx {
+        return true;
+    }
+
+    !assistant_text_handoff_continues_open_table(message, block_idx)
+}
+
+fn assistant_text_handoff_continues_open_table(message: &ChatMessage, block_idx: usize) -> bool {
+    let Some(MessageBlock::Text(text)) = message.blocks.get(block_idx) else {
+        return false;
+    };
+    if !markdown_table_tail_is_open(&text.text) {
+        return false;
+    }
+
+    next_visible_assistant_text(message, block_idx)
+        .is_some_and(|next| starts_with_markdown_table_row(&next.text))
+}
+
+fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Option<&TextBlock> {
+    for block in message.blocks.iter().skip(block_idx + 1) {
+        match block {
+            MessageBlock::Text(text) if text.text.is_empty() => {}
+            MessageBlock::Text(text) => return Some(text),
+            MessageBlock::ToolCall(tool) if tool.hidden_unless_focused_interaction() => {}
+            MessageBlock::Welcome(_)
+            | MessageBlock::ImageAttachment(_)
+            | MessageBlock::UserDialog(_) => {}
+            MessageBlock::Notice(_) | MessageBlock::ToolCall(_) => return None,
+        }
+    }
+    None
 }
 
 fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
@@ -1722,6 +1769,46 @@ mod tests {
                 .segments()
                 .iter()
                 .any(|segment| segment.ids.contains(&HistoryOutputId::Block(second_id)))
+        );
+    }
+
+    #[test]
+    fn active_assistant_table_handoff_keeps_prefix_mutable_with_pipe_row_tail() {
+        let first = TextBlock::from_complete(concat!(
+            "| Hassle | What users report | Refs |\n",
+            "| --- | --- | --- |\n",
+            "| Input lag | Keystrokes echo late as context fills | #18943 |\n",
+        ));
+        let second = TextBlock::from_complete(
+            "| Slow startup | Startup output lands after a long delay | #42002 |\n",
+        );
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(second),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 180);
+        let committed_ids = serialized
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &committed_ids);
+        let remaining_text = line_texts(remaining.rows());
+
+        assert_eq!(serialized.stable_row_count(), 0);
+        assert!(
+            remaining_text.iter().any(|line| line.contains("Slow startup")),
+            "expected table continuation to remain visible: {remaining_text:?}"
+        );
+        assert!(
+            !remaining_text.iter().any(|line| line.trim_start().starts_with("| Slow startup |")),
+            "table continuation must not render as a raw pipe row: {remaining_text:?}"
         );
     }
 

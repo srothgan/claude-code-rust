@@ -766,11 +766,7 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
             let changed = app.input.textarea_insert_char(c);
-            if c.is_whitespace() {
-                mention::deactivate(app);
-            } else {
-                mention::update_query(app);
-            }
+            mention::update_query(app);
             changed.into()
         }
         // Any other key: deactivate mention and forward to normal handling
@@ -993,6 +989,21 @@ mod tests {
         assert!(handled.changed());
         let slash = app.slash.as_ref().expect("slash autocomplete should stay active");
         assert_eq!(slash.dialog.selected, 1);
+    }
+
+    #[test]
+    fn mention_space_key_remains_part_of_active_query() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        mention::activate(&mut app);
+
+        let outcome =
+            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert!(outcome.changed());
+        let mention = app.mention.as_ref().expect("mention should stay active");
+        assert_eq!(mention.query, " ");
     }
 
     #[test]
