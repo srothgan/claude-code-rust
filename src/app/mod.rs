@@ -48,6 +48,7 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
+pub(crate) use cache_policy::{markdown_table_tail_is_open, starts_with_markdown_table_row};
 pub use config::{ConfigHelpSection, ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};

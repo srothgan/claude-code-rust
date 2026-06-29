@@ -70,6 +70,8 @@ enum MarkdownBlock {
     Table(DocumentTable),
 }
 
+const URL_TOKEN_SOFT_MIN_WIDTH: usize = 24;
+
 impl DocumentTable {
     fn column_count(&self) -> usize {
         let body_cols = self.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
@@ -416,10 +418,19 @@ fn measure_cell_widths(text: &str) -> (usize, usize) {
     let soft_min = text
         .lines()
         .flat_map(|line| line.split_whitespace())
-        .map(display_width)
+        .map(token_soft_min_width)
         .max()
         .unwrap_or(preferred);
     (preferred, soft_min)
+}
+
+fn token_soft_min_width(token: &str) -> usize {
+    let width = display_width(token);
+    if is_url_like_token(token) { width.min(URL_TOKEN_SOFT_MIN_WIDTH) } else { width }
+}
+
+fn is_url_like_token(token: &str) -> bool {
+    token.starts_with("http://") || token.starts_with("https://") || token.starts_with("www.")
 }
 
 fn collect_column_metrics(table: &DocumentTable, cols: usize) -> Vec<ColumnMetrics> {
@@ -808,6 +819,71 @@ mod tests {
         let blocks = split_markdown_tables("| a | b |\n| this is not a separator |\n| 1 | 2 |\n");
         assert_eq!(blocks.len(), 1);
         assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
+    }
+
+    #[test]
+    fn structural_parser_preserves_empty_cells_in_valid_table_rows() {
+        let blocks = split_markdown_tables(
+            "| Hassle | What users report | Refs |\n\
+             | --- | --- | --- |\n\
+             | Paste freeze | Pasting many lines froze the terminal |  |\n\
+             | Scrollback destroyed |  | #42002 |\n",
+        );
+
+        let [MarkdownBlock::Table(table)] = blocks.as_slice() else {
+            panic!("expected one parsed table, got {} blocks", blocks.len());
+        };
+
+        assert_eq!(table.column_count(), 3);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].cells.len(), 3);
+        assert_eq!(table.rows[1].cells.len(), 3);
+        assert_eq!(table.rows[0].cells[2].plain_text, "");
+        assert_eq!(table.rows[1].cells[1].plain_text, "");
+    }
+
+    #[test]
+    fn valid_long_rows_after_empty_cells_stay_in_table_grid() {
+        let input = concat!(
+            "| Hassle | What users report | Refs |\n",
+            "| --- | --- | --- |\n",
+            "| Input lag | Keystrokes echo late as context fills | #18943, #41501 |\n",
+            "| Paste freeze | Pasting many lines wrote a large amount to stdout and froze the terminal | apiyi writeup, #9935 |\n",
+            "| Scrollback destroyed | Uses alternate screen and erases native scrollback | #42002, #43643 |\n",
+        );
+        let rendered = render_strings(input, 180);
+
+        assert!(rendered.iter().any(|line| line.contains("Paste freeze")));
+        assert!(rendered.iter().any(|line| line.contains("Scrollback destroyed")));
+        assert!(!rendered.iter().any(|line| line.contains("Hassle:")));
+        assert!(!rendered.iter().any(|line| line.trim_start().starts_with('|')));
+    }
+
+    #[test]
+    fn long_url_refs_do_not_force_stacked_layout_when_grid_can_wrap() {
+        let input = concat!(
+            "| Hassle | What users report | Refs |\n",
+            "| --- | --- | --- |\n",
+            "| Silent sync failures | Progress freezes at ninety-nine percent for hours on large folders, the bar never finishes, and the only workaround anyone finds is force-quitting the whole app | https://support.example.com/community/forums/sync/threads/1042-progress-stuck-at-99-percent-on-large-folders?sort=top&page=3#latest-reply |\n",
+            "| Disappearing files | Files vanish from the sync folder with no warning and reappear later | https://support.example.com/community/forums/data-loss/threads/1043-files-disappear-then-reappear-hours-later?utm_source=digest&ref=panel |\n",
+            "| Version conflicts | Conflicting copies pile up after editing on two devices, with cryptic suffixes added to filenames, and no clear way to tell which version is the latest one here | https://github.com/example/desktop-client/issues/887?q=is%3Aissue+conflicted+copy+filename+suffix+multi-device&utm_campaign=triage |\n",
+        );
+        let rendered = render_strings(input, 120);
+
+        assert!(rendered.iter().any(|line| line.contains("Silent sync failures")));
+        assert!(rendered.iter().any(|line| line.contains("progress-stuck-at-99")));
+        assert!(!rendered.iter().any(|line| line.contains("Hassle:")));
+        assert!(!rendered.iter().any(|line| line.contains("Refs:")));
+        assert!(!rendered.iter().any(|line| line.trim_start().starts_with('|')));
+    }
+
+    #[test]
+    fn url_tokens_have_capped_soft_min_width() {
+        let (_preferred, soft_min) = measure_cell_widths(
+            "https://support.example.com/community/forums/sync/threads/1042-progress-stuck-at-99-percent-on-large-folders?sort=top&page=3#latest-reply",
+        );
+
+        assert_eq!(soft_min, URL_TOKEN_SOFT_MIN_WIDTH);
     }
 
     #[test]

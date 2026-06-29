@@ -1187,8 +1187,8 @@ mod tests {
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
     use crate::app::{
-        App, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole, TextBlock,
-        TextBlockSpacing,
+        App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
+        TextBlock, TextBlockSpacing,
     };
     use crate::ui::inline_chat_rows::{
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
@@ -1232,6 +1232,10 @@ mod tests {
             end_row,
             commit_ready: true,
         }
+    }
+
+    fn assistant_blocks_message(blocks: Vec<MessageBlock>) -> ChatMessage {
+        ChatMessage::new(MessageRole::Assistant, blocks, None)
     }
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
@@ -1348,6 +1352,45 @@ mod tests {
                 .any(|batch| batch.confirm_ids.contains(&HistoryOutputId::Block(second_id)))
         );
         assert_eq!(inserted_text, vec!["second paragraph"]);
+    }
+
+    #[test]
+    fn static_history_batches_preserve_rendered_table_prefix_before_mutable_tail() {
+        let table = concat!(
+            "| Hassle | What users report | Refs |\n",
+            "| --- | --- | --- |\n",
+            "| Input lag | Keystrokes echo late as context fills | #18943 |\n",
+            "| Paste freeze | Pasting many lines froze the terminal |  |\n",
+            "| Scrollback destroyed |  | #42002 |\n",
+        );
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(TextBlock::from_complete(table)),
+            MessageBlock::Text(TextBlock::from_complete("streaming tail remains mutable")),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &BTreeSet::new());
+        let batches = super::build_static_history_batches(&serialized, 180, &BTreeSet::new());
+        let inserted_text = batches
+            .iter()
+            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
+            .map(line_text)
+            .collect::<Vec<_>>();
+        let excluded_ids = batches
+            .iter()
+            .flat_map(|batch| batch.confirm_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let remaining_live_text =
+            serialized.rows_excluding_ids(&excluded_ids).iter().map(line_text).collect::<Vec<_>>();
+
+        assert!(inserted_text.iter().any(|line| line == "Claude"));
+        assert!(inserted_text.iter().any(|line| line.contains("Paste freeze")));
+        assert!(inserted_text.iter().any(|line| line.contains("Scrollback destroyed")));
+        assert!(!inserted_text.iter().any(|line| line.trim_start().starts_with('|')));
+        assert_eq!(remaining_live_text, vec!["streaming tail remains mutable"]);
     }
 
     #[test]

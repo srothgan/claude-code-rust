@@ -19,6 +19,7 @@ use crate::app::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -657,6 +658,59 @@ fn agent_message_chunk_splits_into_frozen_text_blocks() {
     assert_eq!(b1.trailing_spacing, TextBlockSpacing::ParagraphBreak);
     assert_eq!(b2.trailing_spacing, TextBlockSpacing::ParagraphBreak);
     assert_eq!(b3.trailing_spacing, TextBlockSpacing::None);
+}
+
+#[test]
+fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
+    let mut rows = String::new();
+    for idx in 0..70 {
+        let _ = writeln!(
+            rows,
+            "| Slow startup {idx} | Startup output lands after a long delay once context is large. | https://example.com/issues/{idx}/very/long/reference |"
+        );
+    }
+    let table = format!("| Hassle | What users report | Refs |\n| --- | --- | --- |\n{rows}");
+    assert!(table.len() > crate::app::DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES);
+    let mut app = make_test_app();
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(&table))),
+        )),
+    );
+
+    assert!(matches!(app.status, AppStatus::Running));
+    let serialized = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        &mut app,
+        180,
+        &std::collections::BTreeSet::new(),
+    );
+    let committed_ids = serialized
+        .segments()
+        .iter()
+        .filter(|segment| segment.commit_ready)
+        .flat_map(|segment| segment.ids.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let remaining = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        &mut app,
+        180,
+        &committed_ids,
+    );
+    let remaining_text = remaining
+        .rows()
+        .iter()
+        .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>();
+
+    assert!(
+        remaining_text.iter().any(|line| line.contains("Slow startup")),
+        "expected table rows to remain visible: {remaining_text:?}"
+    );
+    assert!(
+        !remaining_text.iter().any(|line| line.trim_start().starts_with("| Slow startup |")),
+        "live tail must not render raw Markdown table rows: {remaining_text:?}"
+    );
 }
 
 // has_in_progress_tool_calls
