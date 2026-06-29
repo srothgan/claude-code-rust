@@ -102,16 +102,23 @@ pub(crate) fn configure_input_textarea(app: &mut App) {
         textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     }
 
-    if needs_highlight_update {
+    if needs_highlight_update || app.mention.is_some() {
         let lines = app.input.lines().to_vec();
+        let active_mention = app.mention.as_ref();
+        let file_index = &app.file_index;
         let textarea = app.input.editor_mut();
         textarea.clear_custom_highlight();
-        apply_textarea_highlights(textarea, &lines);
+        apply_textarea_highlights(textarea, &lines, file_index, active_mention);
         app.input.highlight_version = app.input.content_version;
     }
 }
 
-fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
+fn apply_textarea_highlights(
+    textarea: &mut TextArea<'_>,
+    lines: &[String],
+    file_index: &crate::app::file_index::FileIndexState,
+    active_mention: Option<&mention::MentionState>,
+) {
     let slash_style = Style::default().fg(theme::SLASH_COMMAND);
     let mention_style = Style::default().fg(Color::Cyan);
     let subagent_style = Style::default().fg(theme::SUBAGENT_TOKEN);
@@ -127,7 +134,7 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
             );
         }
 
-        for (start, end, _) in mention::find_mention_spans(line) {
+        for (start, end, _) in mention::find_mention_spans(row, line, file_index, active_mention) {
             textarea.custom_highlight(
                 ((row, start), (row, end)),
                 mention_style,

@@ -16,6 +16,7 @@ const EVENT_DRAIN_BUDGET: usize = 64;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WATCH_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_CANDIDATES: usize = 50;
+const MENTION_RANK_WINDOW: usize = 1_000;
 const NUCLEO_COLUMNS: u32 = 1;
 const NUCLEO_QUERY_TICK_MS: u64 = 10;
 const MATCHER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -484,9 +485,21 @@ impl MentionMatcher {
 
     fn candidates(&self, limit: usize) -> Vec<FileCandidate> {
         let snapshot = self.engine.snapshot();
-        let limit = u32::try_from(limit).unwrap_or(u32::MAX);
-        let end = snapshot.matched_item_count().min(limit);
-        snapshot.matched_items(0..end).map(|item| item.data.clone()).collect()
+        let window = limit.max(MENTION_RANK_WINDOW);
+        let end = snapshot.matched_item_count().min(u32::try_from(window).unwrap_or(u32::MAX));
+        let mut ranked = snapshot
+            .matched_items(0..end)
+            .enumerate()
+            .map(|(nucleo_rank, item)| {
+                let candidate = item.data.clone();
+                let rank = mention_candidate_rank(&self.last_query, &candidate, nucleo_rank);
+                (rank, candidate)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_rank, left), (right_rank, right)| {
+            left_rank.cmp(right_rank).then_with(|| left.rel_path_lower.cmp(&right.rel_path_lower))
+        });
+        ranked.into_iter().take(limit).map(|(_, candidate)| candidate).collect()
     }
 
     fn matched_item_count(&self) -> u32 {
@@ -511,6 +524,56 @@ impl MentionMatcher {
             columns[0] = Utf32String::from(candidate.rel_path.as_str());
         });
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MentionCandidateRank {
+    path_prefix_bucket: u8,
+    depth: usize,
+    relevance_bucket: u8,
+    path_chars: usize,
+    nucleo_rank: usize,
+}
+
+fn mention_candidate_rank(
+    query: &str,
+    candidate: &FileCandidate,
+    nucleo_rank: usize,
+) -> MentionCandidateRank {
+    let query = query.trim().to_lowercase();
+    let path = candidate.rel_path_lower.as_str();
+    let basename = candidate.basename_lower.as_str();
+    let path_prefix_bucket = u8::from(query.is_empty() || !path.starts_with(&query));
+    let relevance_bucket = if !query.is_empty()
+        && (basename.starts_with(&query)
+            || path_segments(path).any(|segment| segment.starts_with(&query)))
+    {
+        0
+    } else if query_terms_match_path(&query, path) {
+        1
+    } else {
+        2
+    };
+
+    MentionCandidateRank {
+        path_prefix_bucket,
+        depth: candidate.depth,
+        relevance_bucket,
+        path_chars: candidate.rel_path.chars().count(),
+        nucleo_rank,
+    }
+}
+
+fn path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split('/').filter(|segment| !segment.is_empty())
+}
+
+fn query_terms_match_path(query: &str, path: &str) -> bool {
+    let mut terms = query.split_whitespace().peekable();
+    if terms.peek().is_none() {
+        return false;
+    }
+    terms.all(|term| path.contains(term))
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1791,6 +1854,49 @@ mod tests {
         let paths = mention_matcher_paths(&mut matcher, "web_dev_work");
 
         assert!(paths.iter().any(|path| path == "web_dev_work/"));
+    }
+
+    #[test]
+    fn mention_matcher_finds_query_containing_spaces() {
+        let mut matcher = MentionMatcher::default();
+        matcher.upsert_scan_batch(vec![
+            candidate("docs/my folder/read me.md"),
+            candidate("src/main.rs"),
+        ]);
+
+        let paths = mention_matcher_paths(&mut matcher, "my folder");
+
+        assert!(paths.iter().any(|path| path == "docs/my folder/read me.md"));
+    }
+
+    #[test]
+    fn mention_matcher_prefers_shallow_paths_over_deep_dependency_matches() {
+        let mut matcher = MentionMatcher::default();
+        matcher.upsert_scan_batch(vec![
+            candidate("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js"),
+            candidate("tester/node_modules/@supabase/storage-js/dist/module/lib/errors.js"),
+            candidate("docs/supabase error module.md"),
+        ]);
+
+        let paths = mention_matcher_paths(&mut matcher, "supabase error module");
+
+        assert_eq!(paths.first().map(String::as_str), Some("docs/supabase error module.md"));
+    }
+
+    #[test]
+    fn mention_matcher_keeps_explicit_deep_path_prefix_ahead_of_shallow_matches() {
+        let mut matcher = MentionMatcher::default();
+        matcher.upsert_scan_batch(vec![
+            candidate("docs/tester node_modules note.md"),
+            candidate("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js"),
+        ]);
+
+        let paths = mention_matcher_paths(&mut matcher, "tester/node_modules");
+
+        assert_eq!(
+            paths.first().map(String::as_str),
+            Some("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js")
+        );
     }
 
     #[test]

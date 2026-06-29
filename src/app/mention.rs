@@ -14,6 +14,8 @@ pub struct MentionState {
     pub trigger_col: usize,
     /// Current query text after the `@` (e.g. "src/m" from "@src/m").
     pub query: String,
+    /// Character position where confirmation replacement should stop.
+    pub replace_end_col: usize,
     /// Filtered + sorted candidates.
     pub candidates: Vec<file_index::FileCandidate>,
     /// Shared autocomplete dialog navigation state.
@@ -24,6 +26,7 @@ pub struct MentionState {
     refresh_after_pending_match: bool,
     last_scan_batch_request_at: Option<Instant>,
     last_scan_batch_request_version: u64,
+    line_char_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +37,30 @@ enum MentionSearchStatus {
     NoMatches,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MentionSpanSource {
+    Active,
+    IndexedPath,
+    BareToken,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MentionSpan {
+    row: usize,
+    trigger_col: usize,
+    end_col: usize,
+    query: String,
+    source: MentionSpanSource,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveMentionBounds {
+    row: usize,
+    trigger_col: usize,
+    replace_end_col: usize,
+    line_char_count: usize,
+}
+
 impl MentionState {
     #[must_use]
     pub fn new(
@@ -42,6 +69,7 @@ impl MentionState {
         query: String,
         candidates: Vec<file_index::FileCandidate>,
     ) -> Self {
+        let replace_end_col = trigger_col + 1 + query.chars().count();
         let search_status = if candidates.is_empty() {
             MentionSearchStatus::Hint
         } else {
@@ -51,6 +79,7 @@ impl MentionState {
             trigger_row,
             trigger_col,
             query,
+            replace_end_col,
             candidates,
             dialog: DialogState::default(),
             search_status,
@@ -59,6 +88,7 @@ impl MentionState {
             refresh_after_pending_match: false,
             last_scan_batch_request_at: None,
             last_scan_batch_request_version: 0,
+            line_char_count: replace_end_col,
         }
     }
 
@@ -90,49 +120,67 @@ impl MentionState {
     }
 }
 
-/// Detect an `@` mention at the current cursor position.
-/// Scans backwards from the cursor to find `@`. The `@` must be preceded by
-/// whitespace, a newline, or be at position 0 (to avoid false triggers mid-word).
-/// Returns `(trigger_row, trigger_col, query)` where `trigger_col` is the
-/// position of the `@` character itself.
-pub fn detect_mention_at_cursor(
+impl From<&MentionState> for ActiveMentionBounds {
+    fn from(mention: &MentionState) -> Self {
+        Self {
+            row: mention.trigger_row,
+            trigger_col: mention.trigger_col,
+            replace_end_col: mention.replace_end_col,
+            line_char_count: mention.line_char_count,
+        }
+    }
+}
+
+fn detect_mention_span_at_cursor(
     lines: &[String],
     cursor_row: usize,
     cursor_col: usize,
-) -> Option<(usize, usize, String)> {
+    file_index: Option<&file_index::FileIndexState>,
+    active: Option<ActiveMentionBounds>,
+) -> Option<MentionSpan> {
     let line = lines.get(cursor_row)?;
-    let chars: Vec<char> = line.chars().collect();
+    let chars = line.chars().collect::<Vec<_>>();
+    let cursor_col = cursor_col.min(chars.len());
 
-    let mut i = cursor_col;
-    while i > 0 {
-        i -= 1;
-        let ch = *chars.get(i)?;
-        if ch == '@' {
-            if i == 0 || chars.get(i - 1).is_some_and(|c| c.is_whitespace()) {
-                let query: String = chars[i + 1..cursor_col].iter().collect();
-                if query.chars().all(|c| !c.is_whitespace()) {
-                    return Some((cursor_row, i, query));
-                }
-            }
-            return None;
-        }
-        if ch.is_whitespace() {
-            return None;
-        }
-    }
-    None
+    valid_trigger_cols_before_cursor(&chars, cursor_col)
+        .into_iter()
+        .rev()
+        .filter_map(|trigger_col| {
+            resolve_mention_span(cursor_row, &chars, trigger_col, cursor_col, file_index, active)
+        })
+        .find(|span| cursor_col > span.trigger_col && cursor_col <= span.end_col)
+}
+
+fn valid_trigger_cols_before_cursor(chars: &[char], cursor_col: usize) -> Vec<usize> {
+    chars
+        .iter()
+        .take(cursor_col)
+        .enumerate()
+        .filter_map(|(col, ch)| {
+            (*ch == '@' && (col == 0 || chars[col - 1].is_whitespace())).then_some(col)
+        })
+        .collect()
 }
 
 /// Activate mention autocomplete after the user types `@`.
 pub fn activate(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let detection = detect_mention_span_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+        Some(&app.file_index),
+        app.mention.as_ref().map(ActiveMentionBounds::from),
+    );
 
-    let Some((trigger_row, trigger_col, query)) = detection else {
+    let Some(span) = detection else {
         return;
     };
 
-    app.mention = Some(MentionState::new(trigger_row, trigger_col, query, Vec::new()));
+    let line_char_count = app.input.lines().get(span.row).map_or(0, |line| line.chars().count());
+    let mut mention = MentionState::new(span.row, span.trigger_col, span.query, Vec::new());
+    mention.replace_end_col = span.end_col;
+    mention.line_char_count = line_char_count;
+    app.mention = Some(mention);
     app.slash = None;
     app.subagent = None;
     refresh_query_state(app);
@@ -140,21 +188,57 @@ pub fn activate(app: &mut App) {
 
 /// Update the query and re-filter candidates while mention is active.
 pub fn update_query(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let active = app.mention.as_ref().map(ActiveMentionBounds::from);
+    let detection = detect_mention_span_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+        Some(&app.file_index),
+        active,
+    );
 
-    let Some((trigger_row, trigger_col, query)) = detection else {
+    let Some(span) = detection else {
         deactivate(app);
         return;
     };
 
+    let line_char_count = app.input.lines().get(span.row).map_or(0, |line| line.chars().count());
+    let previous_line_char_count =
+        app.mention.as_ref().map_or(line_char_count, |mention| mention.line_char_count);
+    let previous_replace_end_col =
+        app.mention.as_ref().map_or(span.end_col, |mention| mention.replace_end_col);
+    let replace_end_col = if matches!(span.source, MentionSpanSource::Active) {
+        adjust_active_replace_end(
+            previous_replace_end_col,
+            previous_line_char_count,
+            line_char_count,
+        )
+        .max(span.end_col)
+    } else {
+        span.end_col
+    };
+
     if let Some(ref mut mention) = app.mention {
-        mention.trigger_row = trigger_row;
-        mention.trigger_col = trigger_col;
-        mention.query = query;
+        mention.trigger_row = span.row;
+        mention.trigger_col = span.trigger_col;
+        mention.query = span.query;
+        mention.replace_end_col = replace_end_col;
+        mention.line_char_count = line_char_count;
     }
 
     refresh_query_state(app);
+}
+
+fn adjust_active_replace_end(
+    previous_replace_end_col: usize,
+    previous_line_char_count: usize,
+    line_char_count: usize,
+) -> usize {
+    if line_char_count >= previous_line_char_count {
+        previous_replace_end_col + (line_char_count - previous_line_char_count)
+    } else {
+        previous_replace_end_col.saturating_sub(previous_line_char_count - line_char_count)
+    }
 }
 
 pub fn refresh_from_file_index(app: &mut App) {
@@ -166,7 +250,7 @@ pub fn refresh_from_file_index_after_scan_batch(app: &mut App) {
         return;
     };
 
-    if mention.query.chars().count() < MIN_QUERY_CHARS {
+    if query_is_hint(&mention.query) {
         mention.mark_hint();
         sync_focus(app);
         return;
@@ -267,7 +351,7 @@ fn refresh_query_state(app: &mut App) {
         return;
     };
 
-    if mention.query.chars().count() < MIN_QUERY_CHARS {
+    if query_is_hint(&mention.query) {
         mention.mark_hint();
         sync_focus(app);
         return;
@@ -299,7 +383,7 @@ fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
         return;
     };
 
-    if query.chars().count() < MIN_QUERY_CHARS {
+    if query_is_hint(&query) {
         if let Some(mention) = app.mention.as_mut() {
             mention.mark_hint();
         }
@@ -332,8 +416,7 @@ fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
     mention.refresh_after_pending_match = false;
     mention.last_scan_batch_request_at = Some(Instant::now());
     mention.last_scan_batch_request_version = index_version;
-    if matches!(mode, MatchRequestMode::UserQuery) {
-        mention.candidates.clear();
+    if matches!(mode, MatchRequestMode::UserQuery) && mention.candidates.is_empty() {
         mention.dialog.clamp(0, AUTOCOMPLETE_VISIBLE_ROWS);
     }
     mention.search_status = MentionSearchStatus::Searching;
@@ -357,6 +440,10 @@ fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
     );
 }
 
+fn query_is_hint(query: &str) -> bool {
+    query.chars().count() < MIN_QUERY_CHARS || query.trim().is_empty()
+}
+
 fn sync_focus(app: &mut App) {
     if app.mention.as_ref().is_some_and(MentionState::has_selectable_candidates) {
         app.claim_focus_target(FocusTarget::Mention);
@@ -369,9 +456,14 @@ fn sync_focus(app: &mut App) {
 /// - If cursor is inside a valid `@mention` token, activate/update autocomplete.
 /// - Otherwise, deactivate mention autocomplete.
 pub fn sync_with_cursor(app: &mut App) {
-    let in_mention =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())
-            .is_some();
+    let in_mention = detect_mention_span_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+        Some(&app.file_index),
+        app.mention.as_ref().map(ActiveMentionBounds::from),
+    )
+    .is_some();
     match (in_mention, app.mention.is_some()) {
         (true, true) => update_query(app),
         (true, false) => activate(app),
@@ -404,8 +496,10 @@ pub fn confirm_selection(app: &mut App) {
         return;
     }
 
-    let mention_end =
-        (trigger_col + 1..chars.len()).find(|&i| chars[i].is_whitespace()).unwrap_or(chars.len());
+    let mention_end = resolve_confirm_end_col(&mention, &chars, &app.file_index);
+    if mention_end <= trigger_col || mention_end > chars.len() {
+        return;
+    }
 
     let before: String = chars[..trigger_col].iter().collect();
     let after: String = chars[mention_end..].iter().collect();
@@ -417,6 +511,29 @@ pub fn confirm_selection(app: &mut App) {
 
     lines[trigger_row] = new_line;
     app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
+}
+
+fn resolve_confirm_end_col(
+    mention: &MentionState,
+    chars: &[char],
+    file_index: &file_index::FileIndexState,
+) -> usize {
+    if mention.replace_end_col <= chars.len()
+        && mention.replace_end_col > mention.trigger_col
+        && chars.get(mention.trigger_col) == Some(&'@')
+    {
+        return mention.replace_end_col;
+    }
+
+    resolve_mention_span(
+        mention.trigger_row,
+        chars,
+        mention.trigger_col,
+        mention.trigger_col + 1,
+        Some(file_index),
+        None,
+    )
+    .map_or(mention.trigger_col, |span| span.end_col)
 }
 
 /// Deactivate mention autocomplete.
@@ -441,27 +558,32 @@ pub fn move_down(app: &mut App) {
     }
 }
 
-/// Find all `@path` references in a text string. Returns `(start_byte, end_byte, path)` tuples.
-/// A valid `@path` must start after whitespace or at position 0, and extends until
-/// the next whitespace or end of string.
-pub fn find_mention_spans(text: &str) -> Vec<(usize, usize, String)> {
+/// Find all `@path` references in a text string. Returns `(start_col, end_col, path)` tuples.
+pub fn find_mention_spans(
+    row: usize,
+    text: &str,
+    file_index: &file_index::FileIndexState,
+    active: Option<&MentionState>,
+) -> Vec<(usize, usize, String)> {
     let mut spans = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
+    let active = active.map(ActiveMentionBounds::from);
 
     while i < chars.len() {
         if chars[i] == '@' && (i == 0 || chars[i - 1].is_whitespace()) {
-            let start = i;
-            i += 1;
-            let path_start = i;
-            while i < chars.len() && !chars[i].is_whitespace() {
+            let cursor_col = active
+                .filter(|active| active.row == row && active.trigger_col == i)
+                .map_or(i + 1, |active| active.replace_end_col.min(chars.len()));
+            if let Some(span) =
+                resolve_mention_span(row, &chars, i, cursor_col, Some(file_index), active)
+            {
+                i = span.end_col.max(i + 1);
+                if !span.query.is_empty() {
+                    spans.push((span.trigger_col, span.end_col, span.query));
+                }
+            } else {
                 i += 1;
-            }
-            if i > path_start {
-                let path: String = chars[path_start..i].iter().collect();
-                let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
-                let byte_end: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
-                spans.push((byte_start, byte_end, path));
             }
         } else {
             i += 1;
@@ -471,16 +593,125 @@ pub fn find_mention_spans(text: &str) -> Vec<(usize, usize, String)> {
     spans
 }
 
+fn resolve_mention_span(
+    row: usize,
+    chars: &[char],
+    trigger_col: usize,
+    cursor_col: usize,
+    file_index: Option<&file_index::FileIndexState>,
+    active: Option<ActiveMentionBounds>,
+) -> Option<MentionSpan> {
+    if chars.get(trigger_col) != Some(&'@')
+        || (trigger_col > 0 && !chars[trigger_col - 1].is_whitespace())
+    {
+        return None;
+    }
+
+    if let Some(active) = active
+        && active.row == row
+        && active.trigger_col == trigger_col
+        && cursor_col > trigger_col
+        && (cursor_col <= active.replace_end_col || chars.len() > active.line_char_count)
+    {
+        let end_col = active.replace_end_col.max(cursor_col).min(chars.len());
+        if end_col > trigger_col {
+            let query = chars[trigger_col + 1..cursor_col.min(end_col)].iter().collect();
+            return Some(MentionSpan {
+                row,
+                trigger_col,
+                end_col,
+                query,
+                source: MentionSpanSource::Active,
+            });
+        }
+    }
+
+    if let Some(file_index) = file_index
+        && let Some((end_col, query)) =
+            longest_indexed_path_span(chars, trigger_col, &file_index.entries)
+    {
+        let query = span_query(chars, trigger_col, cursor_col, end_col, &query);
+        return Some(MentionSpan {
+            row,
+            trigger_col,
+            end_col,
+            query,
+            source: MentionSpanSource::IndexedPath,
+        });
+    }
+
+    let end_col = bare_token_end_col(chars, trigger_col);
+    if end_col <= trigger_col + 1 {
+        if cursor_col == trigger_col + 1 {
+            return Some(MentionSpan {
+                row,
+                trigger_col,
+                end_col: cursor_col,
+                query: String::new(),
+                source: MentionSpanSource::BareToken,
+            });
+        }
+        return None;
+    }
+    let bare_query: String = chars[trigger_col + 1..end_col].iter().collect();
+    let query = span_query(chars, trigger_col, cursor_col, end_col, &bare_query);
+    Some(MentionSpan { row, trigger_col, end_col, query, source: MentionSpanSource::BareToken })
+}
+
+fn span_query(
+    chars: &[char],
+    trigger_col: usize,
+    cursor_col: usize,
+    end_col: usize,
+    fallback: &str,
+) -> String {
+    if cursor_col > trigger_col + 1 {
+        chars[trigger_col + 1..cursor_col.min(end_col)].iter().collect()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn longest_indexed_path_span(
+    chars: &[char],
+    trigger_col: usize,
+    entries: &std::collections::BTreeMap<String, file_index::FileCandidate>,
+) -> Option<(usize, String)> {
+    let mut longest = None;
+    let mut candidate = String::new();
+    for (path_col, ch) in chars.iter().enumerate().skip(trigger_col + 1) {
+        candidate.push(*ch);
+        let end_col = path_col + 1;
+        if entries.contains_key(&candidate) {
+            longest = Some((end_col, candidate.clone()));
+        }
+    }
+    longest
+}
+
+fn bare_token_end_col(chars: &[char], trigger_col: usize) -> usize {
+    let mut end_col = trigger_col + 1;
+    while end_col < chars.len() && !chars[end_col].is_whitespace() {
+        end_col += 1;
+    }
+    end_col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::App;
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         for file in files {
             let path = tmp.path().join(file);
+            if file.ends_with('/') {
+                std::fs::create_dir_all(&path).expect("create dir");
+                continue;
+            }
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).expect("create parent");
             }
@@ -489,6 +720,31 @@ mod tests {
         let mut app = App::test_default();
         app.cwd_raw = tmp.path().to_string_lossy().into_owned();
         (app, tmp)
+    }
+
+    fn candidate(rel_path: &str) -> file_index::FileCandidate {
+        file_index::FileCandidate {
+            rel_path: rel_path.to_owned(),
+            rel_path_lower: rel_path.to_lowercase(),
+            basename_lower: rel_path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_lowercase(),
+            depth: rel_path.matches('/').count(),
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: rel_path.ends_with('/'),
+        }
+    }
+
+    fn index_paths(app: &mut App, paths: &[&str]) {
+        app.file_index.root = Some(PathBuf::from(&app.cwd_raw));
+        app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+        app.file_index.scan_finished = true;
+        for path in paths {
+            app.file_index.entries.insert((*path).to_owned(), candidate(path));
+        }
     }
 
     fn run_search(app: &mut App) {
@@ -519,6 +775,80 @@ mod tests {
     }
 
     #[test]
+    fn detects_and_highlights_indexed_file_path_with_spaces() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my file.md"]);
+
+        let spans = find_mention_spans(0, "open @docs/my file.md now", &app.file_index, None);
+
+        assert_eq!(spans, vec![(5, 21, "docs/my file.md".to_owned())]);
+    }
+
+    #[test]
+    fn detects_and_highlights_indexed_folder_path_with_spaces() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my folder/"]);
+
+        let spans = find_mention_spans(0, "open @docs/my folder/ now", &app.file_index, None);
+
+        assert_eq!(spans, vec![(5, 21, "docs/my folder/".to_owned())]);
+    }
+
+    #[test]
+    fn longest_indexed_path_wins_when_paths_share_prefixes() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["foo", "foo bar.md"]);
+
+        let spans = find_mention_spans(0, "@foo bar.md", &app.file_index, None);
+
+        assert_eq!(spans, vec![(0, 11, "foo bar.md".to_owned())]);
+    }
+
+    #[test]
+    fn indexed_prefix_does_not_over_highlight_following_prose() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my"]);
+
+        let spans = find_mention_spans(0, "@docs/my folder now", &app.file_index, None);
+
+        assert_eq!(spans, vec![(0, 8, "docs/my".to_owned())]);
+    }
+
+    #[test]
+    fn reentering_autocomplete_inside_spaced_path_uses_cursor_query_and_full_span() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my folder/read me.md"]);
+        app.input.set_text("open @docs/my folder/read me.md now");
+        let _ = app.input.set_cursor(0, "open @docs/my folder/read".chars().count());
+
+        sync_with_cursor(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should be active");
+        assert_eq!(mention.query, "docs/my folder/read");
+        assert_eq!(mention.replace_end_col, "open @docs/my folder/read me.md".chars().count());
+    }
+
+    #[test]
+    fn editing_right_side_of_spaced_mention_keeps_full_replacement_span() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my folder/read me.txt", "docs/my folder/read me.md"]);
+        app.input.set_text("open @docs/my folder/read me.txt now");
+        let _ = app.input.set_cursor(0, "open @docs/my folder/read me.".chars().count());
+        sync_with_cursor(&mut app);
+
+        let _ = app.input.textarea_insert_char('m');
+        update_query(&mut app);
+        {
+            let mention = app.mention.as_mut().expect("mention should stay active");
+            mention.candidates = vec![candidate("docs/my folder/read me.md")];
+            mention.search_status = MentionSearchStatus::Ready;
+        }
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines()[0], "open @docs/my folder/read me.md now");
+    }
+
+    #[test]
     fn confirm_selection_replaces_full_existing_token_without_double_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
         app.input.set_text("open @src/lib.txt now");
@@ -546,6 +876,39 @@ mod tests {
     }
 
     #[test]
+    fn confirming_spaced_candidate_at_end_inserts_trailing_space() {
+        let (mut app, _tmp) = app_with_temp_files(&["path with spaces.md"]);
+        app.input.set_text("@path");
+        let _ = app.input.set_cursor(0, "@path".chars().count());
+
+        activate(&mut app);
+        run_search(&mut app);
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines()[0], "@path with spaces.md ");
+    }
+
+    #[test]
+    fn confirming_spaced_candidate_before_text_does_not_add_double_space() {
+        let mut app = App::test_default();
+        app.input.set_text("open @path with typo later");
+        let trigger_col = "open ".chars().count();
+        let mut mention = MentionState::new(
+            0,
+            trigger_col,
+            "path with typo".to_owned(),
+            vec![candidate("path with spaces.md")],
+        );
+        mention.replace_end_col = "open @path with typo".chars().count();
+        mention.search_status = MentionSearchStatus::Ready;
+        app.mention = Some(mention);
+
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines()[0], "open @path with spaces.md later");
+    }
+
+    #[test]
     fn activate_with_empty_query_keeps_empty_candidates_until_threshold() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@");
@@ -560,6 +923,37 @@ mod tests {
             mention.placeholder_message().as_deref(),
             Some("Type a file or folder name after @")
         );
+    }
+
+    #[test]
+    fn whitespace_only_query_stays_hint_without_searching_everything() {
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        activate(&mut app);
+        app.input.set_text("@ ");
+        let _ = app.input.set_cursor(0, 2);
+        update_query(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should be active");
+        assert_eq!(mention.query, " ");
+        assert!(mention.candidates.is_empty());
+        assert!(matches!(mention.search_status, MentionSearchStatus::Hint));
+    }
+
+    #[test]
+    fn user_query_refresh_keeps_existing_candidates_visible() {
+        let mut app = App::test_default();
+        let mut mention = MentionState::new(0, 0, "src".to_owned(), vec![candidate("src/lib.rs")]);
+        mention.search_status = MentionSearchStatus::Ready;
+        app.mention = Some(mention);
+
+        request_match_for_active_mention(&mut app, MatchRequestMode::UserQuery);
+
+        let mention = app.mention.as_ref().expect("mention should remain active");
+        assert_eq!(mention.candidates.len(), 1);
+        assert_eq!(mention.candidates[0].rel_path, "src/lib.rs");
+        assert!(matches!(mention.search_status, MentionSearchStatus::Searching));
     }
 
     #[test]
