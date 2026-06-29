@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Mention file autocomplete** (#226, @srothgan): Move `@` file matching off the UI path, support raw indexed file and folder mentions with spaces, and keep suggestions stable while refreshed queries are pending.
+
 ### Documentation
 
 - **README banner** (#217, @srothgan): Add a project screenshot banner to the README.
@@ -11,6 +15,8 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - **Inline chat resize transactions** (#217, @srothgan): Treat terminal size as a draw-transaction snapshot, recover from mid-draw resizes with purge/replay, and clip stale inline viewport geometry before owned-region clears.
+- **Mention autocomplete ranking and replacement** (#226, @srothgan): Resolve spaced `@` mention spans from active state and indexed paths, preserve whole-mention replacement boundaries, and rank shallow project paths ahead of deep dependency matches unless the query explicitly targets the deep path.
+- **Streaming markdown tables** (#226, @srothgan): Preserve table rendering across streamed cache splits so partial assistant updates do not corrupt table layout.
 
 ### Maintenance
 
@@ -20,6 +26,7 @@ All notable changes to this project will be documented in this file.
 
 - **quinn-proto advisory fix** (#220, @srothgan): Bump `quinn-proto` to `0.11.15` for `RUSTSEC-2026-0185` (remote memory exhaustion from unbounded out-of-order stream reassembly).
 - **Security Audit workflow resilience** (#220, @srothgan): Mark the `cargo audit` step `continue-on-error` so newly published advisories still report and file a tracking issue without failing the scheduled Security Audit run.
+- **Dependency updates** (#221, #222, #224, #223): Bump `uuid` to `1.23.4`, `anyhow` to `1.0.103`, `tui-markdown` to `0.3.8`, and `knip` to `6.23.0` in `agent-sdk`.
 
 ## [0.12.4] - 2026-06-26 [Changes][v0.12.4]
 
