@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Claude Code Rust — a native Rust terminal UI for Claude Code">
+  <!--
+    GitHub social preview card. 1280x640 (2:1).
+    Convert to PNG before uploading (GitHub Settings -> Social preview accepts PNG/JPG/GIF, not SVG).
+    Palette matches the app theme (src/ui/theme.rs): rust-orange #F47600, dark bg #282C34.
+
+    Text fit: every text block uses textLength + lengthAdjust="spacingAndGlyphs" so it is
+    pinned to a known width and cannot overflow the artboard, even if the PNG renderer
+    substitutes a wider font than the one named in font-family.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1e24"/>
+      <stop offset="1" stop-color="#282C34"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#F47600" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#F47600" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="1280" height="640" fill="url(#bg)"/>
+  <!-- Top accent bar -->
+  <rect x="0" y="0" width="1280" height="8" fill="#F47600"/>
+  <!-- Card border (stroke only) -->
+  <rect x="24" y="24" width="1232" height="592" rx="18" fill="none" stroke="#3a3f4b" stroke-width="2"/>
+  <!-- Glow behind crab -->
+  <circle cx="300" cy="312" r="220" fill="url(#glow)"/>
+
+  <!-- Ferris (the Rust crab) — actual ASCII art from the welcome screen, monospace, centered on x=300. -->
+  <g font-family="ui-monospace, 'Cascadia Code', 'Consolas', 'Menlo', monospace"
+     font-size="40" font-weight="700" fill="#F47600" text-anchor="middle" xml:space="preserve">
+    <text x="300" y="252">    _~^~^~_    </text>
+    <text x="300" y="300">\) /  o o  \ (/</text>
+    <text x="300" y="348">  '_   -   _'  </text>
+    <text x="300" y="396">  / '-----' \  </text>
+  </g>
+
+  <!-- Right column. All blocks share left edge x=560 and are width-capped via textLength. -->
+  <!-- Wordmark: "Claude Code" white + "Rust" orange, capped at 660px -> ends at 1220 (inside the 1256 border). -->
+  <text x="560" y="300" textLength="660" lengthAdjust="spacingAndGlyphs"
+        font-family="ui-sans-serif, system-ui, 'Segoe UI', Arial, sans-serif"
+        font-size="70" font-weight="800" fill="#ffffff" xml:space="preserve">Claude Code <tspan fill="#F47600">Rust</tspan></text>
+
+  <!-- Tagline, capped at 600px. -->
+  <text x="562" y="356" textLength="600" lengthAdjust="spacingAndGlyphs"
+        font-family="ui-sans-serif, system-ui, 'Segoe UI', Arial, sans-serif"
+        font-size="32" font-weight="400" fill="#c4c9d4">A native Rust terminal UI for Claude Code</text>
+
+  <!-- Faux terminal prompt line, capped at 560px. -->
+  <text x="562" y="428" textLength="560" lengthAdjust="spacingAndGlyphs"
+        font-family="ui-monospace, 'Cascadia Code', 'Consolas', 'Menlo', monospace"
+        font-size="27" fill="#7a818f" xml:space="preserve"><tspan fill="#F47600" font-weight="700">&#x203A; </tspan>claude-rs<tspan fill="#5a6070">  # fast. native. yours.</tspan></text>
+
+  <!-- Footer line: repo handle (left). Bottom-right intentionally left empty. -->
+  <text x="48" y="592" textLength="520" lengthAdjust="spacingAndGlyphs"
+        font-family="ui-monospace, 'Cascadia Code', 'Consolas', 'Menlo', monospace"
+        font-size="23" fill="#6a7080">github.com/srothgan/claude-code-rust</text>
+</svg>
