@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget, dialog::DialogState, file_index};
+use std::time::{Duration, Instant};
 
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
+const SCAN_BATCH_REFRESH_INTERVAL: Duration = Duration::from_millis(150);
 
 pub struct MentionState {
     /// Character position (row, col) where the `@` was typed.
@@ -17,6 +19,11 @@ pub struct MentionState {
     /// Shared autocomplete dialog navigation state.
     pub dialog: DialogState,
     search_status: MentionSearchStatus,
+    next_match_sequence: u64,
+    pending_match_sequence: Option<u64>,
+    refresh_after_pending_match: bool,
+    last_scan_batch_request_at: Option<Instant>,
+    last_scan_batch_request_version: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +54,11 @@ impl MentionState {
             candidates,
             dialog: DialogState::default(),
             search_status,
+            next_match_sequence: 0,
+            pending_match_sequence: None,
+            refresh_after_pending_match: false,
+            last_scan_batch_request_at: None,
+            last_scan_batch_request_version: 0,
         }
     }
 
@@ -72,6 +84,8 @@ impl MentionState {
     fn mark_hint(&mut self) {
         self.candidates.clear();
         self.search_status = MentionSearchStatus::Hint;
+        self.pending_match_sequence = None;
+        self.refresh_after_pending_match = false;
         self.dialog.clamp(0, AUTOCOMPLETE_VISIBLE_ROWS);
     }
 }
@@ -144,6 +158,10 @@ pub fn update_query(app: &mut App) {
 }
 
 pub fn refresh_from_file_index(app: &mut App) {
+    request_match_for_active_mention(app, MatchRequestMode::IndexRefresh);
+}
+
+pub fn refresh_from_file_index_after_scan_batch(app: &mut App) {
     let Some(mention) = app.mention.as_mut() else {
         return;
     };
@@ -154,20 +172,94 @@ pub fn refresh_from_file_index(app: &mut App) {
         return;
     }
 
-    mention.candidates = file_index::visible_candidates(&app.file_index.entries, &mention.query);
+    let index_version = app.file_index.index_version;
+    if mention.last_scan_batch_request_version >= index_version {
+        return;
+    }
+    if let Some(last_request_at) = mention.last_scan_batch_request_at
+        && last_request_at.elapsed() < SCAN_BATCH_REFRESH_INTERVAL
+    {
+        return;
+    }
+
+    request_match_for_active_mention(app, MatchRequestMode::ScanBatchRefresh);
+}
+
+pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult) -> bool {
+    let Some(mention) = app.mention.as_mut() else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_FILE_INDEX,
+            event_name = "mention_match_result_rejected",
+            message = "mention match result rejected because mention is inactive",
+            generation = result.generation,
+            index_version = result.index_version,
+            sequence = result.sequence,
+            query_chars = result.query.chars().count(),
+            result_count = result.candidates.len(),
+        );
+        return false;
+    };
+
+    if result.generation != app.file_index.generation
+        || result.query != mention.query
+        || mention.pending_match_sequence != Some(result.sequence)
+    {
+        tracing::debug!(
+            target: crate::logging::targets::APP_FILE_INDEX,
+            event_name = "mention_match_result_rejected",
+            message = "mention match result rejected because it is stale",
+            result_generation = result.generation,
+            current_generation = app.file_index.generation,
+            result_index_version = result.index_version,
+            current_index_version = app.file_index.index_version,
+            sequence = result.sequence,
+            pending_sequence = mention.pending_match_sequence,
+            result_query_chars = result.query.chars().count(),
+            current_query_chars = mention.query.chars().count(),
+            query_matches = result.query == mention.query,
+            result_count = result.candidates.len(),
+        );
+        return false;
+    }
+
+    let result_count = result.candidates.len();
+    mention.candidates = result.candidates;
+    mention.pending_match_sequence = None;
+    let needs_follow_up = mention.refresh_after_pending_match
+        || result.index_version < app.file_index.index_version
+        || result.scan_finished != app.file_index.scan_finished;
+    mention.refresh_after_pending_match = false;
     mention.search_status = if mention.candidates.is_empty() {
-        if app.file_index.scan_finished {
+        if result.scan_finished {
             MentionSearchStatus::NoMatches
         } else {
             MentionSearchStatus::Searching
         }
-    } else if app.file_index.scan_finished {
+    } else if result.scan_finished {
         MentionSearchStatus::Ready
     } else {
         MentionSearchStatus::Searching
     };
     mention.dialog.clamp(mention.candidates.len(), AUTOCOMPLETE_VISIBLE_ROWS);
     sync_focus(app);
+    if needs_follow_up {
+        request_match_for_active_mention(app, MatchRequestMode::IndexRefresh);
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_FILE_INDEX,
+        event_name = "mention_match_result_applied",
+        message = "mention applied file index match result",
+        generation = result.generation,
+        result_index_version = result.index_version,
+        current_index_version = app.file_index.index_version,
+        sequence = result.sequence,
+        query_chars = result.query.chars().count(),
+        result_count,
+        result_scan_finished = result.scan_finished,
+        current_scan_finished = app.file_index.scan_finished,
+        follow_up_requested = needs_follow_up,
+    );
+    true
 }
 
 fn refresh_query_state(app: &mut App) {
@@ -182,7 +274,87 @@ fn refresh_query_state(app: &mut App) {
     }
 
     file_index::ensure_started(app);
-    refresh_from_file_index(app);
+    request_match_for_active_mention(app, MatchRequestMode::UserQuery);
+}
+
+#[derive(Clone, Copy)]
+enum MatchRequestMode {
+    UserQuery,
+    IndexRefresh,
+    ScanBatchRefresh,
+}
+
+impl MatchRequestMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UserQuery => "user_query",
+            Self::IndexRefresh => "index_refresh",
+            Self::ScanBatchRefresh => "scan_batch_refresh",
+        }
+    }
+}
+
+fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
+    let Some(query) = app.mention.as_ref().map(|mention| mention.query.clone()) else {
+        return;
+    };
+
+    if query.chars().count() < MIN_QUERY_CHARS {
+        if let Some(mention) = app.mention.as_mut() {
+            mention.mark_hint();
+        }
+        sync_focus(app);
+        return;
+    }
+
+    let generation = app.file_index.generation;
+    let index_version = app.file_index.index_version;
+    let Some(mention) = app.mention.as_mut() else {
+        return;
+    };
+    if mention.pending_match_sequence.is_some() && !matches!(mode, MatchRequestMode::UserQuery) {
+        mention.refresh_after_pending_match = true;
+        tracing::debug!(
+            target: crate::logging::targets::APP_FILE_INDEX,
+            event_name = "mention_match_request_deferred",
+            message = "mention deferred file index match request while one is pending",
+            generation,
+            index_version,
+            mode = mode.as_str(),
+            pending_sequence = mention.pending_match_sequence,
+            query_chars = query.chars().count(),
+        );
+        return;
+    }
+    mention.next_match_sequence = mention.next_match_sequence.saturating_add(1);
+    let sequence = mention.next_match_sequence;
+    mention.pending_match_sequence = Some(sequence);
+    mention.refresh_after_pending_match = false;
+    mention.last_scan_batch_request_at = Some(Instant::now());
+    mention.last_scan_batch_request_version = index_version;
+    if matches!(mode, MatchRequestMode::UserQuery) {
+        mention.candidates.clear();
+        mention.dialog.clamp(0, AUTOCOMPLETE_VISIBLE_ROWS);
+    }
+    mention.search_status = MentionSearchStatus::Searching;
+    sync_focus(app);
+
+    tracing::debug!(
+        target: crate::logging::targets::APP_FILE_INDEX,
+        event_name = "mention_match_request_sent",
+        message = "mention requested file index match",
+        generation,
+        index_version,
+        sequence,
+        mode = mode.as_str(),
+        query_chars = query.chars().count(),
+        query_bytes = query.len(),
+    );
+
+    file_index::request_match(
+        app,
+        file_index::MentionMatchRequest { generation, index_version, sequence, query },
+    );
 }
 
 fn sync_focus(app: &mut App) {
@@ -516,6 +688,7 @@ mod tests {
         app.input.set_text("@needle");
         let _ = app.input.set_cursor(0, "@needle".chars().count());
         update_query(&mut app);
+        run_search(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should remain active");
         assert_eq!(app.file_index.generation, initial_generation);
@@ -524,8 +697,56 @@ mod tests {
     }
 
     #[test]
+    fn scan_refresh_does_not_starve_pending_query_result() {
+        let mut app = App::test_default();
+        app.file_index.index_version = 5;
+        app.file_index.scan_finished = false;
+        let mut state = MentionState::new(0, 0, "web".to_owned(), Vec::new());
+        state.next_match_sequence = 1;
+        state.pending_match_sequence = Some(1);
+        app.mention = Some(state);
+
+        refresh_from_file_index_after_scan_batch(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should remain active");
+        assert_eq!(mention.pending_match_sequence, Some(1));
+        assert!(mention.refresh_after_pending_match);
+
+        let generation = app.file_index.generation;
+        let applied = apply_match_result(
+            &mut app,
+            file_index::MentionMatchResult {
+                generation,
+                index_version: 1,
+                sequence: 1,
+                query: "web".to_owned(),
+                candidates: vec![file_index::FileCandidate {
+                    rel_path: "web_dev_work/".to_owned(),
+                    rel_path_lower: "web_dev_work/".to_owned(),
+                    basename_lower: "web_dev_work".to_owned(),
+                    depth: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: true,
+                }],
+                scan_finished: false,
+            },
+        );
+
+        let mention = app.mention.as_ref().expect("mention should remain active");
+        assert!(applied);
+        assert_eq!(mention.candidates[0].rel_path, "web_dev_work/");
+        assert_eq!(mention.pending_match_sequence, Some(2));
+        assert!(!mention.refresh_after_pending_match);
+    }
+
+    #[test]
     fn basename_prefix_ranks_ahead_of_shallow_path_substring() {
-        let mut candidates = vec![
+        let mut app = App::test_default();
+        app.file_index.root = Some(std::path::PathBuf::from(&app.cwd_raw));
+        app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+        app.file_index.scan_finished = true;
+        app.file_index.entries.insert(
+            "docs/guide-rs.txt".to_owned(),
             file_index::FileCandidate {
                 rel_path: "docs/guide-rs.txt".to_owned(),
                 rel_path_lower: "docs/guide-rs.txt".to_owned(),
@@ -534,6 +755,9 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
                 is_dir: false,
             },
+        );
+        app.file_index.entries.insert(
+            "src/rs-helper.rs".to_owned(),
             file_index::FileCandidate {
                 rel_path: "src/rs-helper.rs".to_owned(),
                 rel_path_lower: "src/rs-helper.rs".to_owned(),
@@ -542,10 +766,14 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
                 is_dir: false,
             },
-        ];
+        );
 
-        file_index::rank_and_truncate_candidates(&mut candidates, "rs");
+        app.input.set_text("@rs");
+        let _ = app.input.set_cursor(0, 3);
+        activate(&mut app);
+        run_search(&mut app);
 
-        assert_eq!(candidates[0].rel_path, "src/rs-helper.rs");
+        let mention = app.mention.as_ref().expect("mention should be active");
+        assert_eq!(mention.candidates[0].rel_path, "src/rs-helper.rs");
     }
 }

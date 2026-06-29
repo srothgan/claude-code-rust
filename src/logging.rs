@@ -18,6 +18,7 @@ pub mod targets {
     pub const APP_CACHE: &str = "app.cache";
     pub const APP_CONFIG: &str = "app.config";
     pub const APP_COMMAND: &str = "app.command";
+    pub const APP_FILE_INDEX: &str = "app.file_index";
     pub const APP_INPUT: &str = "app.input";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_NETWORK: &str = "app.network";
@@ -783,6 +784,7 @@ impl BridgeDiagnosticRecord {
             targets::APP_CACHE => emit_for_level!(targets::APP_CACHE),
             targets::APP_CONFIG => emit_for_level!(targets::APP_CONFIG),
             targets::APP_COMMAND => emit_for_level!(targets::APP_COMMAND),
+            targets::APP_FILE_INDEX => emit_for_level!(targets::APP_FILE_INDEX),
             targets::APP_INPUT => emit_for_level!(targets::APP_INPUT),
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
             targets::APP_PASTE => emit_for_level!(targets::APP_PASTE),

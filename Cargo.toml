@@ -34,6 +34,7 @@ ignore = "0.4.25"
 libc = "0.2"
 notify = "8.2.0"
 notify-rust = "4.17.0"
+nucleo = "0.5.0"
 pulldown-cmark = "0.13.4"
 ratatui = { version = "0.30.1", features = ["unstable-rendered-line-info", "scrolling-regions"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
