@@ -6,8 +6,13 @@
     "cli",
     "tui",
     "claude",
+    "claude-code",
+    "anthropic",
+    "agent-sdk",
     "ai",
-    "terminal"
+    "terminal",
+    "rust",
+    "ratatui"
   ],
   "license": "Apache-2.0",
   "repository": {
