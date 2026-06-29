@@ -12,6 +12,15 @@ All notable changes to this project will be documented in this file.
 
 - **Inline chat resize transactions** (#217, @srothgan): Treat terminal size as a draw-transaction snapshot, recover from mid-draw resizes with purge/replay, and clip stale inline viewport geometry before owned-region clears.
 
+### Maintenance
+
+- **Social discoverability** (#219, @srothgan): Add Open Graph and Twitter Card meta tags with a social preview image to the docs site, and expand the npm package keywords to mirror the repo topics.
+
+### CI and Dependencies
+
+- **quinn-proto advisory fix** (#220, @srothgan): Bump `quinn-proto` to `0.11.15` for `RUSTSEC-2026-0185` (remote memory exhaustion from unbounded out-of-order stream reassembly).
+- **Security Audit workflow resilience** (#220, @srothgan): Mark the `cargo audit` step `continue-on-error` so newly published advisories still report and file a tracking issue without failing the scheduled Security Audit run.
+
 ## [0.12.4] - 2026-06-26 [Changes][v0.12.4]
 
 ### Features
