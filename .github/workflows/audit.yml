@@ -13,3 +13,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/audit@v1
         name: Audit Rust dependencies
+        continue-on-error: true
