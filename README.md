@@ -47,15 +47,17 @@ Full documentation is available at [srothgan.github.io/claude-code-rust](https:/
 
 ## Why
 
-The stock Claude Code TUI runs on Node.js with React Ink. This causes real problems:
+The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. This causes real, widely-reported problems:
 
-- **Memory**: 200-400MB baseline vs ~20-50MB for a native binary
-- **Startup**: 2-5 seconds vs under 100ms
-- **Scrollback**: Broken virtual scrolling that loses history
-- **Input latency**: Event queue delays on keystroke handling
-- **Copy/paste**: Custom implementation instead of native terminal support
+- **Flickering**: The whole view is redrawn on every status update, causing constant flicker — bad enough to crash editors' integrated terminals during long sessions
+- **CPU**: Sustained high CPU even when idle, and runaway loops that spawn multiple background processes
+- **Memory**: 200-400MB baseline (and climbing with conversation length) vs ~20-50MB for a native binary
+- **Resize**: Window resizing leaves duplicated frames in scrollback, loses lines when shrinking, and can garble the display
+- **Input latency**: Keystrokes echo with visible delay as context fills up, and noticeably worse on Windows
+- **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
+- **Paste**: Large pastes can flood stdout and freeze the terminal
 
-Claude Code Rust fixes all of these by compiling to a single native binary with direct terminal control via Crossterm.
+Claude Code Rust addresses these by compiling to a single native binary with diffed, direct terminal control via Crossterm and Ratatui — no full-frame redraws, no Node runtime overhead.
 
 ## Documentation
 
