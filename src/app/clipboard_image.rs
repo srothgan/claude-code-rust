@@ -83,32 +83,6 @@ pub fn validate_image(data: &str, mime_type: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Find `[Image #N]` badge spans in a line.
-///
-/// Returns `(byte_start, byte_end, 1-based_index)` for each badge found.
-/// Shared by both the input editing logic and the UI highlighting code.
-pub fn find_image_badge_spans(line: &str) -> Vec<(usize, usize, usize)> {
-    let mut spans = Vec::new();
-    let mut search_from = 0;
-    while let Some(start) = line[search_from..].find("[Image #") {
-        let abs_start = search_from + start;
-        if let Some(end_rel) = line[abs_start..].find(']') {
-            let abs_end = abs_start + end_rel + 1;
-            let inner = &line[abs_start + 8..abs_start + end_rel];
-            if !inner.is_empty()
-                && inner.chars().all(|c| c.is_ascii_digit())
-                && let Ok(idx) = inner.parse::<usize>()
-            {
-                spans.push((abs_start, abs_end, idx));
-            }
-            search_from = abs_end;
-        } else {
-            break;
-        }
-    }
-    spans
-}
-
 /// Encode already-retrieved clipboard image data to a base64 PNG.
 ///
 /// Accepts the `arboard::ImageData` obtained from a clipboard that the caller
@@ -220,28 +194,6 @@ mod tests {
         assert!(validate_image("aGVsbG8=", "image/jpeg").is_ok());
         assert!(validate_image("aGVsbG8=", "image/gif").is_ok());
         assert!(validate_image("aGVsbG8=", "image/webp").is_ok());
-    }
-
-    // --- find_image_badge_spans ---
-
-    #[test]
-    fn find_badge_spans_basic() {
-        let spans = find_image_badge_spans("hello [Image #1] world [Image #2]");
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].2, 1);
-        assert_eq!(spans[1].2, 2);
-    }
-
-    #[test]
-    fn find_badge_spans_ignores_non_numeric() {
-        let spans = find_image_badge_spans("[Image #abc] [Image #1]");
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].2, 1);
-    }
-
-    #[test]
-    fn find_badge_spans_empty() {
-        assert!(find_image_badge_spans("no badges here").is_empty());
     }
 
     #[test]

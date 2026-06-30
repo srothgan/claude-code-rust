@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::app::input::parse_paste_placeholder_ranges;
+use crate::app::input_atoms::{self, InputAtomKind};
 use crate::app::mention;
 use crate::app::subagent;
 use crate::app::{App, FocusOwner};
@@ -150,20 +150,19 @@ fn apply_textarea_highlights(
             );
         }
 
-        for (start, end) in parse_paste_placeholder_ranges(line) {
-            textarea.custom_highlight(
-                ((row, start), (row, end)),
-                paste_style,
-                HIGHLIGHT_PASTE_PRIORITY,
-            );
-        }
-
-        for (start, end, _) in crate::app::clipboard_image::find_image_badge_spans(line) {
-            textarea.custom_highlight(
-                ((row, start), (row, end)),
-                image_badge_style,
-                HIGHLIGHT_IMAGE_BADGE_PRIORITY,
-            );
+        for atom in input_atoms::resolve_line_atoms(row, line) {
+            match atom.kind {
+                InputAtomKind::PasteBlock { .. } => textarea.custom_highlight(
+                    ((row, atom.start_col), (row, atom.end_col)),
+                    paste_style,
+                    HIGHLIGHT_PASTE_PRIORITY,
+                ),
+                InputAtomKind::ImageBadge { .. } => textarea.custom_highlight(
+                    ((row, atom.start_col), (row, atom.end_col)),
+                    image_badge_style,
+                    HIGHLIGHT_IMAGE_BADGE_PRIORITY,
+                ),
+            }
         }
     }
 }

@@ -51,7 +51,7 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 time = { version = "0.3.47", features = ["formatting", "macros"] }
 two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }
 tui-markdown = { version = "0.3.7" }
-tui-textarea-2 = "0.11.0"
+tui-textarea-2 = "0.12.0"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 uuid = { version = "1.23.2", features = ["v4"] }

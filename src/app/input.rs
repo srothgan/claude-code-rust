@@ -1,7 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
-use tui_textarea::{CursorMove, TextArea, WrapMode};
+use tui_textarea::{AtomicDeleteDirection, AtomicRange, CursorMove, TextArea, WrapMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSnapshot {
@@ -116,7 +116,19 @@ impl InputState {
             lines.push(String::new());
         }
         self.editor.set_lines(lines, (cursor_row, cursor_col));
+        self.refresh_atomic_ranges();
         self.bump_content_version();
+    }
+
+    fn refresh_atomic_ranges(&mut self) {
+        let lines = self.lines().to_vec();
+        let ranges = crate::app::input_atoms::atomic_ranges_for_textarea(&lines);
+        self.editor.set_atomic_ranges(ranges);
+    }
+
+    #[must_use]
+    pub fn atomic_ranges(&self) -> &[AtomicRange] {
+        self.editor.atomic_ranges()
     }
 
     pub fn clear_custom_highlights(&mut self) {
@@ -174,7 +186,8 @@ impl InputState {
 
     /// Replace the input with the given text, placing the cursor at the end.
     pub fn set_text(&mut self, text: &str) {
-        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        let normalized = normalize_line_endings(text);
+        let mut lines: Vec<String> = normalized.split('\n').map(String::from).collect();
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -200,12 +213,14 @@ impl InputState {
 
     pub fn textarea_insert_char(&mut self, c: char) -> bool {
         self.editor.insert_char(c);
+        self.refresh_atomic_ranges();
         self.bump_content_version();
         true
     }
 
     pub fn textarea_insert_newline(&mut self) -> bool {
         self.editor.insert_newline();
+        self.refresh_atomic_ranges();
         self.bump_content_version();
         true
     }
@@ -213,6 +228,7 @@ impl InputState {
     pub fn textarea_delete_char_before(&mut self) -> bool {
         let changed = self.editor.delete_char();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -221,6 +237,7 @@ impl InputState {
     pub fn textarea_delete_char_after(&mut self) -> bool {
         let changed = self.editor.delete_next_char();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -265,6 +282,7 @@ impl InputState {
     pub fn textarea_undo(&mut self) -> bool {
         let changed = self.editor.undo();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -273,6 +291,7 @@ impl InputState {
     pub fn textarea_redo(&mut self) -> bool {
         let changed = self.editor.redo();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -293,6 +312,7 @@ impl InputState {
     pub fn textarea_delete_word_before(&mut self) -> bool {
         let changed = self.editor.delete_word();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -301,6 +321,7 @@ impl InputState {
     pub fn textarea_delete_word_after(&mut self) -> bool {
         let changed = self.editor.delete_next_word();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -309,6 +330,7 @@ impl InputState {
     pub fn textarea_delete_line_before(&mut self) -> bool {
         let changed = self.editor.delete_line_by_head();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -317,6 +339,7 @@ impl InputState {
     pub fn textarea_delete_line_after(&mut self) -> bool {
         let changed = self.editor.delete_line_by_end();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
@@ -325,9 +348,20 @@ impl InputState {
     pub fn textarea_yank(&mut self) -> bool {
         let changed = self.editor.paste();
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
+    }
+
+    pub fn textarea_delete_atomic_range_at_cursor(
+        &mut self,
+        direction: AtomicDeleteDirection,
+    ) -> Option<AtomicRange> {
+        let range = self.editor.delete_atomic_range_at_cursor(direction)?;
+        self.refresh_atomic_ranges();
+        self.bump_content_version();
+        Some(range)
     }
 
     pub fn insert_newline(&mut self) {
@@ -344,6 +378,7 @@ impl InputState {
         }
         let changed = self.editor.insert_str(&normalized);
         if changed {
+            self.refresh_atomic_ranges();
             self.bump_content_version();
         }
     }
@@ -367,13 +402,14 @@ impl InputState {
 
     /// Store the full text as a paste block and return its placeholder label.
     pub fn allocate_paste_block_placeholder(&mut self, text: &str) -> String {
+        let normalized = normalize_line_endings(text);
         let idx = next_free_paste_block_index(self.lines(), &self.paste_blocks);
         if idx < self.paste_blocks.len() {
-            text.clone_into(&mut self.paste_blocks[idx]);
+            normalized.clone_into(&mut self.paste_blocks[idx]);
         } else {
-            self.paste_blocks.push(text.to_owned());
+            self.paste_blocks.push(normalized.clone());
         }
-        paste_placeholder_label(idx, count_text_chars(text))
+        paste_placeholder_label(idx, count_text_chars(&normalized))
     }
 
     /// Append text to the paste block under the cursor if the cursor currently
@@ -391,10 +427,11 @@ impl InputState {
             return false;
         };
 
+        let normalized = normalize_line_endings(text);
         let Some(block) = self.paste_blocks.get_mut(idx) else {
             return false;
         };
-        block.push_str(text);
+        block.push_str(&normalized);
 
         let head = &current_line[..start];
         let tail = &current_line[end..];
@@ -468,39 +505,6 @@ impl InputState {
         u16::try_from(self.lines().len()).unwrap_or(u16::MAX)
     }
 
-    /// If the cursor is inside or immediately adjacent to an `[Image #N]` badge,
-    /// delete the entire badge and return the 1-based image index N.
-    ///
-    /// `direction` should be `"before"` for Backspace (cursor after badge) or
-    /// `"after"` for Delete (cursor before badge).
-    pub fn delete_image_badge(&mut self, direction: &str) -> Option<usize> {
-        let (row, col) = self.cursor();
-        let line = self.lines().get(row)?.clone();
-        let cursor_byte = char_to_byte_index(&line, col);
-
-        for (byte_start, byte_end, idx) in
-            crate::app::clipboard_image::find_image_badge_spans(&line)
-        {
-            let hit = match direction {
-                // Backspace: cursor is anywhere inside or at the end of the badge.
-                "before" => cursor_byte > byte_start && cursor_byte <= byte_end,
-                // Delete: cursor is anywhere inside or at the start of the badge.
-                "after" => cursor_byte >= byte_start && cursor_byte < byte_end,
-                _ => false,
-            };
-            if hit {
-                // Remove the badge text from the line.
-                let mut lines = self.lines().to_vec();
-                let l = &mut lines[row];
-                l.replace_range(byte_start..byte_end, "");
-                let new_col = byte_to_char_index(l, byte_start);
-                self.replace_lines_and_cursor(lines, row, new_col);
-                return Some(idx);
-            }
-        }
-        None
-    }
-
     /// Renumber all `[Image #N]` badges in the input to match the current
     /// `pending_images` indices (1-based). Call after removing an image.
     pub fn renumber_image_badges(&mut self) {
@@ -509,32 +513,24 @@ impl InputState {
         let mut new_cursor_col = cursor_col;
         let mut counter = 0usize;
         for (row_idx, line) in lines.iter_mut().enumerate() {
+            let atoms = crate::app::input_atoms::resolve_line_atoms(row_idx, line);
             let mut result = String::with_capacity(line.len());
             let mut search_from = 0usize;
-            // Badge text is pure ASCII (`[Image #N]`), so byte len == char len.
             let mut col_delta: isize = 0;
-            while let Some(rel_start) = line[search_from..].find("[Image #") {
-                let abs_start = search_from + rel_start;
-                if let Some(end_rel) = line[abs_start..].find(']') {
-                    let abs_end = abs_start + end_rel + 1;
-                    let inner = &line[abs_start + 8..abs_start + end_rel];
-                    if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
-                        counter += 1;
-                        let new_badge = format!("[Image #{counter}]");
-                        result.push_str(&line[search_from..abs_start]);
-                        let old_len = abs_end - abs_start;
-                        let new_len = new_badge.len();
-                        col_delta += new_len.cast_signed() - old_len.cast_signed();
-                        result.push_str(&new_badge);
-                        search_from = abs_end;
-                        continue;
-                    }
-                    // Not a valid badge, copy as-is.
-                    result.push_str(&line[search_from..abs_end]);
-                    search_from = abs_end;
-                } else {
-                    break;
+            for atom in atoms {
+                if !matches!(atom.kind, crate::app::input_atoms::InputAtomKind::ImageBadge { .. }) {
+                    continue;
                 }
+                counter += 1;
+                let new_badge = format!("[Image #{counter}]");
+                result.push_str(&line[search_from..atom.start_byte]);
+                result.push_str(&new_badge);
+                if row_idx == cursor_row && cursor_col >= atom.end_col {
+                    let old_len = atom.end_col.saturating_sub(atom.start_col);
+                    let new_len = new_badge.chars().count();
+                    col_delta += new_len.cast_signed() - old_len.cast_signed();
+                }
+                search_from = atom.end_byte;
             }
             result.push_str(&line[search_from..]);
             *line = result;
@@ -545,11 +541,6 @@ impl InputState {
         }
         self.replace_lines_and_cursor(lines, cursor_row, new_cursor_col);
     }
-}
-
-/// Convert a byte index to a character index within a string.
-fn byte_to_char_index(s: &str, byte_idx: usize) -> usize {
-    s[..byte_idx].chars().count()
 }
 
 impl Default for InputState {
@@ -618,16 +609,17 @@ fn find_next_placeholder_with_suffix(
     line: &str,
     search_from: usize,
 ) -> Option<(usize, usize, usize)> {
-    let mut start_search = search_from;
-    while start_search < line.len() {
-        let rel = line[start_search..].find(PASTE_PREFIX)?;
-        let start = start_search + rel;
-        if let Some((idx, end_rel)) = parse_paste_placeholder_with_suffix(&line[start..]) {
-            return Some((start, start + end_rel, idx));
+    crate::app::input_atoms::resolve_line_atoms(0, line).into_iter().find_map(|atom| {
+        if atom.start_byte < search_from {
+            return None;
         }
-        start_search = start + PASTE_PREFIX.len();
-    }
-    None
+        match atom.kind {
+            crate::app::input_atoms::InputAtomKind::PasteBlock { index, .. } => {
+                Some((atom.start_byte, atom.end_byte, index))
+            }
+            crate::app::input_atoms::InputAtomKind::ImageBadge { .. } => None,
+        }
+    })
 }
 
 fn expand_placeholders_in_line(line: &str, paste_blocks: &[String]) -> String {
@@ -678,40 +670,10 @@ fn find_placeholder_ending_at_col(line: &str, cursor_col: usize) -> Option<(usiz
     None
 }
 
-/// Parse a placeholder at the start of a line.
-///
-/// Returns `(paste_block_index, placeholder_end_byte_index)`.
-pub fn parse_paste_placeholder_with_suffix(line: &str) -> Option<(usize, usize)> {
-    let rest = line.strip_prefix(PASTE_PREFIX)?;
-    let close_rel = rest.find(PASTE_SUFFIX)?;
-    let rest = &rest[..close_rel];
-    let num_str = rest.split(" - ").next()?;
-    let n: usize = num_str.parse().ok()?;
-    if n == 0 {
-        return None;
-    }
-    let end = PASTE_PREFIX.len() + close_rel + PASTE_SUFFIX.len();
-    Some((n - 1, end))
-}
-
 /// Parse the placeholder index directly before the cursor, even when the
 /// placeholder is embedded within a line.
 pub fn parse_paste_placeholder_before_cursor(line: &str, cursor_col: usize) -> Option<usize> {
     find_placeholder_ending_at_col(line, cursor_col).map(|(_, _, idx)| idx)
-}
-
-/// Return all placeholder highlight ranges in a line as `(start_col, end_col)`.
-#[must_use]
-pub fn parse_paste_placeholder_ranges(line: &str) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut search_from = 0usize;
-    while let Some((start, end, _)) = find_next_placeholder_with_suffix(line, search_from) {
-        let start_col = line[..start].chars().count();
-        let end_col = line[..end].chars().count();
-        ranges.push((start_col, end_col));
-        search_from = end;
-    }
-    ranges
 }
 
 #[cfg(test)]
@@ -722,6 +684,7 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
+    use tui_textarea::{AtomicDeleteDirection, AtomicRange};
 
     // char_to_byte_index
 
@@ -1595,11 +1558,53 @@ mod tests {
     }
 
     #[test]
-    fn parse_placeholder_with_trailing_suffix_text() {
-        let line = "[Pasted Text 2 - 42 chars]tail";
-        let parsed = parse_paste_placeholder_with_suffix(line).unwrap();
-        assert_eq!(parsed.0, 1);
-        assert_eq!(&line[..parsed.1], "[Pasted Text 2 - 42 chars]");
+    fn set_text_registers_atomic_ranges() {
+        let mut input = InputState::new();
+        input.set_text("é [Image #1] [Pasted Text 2 - 3 chars]");
+
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange {
+                    row: 0,
+                    start_col: "é ".chars().count(),
+                    end_col: "é [Image #1]".chars().count(),
+                },
+                AtomicRange {
+                    row: 0,
+                    start_col: "é [Image #1] ".chars().count(),
+                    end_col: "é [Image #1] [Pasted Text 2 - 3 chars]".chars().count(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn atomic_deletion_refreshes_ranges_and_undo_restores_them() {
+        let mut input = InputState::new();
+        input.set_text("a[Image #1]b");
+        let _ = input.set_cursor_col("a[Image #1]".chars().count());
+
+        let deleted = input.textarea_delete_atomic_range_at_cursor(AtomicDeleteDirection::Backward);
+
+        assert!(deleted.is_some());
+        assert_eq!(input.text(), "ab");
+        assert!(input.atomic_ranges().is_empty());
+
+        assert!(input.textarea_undo());
+        assert_eq!(input.text(), "a[Image #1]b");
+        assert_eq!(input.atomic_ranges().len(), 1);
+    }
+
+    #[test]
+    fn paste_block_storage_normalizes_line_endings() {
+        let mut input = InputState::new();
+
+        input.insert_paste_block("a\r\nb\rc");
+
+        assert_eq!(input.lines(), vec!["[Pasted Text 1 - 5 chars]"]);
+        assert_eq!(input.paste_blocks, vec!["a\nb\nc"]);
+        assert_eq!(input.text(), "a\nb\nc");
     }
 
     #[test]
@@ -1651,7 +1656,7 @@ mod tests {
         let mut input = InputState::new();
         let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk";
         input.insert_paste_block(original);
-        assert!(input.append_to_active_paste_block("\nl\nm"));
+        assert!(input.append_to_active_paste_block("\r\nl\rm"));
         assert_eq!(input.lines()[0], "[Pasted Text 1 - 25 chars]");
         assert_eq!(input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
     }
