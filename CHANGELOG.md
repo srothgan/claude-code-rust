@@ -6,7 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- **Mention file autocomplete** (#226, @srothgan): Move `@` file matching off the UI path, support raw indexed file and folder mentions with spaces, and keep suggestions stable while refreshed queries are pending.
+- **Mention file autocomplete** (#226, @srothgan): Move `@` file matching off the UI path, support raw indexed file and folder mentions with spaces, preserve whole-mention replacement boundaries, and rank shallow project paths ahead of deep dependency matches unless the query explicitly targets the deep path.
+- **Atomic input placeholders** (#227, @srothgan): Treat image badges and pasted-text placeholders as shared textarea atoms, keeping cursor movement, deletion, undo/redo, image attachment state, and paste expansion aligned through `tui-textarea-2` `0.12.0` atomic range support.
 
 ### Documentation
 
@@ -15,7 +16,6 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - **Inline chat resize transactions** (#217, @srothgan): Treat terminal size as a draw-transaction snapshot, recover from mid-draw resizes with purge/replay, and clip stale inline viewport geometry before owned-region clears.
-- **Mention autocomplete ranking and replacement** (#226, @srothgan): Resolve spaced `@` mention spans from active state and indexed paths, preserve whole-mention replacement boundaries, and rank shallow project paths ahead of deep dependency matches unless the query explicitly targets the deep path.
 - **Streaming markdown tables** (#226, @srothgan): Preserve table rendering across streamed cache splits so partial assistant updates do not corrupt table layout.
 
 ### Maintenance

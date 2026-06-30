@@ -14,10 +14,12 @@ use crate::app::keymap::{
     TerminalAction,
 };
 use crate::app::state::AutocompleteKind;
+use crate::app::{input_atoms, input_atoms::InputAtomKind};
 use crate::app::{mention, permissions, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::rc::Rc;
 use std::time::Instant;
+use tui_textarea::AtomicDeleteDirection;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
@@ -316,28 +318,28 @@ fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
 }
 
 fn delete_input_char_before(app: &mut App) -> bool {
-    if try_delete_image_badge(app, "before") {
+    if try_delete_input_atom(app, AtomicDeleteDirection::Backward) {
         return true;
     }
     app.input.textarea_delete_char_before()
 }
 
 fn delete_input_char_after(app: &mut App) -> bool {
-    if try_delete_image_badge(app, "after") {
+    if try_delete_input_atom(app, AtomicDeleteDirection::Forward) {
         return true;
     }
     app.input.textarea_delete_char_after()
 }
 
 fn delete_input_word_before(app: &mut App) -> bool {
-    if try_delete_image_badge(app, "before") {
+    if try_delete_input_atom(app, AtomicDeleteDirection::Backward) {
         return true;
     }
     app.input.textarea_delete_word_before()
 }
 
 fn delete_input_word_after(app: &mut App) -> bool {
-    if try_delete_image_badge(app, "after") {
+    if try_delete_input_atom(app, AtomicDeleteDirection::Forward) {
         return true;
     }
     app.input.textarea_delete_word_after()
@@ -643,19 +645,42 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
     }
 }
 
-/// If the cursor is inside or adjacent to an `[Image #N]` badge, delete the
-/// entire badge, remove the associated image from `pending_images`, and
-/// renumber remaining badges. Returns `true` if a badge was deleted.
-fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
-    let Some(one_based_idx) = app.input.delete_image_badge(direction) else {
+fn try_delete_input_atom(app: &mut App, direction: AtomicDeleteDirection) -> bool {
+    let (cursor_row, cursor_col) = app.input.cursor();
+    let Some(atom) =
+        input_atoms::atom_at_cursor(app.input.lines(), cursor_row, cursor_col, direction)
+    else {
         return false;
     };
-    let array_idx = one_based_idx.saturating_sub(1);
-    if array_idx < app.pending_images.len() {
-        app.pending_images.remove(array_idx);
+    if app.input.textarea_delete_atomic_range_at_cursor(direction).is_none() {
+        return false;
     }
-    app.input.renumber_image_badges();
-    app.request_chat_repaint();
+
+    match atom.kind {
+        InputAtomKind::ImageBadge { one_based_index } => {
+            let array_idx = one_based_index - 1;
+            if array_idx < app.pending_images.len() {
+                app.pending_images.remove(array_idx);
+            }
+            app.input.renumber_image_badges();
+            app.request_chat_repaint();
+        }
+        InputAtomKind::PasteBlock { index, .. } => {
+            if app
+                .active_paste_session
+                .is_some_and(|session| session.placeholder_index == Some(index))
+            {
+                app.active_paste_session = None;
+            }
+            if app
+                .pending_paste_session
+                .is_some_and(|session| session.placeholder_index == Some(index))
+            {
+                app.pending_paste_session = None;
+            }
+            app.request_chat_repaint();
+        }
+    }
     true
 }
 
@@ -679,7 +704,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         CharAction::RetroCapture(delete_count) => {
             // Burst confirmation retro-captured already-inserted leading chars.
             for _ in 0..delete_count {
-                let _ = app.input.textarea_delete_char_before();
+                let _ = delete_input_char_before(app);
             }
             tracing::debug!(
                 target: crate::logging::targets::APP_PASTE,
@@ -760,7 +785,7 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
             KeyOutcome::Handled(true)
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = delete_input_char_before(app);
             mention::update_query(app);
             changed.into()
         }
@@ -803,7 +828,7 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
             KeyOutcome::Handled(true)
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = delete_input_char_before(app);
             slash::update_query(app);
             changed.into()
         }
@@ -845,7 +870,7 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
             KeyOutcome::Handled(true)
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = delete_input_char_before(app);
             subagent::update_query(app);
             changed.into()
         }
@@ -938,6 +963,88 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert_eq!(app.input.cursor_col(), 1);
+    }
+
+    #[test]
+    fn backspace_after_image_atom_removes_pending_image_and_renumbers_badges() {
+        let mut app = App::test_default();
+        app.input.set_text("[Image #1] text [Image #2]");
+        let _ = app.input.set_cursor_col("[Image #1]".chars().count());
+        app.pending_images = vec![
+            crate::app::clipboard_image::ImageAttachment {
+                data: "first".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+            crate::app::clipboard_image::ImageAttachment {
+                data: "second".to_owned(),
+                mime_type: "image/png".to_owned(),
+            },
+        ];
+        app.surface_dirty.chat.repaint = false;
+
+        let outcome = execute_key_action(
+            &mut app,
+            KeyAction::Input(InputAction::DeleteCharBefore),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), " text [Image #1]");
+        assert_eq!(app.pending_images.len(), 1);
+        assert_eq!(app.pending_images[0].data, "second");
+        assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn delete_before_paste_atom_removes_placeholder_only_and_clears_session() {
+        let mut app = App::test_default();
+        app.input.insert_str("before ");
+        app.input.insert_paste_block("a\r\nb\rc");
+        app.input.insert_str(" after");
+        let _ = app.input.set_cursor_col("before ".chars().count());
+        app.active_paste_session = Some(crate::app::PasteSessionState {
+            id: 1,
+            start: crate::app::SelectionPoint { row: 0, col: "before ".chars().count() },
+            placeholder_index: Some(0),
+        });
+        app.pending_paste_session = app.active_paste_session;
+        app.surface_dirty.chat.repaint = false;
+
+        let outcome = execute_key_action(
+            &mut app,
+            KeyAction::Input(InputAction::DeleteCharAfter),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        );
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.lines(), vec!["before  after"]);
+        assert_eq!(app.input.text(), "before  after");
+        assert_eq!(app.input.paste_blocks, vec!["a\nb\nc"]);
+        assert!(app.active_paste_session.is_none());
+        assert!(app.pending_paste_session.is_none());
+        assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn autocomplete_backspace_uses_atom_side_effects() {
+        let mut app = App::test_default();
+        app.input.set_text("[Image #1]");
+        let _ = app.input.set_cursor_col("[Image #1]".chars().count());
+        app.pending_images = vec![crate::app::clipboard_image::ImageAttachment {
+            data: "image".to_owned(),
+            mime_type: "image/png".to_owned(),
+        }];
+        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        app.claim_focus_target(FocusTarget::Mention);
+        app.surface_dirty.chat.repaint = false;
+
+        let outcome =
+            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert!(app.input.is_empty());
+        assert!(app.pending_images.is_empty());
+        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]

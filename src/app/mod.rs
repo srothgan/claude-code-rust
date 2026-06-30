@@ -14,6 +14,7 @@ mod focus;
 mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
+pub(crate) mod input_atoms;
 mod input_submit;
 pub mod keymap;
 mod keys;
