@@ -571,30 +571,6 @@ fn normalize_line_endings(text: &str) -> String {
     out
 }
 
-/// Count logical lines for text containing mixed `\n`, `\r`, and `\r\n` endings.
-#[cfg(test)]
-#[must_use]
-fn count_text_lines(text: &str) -> usize {
-    // Count universal newlines (\n, \r, and \r\n as a single break).
-    let mut lines = 1;
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\n' => lines += 1,
-            b'\r' => {
-                lines += 1;
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    lines
-}
-
 /// Count Unicode scalar characters in a text payload.
 #[must_use]
 pub fn count_text_chars(text: &str) -> usize {
@@ -1682,13 +1658,6 @@ mod tests {
         });
         let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert!(!input.append_to_active_paste_block("x"));
-    }
-
-    #[test]
-    fn count_text_lines_handles_mixed_line_endings() {
-        assert_eq!(count_text_lines("a\r\nb\nc\rd"), 4);
-        assert_eq!(count_text_lines("single"), 1);
-        assert_eq!(count_text_lines("x\r\n"), 2);
     }
 
     #[test]

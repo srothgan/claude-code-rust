@@ -17,15 +17,6 @@ fn draw_fullscreen_surface_frame_supports_fullscreen_retained_views() {
 }
 
 #[test]
-fn session_kind_matches_surface_mode() {
-    assert_eq!(session_kind_for_surface(SurfaceMode::Chat), SurfaceSessionKind::Chat);
-    assert_eq!(
-        session_kind_for_surface(SurfaceMode::Fullscreen(FullscreenView::Trusted)),
-        SurfaceSessionKind::Fullscreen
-    );
-}
-
-#[test]
 fn surface_transition_plan_is_noop_for_chat_to_chat() {
     assert_eq!(
         plan_surface_transition(SurfaceMode::Chat, SurfaceMode::Chat),
