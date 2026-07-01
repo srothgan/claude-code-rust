@@ -93,7 +93,7 @@ impl ConfigState {
             .value
         {
             ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
-                Some(OPUS_MODEL_ALIAS_ID.to_owned())
+                Some(DEFAULT_MODEL_ALIAS_ID.to_owned())
             }
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,

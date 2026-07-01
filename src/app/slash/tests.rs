@@ -81,6 +81,50 @@ fn config_without_args_opens_settings_view() {
 }
 
 #[test]
+fn app_config_shadows_advertised_config_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = App::test_default();
+    app.settings_home_override = Some(dir.path().to_path_buf());
+    app.available_commands =
+        vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
+
+    let consumed = try_handle_submit(&mut app, "/config");
+
+    assert!(consumed);
+    assert_eq!(
+        app.surface_mode,
+        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+    );
+}
+
+#[test]
+fn app_config_candidate_ignores_advertised_config_metadata() {
+    let mut app = App::test_default();
+    app.available_commands =
+        vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
+    app.input.set_text("/config");
+    let _ = app.input.set_cursor(0, "/config".chars().count());
+
+    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let config_candidates: Vec<_> =
+        slash.candidates.iter().filter(|candidate| candidate.primary == "/config").collect();
+
+    assert_eq!(config_candidates.len(), 1);
+    assert_eq!(config_candidates[0].secondary.as_deref(), Some("Open settings"));
+}
+
+#[test]
+fn app_config_does_not_enter_advertised_argument_mode() {
+    let mut app = App::test_default();
+    app.available_commands =
+        vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
+    app.input.set_text("/config ");
+    let _ = app.input.set_cursor(0, "/config ".chars().count());
+
+    assert!(super::candidates::build_slash_state(&app).is_none());
+}
+
+#[test]
 fn help_without_args_opens_help_tab() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
@@ -951,6 +995,25 @@ fn docs_commands_reuse_help_rows() {
     assert!(block.text.contains("/new-session"));
     assert!(block.text.contains("/resume"));
     assert!(block.text.contains("/rewind"));
+}
+
+#[test]
+fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
+    let mut app = App::test_default();
+    app.available_commands = vec![
+        crate::agent::model::AvailableCommand::new("/config", "SDK config command")
+            .input_hint("<setting>"),
+    ];
+
+    let consumed = try_handle_submit(&mut app, "/docs commands");
+
+    assert!(consumed);
+    let last = app.messages.last().expect("expected system message");
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert!(block.text.contains("| /config | Open the fullscreen settings tab. |"));
+    assert!(!block.text.contains("SDK config command"));
 }
 
 #[test]

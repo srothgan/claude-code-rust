@@ -16,23 +16,31 @@ fn mcp_status_label(status: McpServerConnectionStatus) -> &'static str {
 
 fn mcp_config_diagnostics(
     config: Option<&McpServerStatusConfig>,
-) -> (&'static str, Option<u64>, Option<bool>, usize) {
+) -> (&'static str, Option<u64>, Option<u64>, Option<bool>, usize) {
     match config {
-        Some(McpServerStatusConfig::Stdio { timeout, always_load, .. }) => {
-            ("stdio", *timeout, *always_load, 0)
+        Some(McpServerStatusConfig::Stdio { timeout, request_timeout_ms, always_load, .. }) => {
+            ("stdio", *timeout, *request_timeout_ms, *always_load, 0)
         }
-        Some(McpServerStatusConfig::Sse { tools, timeout, always_load, .. }) => {
-            ("sse", *timeout, *always_load, tools.len())
-        }
-        Some(McpServerStatusConfig::Http { tools, timeout, always_load, .. }) => {
-            ("http", *timeout, *always_load, tools.len())
-        }
-        Some(McpServerStatusConfig::Sdk { .. }) => ("sdk", None, None, 0),
+        Some(McpServerStatusConfig::Sse {
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+            ..
+        }) => ("sse", *timeout, *request_timeout_ms, *always_load, tools.len()),
+        Some(McpServerStatusConfig::Http {
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+            ..
+        }) => ("http", *timeout, *request_timeout_ms, *always_load, tools.len()),
+        Some(McpServerStatusConfig::Sdk { .. }) => ("sdk", None, None, None, 0),
         Some(McpServerStatusConfig::ClaudeaiProxy { timeout, .. }) => {
-            ("claudeai-proxy", *timeout, None, 0)
+            ("claudeai-proxy", *timeout, None, None, 0)
         }
-        Some(McpServerStatusConfig::Unknown { .. }) => ("unknown", None, None, 0),
-        None => ("missing", None, None, 0),
+        Some(McpServerStatusConfig::Unknown { .. }) => ("unknown", None, None, None, 0),
+        None => ("missing", None, None, None, 0),
     }
 }
 
@@ -40,14 +48,20 @@ fn mcp_server_diagnostic_summaries(servers: &[McpServerStatus]) -> Vec<serde_jso
     servers
         .iter()
         .map(|server| {
-            let (config_type, timeout_ms, always_load, configured_tool_policy_count) =
-                mcp_config_diagnostics(server.config.as_ref());
+            let (
+                config_type,
+                timeout_ms,
+                request_timeout_ms,
+                always_load,
+                configured_tool_policy_count,
+            ) = mcp_config_diagnostics(server.config.as_ref());
             serde_json::json!({
                 "name": server.name,
                 "status": mcp_status_label(server.status),
                 "config_type": config_type,
                 "scope": server.scope,
                 "timeout_ms": timeout_ms,
+                "request_timeout_ms": request_timeout_ms,
                 "always_load": always_load,
                 "tool_count": server.tools.len(),
                 "configured_tool_policy_count": configured_tool_policy_count,

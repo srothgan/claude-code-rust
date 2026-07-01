@@ -18,6 +18,7 @@ type McpServerDiagnosticSummary = {
   config_type: string;
   scope?: string;
   timeout_ms?: number;
+  request_timeout_ms?: number;
   always_load?: boolean;
   tool_count: number;
   configured_tool_policy_count: number;
@@ -91,6 +92,20 @@ function optionalTimeout(
   return value;
 }
 
+function optionalRequestTimeoutMs(
+  record: Record<string, unknown>,
+  context: string,
+): number | undefined {
+  const value = record.request_timeout_ms;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 1000) {
+    throw new Error(`${context}.request_timeout_ms must be an integer >= 1000`);
+  }
+  return value;
+}
+
 function optionalAlwaysLoad(
   record: Record<string, unknown>,
   context: string,
@@ -150,6 +165,7 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
   }
 
   const timeout = optionalTimeout(record, context);
+  const requestTimeoutMs = optionalRequestTimeoutMs(record, context);
   const alwaysLoad = optionalAlwaysLoad(record, context);
 
   switch (type) {
@@ -167,6 +183,7 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
         ...(optionalStringArray(record, "args", context) ? { args: optionalStringArray(record, "args", context) } : {}),
         ...(optionalStringMap(record, "env", context) ? { env: optionalStringMap(record, "env", context) } : {}),
         ...(timeout === undefined ? {} : { timeout }),
+        ...(requestTimeoutMs === undefined ? {} : { request_timeout_ms: requestTimeoutMs }),
         ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
       };
     }
@@ -183,6 +200,7 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
         ...(optionalStringMap(record, "headers", context) ? { headers: optionalStringMap(record, "headers", context) } : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(timeout === undefined ? {} : { timeout }),
+        ...(requestTimeoutMs === undefined ? {} : { request_timeout_ms: requestTimeoutMs }),
         ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
       };
     }
@@ -209,6 +227,10 @@ function toSdkToolPolicies(tools?: McpServerToolPolicy[]): import("@anthropic-ai
   }));
 }
 
+function sdkRequestTimeoutConfig(config: { request_timeout_ms?: number }): { requestTimeoutMs?: number } {
+  return config.request_timeout_ms === undefined ? {} : { requestTimeoutMs: config.request_timeout_ms };
+}
+
 export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfig {
   switch (config.type) {
     case "stdio":
@@ -218,6 +240,7 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.args ? { args: config.args } : {}),
         ...(config.env ? { env: config.env } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...sdkRequestTimeoutConfig(config),
         ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
       };
     case "sse":
@@ -227,6 +250,7 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.headers ? { headers: config.headers } : {}),
         ...(config.tools ? { tools: toSdkToolPolicies(config.tools) } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...sdkRequestTimeoutConfig(config),
         ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
       };
     case "http":
@@ -236,6 +260,7 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.headers ? { headers: config.headers } : {}),
         ...(config.tools ? { tools: toSdkToolPolicies(config.tools) } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...sdkRequestTimeoutConfig(config),
         ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
       };
   }
@@ -319,6 +344,17 @@ export function mapMcpServerStatus(status: SdkMcpServerStatus): McpServerStatus 
   };
 }
 
+function sdkRequestTimeoutMs(config: unknown): number | undefined {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return undefined;
+  }
+  const raw = config as Record<string, unknown>;
+  const value = raw.requestTimeoutMs ?? raw.request_timeout_ms;
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)
+    ? value
+    : undefined;
+}
+
 export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpServerStatusConfig {
   switch (config.type) {
     case "stdio":
@@ -328,6 +364,7 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
         ...(Array.isArray(config.args) && config.args.length > 0 ? { args: config.args } : {}),
         ...(config.env ? { env: config.env } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
         ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
       };
     case "sse": {
@@ -338,6 +375,7 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
         ...(config.headers ? { headers: config.headers } : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
         ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
       };
     }
@@ -349,6 +387,7 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
         ...(config.headers ? { headers: config.headers } : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
+        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
         ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
       };
     }
@@ -382,6 +421,7 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
 function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): {
   config_type: string;
   timeout_ms?: number;
+  request_timeout_ms?: number;
   always_load?: boolean;
   configured_tool_policy_count: number;
 } {
@@ -397,6 +437,7 @@ function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): 
       return {
         config_type: "stdio",
         ...(config.timeout === undefined ? {} : { timeout_ms: config.timeout }),
+        ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
         ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
         configured_tool_policy_count: 0,
       };
@@ -405,6 +446,7 @@ function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): 
       return {
         config_type: config.type,
         ...(config.timeout === undefined ? {} : { timeout_ms: config.timeout }),
+        ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
         ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
         configured_tool_policy_count: config.tools?.length ?? 0,
       };
@@ -438,6 +480,7 @@ export function summarizeMcpServersForDiagnostics(
       config_type: config.config_type,
       ...(server.scope ? { scope: server.scope } : {}),
       ...(config.timeout_ms === undefined ? {} : { timeout_ms: config.timeout_ms }),
+      ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
       ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
       tool_count: server.tools.length,
       configured_tool_policy_count: config.configured_tool_policy_count,

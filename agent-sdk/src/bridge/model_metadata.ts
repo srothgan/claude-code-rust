@@ -10,22 +10,16 @@ type ModelMetadataSession = {
 
 type NormalizedModelKey = {
   original: string;
-  family: "opus" | "sonnet" | "haiku" | "unknown";
+  family: "fable" | "opus" | "sonnet" | "haiku" | "unknown";
   versionParts: number[];
   variantParts: string[];
   buildParts: string[];
   contextSuffix?: string;
 };
 
-const OPUS_MODEL_ALIAS = "opus";
+const DEFAULT_MODEL_ALIAS = "fable";
 const MAX_MODEL_VERSION_PARTS = 2;
 const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
-
-function isUnavailableModelId(id: string): boolean {
-  const normalized = id.trim().toLowerCase();
-  // TODO: Revisit only after a product decision if Anthropic restores Fable 5 access.
-  return normalized === "fable" || normalized.startsWith("claude-fable-5");
-}
 
 function isEffortLevel(value: unknown): value is EffortLevel {
   return (
@@ -53,7 +47,10 @@ function normalizeModelKey(id: string): NormalizedModelKey {
   const parts = withoutPrefix.split("-").filter((part) => part.length > 0);
   const familyPart = parts[0] ?? "";
   const family =
-    familyPart === "opus" || familyPart === "sonnet" || familyPart === "haiku"
+    familyPart === "fable" ||
+    familyPart === "opus" ||
+    familyPart === "sonnet" ||
+    familyPart === "haiku"
       ? familyPart
       : "unknown";
   const versionParts: number[] = [];
@@ -63,6 +60,10 @@ function normalizeModelKey(id: string): NormalizedModelKey {
   if (family !== "unknown") {
     for (const part of parts.slice(1)) {
       if (/^\d+$/.test(part)) {
+        if (versionParts.length > 0 && RELEASE_BUILD_TOKEN.test(part)) {
+          buildParts.push(part);
+          continue;
+        }
         if (versionParts.length < MAX_MODEL_VERSION_PARTS) {
           const parsed = Number.parseInt(part, 10);
           if (Number.isFinite(parsed)) {
@@ -161,11 +162,13 @@ function humanizeModelId(id: string): string {
   }
 
   const familyLabel =
-    normalized.family === "opus"
-      ? "Opus"
-      : normalized.family === "sonnet"
-        ? "Sonnet"
-        : "Haiku";
+    normalized.family === "fable"
+      ? "Fable"
+      : normalized.family === "opus"
+        ? "Opus"
+        : normalized.family === "sonnet"
+          ? "Sonnet"
+          : "Haiku";
   const versionLabel =
     normalized.versionParts.length > 0 ? ` ${normalized.versionParts.join(".")}` : "";
   const contextLabel =
@@ -197,16 +200,22 @@ function resolveCatalogModel(
   resolvedId: string,
   requestedId: string | undefined,
 ): AvailableModel | undefined {
-  const exactResolved = availableModels.find((entry) => entry.id === resolvedId);
+  const exactResolved = availableModels.find(
+    (entry) => entry.id === resolvedId || entry.resolved_model === resolvedId,
+  );
   if (exactResolved) {
     return exactResolved;
   }
 
   if (requestedId) {
-    const exactRequested = availableModels.find((entry) => entry.id === requestedId);
+    const exactRequested = availableModels.find(
+      (entry) => entry.id === requestedId || entry.resolved_model === requestedId,
+    );
     if (
       exactRequested &&
-      modelKeysAreCompatible(exactRequested.id, resolvedId) &&
+      (modelKeysAreCompatible(exactRequested.id, resolvedId) ||
+        (exactRequested.resolved_model !== undefined &&
+          modelKeysAreCompatible(exactRequested.resolved_model, resolvedId))) &&
       !hasVariantSiblingConflict(availableModels, exactRequested.id, resolvedId)
     ) {
       return exactRequested;
@@ -215,7 +224,9 @@ function resolveCatalogModel(
 
   const compatible = availableModels.filter(
     (entry) =>
-      modelKeysAreCompatible(entry.id, resolvedId) &&
+      (modelKeysAreCompatible(entry.id, resolvedId) ||
+        (entry.resolved_model !== undefined &&
+          modelKeysAreCompatible(entry.resolved_model, resolvedId))) &&
       !hasVariantSiblingConflict(availableModels, entry.id, resolvedId),
   );
   return compatible.length === 1 ? compatible[0] : undefined;
@@ -231,13 +242,15 @@ export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableMo
       return (
         typeof entry?.value === "string" &&
         entry.value.trim().length > 0 &&
-        !isUnavailableModelId(entry.value) &&
         typeof entry.displayName === "string" &&
         entry.displayName.trim().length > 0
       );
     })
     .map((entry) => ({
       id: entry.value,
+      ...(typeof entry.resolvedModel === "string" && entry.resolvedModel.trim().length > 0
+        ? { resolved_model: entry.resolvedModel.trim() }
+        : {}),
       display_name: entry.displayName,
       supports_effort: entry.supportsEffort === true,
       supported_effort_levels: Array.isArray(entry.supportedEffortLevels)
@@ -264,9 +277,9 @@ export function resolveCurrentModel(session: ModelMetadataSession): CurrentModel
     session.resolvedRuntimeModelId?.trim() ||
     session.model.trim() ||
     requestedId ||
-    OPUS_MODEL_ALIAS;
+    DEFAULT_MODEL_ALIAS;
   const catalogModel = resolveCatalogModel(session.availableModels, resolvedId, requestedId);
-  const runtimeDisplayId = resolvedId || requestedId || OPUS_MODEL_ALIAS;
+  const runtimeDisplayId = resolvedId || requestedId || DEFAULT_MODEL_ALIAS;
   const displayNameShort = shortDisplayNameForModelId(runtimeDisplayId);
   const displayNameLong = catalogModel?.display_name ?? humanizeModelId(runtimeDisplayId);
   return {

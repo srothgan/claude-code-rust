@@ -1410,6 +1410,7 @@ mod tests {
         let line = model_overlay_title_line(
             &crate::app::config::OverlayModelOption {
                 id: "sonnet".to_owned(),
+                resolved_model: None,
                 display_name: "Sonnet".to_owned(),
                 description: None,
                 supports_effort: true,
@@ -2337,6 +2338,7 @@ mod tests {
                 args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
                 env: BTreeMap::new(),
                 timeout: Some(5000),
+                request_timeout_ms: Some(30000),
                 always_load: Some(true),
             }),
             scope: Some("project".to_owned()),

@@ -89,27 +89,51 @@ fn map_mcp_tool_policy(policy: types::McpServerToolPolicy) -> model::McpServerTo
 
 fn map_mcp_status_config(config: types::McpServerStatusConfig) -> model::McpServerStatusConfig {
     match config {
-        types::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
-            model::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load }
-        }
-        types::McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load } => {
-            model::McpServerStatusConfig::Sse {
-                url,
-                headers,
-                tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
-                timeout,
-                always_load,
-            }
-        }
-        types::McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
-            model::McpServerStatusConfig::Http {
-                url,
-                headers,
-                tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
-                timeout,
-                always_load,
-            }
-        }
+        types::McpServerStatusConfig::Stdio {
+            command,
+            args,
+            env,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => model::McpServerStatusConfig::Stdio {
+            command,
+            args,
+            env,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        },
+        types::McpServerStatusConfig::Sse {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => model::McpServerStatusConfig::Sse {
+            url,
+            headers,
+            tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
+            timeout,
+            request_timeout_ms,
+            always_load,
+        },
+        types::McpServerStatusConfig::Http {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => model::McpServerStatusConfig::Http {
+            url,
+            headers,
+            tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
+            timeout,
+            request_timeout_ms,
+            always_load,
+        },
         types::McpServerStatusConfig::Sdk { name } => model::McpServerStatusConfig::Sdk { name },
         types::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout } => {
             model::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout }
@@ -275,6 +299,11 @@ pub(super) fn map_available_models(
         .into_iter()
         .map(|model_info| {
             let mut mapped = model::AvailableModel::new(model_info.id, model_info.display_name);
+            if let Some(resolved_model) = model_info.resolved_model
+                && !resolved_model.trim().is_empty()
+            {
+                mapped = mapped.resolved_model(resolved_model);
+            }
             if let Some(description) = model_info.description
                 && !description.trim().is_empty()
             {
@@ -967,6 +996,7 @@ mod tests {
         let mapped = map_available_models(vec![
             types::AvailableModel {
                 id: "sonnet".to_owned(),
+                resolved_model: Some("claude-sonnet-5".to_owned()),
                 display_name: "Claude Sonnet".to_owned(),
                 description: Some("Balanced model".to_owned()),
                 supports_effort: true,
@@ -983,6 +1013,7 @@ mod tests {
             },
             types::AvailableModel {
                 id: "haiku".to_owned(),
+                resolved_model: None,
                 display_name: "Claude Haiku".to_owned(),
                 description: None,
                 supports_effort: false,
@@ -997,6 +1028,7 @@ mod tests {
             mapped,
             vec![
                 model::AvailableModel::new("sonnet", "Claude Sonnet")
+                    .resolved_model("claude-sonnet-5")
                     .description("Balanced model")
                     .supports_effort(true)
                     .supported_effort_levels(vec![
@@ -1642,6 +1674,7 @@ mod tests {
                     },
                 ],
                 timeout: Some(5000),
+                request_timeout_ms: Some(30000),
                 always_load: Some(true),
             }),
             scope: Some("project".to_owned()),
@@ -1650,12 +1683,18 @@ mod tests {
 
         let mapped = super::map_mcp_server_status(status);
 
-        let Some(model::McpServerStatusConfig::Http { tools, timeout, always_load, .. }) =
-            mapped.config
+        let Some(model::McpServerStatusConfig::Http {
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+            ..
+        }) = mapped.config
         else {
             panic!("expected http MCP config");
         };
         assert_eq!(timeout, Some(5000));
+        assert_eq!(request_timeout_ms, Some(30000));
         assert_eq!(always_load, Some(true));
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].permission_policy, Some(model::McpServerToolPermissionPolicy::Deny));

@@ -88,6 +88,11 @@ pub fn is_cancel_command(text: &str) -> bool {
     parse(text).is_some_and(|parsed| parsed.name == "/cancel")
 }
 
+pub(crate) fn app_owned_command_name(name: &str) -> Option<&'static str> {
+    let normalized = normalize_slash_name(name.trim());
+    command_spec(&normalized).map(|spec| spec.name)
+}
+
 fn normalize_slash_name(name: &str) -> String {
     if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }

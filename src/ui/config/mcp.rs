@@ -546,23 +546,56 @@ fn auth_redirect_action_lines(
 
 fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
     match config {
-        McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
+        McpServerStatusConfig::Stdio {
+            command,
+            args,
+            env,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => {
             let args_label = if args.is_empty() { "(none)".to_owned() } else { args.join(" ") };
             let mut lines = vec![
                 detail_kv("Command", command, Color::White),
                 detail_kv("Args", &args_label, Color::White),
                 detail_kv("Env", &format!("{} variable(s)", env.len()), Color::White),
             ];
-            append_mcp_runtime_config_lines(&mut lines, *timeout, *always_load, &[]);
+            append_mcp_runtime_config_lines(
+                &mut lines,
+                *timeout,
+                *request_timeout_ms,
+                *always_load,
+                &[],
+            );
             lines
         }
-        McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load }
-        | McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
+        McpServerStatusConfig::Sse {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        }
+        | McpServerStatusConfig::Http {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => {
             let mut lines = vec![
                 detail_kv("URL", url, Color::White),
                 detail_kv("Headers", &format!("{} configured", headers.len()), Color::White),
             ];
-            append_mcp_runtime_config_lines(&mut lines, *timeout, *always_load, tools);
+            append_mcp_runtime_config_lines(
+                &mut lines,
+                *timeout,
+                *request_timeout_ms,
+                *always_load,
+                tools,
+            );
             lines
         }
         McpServerStatusConfig::Sdk { name } => vec![detail_kv("SDK server", name, Color::White)],
@@ -571,7 +604,7 @@ fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
                 detail_kv("Proxy URL", url, Color::White),
                 detail_kv("Proxy ID", id, Color::White),
             ];
-            append_mcp_runtime_config_lines(&mut lines, *timeout, None, &[]);
+            append_mcp_runtime_config_lines(&mut lines, *timeout, None, None, &[]);
             lines
         }
         McpServerStatusConfig::Unknown { raw_type } => {
@@ -583,11 +616,15 @@ fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
 fn append_mcp_runtime_config_lines(
     lines: &mut Vec<Line<'static>>,
     timeout: Option<u64>,
+    request_timeout_ms: Option<u64>,
     always_load: Option<bool>,
     tools: &[crate::agent::model::McpServerToolPolicy],
 ) {
     if let Some(timeout_ms) = timeout {
         lines.push(detail_kv("Timeout", &format!("{timeout_ms} ms"), Color::White));
+    }
+    if let Some(timeout_ms) = request_timeout_ms {
+        lines.push(detail_kv("Request timeout", &format!("{timeout_ms} ms"), Color::White));
     }
     if let Some(always_load) = always_load {
         lines.push(detail_kv(
@@ -865,6 +902,7 @@ mod tests {
                         org_max_permission: None,
                     }],
                     timeout: Some(5000),
+                    request_timeout_ms: Some(30000),
                     always_load: Some(true),
                 }),
                 scope: Some("user".to_owned()),
@@ -886,6 +924,7 @@ mod tests {
                     ],
                     env: BTreeMap::new(),
                     timeout: None,
+                    request_timeout_ms: None,
                     always_load: None,
                 }),
                 scope: Some("project".to_owned()),
@@ -934,11 +973,13 @@ mod tests {
                 },
             ],
             timeout: Some(5000),
+            request_timeout_ms: Some(30000),
             always_load: Some(true),
         });
         let text = lines.iter().map(Line::to_string).collect::<Vec<_>>().join("\n");
 
         assert!(text.contains("5000 ms"));
+        assert!(text.contains("30000 ms"));
         assert!(text.contains("enabled"));
         assert!(text.contains("search"));
         assert!(text.contains("always deny"));

@@ -698,6 +698,7 @@ mod tests {
                             },
                         ],
                         timeout: Some(5000),
+                        request_timeout_ms: Some(30000),
                         always_load: Some(true),
                     },
                 )]),
@@ -728,6 +729,7 @@ mod tests {
                             }
                         ],
                         "timeout": 5000,
+                        "request_timeout_ms": 30000,
                         "always_load": true
                     }
                 }

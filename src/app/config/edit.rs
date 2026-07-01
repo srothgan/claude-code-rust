@@ -1,7 +1,7 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DefaultPermissionMode,
-    LanguageOverlayState, ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DEFAULT_MODEL_ALIAS_ID,
+    DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
     OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
     PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
     SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
@@ -297,14 +297,15 @@ fn confirm_confirmation_overlay(app: &mut App) {
 pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
     model_overlay_options(app)
         .into_iter()
-        .find(|option| option.id == model_id)
+        .find(|option| option.matches_model_id(model_id))
         .is_none_or(|option| option.supports_effort)
 }
 
 pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
-    model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
-        Vec::new,
-        |option| {
+    model_overlay_options(app)
+        .into_iter()
+        .find(|option| option.matches_model_id(model_id))
+        .map_or_else(Vec::new, |option| {
             if option.supports_effort {
                 option
                     .supported_effort_levels
@@ -314,13 +315,13 @@ pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Ve
             } else {
                 Vec::new()
             }
-        },
-    )
+        })
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct OverlayModelOption {
     pub id: String,
+    pub resolved_model: Option<String>,
     pub display_name: String,
     pub description: Option<String>,
     pub supports_effort: bool,
@@ -330,12 +331,20 @@ pub(crate) struct OverlayModelOption {
     pub supports_auto_mode: Option<bool>,
 }
 
+impl OverlayModelOption {
+    #[must_use]
+    pub fn matches_model_id(&self, model_id: &str) -> bool {
+        self.id == model_id || self.resolved_model.as_deref() == Some(model_id)
+    }
+}
+
 pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
     let mut options = app
         .available_models
         .iter()
         .map(|model| OverlayModelOption {
             id: model.id.clone(),
+            resolved_model: model.resolved_model.clone(),
             display_name: model.display_name.clone(),
             description: model.description.clone(),
             supports_effort: model.supports_effort,
@@ -468,8 +477,13 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
     let current_model = app
         .config
         .model_effective()
-        .filter(|value| options.iter().any(|option| option.id == *value))
-        .unwrap_or_else(|| OPUS_MODEL_ALIAS_ID.to_owned());
+        .and_then(|value| {
+            options
+                .iter()
+                .find(|option| option.matches_model_id(&value))
+                .map(|option| option.id.clone())
+        })
+        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned());
     let current_effort = app.config.thinking_effort_effective();
     let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
     app.config.replace_overlay(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
