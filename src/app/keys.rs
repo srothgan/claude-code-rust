@@ -213,6 +213,13 @@ fn should_reclaim_input_focus_before_inline_interaction(app: &App, key: KeyEvent
     let question_notes_editing = questions::focused_question_is_editing_notes(app);
     match key.code {
         KeyCode::Backspace | KeyCode::Delete => !question_notes_editing,
+        KeyCode::Char(' ')
+            if questions::has_focused_question(app)
+                && is_printable_text_modifiers(key.modifiers)
+                && !question_notes_editing =>
+        {
+            false
+        }
         KeyCode::Char(_) if is_printable_text_modifiers(key.modifiers) => !question_notes_editing,
         _ => false,
     }

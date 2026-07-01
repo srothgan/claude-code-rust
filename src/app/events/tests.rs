@@ -4067,6 +4067,39 @@ fn typing_reclaims_input_from_auto_focused_question() {
 }
 
 #[test]
+fn space_toggles_focused_question_without_reclaiming_input() {
+    let mut app = make_test_app();
+    let _response_rx = attach_pending_question(
+        &mut app,
+        "question-space",
+        model::QuestionPrompt::new(
+            "Choose drinks",
+            "Drinks",
+            true,
+            vec![
+                model::QuestionOption::new("coffee", "Coffee"),
+                model::QuestionOption::new("tea", "Tea"),
+            ],
+        ),
+        true,
+    );
+
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+    );
+
+    assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    assert_eq!(app.input.text(), "");
+    let (mi, bi) = app.lookup_tool_call("question-space").expect("question tool call");
+    let MessageBlock::ToolCall(tc) = app.messages.get(mi).unwrap().blocks.get(bi).unwrap() else {
+        panic!("expected tool call block");
+    };
+    let question = tc.pending_question.as_ref().expect("pending question");
+    assert!(question.selected_option_indices.contains(&0));
+}
+
+#[test]
 fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
     let mut app = make_test_app();
     let mut response_rx = attach_pending_permission(

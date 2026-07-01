@@ -239,6 +239,10 @@ fn tool_display_title<'a>(
     tc: &'a ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
 ) -> Cow<'a, str> {
+    if tc.is_ask_question_tool() {
+        return ask_user_question_display_title(tc);
+    }
+
     if render_context.current_mode_id == Some("plan") {
         match tc.sdk_tool_name.as_str() {
             "Write" => return Cow::Borrowed("Create Plan"),
@@ -248,6 +252,29 @@ fn tool_display_title<'a>(
     }
 
     tool_display::tool_title(&tc.sdk_tool_name, &tc.title)
+}
+
+fn ask_user_question_display_title(tc: &ToolCallInfo) -> Cow<'static, str> {
+    if let Some(question) = &tc.pending_question {
+        return if question.total_questions > 1 {
+            Cow::Owned(format!("Questions ({})", question.total_questions))
+        } else {
+            Cow::Borrowed("Question")
+        };
+    }
+
+    let result_count = tc
+        .raw_input
+        .as_ref()
+        .and_then(|input| input.get("question_results"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+
+    match result_count {
+        0 => Cow::Borrowed("Question"),
+        1 => Cow::Borrowed("Answered question"),
+        count => Cow::Owned(format!("Answered questions ({count})")),
+    }
 }
 
 // ---------------------------------------------------------------------------

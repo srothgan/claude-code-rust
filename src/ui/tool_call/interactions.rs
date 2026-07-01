@@ -338,17 +338,15 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                     Style::default().fg(theme::DIM),
                 ),
                 Span::styled(opt.label.clone(), name_style),
+                option_description_suffix(opt.description.as_deref()),
             ]));
-            if let Some(desc) = opt.description.as_ref().map(|d| d.trim()).filter(|d| !d.is_empty())
-            {
-                lines.push(Line::from(Span::styled(
-                    format!("      {desc}"),
-                    Style::default().fg(theme::DIM),
-                )));
+            if i + 1 < question.prompt.options.len() {
+                lines.push(Line::default());
             }
         }
     }
 
+    let answer_text_indent = question_answer_text_indent(question);
     if let Some(preview) = question
         .prompt
         .options
@@ -359,12 +357,12 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            "  Preview",
+            format!("{answer_text_indent}Preview"),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         )));
         for row in preview.lines() {
             lines.push(Line::from(Span::styled(
-                format!("    {row}"),
+                format!("{answer_text_indent}  {row}"),
                 Style::default().fg(theme::DIM),
             )));
         }
@@ -373,7 +371,10 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     lines.push(Line::default());
     lines.push(Line::from(vec![
         Span::styled(
-            format!("  Notes{}: ", if question.editing_notes { " [editing]" } else { "" }),
+            format!(
+                "{answer_text_indent}Notes{}: ",
+                if question.editing_notes { " [editing]" } else { "" }
+            ),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -395,6 +396,23 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         Style::default().fg(theme::DIM),
     )));
     lines
+}
+
+fn question_answer_text_indent(question: &InlineQuestion) -> &'static str {
+    if question.prompt.multi_select { "        " } else { "    " }
+}
+
+fn option_description_suffix(description: Option<&str>) -> Span<'static> {
+    description.map(str::trim).filter(|desc| !desc.is_empty()).map_or_else(
+        || Span::raw(""),
+        |desc| {
+            Span::styled(format!(" - {}", single_line_text(desc)), Style::default().fg(theme::DIM))
+        },
+    )
+}
+
+fn single_line_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -505,6 +523,48 @@ mod tests {
         let footer = lines.last().expect("question footer line");
         assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Tab to focus)");
         assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn focused_question_option_description_stays_on_option_line() {
+        let mut question = test_question();
+        question.prompt.options[0] =
+            QuestionOption::new("safe", "Safer path").description(Some("Avoids churn.".to_owned()));
+
+        let rendered = render_question_lines(&question)
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
+            .collect::<Vec<String>>();
+
+        assert!(rendered.iter().any(|line| line.contains("Safer path - Avoids churn.")));
+        assert!(!rendered.iter().any(|line| line.trim() == "Avoids churn."));
+        let first_option_idx = rendered
+            .iter()
+            .position(|line| line.contains("Safer path - Avoids churn."))
+            .expect("first option line");
+        assert_eq!(rendered.get(first_option_idx + 1).map(String::as_str), Some(""));
+        assert!(
+            rendered.get(first_option_idx + 2).is_some_and(|line| line.contains("Faster path"))
+        );
+    }
+
+    #[test]
+    fn focused_question_preview_and_notes_align_with_option_text() {
+        let mut question = test_question();
+        question.prompt.multi_select = true;
+        question.prompt.options[0] = QuestionOption::new("safe", "Safer path")
+            .description(Some("Avoids churn.".to_owned()))
+            .preview(Some("Preview text".to_owned()));
+        question.notes = "note text".to_owned();
+
+        let rendered = render_question_lines(&question)
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
+            .collect::<Vec<String>>();
+
+        assert!(rendered.iter().any(|line| line.contains("        Preview")));
+        assert!(rendered.iter().any(|line| line.contains("          Preview text")));
+        assert!(rendered.iter().any(|line| line.contains("        Notes: note text")));
     }
 
     #[test]
