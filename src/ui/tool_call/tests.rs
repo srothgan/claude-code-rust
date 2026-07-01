@@ -228,6 +228,49 @@ fn tool_display_title_uses_plan_aliases() {
 }
 
 #[test]
+fn tool_display_title_uses_stable_question_title_for_pending_ask_user_question() {
+    let mut tc = test_tool_call(
+        "What is your favorite language?",
+        "AskUserQuestion",
+        model::ToolCallStatus::InProgress,
+    );
+    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+    tc.pending_question = Some(crate::app::InlineQuestion {
+        prompt: model::QuestionPrompt::new(
+            "What is your favorite language?",
+            "Language",
+            false,
+            vec![model::QuestionOption::new("rust", "Rust")],
+        ),
+        response_tx,
+        focused_option_index: 0,
+        selected_option_indices: std::collections::BTreeSet::new(),
+        notes: String::new(),
+        notes_cursor: 0,
+        editing_notes: false,
+        focused: true,
+        question_index: 0,
+        total_questions: 4,
+    });
+
+    assert_eq!(tool_display_title(&tc, ToolCallRenderContext::default()), "Questions (4)");
+}
+
+#[test]
+fn tool_display_title_uses_answered_questions_title_for_completed_ask_user_question() {
+    let mut tc =
+        test_tool_call("Which config format?", "AskUserQuestion", model::ToolCallStatus::Completed);
+    tc.raw_input = Some(serde_json::json!({
+        "question_results": [
+            { "question": "First?", "header": "First", "selected_options": [] },
+            { "question": "Second?", "header": "Second", "selected_options": [] }
+        ]
+    }));
+
+    assert_eq!(tool_display_title(&tc, ToolCallRenderContext::default()), "Answered questions (2)");
+}
+
+#[test]
 fn tool_display_title_formats_raw_mcp_titles() {
     let tc = test_tool_call(
         "mcp__claude_ai_Strava__list_activities",
@@ -390,6 +433,153 @@ fn markdown_read_body_uses_markdown_renderer() {
     assert!(rendered.contains("Heading"));
     assert!(rendered.contains("Body text"));
     assert!(!rendered.contains("**"));
+}
+
+#[test]
+fn ask_user_question_completed_body_renders_structured_answers() {
+    let mut tc =
+        test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::Completed);
+    tc.raw_input = Some(serde_json::json!({
+        "question_results": [
+            {
+                "question": "Pick deployment target",
+                "header": "Target",
+                "question_index": 0,
+                "total_questions": 2,
+                "selected_options": [
+                    {
+                        "option_id": "question_0",
+                        "label": "Staging",
+                        "description": "Low-risk validation",
+                        "preview": "Deploy to staging first."
+                    }
+                ],
+                "annotation": {
+                    "preview": "Deploy to staging first.",
+                    "notes": "Roll out here before production."
+                }
+            },
+            {
+                "question": "When should this run?",
+                "header": "Timing",
+                "question_index": 1,
+                "total_questions": 2,
+                "selected_options": [
+                    {
+                        "option_id": "question_1",
+                        "label": "After tests pass",
+                        "description": ""
+                    }
+                ]
+            }
+        ]
+    }));
+    tc.content =
+        vec![model::ToolCallContent::from("Target: Staging\n  Pick deployment target".to_owned())];
+
+    let body = standard::render_tool_call_body(&tc, 120);
+    let rendered = rendered_line_texts_trimmed(&body);
+    let joined = rendered.join("\n");
+
+    assert!(joined.contains("? Target (1/2)"));
+    assert!(joined.contains("Pick deployment target"));
+    assert!(joined.contains("[x] Staging - Low-risk validation"));
+    assert!(joined.contains("Preview"));
+    assert!(joined.contains("Deploy to staging first."));
+    assert!(joined.contains("Notes: Roll out here before production."));
+    assert!(joined.contains("? Timing (2/2)"));
+    assert!(joined.contains("[x] After tests pass"));
+    assert!(!joined.contains("Target: Staging"));
+}
+
+#[test]
+fn ask_user_question_completed_body_indents_preview_and_notes_with_answers() {
+    let mut tc =
+        test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::Completed);
+    tc.raw_input = Some(serde_json::json!({
+        "question_results": [
+            {
+                "question": "Which config format do you prefer?",
+                "header": "Config fmt",
+                "question_index": 0,
+                "total_questions": 1,
+                "selected_options": [
+                    {
+                        "option_id": "question_0",
+                        "label": "JSON",
+                        "description": "Ubiquitous, no comments."
+                    }
+                ],
+                "annotation": {
+                    "preview": "{\n  \"server\": { \"host\": \"127.0.0.1\" }\n}",
+                    "notes": "Use this for generated config."
+                }
+            }
+        ]
+    }));
+
+    let body = standard::render_tool_call_body(&tc, 120);
+    let rendered = rendered_line_texts_trimmed(&body);
+
+    assert!(rendered.iter().any(|line| line.contains("  [x] JSON - Ubiquitous, no comments.")));
+    assert!(rendered.iter().any(|line| line.contains("      Preview")));
+    assert!(rendered.iter().any(|line| line.contains("        {")));
+    assert!(
+        rendered.iter().any(|line| line.contains("      Notes: Use this for generated config."))
+    );
+}
+
+#[test]
+fn ask_user_question_pending_body_hides_answer_transcript() {
+    let mut tc =
+        test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::InProgress);
+    tc.content = vec![model::ToolCallContent::from(
+        "Log level: info\n  What log level should ship as the default?".to_owned(),
+    )];
+    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+    tc.pending_question = Some(crate::app::InlineQuestion {
+        prompt: model::QuestionPrompt::new(
+            "Which features should be enabled by default?",
+            "Features",
+            true,
+            vec![
+                model::QuestionOption::new("question_0", "Streaming")
+                    .description(Some("Stream responses as they generate.".to_owned())),
+            ],
+        ),
+        response_tx,
+        focused_option_index: 0,
+        selected_option_indices: std::collections::BTreeSet::from([0]),
+        notes: String::new(),
+        notes_cursor: 0,
+        editing_notes: false,
+        focused: true,
+        question_index: 1,
+        total_questions: 4,
+    });
+
+    let body = standard::render_tool_call_body(&tc, 120);
+    let joined = rendered_line_texts_trimmed(&body).join("\n");
+
+    assert!(joined.contains("? Features (2/4)"));
+    assert!(joined.contains("Which features should be enabled by default?"));
+    assert!(joined.contains("[x] Streaming"));
+    assert!(!joined.contains("Log level: info"));
+    assert!(!joined.contains("What log level should ship as the default?"));
+}
+
+#[test]
+fn ask_user_question_completed_body_falls_back_to_transcript_without_structured_answers() {
+    let mut tc =
+        test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::Completed);
+    tc.content =
+        vec![model::ToolCallContent::from("Target: Staging\n  Pick deployment target".to_owned())];
+
+    let body = standard::render_tool_call_body(&tc, 120);
+    let joined = rendered_line_texts_trimmed(&body).join("\n");
+
+    assert!(joined.contains("Target: Staging"));
+    assert!(joined.contains("Pick deployment target"));
 }
 
 #[test]

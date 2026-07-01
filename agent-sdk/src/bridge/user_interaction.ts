@@ -210,6 +210,41 @@ function askUserQuestionTranscript(
   return answers.map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`).join("\n");
 }
 
+function askUserQuestionCompletedRawInput(
+  prompts: AskUserQuestionPrompt[],
+  answers: Record<string, string>,
+  annotations: Record<string, QuestionAnnotation>,
+  questionResults: Json[],
+): Json {
+  return {
+    questions: prompts.map((prompt) => ({
+      question: prompt.question,
+      header: prompt.header,
+      multiSelect: prompt.multiSelect,
+      options: prompt.options.map((option) => ({
+        label: option.label,
+        description: option.description,
+        ...(option.preview ? { preview: option.preview } : {}),
+      })),
+    })),
+    answers,
+    ...(Object.keys(annotations).length > 0 ? { annotations: questionAnnotationsJson(annotations) } : {}),
+    question_results: questionResults,
+  };
+}
+
+function questionAnnotationsJson(annotations: Record<string, QuestionAnnotation>): { [key: string]: Json } {
+  return Object.fromEntries(
+    Object.entries(annotations).map(([question, annotation]) => [
+      question,
+      {
+        ...(annotation.preview ? { preview: annotation.preview } : {}),
+        ...(annotation.notes ? { notes: annotation.notes } : {}),
+      },
+    ]),
+  );
+}
+
 function deriveAnnotation(
   selectedOptions: QuestionOption[],
   annotation?: QuestionAnnotation,
@@ -244,6 +279,7 @@ export async function requestAskUserQuestionAnswers(
   const answers: Record<string, string> = {};
   const annotations: Record<string, QuestionAnnotation> = {};
   const transcript: Array<{ header: string; question: string; answer: string }> = [];
+  const questionResults: Json[] = [];
 
   for (const [index, prompt] of prompts.entries()) {
     const promptToolCall = askUserQuestionPromptToolCall(baseToolCall, prompt, index, prompts.length);
@@ -301,12 +337,36 @@ export async function requestAskUserQuestionAnswers(
       annotations[prompt.question] = annotation;
     }
     transcript.push({ header: prompt.header, question: prompt.question, answer });
+    questionResults.push({
+      question: prompt.question,
+      header: prompt.header,
+      question_index: index,
+      total_questions: prompts.length,
+      selected_options: selectedOptions.map((option) => ({
+        option_id: option.option_id,
+        label: option.label,
+        ...(option.description ? { description: option.description } : {}),
+        ...(option.preview ? { preview: option.preview } : {}),
+      })),
+      ...(annotation
+        ? {
+            annotation: {
+              ...(annotation.preview ? { preview: annotation.preview } : {}),
+              ...(annotation.notes ? { notes: annotation.notes } : {}),
+            },
+          }
+        : {}),
+    });
 
     const summary = askUserQuestionTranscript(transcript);
+    const completed = index + 1 >= prompts.length;
     const progressFields: ToolCallUpdateFields = {
-      status: index + 1 >= prompts.length ? "completed" : "in_progress",
+      status: completed ? "completed" : "in_progress",
       raw_output: summary,
       content: [{ type: "content", content: { type: "text", text: summary } }],
+      ...(completed
+        ? { raw_input: askUserQuestionCompletedRawInput(prompts, answers, annotations, questionResults) }
+        : {}),
     };
     emitToolCallUpdate(session, toolUseId, progressFields, "summary");
   }

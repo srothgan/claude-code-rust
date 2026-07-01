@@ -3681,6 +3681,71 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
     question_index: 0,
     total_questions: 1,
   });
+
+  const completedQuestionUpdate = events
+    .map((event) => (event.event === "session_update" ? (event.update as Record<string, unknown>) : undefined))
+    .find((update) => {
+      const toolCallUpdate = update?.tool_call_update as Record<string, unknown> | undefined;
+      const fields = toolCallUpdate?.fields as Record<string, unknown> | undefined;
+      return toolCallUpdate?.tool_call_id === "tool-question" && fields?.status === "completed";
+    })?.tool_call_update as Record<string, unknown> | undefined;
+  const completedFields = completedQuestionUpdate?.fields as Record<string, unknown> | undefined;
+  assert.deepEqual(completedFields?.raw_input, {
+    questions: [
+      {
+        question: "Pick deployment target",
+        header: "Target",
+        multiSelect: true,
+        options: [
+          {
+            label: "Staging",
+            description: "Low-risk validation",
+            preview: "Deploy to staging first.",
+          },
+          {
+            label: "Production",
+            description: "Customer-facing rollout",
+            preview: "Deploy to production after approval.",
+          },
+        ],
+      },
+    ],
+    answers: {
+      "Pick deployment target": "Staging, Production",
+    },
+    annotations: {
+      "Pick deployment target": {
+        preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+        notes: "Roll out in both environments",
+      },
+    },
+    question_results: [
+      {
+        question: "Pick deployment target",
+        header: "Target",
+        question_index: 0,
+        total_questions: 1,
+        selected_options: [
+          {
+            option_id: "question_0",
+            label: "Staging",
+            description: "Low-risk validation",
+            preview: "Deploy to staging first.",
+          },
+          {
+            option_id: "question_1",
+            label: "Production",
+            description: "Customer-facing rollout",
+            preview: "Deploy to production after approval.",
+          },
+        ],
+        annotation: {
+          preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+          notes: "Roll out in both environments",
+        },
+      },
+    ],
+  });
 });
 
 test("normalizeToolKind maps known tool names", () => {

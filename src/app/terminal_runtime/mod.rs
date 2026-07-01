@@ -23,13 +23,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) use release_guard::TerminalReleaseGuard;
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceSessionKind {
-    Chat,
-    Fullscreen,
-}
-
 enum SurfaceTerminalSession {
     Chat(ChatTerminalSession),
     Fullscreen(FullscreenTerminalSession),
@@ -277,14 +270,6 @@ fn restore_terminal_modes(alternate_screen_active: &AtomicBool) -> std::io::Resu
     match first_error {
         Some(err) => Err(err),
         None => Ok(()),
-    }
-}
-
-#[cfg(test)]
-fn session_kind_for_surface(surface: SurfaceMode) -> SurfaceSessionKind {
-    match surface {
-        SurfaceMode::Chat => SurfaceSessionKind::Chat,
-        SurfaceMode::Fullscreen(_) => SurfaceSessionKind::Fullscreen,
     }
 }
 

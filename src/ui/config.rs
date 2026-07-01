@@ -1009,20 +1009,6 @@ struct CapabilityBadge {
     fg: Color,
 }
 
-#[cfg(test)]
-fn model_overlay_title_text(
-    option: &crate::app::config::OverlayModelOption,
-    marker: &str,
-) -> String {
-    let badges = model_capability_badges(option);
-    let mut title = format!("{marker} {}", option.display_name);
-    if !badges.is_empty() {
-        title.push_str("  ");
-        title.push_str(&badges.into_iter().map(|badge| badge.label).collect::<Vec<_>>().join("  "));
-    }
-    title
-}
-
 fn model_overlay_title_line(
     option: &crate::app::config::OverlayModelOption,
     marker: &str,
@@ -1120,7 +1106,7 @@ fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
 mod tests {
     use super::{
         SETTINGS_LIMITATION_HINT, effort_overlay_scroll, model_overlay_lines, model_overlay_scroll,
-        model_overlay_title_line, model_overlay_title_text,
+        model_overlay_title_line,
     };
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
@@ -1420,8 +1406,8 @@ mod tests {
     }
 
     #[test]
-    fn model_overlay_title_text_uses_human_labels_without_divider() {
-        let title = model_overlay_title_text(
+    fn model_overlay_title_line_uses_human_badge_labels_without_divider() {
+        let line = model_overlay_title_line(
             &crate::app::config::OverlayModelOption {
                 id: "sonnet".to_owned(),
                 display_name: "Sonnet".to_owned(),
@@ -1433,12 +1419,21 @@ mod tests {
                 supports_auto_mode: Some(false),
             },
             ">",
+            false,
+            false,
         );
+        let title = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
+        let badge_labels = line
+            .spans
+            .iter()
+            .map(|span| span.content.trim())
+            .filter(|content| !content.is_empty())
+            .collect::<Vec<_>>();
 
         assert!(title.starts_with("> Sonnet"));
-        assert!(title.contains("Effort"));
-        assert!(title.contains("Adaptive thinking"));
-        assert!(title.contains("Fast mode"));
+        assert!(badge_labels.contains(&"Effort"));
+        assert!(badge_labels.contains(&"Adaptive thinking"));
+        assert!(badge_labels.contains(&"Fast mode"));
         assert!(!title.contains("Auto mode"));
         assert!(!title.contains('['));
         assert!(!title.contains('|'));

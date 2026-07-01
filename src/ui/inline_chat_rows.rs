@@ -933,7 +933,8 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         has_visible_content: request.has_prior_assistant_content,
     };
 
-    for item in request.items {
+    let mut items = request.items.into_iter().peekable();
+    while let Some(item) = items.next() {
         let boundary = AssistantBoundaryMeta {
             ids: item.ids,
             msg_idx: item.msg_idx,
@@ -944,7 +945,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         let item_leading_blank_lines = item.leading_blank_lines;
         match item.item {
             AssistantRenderItem::Text(block) => {
-                let trailing_gap = block.trailing_blank_lines();
+                let trailing_gap = assistant_text_trailing_gap(&block, items.peek());
                 let rendered =
                     render_assistant_text_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
@@ -960,7 +961,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                 }
             }
             AssistantRenderItem::Notice(block) => {
-                let trailing_gap = block.trailing_blank_lines();
+                let trailing_gap = assistant_text_trailing_gap(&block.text, items.peek());
                 let rendered =
                     render_assistant_notice_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
@@ -1015,6 +1016,86 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     }
 
     RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
+}
+
+fn assistant_text_trailing_gap(
+    block: &TextBlock,
+    next_item: Option<&AssistantRenderItemSpec>,
+) -> usize {
+    let gap = block.trailing_blank_lines();
+    if gap == 0 {
+        return 0;
+    }
+
+    let next_text = next_item.and_then(assistant_item_text);
+    if text_boundary_touches_markdown_list(&block.text, next_text) { 0 } else { gap }
+}
+
+fn assistant_item_text(item: &AssistantRenderItemSpec) -> Option<&TextBlock> {
+    match &item.item {
+        AssistantRenderItem::Text(block) => Some(block),
+        AssistantRenderItem::Notice(block) => Some(&block.text),
+        AssistantRenderItem::CanonicalTool { .. } => None,
+    }
+}
+
+fn text_boundary_touches_markdown_list(current: &str, next: Option<&TextBlock>) -> bool {
+    markdown_source_ends_with_list_item(current)
+        || next.is_some_and(|block| markdown_source_starts_with_list_item(&block.text))
+}
+
+fn markdown_source_starts_with_list_item(text: &str) -> bool {
+    markdown_source_boundary_line(text, BoundaryLine::First)
+        .is_some_and(markdown_source_line_is_list_item)
+}
+
+fn markdown_source_ends_with_list_item(text: &str) -> bool {
+    markdown_source_boundary_line(text, BoundaryLine::Last)
+        .is_some_and(markdown_source_line_is_list_item)
+}
+
+#[derive(Clone, Copy)]
+enum BoundaryLine {
+    First,
+    Last,
+}
+
+fn markdown_source_boundary_line(text: &str, boundary: BoundaryLine) -> Option<&str> {
+    let mut in_fenced_code = false;
+    let mut first = None;
+    let mut last = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        let in_code_line = in_fenced_code || is_fence;
+        if is_fence {
+            in_fenced_code = !in_fenced_code;
+        }
+        if in_code_line || trimmed.is_empty() {
+            continue;
+        }
+        first.get_or_insert(line);
+        last = Some(line);
+    }
+
+    match boundary {
+        BoundaryLine::First => first,
+        BoundaryLine::Last => last,
+    }
+}
+
+fn markdown_source_line_is_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("+ ")
+        || markdown_source_starts_with_ordered_list_marker(trimmed)
+}
+
+fn markdown_source_starts_with_ordered_list_marker(text: &str) -> bool {
+    let digit_count = text.bytes().take_while(u8::is_ascii_digit).count();
+    digit_count > 0 && text[digit_count..].starts_with(". ")
 }
 
 fn append_assistant_label_rows(
@@ -1696,6 +1777,38 @@ mod tests {
         let rows = serialize_live_rows(&mut app, 120);
 
         assert_eq!(line_texts(&rows), vec!["Claude", "line 1: ready", "", "line 2: ready"]);
+    }
+
+    #[test]
+    fn live_assistant_text_suppresses_paragraph_gap_before_list_block() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(
+                TextBlock::from_complete("Intro\n\n")
+                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
+            ),
+            MessageBlock::Text(TextBlock::from_complete("- One\n- Two")),
+        ]));
+
+        let rows = serialize_live_rows(&mut app, 120);
+
+        assert_eq!(line_texts(&rows), vec!["Claude", "Intro", "  - One", "  - Two"]);
+    }
+
+    #[test]
+    fn live_assistant_text_suppresses_paragraph_gap_after_list_block() {
+        let mut app = App::test_default();
+        app.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(
+                TextBlock::from_complete("- One\n- Two\n\n")
+                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
+            ),
+            MessageBlock::Text(TextBlock::from_complete("Outro")),
+        ]));
+
+        let rows = serialize_live_rows(&mut app, 120);
+
+        assert_eq!(line_texts(&rows), vec!["Claude", "  - One", "  - Two", "Outro"]);
     }
 
     #[test]

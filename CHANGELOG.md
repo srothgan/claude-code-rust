@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **Mention file autocomplete** (#226, @srothgan): Move `@` file matching off the UI path, support raw indexed file and folder mentions with spaces, preserve whole-mention replacement boundaries, and rank shallow project paths ahead of deep dependency matches unless the query explicitly targets the deep path.
 - **Atomic input placeholders** (#227, @srothgan): Treat image badges and pasted-text placeholders as shared textarea atoms, keeping cursor movement, deletion, undo/redo, image attachment state, and paste expansion aligned through `tui-textarea-2` `0.12.0` atomic range support.
+- **Question and list rendering** (#228, @srothgan): Render markdown lists with indentation instead of injected blank gaps, and show `AskUserQuestion` answers as structured results with selected options, descriptions, previews, and notes.
 
 ### Documentation
 
@@ -20,10 +21,12 @@ All notable changes to this project will be documented in this file.
 
 ### Maintenance
 
+- **Dead test helper cleanup** (#228, @srothgan): Remove stale test-only helpers that kept old production paths alive only through tests.
 - **Social discoverability** (#219, @srothgan): Add Open Graph and Twitter Card meta tags with a social preview image to the docs site, and expand the npm package keywords to mirror the repo topics.
 
 ### CI and Dependencies
 
+- **CodeQL scanning** (#228, @srothgan): Add a CodeQL workflow for repository code scanning.
 - **quinn-proto advisory fix** (#220, @srothgan): Bump `quinn-proto` to `0.11.15` for `RUSTSEC-2026-0185` (remote memory exhaustion from unbounded out-of-order stream reassembly).
 - **Security Audit workflow resilience** (#220, @srothgan): Mark the `cargo audit` step `continue-on-error` so newly published advisories still report and file a tracking issue without failing the scheduled Security Audit run.
 - **Dependency updates** (#221, #222, #224, #223): Bump `uuid` to `1.23.4`, `anyhow` to `1.0.103`, `tui-markdown` to `0.3.8`, and `knip` to `6.23.0` in `agent-sdk`.

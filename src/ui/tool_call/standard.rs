@@ -13,6 +13,7 @@ use crate::ui::tool_display;
 use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde_json::Value;
 use std::path::Path;
 use two_face::theme::EmbeddedThemeName;
 
@@ -38,6 +39,7 @@ const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
+const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
 const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
@@ -164,6 +166,7 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     !tc.content.is_empty()
         || tc.pending_permission.is_some()
         || tc.pending_question.is_some()
+        || renders_structured_ask_user_question_result(tc)
         || (tc.is_execute_tool()
             && (tc.terminal_output.is_some()
                 || matches!(tc.status, model::ToolCallStatus::InProgress)))
@@ -317,7 +320,9 @@ fn truncate_summary_line(line: &str, max_chars: usize) -> String {
 
 /// Render the full content of a tool call as lines.
 fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    if hides_pending_ask_user_question_transcript(tc) {
+        return Vec::new();
+    }
 
     if tasks::is_state_tool(tc)
         && let Some(task_lines) = tasks::render_tool_content(tc)
@@ -376,9 +381,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     }
 
     if tc.is_execute_tool() {
-        lines.extend(execute::render_execute_content(tc));
-        debug_failed_tool_render(tc);
-        return lines;
+        return render_execute_tool_content(tc);
+    }
+
+    if let Some(question_lines) = render_completed_ask_user_question_content(tc) {
+        return question_lines;
     }
 
     if tool_body_uses_summary_only(tc) {
@@ -390,6 +397,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         };
     }
 
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
@@ -420,6 +428,153 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+fn render_execute_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let lines = execute::render_execute_content(tc);
+    debug_failed_tool_render(tc);
+    lines
+}
+
+fn render_completed_ask_user_question_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    if tc.is_ask_question_tool()
+        && tc.pending_question.is_none()
+        && matches!(tc.status, model::ToolCallStatus::Completed)
+    {
+        render_ask_user_question_result(tc)
+    } else {
+        None
+    }
+}
+
+fn hides_pending_ask_user_question_transcript(tc: &ToolCallInfo) -> bool {
+    tc.is_ask_question_tool() && tc.pending_question.is_some()
+}
+
+fn render_ask_user_question_result(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    let results = tc.raw_input.as_ref()?.get("question_results")?.as_array()?;
+    if results.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    for (idx, result) in results.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::default());
+        }
+        render_ask_user_question_result_entry(result, &mut lines);
+    }
+
+    (!lines.is_empty()).then_some(lines)
+}
+
+fn render_ask_user_question_result_entry(result: &Value, lines: &mut Vec<Line<'static>>) {
+    let header = json_str(result, "header").unwrap_or("Question");
+    let question = json_str(result, "question");
+    let title = ask_user_question_result_title(
+        header,
+        json_usize(result, "question_index"),
+        json_usize(result, "total_questions"),
+    );
+
+    lines.push(Line::from(vec![
+        Span::styled("? ", Style::default().fg(theme::RUST_ORANGE)),
+        Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+    ]));
+
+    if let Some(question) = question {
+        for row in question.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("  {row}"),
+                Style::default().fg(theme::DIM),
+            )));
+        }
+    }
+
+    let selected_options: &[Value] =
+        result.get("selected_options").and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    if !selected_options.is_empty() {
+        lines.push(Line::default());
+        for option in selected_options {
+            render_selected_question_option(option, lines);
+        }
+    }
+
+    render_question_annotation_section(result, "preview", "Preview", lines);
+    render_question_annotation_section(result, "notes", "Notes", lines);
+}
+
+fn ask_user_question_result_title(
+    header: &str,
+    question_index: Option<usize>,
+    total_questions: Option<usize>,
+) -> String {
+    match (question_index, total_questions) {
+        (Some(index), Some(total)) if total > 1 => format!("{header} ({}/{total})", index + 1),
+        _ => header.to_owned(),
+    }
+}
+
+fn render_selected_question_option(option: &Value, lines: &mut Vec<Line<'static>>) {
+    let Some(label) = json_str(option, "label") else {
+        return;
+    };
+    let mut spans = vec![
+        Span::styled("  [x] ", Style::default().fg(theme::DIM)),
+        Span::styled(label.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
+    ];
+
+    if let Some(description) = json_str(option, "description").map(single_line_text) {
+        spans.push(Span::styled(" - ", Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(description, Style::default().fg(theme::DIM)));
+    }
+    lines.push(Line::from(spans));
+}
+
+fn render_question_annotation_section(
+    result: &Value,
+    key: &str,
+    title: &str,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let Some(text) = result.get("annotation").and_then(|annotation| json_str(annotation, key))
+    else {
+        return;
+    };
+
+    lines.push(Line::default());
+    if key == "notes" {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{ASK_USER_QUESTION_RESULT_TEXT_INDENT}{title}: "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(single_line_text(text), Style::default().fg(theme::DIM)),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!("{ASK_USER_QUESTION_RESULT_TEXT_INDENT}{title}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for row in text.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("{ASK_USER_QUESTION_RESULT_TEXT_INDENT}  {row}"),
+                Style::default().fg(theme::DIM),
+            )));
+        }
+    }
+}
+
+fn single_line_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn json_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key)?.as_str().map(str::trim).filter(|text| !text.is_empty())
+}
+
+fn json_usize(value: &Value, key: &str) -> Option<usize> {
+    value.get(key)?.as_u64().and_then(|number| usize::try_from(number).ok())
+}
+
 fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
     tc.is_exit_plan_mode_tool()
         || matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task" | "WebSearch" | "WebFetch")
@@ -432,11 +587,23 @@ enum ToolContentHeightPolicy {
 }
 
 fn tool_content_height_policy(tc: &ToolCallInfo) -> ToolContentHeightPolicy {
-    if renders_only_plan_file_content(tc) {
+    if renders_only_plan_file_content(tc) || renders_structured_ask_user_question_result(tc) {
         ToolContentHeightPolicy::Unbounded
     } else {
         ToolContentHeightPolicy::Bounded
     }
+}
+
+fn renders_structured_ask_user_question_result(tc: &ToolCallInfo) -> bool {
+    tc.is_ask_question_tool()
+        && tc.pending_question.is_none()
+        && matches!(tc.status, model::ToolCallStatus::Completed)
+        && tc
+            .raw_input
+            .as_ref()
+            .and_then(|input| input.get("question_results"))
+            .and_then(Value::as_array)
+            .is_some_and(|results| !results.is_empty())
 }
 
 fn renders_only_plan_file_content(tc: &ToolCallInfo) -> bool {
