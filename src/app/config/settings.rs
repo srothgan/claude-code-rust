@@ -336,7 +336,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         id: SettingId::Model,
         entry_id: "A19",
         label: "Model",
-        description: "Sets the model for new sessions and opens the combined model and thinking effort picker.",
+        description: "Sets the model for new sessions.",
         file: SettingFile::Settings,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,

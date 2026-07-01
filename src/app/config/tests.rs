@@ -967,7 +967,7 @@ fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
 
-    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    let overlay = app.config.thinking_effort_overlay().expect("thinking effort overlay");
     assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
 }
 
@@ -987,8 +987,61 @@ fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
 
-    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    let overlay = app.config.thinking_effort_overlay().expect("thinking effort overlay");
     assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
+}
+
+#[test]
+fn model_overlay_confirm_persists_model_without_rewriting_effort() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = open_settings_app_in_dir(&dir);
+    app.available_models = vec![
+        AvailableModel::new("fable", "Fable 5").supports_effort(true),
+        AvailableModel::new("opus", "Opus").supports_effort(true),
+    ];
+    store::set_model(&mut app.config.committed_settings_document, Some("fable"));
+    store::set_thinking_effort_level(
+        &mut app.config.committed_settings_document,
+        EffortLevel::High,
+    )
+    .expect("high is persistable");
+
+    select_setting(&mut app, SettingId::Model);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(app.config.model_overlay().is_some());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let saved = read_json_file(&path);
+    assert_eq!(json_at(&saved, &["model"]), Some(&Value::String("opus".to_owned())));
+    assert_eq!(json_at(&saved, &["effortLevel"]), Some(&Value::String("high".to_owned())));
+    assert_eq!(app.config.thinking_effort_effective(), EffortLevel::High);
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn thinking_effort_overlay_confirm_persists_effort_without_rewriting_model() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = open_settings_app_in_dir(&dir);
+    app.available_models = vec![
+        AvailableModel::new("fable", "Fable 5")
+            .supports_effort(true)
+            .supported_effort_levels(EffortLevel::PERSISTABLE_SETTINGS.to_vec()),
+    ];
+    store::set_model(&mut app.config.committed_settings_document, Some("fable"));
+
+    select_setting(&mut app, SettingId::ThinkingEffort);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(app.config.thinking_effort_overlay().is_some());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let saved = read_json_file(&path);
+    assert_eq!(json_at(&saved, &["model"]), Some(&Value::String("fable".to_owned())));
+    assert_eq!(json_at(&saved, &["effortLevel"]), Some(&Value::String("high".to_owned())));
+    assert!(app.config.overlay.is_none());
 }
 
 #[test]

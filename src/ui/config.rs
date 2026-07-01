@@ -12,7 +12,7 @@ mod usage;
 
 use crate::agent::model::EffortLevel;
 use crate::app::config::{
-    OutputStyle, OverlayFocus, language_input_validation_message, model_overlay_options,
+    DEFAULT_MODEL_ALIAS_ID, OutputStyle, language_input_validation_message, model_overlay_options,
     supported_effort_levels_for_model,
 };
 use crate::app::{App, ConfigTab};
@@ -27,7 +27,7 @@ use unicode_width::UnicodeWidthChar;
 use super::theme;
 use input::{add_marketplace_example_lines, render_text_input_field};
 use overlay::{
-    OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_header,
+    OverlayChrome, OverlayLayoutSpec, overlay_line_style,
     render_overlay_separator as shared_render_overlay_separator, render_overlay_shell,
     selected_scroll,
 };
@@ -139,8 +139,10 @@ fn config_help_text(app: &App) -> String {
 }
 
 fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &App) {
-    if app.config.model_and_effort_overlay().is_some() {
-        render_model_and_effort_overlay(frame, frame_area, app);
+    if app.config.model_overlay().is_some() {
+        render_model_overlay(frame, frame_area, app);
+    } else if app.config.thinking_effort_overlay().is_some() {
+        render_thinking_effort_overlay(frame, frame_area, app);
     } else if app.config.output_style_overlay().is_some() {
         render_output_style_overlay(frame, frame_area, app);
     } else if app.config.language_overlay().is_some() {
@@ -168,10 +170,10 @@ fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &App) {
     }
 }
 
-fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
+fn render_model_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    if app.config.model_overlay().is_none() {
         return;
-    };
+    }
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -185,47 +187,55 @@ fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
             inner_margin: Margin { vertical: 1, horizontal: 1 },
         },
         OverlayChrome {
-            title: "Model and Thinking Effort",
+            title: "Model",
             subtitle: None,
-            help: Some("Tab switches model/effort | Enter confirm | Esc cancel"),
+            help: Some("Up/Down select | Enter confirm | Esc cancel"),
             message: app.config.overlay_message.as_ref(),
         },
     );
     let model_lines = model_overlay_lines(app);
-    let effort_lines = effort_overlay_lines(app);
-    let (model_height, effort_height) = model_and_effort_section_heights(rendered.body_area.height);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(model_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(effort_height),
-        ])
-        .split(rendered.body_area);
-
-    let model_focused = overlay.focus == OverlayFocus::Model;
-    let effort_focused = overlay.focus == OverlayFocus::Effort;
-    render_overlay_header(frame, sections[0], "Model", model_focused);
-    shared_render_overlay_separator(frame, sections[2]);
-    render_overlay_header(frame, sections[3], "Thinking effort", effort_focused);
-
-    let model_scroll = model_overlay_scroll(app, sections[1].height, sections[1].width);
+    let model_scroll =
+        model_overlay_scroll(app, rendered.body_area.height, rendered.body_area.width);
     frame.render_widget(
         Paragraph::new(model_lines).scroll((model_scroll, 0)).wrap(Wrap { trim: false }),
-        sections[1],
+        rendered.body_area,
     );
+}
 
-    let effort_scroll = effort_overlay_scroll(app, sections[4].height, sections[4].width);
+fn render_thinking_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    if app.config.thinking_effort_overlay().is_none() {
+        return;
+    }
+    let rendered = render_overlay_shell(
+        frame,
+        area,
+        OverlayLayoutSpec {
+            min_width: 1,
+            min_height: 1,
+            width_percent: 76,
+            height_percent: 70,
+            preferred_height: 16,
+            fullscreen_below: Some((72, 16)),
+            inner_margin: Margin { vertical: 1, horizontal: 2 },
+        },
+        OverlayChrome {
+            title: "Thinking effort",
+            subtitle: Some("Available effort levels depend on the selected model."),
+            help: Some("Up/Down select | Enter confirm | Esc cancel"),
+            message: app.config.overlay_message.as_ref(),
+        },
+    );
+    let effort_lines = effort_overlay_lines(app);
+    let effort_scroll =
+        effort_overlay_scroll(app, rendered.body_area.height, rendered.body_area.width);
     frame.render_widget(
         Paragraph::new(effort_lines).scroll((effort_scroll, 0)).wrap(Wrap { trim: false }),
-        sections[4],
+        rendered.body_area,
     );
 }
 
 fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
+    let Some(overlay) = app.config.model_overlay() else {
         return Vec::new();
     };
     let mut lines = model_overlay_options(app)
@@ -233,12 +243,7 @@ fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
         .flat_map(|option| {
             let selected = option.id == overlay.selected_model;
             let marker = if selected { ">" } else { " " };
-            let mut lines = vec![model_overlay_title_line(
-                &option,
-                marker,
-                selected,
-                overlay.focus == OverlayFocus::Model,
-            )];
+            let mut lines = vec![model_overlay_title_line(&option, marker, selected, true)];
             if let Some(description) = option.description {
                 lines.push(Line::from(Span::styled(
                     format!("  {description}"),
@@ -256,10 +261,11 @@ fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn effort_overlay_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
+    let Some(overlay) = app.config.thinking_effort_overlay() else {
         return Vec::new();
     };
-    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
+    let selected_model = selected_model_for_effort(app);
+    let levels = supported_effort_levels_for_model(app, &selected_model);
     if levels.is_empty() {
         return vec![
             Line::from(Span::styled(
@@ -280,7 +286,7 @@ fn effort_overlay_lines(app: &App) -> Vec<Line<'static>> {
             vec![
                 Line::from(Span::styled(
                     format!("{} {}", if selected { ">" } else { " " }, level.label()),
-                    overlay_line_style(selected, overlay.focus == OverlayFocus::Effort),
+                    overlay_line_style(selected, true),
                 )),
                 Line::from(Span::styled(
                     format!("  {}", level.description()),
@@ -903,24 +909,8 @@ fn char_width(ch: char) -> usize {
     UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
-fn model_and_effort_section_heights(inner_height: u16) -> (u16, u16) {
-    const CHROME_HEIGHT: u16 = 3;
-    const DEFAULT_EFFORT_HEIGHT: u16 = 8;
-
-    let content_height = inner_height.saturating_sub(CHROME_HEIGHT);
-    match content_height {
-        0 => (0, 0),
-        1 => (1, 0),
-        _ => {
-            let effort_height = DEFAULT_EFFORT_HEIGHT.min(content_height.saturating_sub(1));
-            let model_height = content_height.saturating_sub(effort_height);
-            (model_height, effort_height)
-        }
-    }
-}
-
 fn model_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
+    let Some(overlay) = app.config.model_overlay() else {
         return 0;
     };
     let options = model_overlay_options(app);
@@ -947,10 +937,11 @@ fn model_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) ->
 }
 
 fn effort_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
+    let Some(overlay) = app.config.thinking_effort_overlay() else {
         return 0;
     };
-    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
+    let selected_model = selected_model_for_effort(app);
+    let levels = supported_effort_levels_for_model(app, &selected_model);
     if levels.is_empty() || viewport_height == 0 || viewport_width == 0 {
         return 0;
     }
@@ -971,6 +962,10 @@ fn effort_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -
         viewport_width,
     );
     selected_scroll(selected_start, selected_height, viewport_height)
+}
+
+fn selected_model_for_effort(app: &App) -> String {
+    app.config.model_effective().unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned())
 }
 
 fn effort_overlay_option_height(level: EffortLevel, is_last: bool, viewport_width: u16) -> usize {
@@ -1111,8 +1106,8 @@ mod tests {
     use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
     use crate::app::config::{
-        ConfigOverlayState, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
-        OutputStyleOverlayState, OverlayFocus, SettingId, setting_specs,
+        ConfigOverlayState, LanguageOverlayState, ModelOverlayState, OutputStyle,
+        OutputStyleOverlayState, SettingId, ThinkingEffortOverlayState, setting_specs,
         supported_effort_levels_for_model,
     };
     use ratatui::Terminal;
@@ -1203,7 +1198,7 @@ mod tests {
         let options = crate::app::config::model_overlay_options(app);
         let overlay = app
             .config
-            .model_and_effort_overlay()
+            .model_overlay()
             .expect("model overlay should be present for visibility assertions");
         let selected_index = options
             .iter()
@@ -1261,10 +1256,8 @@ mod tests {
                 ]),
             AvailableModel::new("haiku", "Haiku").description("Fastest").supports_effort(false),
         ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
+        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
             selected_model: "sonnet".to_owned(),
-            selected_effort: EffortLevel::High,
         }));
 
         let scroll = assert_selected_model_visible(&app, 6, 40);
@@ -1285,10 +1278,8 @@ mod tests {
                 ]),
             AvailableModel::new("haiku", "Haiku").supports_effort(false),
         ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
+        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
             selected_model: "haiku".to_owned(),
-            selected_effort: EffortLevel::Medium,
         }));
 
         let narrow_scroll = assert_selected_model_visible(&app, 4, 10);
@@ -1319,10 +1310,8 @@ mod tests {
                 .supports_effort(false)
                 .supports_fast_mode(Some(true)),
         ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
+        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
             selected_model: "haiku".to_owned(),
-            selected_effort: EffortLevel::Medium,
         }));
 
         let narrow_scroll = assert_selected_model_visible(&app, 3, 12);
@@ -1339,17 +1328,19 @@ mod tests {
                 .supports_effort(true)
                 .supported_effort_levels(EffortLevel::ALL.to_vec()),
         ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Effort,
-            selected_model: "opus".to_owned(),
+        crate::app::config::store::set_model(
+            &mut app.config.committed_settings_document,
+            Some("opus"),
+        );
+        app.config.overlay = Some(ConfigOverlayState::ThinkingEffort(ThinkingEffortOverlayState {
             selected_effort: EffortLevel::Low,
         }));
 
         assert_eq!(effort_overlay_scroll(&app, 8, 40), 0);
 
         app.config
-            .model_and_effort_overlay_mut()
-            .expect("model and effort overlay")
+            .thinking_effort_overlay_mut()
+            .expect("thinking effort overlay")
             .selected_effort = EffortLevel::XHigh;
 
         assert!(effort_overlay_scroll(&app, 8, 40) > 0);
@@ -1381,10 +1372,8 @@ mod tests {
                 .supports_fast_mode(Some(true))
                 .supports_auto_mode(None),
         ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
+        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
             selected_model: "sonnet".to_owned(),
-            selected_effort: EffortLevel::High,
         }));
 
         let rendered =

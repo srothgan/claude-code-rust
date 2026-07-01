@@ -101,21 +101,6 @@ pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
     }
 }
 
-pub(super) fn render_overlay_header(frame: &mut Frame, area: Rect, title: &str, focused: bool) {
-    let prefix = if focused { "> " } else { "  " };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("{prefix}{title}"),
-            if focused {
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme::DIM)
-            },
-        ))),
-        area,
-    );
-}
-
 pub(super) fn render_overlay_separator(frame: &mut Frame, area: Rect) {
     let width = usize::from(area.width.max(1));
     frame.render_widget(

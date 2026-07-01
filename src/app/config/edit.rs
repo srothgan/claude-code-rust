@@ -1,10 +1,10 @@
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
     AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DEFAULT_MODEL_ALIAS_ID,
-    DefaultPermissionMode, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
-    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
-    PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
-    SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
+    DefaultPermissionMode, LanguageOverlayState, ModelOverlayState, OutputStyle,
+    OutputStyleOverlayState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
+    PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue, SessionRenameOverlayState,
+    SettingFile, SettingId, SettingOptions, SettingSpec, ThinkingEffortOverlayState,
     resolved_setting, setting_display_value, setting_spec, store,
 };
 use crate::agent::model::EffortLevel;
@@ -78,11 +78,9 @@ pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
             });
         }
         SettingId::Language => open_language_overlay(app),
-        SettingId::Model => open_model_and_effort_overlay(app, OverlayFocus::Model),
+        SettingId::Model => open_model_overlay(app),
         SettingId::OutputStyle => open_output_style_overlay(app),
-        SettingId::ThinkingEffort => {
-            open_model_and_effort_overlay(app, OverlayFocus::Effort);
-        }
+        SettingId::ThinkingEffort => open_thinking_effort_overlay(app),
         SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
             cycle_static_enum(app, spec, 1);
         }
@@ -134,13 +132,18 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match app.config.overlay.clone() {
-        Some(ConfigOverlayState::ModelAndEffort(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_and_effort_overlay(app),
+        Some(ConfigOverlayState::Model(_)) => match (key.code, key.modifiers) {
+            (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_overlay(app),
             (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
-            (KeyCode::Tab | KeyCode::Right | KeyCode::Left, KeyModifiers::NONE)
-            | (KeyCode::BackTab, _) => toggle_model_and_effort_focus(app),
-            (KeyCode::Up, KeyModifiers::NONE) => move_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_overlay_selection(app, 1),
+            (KeyCode::Up, KeyModifiers::NONE) => move_model_overlay_selection(app, -1),
+            (KeyCode::Down, KeyModifiers::NONE) => move_model_overlay_selection(app, 1),
+            _ => {}
+        },
+        Some(ConfigOverlayState::ThinkingEffort(_)) => match (key.code, key.modifiers) {
+            (KeyCode::Enter, KeyModifiers::NONE) => confirm_thinking_effort_overlay(app),
+            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
+            (KeyCode::Up, KeyModifiers::NONE) => move_effort_overlay_selection(app, -1),
+            (KeyCode::Down, KeyModifiers::NONE) => move_effort_overlay_selection(app, 1),
             _ => {}
         },
         Some(ConfigOverlayState::OutputStyle(_)) => match (key.code, key.modifiers) {
@@ -193,7 +196,8 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             true
         }
         Some(
-            ConfigOverlayState::ModelAndEffort(_)
+            ConfigOverlayState::Model(_)
+            | ConfigOverlayState::ThinkingEffort(_)
             | ConfigOverlayState::OutputStyle(_)
             | ConfigOverlayState::InstalledPluginActions(_)
             | ConfigOverlayState::PluginInstallActions(_)
@@ -292,13 +296,6 @@ fn confirm_confirmation_overlay(app: &mut App) {
             super::mcp_edit::execute_confirmed_mcp_server_action(app, action);
         }
     }
-}
-
-pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
-    model_overlay_options(app)
-        .into_iter()
-        .find(|option| option.matches_model_id(model_id))
-        .is_none_or(|option| option.supports_effort)
 }
 
 pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
@@ -472,7 +469,7 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
     }
 }
 
-fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
+fn open_model_overlay(app: &mut App) {
     let options = model_overlay_options(app);
     let current_model = app
         .config
@@ -484,11 +481,17 @@ fn open_model_and_effort_overlay(app: &mut App, focus: OverlayFocus) {
                 .map(|option| option.id.clone())
         })
         .unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned());
+    app.config.replace_overlay(ConfigOverlayState::Model(ModelOverlayState {
+        selected_model: current_model,
+    }));
+    app.config.last_error = None;
+}
+
+fn open_thinking_effort_overlay(app: &mut App) {
+    let current_model = selected_model_for_effort(app);
     let current_effort = app.config.thinking_effort_effective();
     let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
-    app.config.replace_overlay(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-        focus,
-        selected_model: current_model,
+    app.config.replace_overlay(ConfigOverlayState::ThinkingEffort(ThinkingEffortOverlayState {
         selected_effort,
     }));
     app.config.last_error = None;
@@ -564,27 +567,10 @@ pub(super) fn generate_session_title(app: &mut App) {
     }
 }
 
-fn toggle_model_and_effort_focus(app: &mut App) {
-    let Some(overlay) = app.config.model_and_effort_overlay_mut() else {
+fn move_model_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.config.model_overlay().cloned() else {
         return;
     };
-    overlay.focus = match overlay.focus {
-        OverlayFocus::Model => OverlayFocus::Effort,
-        OverlayFocus::Effort => OverlayFocus::Model,
-    };
-}
-
-fn move_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.config.model_and_effort_overlay().cloned() else {
-        return;
-    };
-    match overlay.focus {
-        OverlayFocus::Model => move_overlay_model_selection(app, &overlay, delta),
-        OverlayFocus::Effort => move_overlay_effort_selection(app, &overlay, delta),
-    }
-}
-
-fn move_overlay_model_selection(app: &mut App, overlay: &ModelAndEffortOverlayState, delta: isize) {
     let options = model_overlay_options(app);
     if options.is_empty() {
         return;
@@ -593,35 +579,47 @@ fn move_overlay_model_selection(app: &mut App, overlay: &ModelAndEffortOverlaySt
         options.iter().position(|option| option.id == overlay.selected_model).unwrap_or(0);
     let next_index = step_index_clamped(current_index, delta, options.len());
     let next_model = &options[next_index];
-    let next_effort = overlay_effort_for_model(app, &next_model.id, overlay.selected_effort);
-    if let Some(state) = app.config.model_and_effort_overlay_mut() {
+    if let Some(state) = app.config.model_overlay_mut() {
         state.selected_model.clone_from(&next_model.id);
-        state.selected_effort = next_effort;
     }
 }
 
-fn move_overlay_effort_selection(
-    app: &mut App,
-    overlay: &ModelAndEffortOverlayState,
-    delta: isize,
-) {
-    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
+fn move_effort_overlay_selection(app: &mut App, delta: isize) {
+    let Some(overlay) = app.config.thinking_effort_overlay().copied() else {
+        return;
+    };
+    let current_model = selected_model_for_effort(app);
+    let levels = supported_effort_levels_for_model(app, &current_model);
     if levels.is_empty() {
         return;
     }
     let current_index =
         levels.iter().position(|level| *level == overlay.selected_effort).unwrap_or(0);
     let next_index = step_index_clamped(current_index, delta, levels.len());
-    if let Some(state) = app.config.model_and_effort_overlay_mut() {
+    if let Some(state) = app.config.thinking_effort_overlay_mut() {
         state.selected_effort = levels[next_index];
     }
 }
 
-fn confirm_model_and_effort_overlay(app: &mut App) {
-    let Some(overlay) = app.config.model_and_effort_overlay().cloned() else {
+fn confirm_model_overlay(app: &mut App) {
+    let Some(overlay) = app.config.model_overlay().cloned() else {
         return;
     };
-    if persist_model_and_effort_change(app, &overlay.selected_model, overlay.selected_effort) {
+    if persist_model_change(app, &overlay.selected_model) {
+        app.config.clear_overlay();
+    }
+}
+
+fn confirm_thinking_effort_overlay(app: &mut App) {
+    let Some(overlay) = app.config.thinking_effort_overlay().copied() else {
+        return;
+    };
+    let current_model = selected_model_for_effort(app);
+    if supported_effort_levels_for_model(app, &current_model).is_empty() {
+        app.config.clear_overlay();
+        return;
+    }
+    if persist_thinking_effort_change(app, overlay.selected_effort) {
         app.config.clear_overlay();
     }
 }
@@ -767,23 +765,13 @@ fn confirm_session_rename_overlay(app: &mut App) {
     }
 }
 
-fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
+fn persist_model_change(app: &mut App, model: &str) -> bool {
     let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
         app.config.set_overlay_error("Settings paths are not available");
         return false;
     };
     let mut next_document = app.config.committed_settings_document.clone();
     store::set_model(&mut next_document, Some(model));
-    if model_supports_effort(app, model)
-        && store::set_thinking_effort_level(&mut next_document, effort).is_err()
-    {
-        app.config.set_overlay_error(format!(
-            "{} cannot be saved as a default thinking effort. Use /effort {} for the active session.",
-            effort.label(),
-            effort.as_stored()
-        ));
-        return false;
-    }
     match store::save(&path, &next_document) {
         Ok(()) => {
             app.config.committed_settings_document = next_document;
@@ -797,6 +785,39 @@ fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLev
             false
         }
     }
+}
+
+fn persist_thinking_effort_change(app: &mut App, effort: EffortLevel) -> bool {
+    let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
+        app.config.set_overlay_error("Settings paths are not available");
+        return false;
+    };
+    let mut next_document = app.config.committed_settings_document.clone();
+    if store::set_thinking_effort_level(&mut next_document, effort).is_err() {
+        app.config.set_overlay_error(format!(
+            "{} cannot be saved as a default thinking effort. Use /effort {} for the active session.",
+            effort.label(),
+            effort.as_stored()
+        ));
+        return false;
+    }
+    match store::save(&path, &next_document) {
+        Ok(()) => {
+            app.config.committed_settings_document = next_document;
+            app.reconcile_runtime_from_persisted_settings_change();
+            app.config.last_error = None;
+            app.config.status_message = Some(format!("Saved Thinking effort: {}", effort.label()));
+            true
+        }
+        Err(err) => {
+            app.config.set_overlay_error(err);
+            false
+        }
+    }
+}
+
+fn selected_model_for_effort(app: &App) -> String {
+    app.config.model_effective().unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned())
 }
 
 fn overlay_effort_for_model(app: &App, model_id: &str, current: EffortLevel) -> EffortLevel {

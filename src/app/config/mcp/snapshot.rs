@@ -127,7 +127,8 @@ fn clear_missing_mcp_server_overlays(app: &mut App) {
             Some(overlay.request.server_name.as_str())
         }
         Some(
-            ConfigOverlayState::ModelAndEffort(_)
+            ConfigOverlayState::Model(_)
+            | ConfigOverlayState::ThinkingEffort(_)
             | ConfigOverlayState::OutputStyle(_)
             | ConfigOverlayState::Language(_)
             | ConfigOverlayState::SessionRename(_)
