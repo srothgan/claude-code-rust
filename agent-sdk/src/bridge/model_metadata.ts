@@ -38,7 +38,7 @@ function normalizeModelKey(id: string): NormalizedModelKey {
   }
 
   const lower = original.toLowerCase();
-  const contextMatch = lower.match(/\[([^\]]+)\]$/);
+  const contextMatch = lower.match(/\[([^[\]]+)\]$/);
   const contextSuffix = contextMatch?.[1];
   const withoutContext = contextMatch ? lower.slice(0, contextMatch.index) : lower;
   const withoutPrefix = withoutContext.startsWith("claude-")

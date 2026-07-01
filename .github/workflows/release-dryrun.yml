@@ -6,6 +6,9 @@ on:
     paths:
       - 'Cargo.toml'
 
+permissions:
+  contents: read
+
 jobs:
   dry-run-publish:
     name: Validate npm publish

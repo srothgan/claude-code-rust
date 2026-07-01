@@ -5,6 +5,11 @@ on:
     - cron: '0 0 * * 1'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+  checks: write
+
 jobs:
   audit:
     name: Cargo Audit
