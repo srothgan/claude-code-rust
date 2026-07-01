@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **Fable 5 and Claude Agent SDK 0.3.198 migration** (#229, @srothgan): Make Fable 5 the default model alias, preserve resolved model IDs from the SDK catalog, and refresh bridge metadata handling for current models, MCP request timeouts, and newer SDK status fields.
+- **Separate model and thinking effort config dialogs** (#229, @srothgan): Split the combined `/config` model and effort picker into independent dialogs, keep effort choices filtered by the selected model, and explain the model-dependent effort behavior only in the effort dialog.
 - **Mention file autocomplete** (#226, @srothgan): Move `@` file matching off the UI path, support raw indexed file and folder mentions with spaces, preserve whole-mention replacement boundaries, and rank shallow project paths ahead of deep dependency matches unless the query explicitly targets the deep path.
 - **Atomic input placeholders** (#227, @srothgan): Treat image badges and pasted-text placeholders as shared textarea atoms, keeping cursor movement, deletion, undo/redo, image attachment state, and paste expansion aligned through `tui-textarea-2` `0.12.0` atomic range support.
 - **Question and list rendering** (#228, @srothgan): Render markdown lists with indentation instead of injected blank gaps, and show `AskUserQuestion` answers as structured results with selected options, descriptions, previews, and notes.
@@ -16,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- **SDK metadata and MCP preservation** (#229, @srothgan): Preserve MCP `request_timeout_ms` through status display, diagnostics, and dynamic server removal, and keep app-owned slash commands from being duplicated by SDK command snapshots.
 - **Inline chat resize transactions** (#217, @srothgan): Treat terminal size as a draw-transaction snapshot, recover from mid-draw resizes with purge/replay, and clip stale inline viewport geometry before owned-region clears.
 - **Streaming markdown tables** (#226, @srothgan): Preserve table rendering across streamed cache splits so partial assistant updates do not corrupt table layout.
 
@@ -26,6 +29,8 @@ All notable changes to this project will be documented in this file.
 
 ### CI and Dependencies
 
+- **Workflow permission hardening** (#229, @srothgan): Declare least-privilege GitHub Actions permissions for CI, audit, commit-lint, release dry-run, and Agent SDK workflows to resolve CodeQL code scanning alerts.
+- **Claude Agent SDK update** (#229, @srothgan): Bump `@anthropic-ai/claude-agent-sdk` to `0.3.198` in the root package and bundled bridge package locks.
 - **CodeQL scanning** (#228, @srothgan): Add a CodeQL workflow for repository code scanning.
 - **quinn-proto advisory fix** (#220, @srothgan): Bump `quinn-proto` to `0.11.15` for `RUSTSEC-2026-0185` (remote memory exhaustion from unbounded out-of-order stream reassembly).
 - **Security Audit workflow resilience** (#220, @srothgan): Mark the `cargo audit` step `continue-on-error` so newly published advisories still report and file a tracking issue without failing the scheduled Security Audit run.
