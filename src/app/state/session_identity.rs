@@ -41,9 +41,7 @@ impl App {
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
-        self.rewind_targets.clear();
-        self.rewind_targets_session_id = None;
-        self.rewind_targets_in_flight = false;
+        self.sdk_inventory.clear_rewind_targets();
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {

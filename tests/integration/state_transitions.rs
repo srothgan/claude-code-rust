@@ -135,7 +135,7 @@ async fn todowrite_tool_call_does_not_update_task_state() {
         .meta(meta);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    assert!(app.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
+    assert!(app.sdk_inventory.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
     assert!(app.has_tool_call("todo-1"));
 }
 
@@ -390,7 +390,7 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update1)),
     );
-    assert_eq!(app.available_commands.len(), 2);
+    assert_eq!(app.sdk_inventory.available_commands.len(), 2);
 
     // New update replaces, not appends
     let cmd3 = model::AvailableCommand::new("/commit", "Commit");
@@ -399,7 +399,7 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update2)),
     );
-    assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
+    assert_eq!(app.sdk_inventory.available_commands.len(), 1, "replaced, not appended");
 }
 
 #[tokio::test]

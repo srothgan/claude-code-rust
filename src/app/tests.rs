@@ -410,7 +410,7 @@ fn mode_selection_then_second_enter_arms_submit() {
 #[test]
 fn model_selection_then_second_enter_arms_submit() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         model::AvailableModel::new("sonnet", "Claude Sonnet"),
         model::AvailableModel::new("haiku", "Claude Haiku"),
     ];

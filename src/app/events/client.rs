@@ -314,9 +314,10 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 );
                 return;
             }
-            app.rewind_targets = targets;
-            app.rewind_targets_session_id = Some(crate::agent::model::SessionId::new(session_id));
-            app.rewind_targets_in_flight = false;
+            app.sdk_inventory.rewind_targets = targets;
+            app.sdk_inventory.rewind_targets_session_id =
+                Some(crate::agent::model::SessionId::new(session_id));
+            app.sdk_inventory.rewind_targets_in_flight = false;
             crate::app::slash::sync_with_cursor(app);
         }
         ClientEvent::RewindResultReceived { result } => {

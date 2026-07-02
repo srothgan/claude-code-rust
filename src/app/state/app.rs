@@ -13,6 +13,7 @@ pub struct App {
     pub settings_home_override: Option<PathBuf>,
     pub transcript: Transcript,
     pub session_runtime: SessionRuntimeState,
+    pub sdk_inventory: SdkInventoryState,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
@@ -39,26 +40,12 @@ pub struct App {
     pub tool_call_scopes: HashMap<String, ToolCallScope>,
     /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::agent::events::TerminalMap,
-    /// Current SDK task state from `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`.
-    pub tasks: Vec<model::TaskItem>,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Resolved keyboard bindings used by chat-surface dispatch.
     pub keymap: ResolvedKeymap,
-    /// Commands advertised by the agent via `AvailableCommandsUpdate`.
-    pub available_commands: Vec<model::AvailableCommand>,
-    /// Rewind candidates loaded from persisted SDK session history.
-    pub rewind_targets: Vec<model::RewindTarget>,
-    /// Session id that owns `rewind_targets`.
-    pub rewind_targets_session_id: Option<model::SessionId>,
-    /// True while a rewind target refresh request is in flight.
-    pub rewind_targets_in_flight: bool,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
-    /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
-    pub available_agents: Vec<model::AvailableAgent>,
-    /// Models advertised by the agent SDK for the active session.
-    pub available_models: Vec<model::AvailableModel>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
@@ -171,6 +158,7 @@ impl App {
             settings_home_override: None,
             transcript: Transcript::default(),
             session_runtime: SessionRuntimeState::test_default(),
+            sdk_inventory: SdkInventoryState::default(),
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
@@ -189,16 +177,9 @@ impl App {
             spinner_last_advance_at: None,
             tool_call_scopes: HashMap::default(),
             terminals: std::rc::Rc::default(),
-            tasks: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
-            available_commands: Vec::new(),
-            rewind_targets: Vec::new(),
-            rewind_targets_session_id: None,
-            rewind_targets_in_flight: false,
             plugins: PluginsState::default(),
-            available_agents: Vec::new(),
-            available_models: Vec::new(),
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             chat_render: ChatRenderState::default(),

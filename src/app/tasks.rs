@@ -6,12 +6,12 @@ use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
 
 pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpdate) {
-    let previous_tasks = app.tasks.clone();
+    let previous_tasks = app.sdk_inventory.tasks.clone();
     let removed: HashSet<&str> =
         update.removed_task_ids.iter().map(std::string::String::as_str).collect();
 
     if update.is_complete_snapshot {
-        app.tasks = update
+        app.sdk_inventory.tasks = update
             .tasks
             .into_iter()
             .filter(|task| !removed.contains(task.task_id.as_str()))
@@ -21,7 +21,7 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
     }
 
     if !removed.is_empty() {
-        app.tasks.retain(|task| !removed.contains(task.task_id.as_str()));
+        app.sdk_inventory.tasks.retain(|task| !removed.contains(task.task_id.as_str()));
     }
 
     for task in update.tasks {
@@ -29,18 +29,18 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
             continue;
         }
         if let Some(existing) =
-            app.tasks.iter_mut().find(|existing| existing.task_id == task.task_id)
+            app.sdk_inventory.tasks.iter_mut().find(|existing| existing.task_id == task.task_id)
         {
             *existing = task;
         } else {
-            app.tasks.push(task);
+            app.sdk_inventory.tasks.push(task);
         }
     }
     refresh_task_tool_displays_with_previous(app, &previous_tasks);
 }
 
 pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
-    let previous_tasks = app.tasks.clone();
+    let previous_tasks = app.sdk_inventory.tasks.clone();
     refresh_task_tool_displays_with_previous(app, &previous_tasks)
 }
 
@@ -48,7 +48,7 @@ fn refresh_task_tool_displays_with_previous(
     app: &mut App,
     previous_tasks: &[model::TaskItem],
 ) -> bool {
-    let current_tasks = app.tasks.clone();
+    let current_tasks = app.sdk_inventory.tasks.clone();
     let mut dirty_blocks = Vec::new();
 
     for (message_idx, message) in app.transcript.messages.iter_mut().enumerate() {
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn singular_updates_merge_by_task_id() {
         let mut app = App::test_default();
-        app.tasks.push(task("task-1", "old", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task("task-1", "old", model::TaskStatus::Pending));
 
         apply_task_state_update(
             &mut app,
@@ -298,16 +298,16 @@ mod tests {
             )]),
         );
 
-        assert_eq!(app.tasks.len(), 1);
-        assert_eq!(app.tasks[0].subject, "new");
-        assert_eq!(app.tasks[0].status, model::TaskStatus::InProgress);
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].subject, "new");
+        assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
     }
 
     #[test]
     fn removed_task_ids_remove_state() {
         let mut app = App::test_default();
-        app.tasks.push(task("task-1", "one", model::TaskStatus::Pending));
-        app.tasks.push(task("task-2", "two", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task("task-1", "one", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task("task-2", "two", model::TaskStatus::Pending));
 
         apply_task_state_update(
             &mut app,
@@ -315,15 +315,15 @@ mod tests {
                 .removed_task_ids(vec!["task-1".to_owned()]),
         );
 
-        assert_eq!(app.tasks.len(), 1);
-        assert_eq!(app.tasks[0].task_id, "task-2");
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-2");
     }
 
     #[test]
     fn complete_snapshot_replaces_membership() {
         let mut app = App::test_default();
-        app.tasks.push(task("task-1", "one", model::TaskStatus::Pending));
-        app.tasks.push(task("task-2", "two", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task("task-1", "one", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task("task-2", "two", model::TaskStatus::Pending));
 
         apply_task_state_update(
             &mut app,
@@ -332,9 +332,9 @@ mod tests {
                 .complete_snapshot(true),
         );
 
-        assert_eq!(app.tasks.len(), 1);
-        assert_eq!(app.tasks[0].task_id, "task-2");
-        assert_eq!(app.tasks[0].subject, "two updated");
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-2");
+        assert_eq!(app.sdk_inventory.tasks[0].subject, "two updated");
     }
 
     #[test]
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn in_progress_update_uses_task_subject_and_activity() {
         let mut app = App::test_default();
-        app.tasks.push(
+        app.sdk_inventory.tasks.push(
             task("1", "Scaffold Next.js 15 app via create-next-app", model::TaskStatus::Pending)
                 .active_form("Scaffolding Next.js app"),
         );
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn completed_update_clears_redundant_activity_content() {
         let mut app = App::test_default();
-        app.tasks.push(task(
+        app.sdk_inventory.tasks.push(task(
             "1",
             "Scaffold Next.js 15 app via create-next-app",
             model::TaskStatus::Completed,
@@ -424,7 +424,11 @@ mod tests {
     #[test]
     fn deleted_update_uses_previous_task_subject_after_removal() {
         let mut app = App::test_default();
-        app.tasks.push(task("1", "Remove temporary files", model::TaskStatus::Pending));
+        app.sdk_inventory.tasks.push(task(
+            "1",
+            "Remove temporary files",
+            model::TaskStatus::Pending,
+        ));
         insert_tool_call(
             &mut app,
             task_tool_call(
@@ -442,7 +446,7 @@ mod tests {
                 .removed_task_ids(vec!["1".to_owned()]),
         );
 
-        assert!(app.tasks.is_empty());
+        assert!(app.sdk_inventory.tasks.is_empty());
         assert_eq!(only_tool_call(&app).title, "Delete task #1: Remove temporary files");
     }
 }

@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn supported_advertised_slash_submit_falls_through_to_prompt_turn() {
         let (mut app, mut rx) = app_with_connection();
-        app.available_commands =
+        app.sdk_inventory.available_commands =
             vec![model::AvailableCommand::new("/remote-command", "Remote command")];
         app.input.set_text("/remote-command");
 

@@ -16,6 +16,7 @@ mod focus_runtime;
 mod git_runtime;
 mod paste;
 mod repaint;
+mod sdk_inventory;
 mod session_identity;
 mod session_runtime;
 mod startup;
@@ -43,6 +44,7 @@ pub use messages::{
 pub use paste::PasteState;
 pub use repaint::LayoutInvalidation as InvalidationLevel;
 pub use repaint::{ChatRenderTraceState, LayoutInvalidation};
+pub use sdk_inventory::SdkInventoryState;
 pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
 pub use tool_call_info::{
@@ -74,6 +76,7 @@ mod prelude {
     pub(super) use super::render_budget;
     pub(super) use super::repaint::LayoutInvalidation as InvalidationLevel;
     pub(super) use super::repaint::{ChatRenderTraceState, LayoutInvalidation};
+    pub(super) use super::sdk_inventory::SdkInventoryState;
     pub(super) use super::session_runtime::SessionRuntimeState;
     pub(super) use super::startup::StartupState;
     pub(super) use super::tool_call_info::ToolCallInfo;

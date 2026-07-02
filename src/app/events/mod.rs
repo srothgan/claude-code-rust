@@ -289,7 +289,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 source = cmds.source.as_deref().unwrap_or("unknown"),
                 generation = cmds.generation,
             );
-            app.available_commands = cmds.available_commands;
+            app.sdk_inventory.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
             if app.slash.is_some() {
                 super::slash::update_query(app);
@@ -303,7 +303,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 outcome = "success",
                 agent_count = agents.available_agents.len(),
             );
-            app.available_agents = agents.available_agents;
+            app.sdk_inventory.available_agents = agents.available_agents;
             if app.subagent.is_some() {
                 super::subagent::update_query(app);
             }

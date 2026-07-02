@@ -66,24 +66,24 @@ fn request_rewind_targets_for_active_argument(app: &mut App) {
     let SlashContext::Argument { command, arg_index, .. } = detection.context else {
         return;
     };
-    if command != "/rewind" || arg_index != 0 || app.rewind_targets_in_flight {
+    if command != "/rewind" || arg_index != 0 || app.sdk_inventory.rewind_targets_in_flight {
         return;
     }
     let Some(session_id) = app.session_runtime.session_id.clone() else {
         return;
     };
-    if app.rewind_targets_session_id.as_ref() == Some(&session_id) {
+    if app.sdk_inventory.rewind_targets_session_id.as_ref() == Some(&session_id) {
         return;
     }
     let Some(conn) = app.session_runtime.conn.clone() else {
         return;
     };
     let session_id_text = session_id.to_string();
-    app.rewind_targets_in_flight = true;
-    app.rewind_targets.clear();
-    app.rewind_targets_session_id = None;
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets.clear();
+    app.sdk_inventory.rewind_targets_session_id = None;
     if let Err(err) = conn.get_rewind_targets(session_id_text.clone()) {
-        app.rewind_targets_in_flight = false;
+        app.sdk_inventory.rewind_targets_in_flight = false;
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "rewind_targets_request_failed",

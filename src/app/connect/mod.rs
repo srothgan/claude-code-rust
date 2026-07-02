@@ -17,7 +17,7 @@ use super::config::ConfigState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
-    SessionPickerState, SessionRuntimeState, StartupState, Transcript,
+    SdkInventoryState, SessionPickerState, SessionRuntimeState, StartupState, Transcript,
 };
 use super::trust;
 use super::view::SurfaceMode;
@@ -136,6 +136,7 @@ pub fn create_app(cli: &Cli) -> App {
             "-",
         )]),
         session_runtime: SessionRuntimeState::default(),
+        sdk_inventory: SdkInventoryState::default(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
@@ -157,16 +158,9 @@ pub fn create_app(cli: &Cli) -> App {
         spinner_last_advance_at: None,
         tool_call_scopes: HashMap::new(),
         terminals,
-        tasks: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
-        available_commands: Vec::new(),
-        rewind_targets: Vec::new(),
-        rewind_targets_session_id: None,
-        rewind_targets_in_flight: false,
         plugins: PluginsState::default(),
-        available_agents: Vec::new(),
-        available_models: Vec::new(),
         recent_sessions: Vec::new(),
         session_picker: SessionPickerState::default(),
         chat_render: super::ChatRenderState::default(),

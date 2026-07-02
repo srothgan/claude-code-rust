@@ -958,7 +958,8 @@ fn thinking_effort_rejects_max_as_persisted_setting() {
 #[test]
 fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_list() {
     let (_dir, mut app) = open_settings_test_app();
-    app.available_models = vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
+    app.sdk_inventory.available_models =
+        vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
     store::set_model(&mut app.config.committed_settings_document, Some("opus"));
     select_setting(&mut app, SettingId::ThinkingEffort);
 
@@ -974,7 +975,7 @@ fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_
 #[test]
 fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
     let (_dir, mut app) = open_settings_test_app();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(EffortLevel::ALL.to_vec()),
@@ -996,7 +997,7 @@ fn model_overlay_confirm_persists_model_without_rewriting_effort() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = open_settings_app_in_dir(&dir);
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("fable", "Fable 5").supports_effort(true),
         AvailableModel::new("opus", "Opus").supports_effort(true),
     ];
@@ -1025,7 +1026,7 @@ fn thinking_effort_overlay_confirm_persists_effort_without_rewriting_model() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = open_settings_app_in_dir(&dir);
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("fable", "Fable 5")
             .supports_effort(true)
             .supported_effort_levels(EffortLevel::PERSISTABLE_SETTINGS.to_vec()),
@@ -1108,7 +1109,7 @@ fn save_preserves_invalid_unedited_values() {
 #[test]
 fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let mut app = App::test_default();
-    app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
+    app.sdk_inventory.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
     store::set_model(&mut app.config.committed_settings_document, Some("unknown"));
 
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
@@ -1120,7 +1121,7 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
 #[test]
 fn resolved_model_accepts_runtime_alias_resolved_model_id() {
     let mut app = App::test_default();
-    app.available_models =
+    app.sdk_inventory.available_models =
         vec![AvailableModel::new("fable", "Fable 5").resolved_model("claude-fable-5")];
     store::set_model(&mut app.config.committed_settings_document, Some("claude-fable-5"));
 
@@ -1133,7 +1134,7 @@ fn resolved_model_accepts_runtime_alias_resolved_model_id() {
 #[test]
 fn model_overlay_options_are_sorted_alphabetically() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("sonnet", "Sonnet"),
         AvailableModel::new("haiku", "Haiku"),
         AvailableModel::new("opus", "Opus"),

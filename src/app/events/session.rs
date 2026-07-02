@@ -52,7 +52,7 @@ pub(super) fn handle_connected_client_event(
         true,
         ChatResetRenderMode::PreserveInlineViewport,
     );
-    app.available_models = available_models;
+    app.sdk_inventory.available_models = available_models;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
@@ -194,8 +194,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    app.rewind_targets_in_flight = false;
-    app.rewind_targets_session_id = None;
+    app.sdk_inventory.rewind_targets_in_flight = false;
+    app.sdk_inventory.rewind_targets_session_id = None;
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
@@ -308,7 +308,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     apply_session_cwd(app, cwd);
-    app.available_models = available_models;
+    app.sdk_inventory.available_models = available_models;
     reset_for_new_session(
         app,
         session_id,

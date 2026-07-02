@@ -48,9 +48,7 @@ fn reset_session_identity_state(
     app.session_runtime.login_hint = None;
     super::clear_compaction_state(app, false);
     app.session_runtime.session_usage = super::super::SessionUsageState::default();
-    app.rewind_targets.clear();
-    app.rewind_targets_session_id = None;
-    app.rewind_targets_in_flight = false;
+    app.sdk_inventory.clear_rewind_targets();
     app.status = super::super::AppStatus::Ready;
     app.session_runtime.fast_mode_state = model::FastModeState::Off;
     app.session_runtime.runtime_session_state = None;
@@ -86,10 +84,10 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.turn.reset_for_new_session();
     app.clear_tool_scope_tracking();
     app.clear_tool_call_index();
-    app.tasks.clear();
+    app.sdk_inventory.tasks.clear();
     app.focus = super::super::FocusManager::default();
-    app.available_commands.clear();
-    app.available_agents.clear();
+    app.sdk_inventory.available_commands.clear();
+    app.sdk_inventory.available_agents.clear();
     app.config.clear_overlay();
     app.config.pending_session_title_change = None;
 }
@@ -262,15 +260,15 @@ mod tests {
     #[test]
     fn session_reset_clears_rewind_target_state() {
         let mut app = App::test_default();
-        app.rewind_targets = vec![model::RewindTarget {
+        app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
             uuid: "user-1".to_owned(),
             first_text: "prompt".to_owned(),
             input_text: "prompt".to_owned(),
             index: 0,
             previous_assistant_uuid: None,
         }];
-        app.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
-        app.rewind_targets_in_flight = true;
+        app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
+        app.sdk_inventory.rewind_targets_in_flight = true;
 
         reset_for_new_session(
             &mut app,
@@ -281,8 +279,8 @@ mod tests {
             ChatResetRenderMode::DeferTranscriptRender,
         );
 
-        assert!(app.rewind_targets.is_empty());
-        assert!(app.rewind_targets_session_id.is_none());
-        assert!(!app.rewind_targets_in_flight);
+        assert!(app.sdk_inventory.rewind_targets.is_empty());
+        assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
+        assert!(!app.sdk_inventory.rewind_targets_in_flight);
     }
 }

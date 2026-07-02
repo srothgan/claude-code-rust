@@ -122,7 +122,7 @@ fn build_subagent_state(app: &App) -> Option<SubagentState> {
         app.input.cursor_row(),
         app.input.cursor_col(),
     )?;
-    let candidates = filter_candidates(&app.available_agents, &detection.query);
+    let candidates = filter_candidates(&app.sdk_inventory.available_agents, &detection.query);
     if candidates.is_empty() {
         return None;
     }
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_when_subagent_token_is_valid() {
         let mut app = App::test_default();
-        app.available_agents = vec![
+        app.sdk_inventory.available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
             crate::agent::model::AvailableAgent::new("explore", "Explore codebase"),
         ];
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_on_bare_ampersand_at_line_end() {
         let mut app = App::test_default();
-        app.available_agents =
+        app.sdk_inventory.available_agents =
             vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
         app.input.set_text("&");
 

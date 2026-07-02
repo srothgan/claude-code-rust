@@ -943,7 +943,11 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
 #[test]
 fn todowrite_tool_call_does_not_mutate_task_state() {
     let mut app = make_test_app();
-    app.tasks.push(task_item("task-1", "Existing task", model::TaskStatus::InProgress));
+    app.sdk_inventory.tasks.push(task_item(
+        "task-1",
+        "Existing task",
+        model::TaskStatus::InProgress,
+    ));
     let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
         .kind(model::ToolKind::Other)
         .raw_input(serde_json::json!({
@@ -964,10 +968,10 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    assert_eq!(app.tasks.len(), 1);
-    assert_eq!(app.tasks[0].task_id, "task-1");
-    assert_eq!(app.tasks[0].subject, "Existing task");
-    assert_eq!(app.tasks[0].status, model::TaskStatus::InProgress);
+    assert_eq!(app.sdk_inventory.tasks.len(), 1);
+    assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-1");
+    assert_eq!(app.sdk_inventory.tasks[0].subject, "Existing task");
+    assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
 }
 
 #[test]
@@ -1161,7 +1165,7 @@ fn test_app_defaults() {
     assert_eq!(app.files_accessed, 0);
     assert!(app.turn.pending_interaction_ids.is_empty());
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(app.tasks.is_empty());
+    assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());
     assert!(!app.turn.cancelled_pending_hint);
     assert!(matches!(app.status, AppStatus::Ready));
@@ -1776,7 +1780,7 @@ fn session_replaced_resets_chat_and_transient_state() {
     app.status = AppStatus::Running;
     app.files_accessed = 9;
     app.turn.pending_interaction_ids.push("perm-1".into());
-    app.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
+    app.sdk_inventory.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
     app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "supabase".into(),
@@ -1814,7 +1818,7 @@ fn session_replaced_resets_chat_and_transient_state() {
     assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert_eq!(app.files_accessed, 0);
     assert!(app.turn.pending_interaction_ids.is_empty());
-    assert!(app.tasks.is_empty());
+    assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.removed_config_servers.is_empty());
@@ -2201,9 +2205,9 @@ fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
 #[test]
 fn slash_command_error_clears_rewind_target_loading_state() {
     let mut app = make_test_app();
-    app.rewind_targets_in_flight = true;
-    app.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".into(),
         first_text: "hello".into(),
         input_text: "hello".into(),
@@ -2216,8 +2220,8 @@ fn slash_command_error_clears_rewind_target_loading_state() {
         ClientEvent::SlashCommandError("failed to load rewind targets".into()),
     );
 
-    assert!(!app.rewind_targets_in_flight);
-    assert!(app.rewind_targets_session_id.is_none());
+    assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
 }
 
 #[test]
@@ -5037,7 +5041,7 @@ fn available_commands_update_replaces_previous_commands() {
     );
 
     assert_eq!(
-        app.available_commands,
+        app.sdk_inventory.available_commands,
         vec![model::AvailableCommand::new("/new", "New command").input_hint("<arg>")]
     );
 }

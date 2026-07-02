@@ -714,8 +714,8 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if !app.available_models.is_empty()
-        && !app.available_models.iter().any(|candidate| candidate.id == model_name)
+    if !app.sdk_inventory.available_models.is_empty()
+        && !app.sdk_inventory.available_models.iter().any(|candidate| candidate.id == model_name)
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
         return true;
@@ -806,8 +806,12 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
     let agent = if requested_agent == "reset" {
         None
     } else {
-        if !app.available_agents.is_empty()
-            && !app.available_agents.iter().any(|candidate| candidate.name == requested_agent)
+        if !app.sdk_inventory.available_agents.is_empty()
+            && !app
+                .sdk_inventory
+                .available_agents
+                .iter()
+                .any(|candidate| candidate.name == requested_agent)
         {
             push_system_message(app, format!("Unknown agent: {requested_agent}"));
             return true;
@@ -898,7 +902,9 @@ fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, usage(AppSlashCommand::Rewind));
         return true;
     };
-    let Some(target) = app.rewind_targets.iter().find(|target| target.uuid == target_uuid) else {
+    let Some(target) =
+        app.sdk_inventory.rewind_targets.iter().find(|target| target.uuid == target_uuid)
+    else {
         push_system_message(app, format!("Unknown rewind target: {target_uuid}"));
         return true;
     };
@@ -971,10 +977,11 @@ fn build_docs_mode_markdown(app: &App) -> String {
 }
 
 fn build_docs_models_markdown(app: &App) -> String {
-    let rows = if app.available_models.is_empty() {
+    let rows = if app.sdk_inventory.available_models.is_empty() {
         vec![("Unavailable".to_owned(), "Connect to load advertised models.".to_owned())]
     } else {
-        app.available_models
+        app.sdk_inventory
+            .available_models
             .iter()
             .map(|model| {
                 let name = if model.display_name.trim().is_empty() {

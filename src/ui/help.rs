@@ -217,7 +217,7 @@ fn build_slash_command_items(app: &App) -> Vec<(String, String)> {
         .map(|spec| (spec.name.to_owned(), spec.long_description.to_owned()))
         .collect();
 
-    for cmd in &app.available_commands {
+    for cmd in &app.sdk_inventory.available_commands {
         let name =
             if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
         if crate::app::slash::app_owned_command_name(&name).is_some() {
@@ -255,6 +255,7 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     let mut agents: Vec<(String, String)> = app
+        .sdk_inventory
         .available_agents
         .iter()
         .filter(|agent| !agent.name.trim().is_empty())

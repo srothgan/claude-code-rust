@@ -360,7 +360,7 @@ async fn todowrite_update_raw_input_does_not_mutate_task_state() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    assert!(app.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
+    assert!(app.sdk_inventory.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
     let tc = tool_call_block(&app, "tc-todo-up");
     assert_eq!(tc.sdk_tool_name, "TodoWrite");
 }

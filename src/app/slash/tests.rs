@@ -33,7 +33,7 @@ fn unsupported_command_is_handled_locally() {
 #[test]
 fn advertised_command_is_forwarded() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/remote-command", "Remote command")];
     let consumed = try_handle_submit(&mut app, "/remote-command");
     assert!(!consumed);
@@ -85,7 +85,7 @@ fn app_config_shadows_advertised_config_command() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
 
     let consumed = try_handle_submit(&mut app, "/config");
@@ -100,7 +100,7 @@ fn app_config_shadows_advertised_config_command() {
 #[test]
 fn app_config_candidate_ignores_advertised_config_metadata() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
     app.input.set_text("/config");
     let _ = app.input.set_cursor(0, "/config".chars().count());
@@ -116,7 +116,7 @@ fn app_config_candidate_ignores_advertised_config_metadata() {
 #[test]
 fn app_config_does_not_enter_advertised_argument_mode() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
     app.input.set_text("/config ");
     let _ = app.input.set_cursor(0, "/config ".chars().count());
@@ -616,7 +616,7 @@ fn mode_argument_candidates_are_dynamic() {
 #[test]
 fn model_argument_candidates_are_dynamic() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
             .description("Balanced coding model"),
         crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -631,7 +631,7 @@ fn model_argument_candidates_are_dynamic() {
 #[test]
 fn model_argument_candidates_include_sdk_default_option() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("default", "Default")
             .description("Default (recommended)"),
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -655,7 +655,7 @@ fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
         }
     });
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("opus", "Opus")
             .description("Opus 4.7 · Most capable for complex work"),
     ];
@@ -673,7 +673,7 @@ fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
 #[test]
 fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("opus", "Opus")
             .description("Opus 4.7 · Most capable for complex work"),
     ];
@@ -691,7 +691,7 @@ fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
 #[test]
 fn agent_argument_candidates_include_reset_and_available_agents() {
     let mut app = App::test_default();
-    app.available_agents = vec![
+    app.sdk_inventory.available_agents = vec![
         crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("claude-opus"),
         crate::agent::model::AvailableAgent::new("planner", "Plan work"),
     ];
@@ -713,7 +713,7 @@ fn agent_argument_candidates_include_reset_and_available_agents() {
 #[test]
 fn agent_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
-    app.available_agents = vec![
+    app.sdk_inventory.available_agents = vec![
         crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
         crate::agent::model::AvailableAgent::new("planner", "Plan work"),
     ];
@@ -738,8 +738,8 @@ fn rewind_argument_candidates_use_cached_targets() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
     app.session_runtime.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
-    app.rewind_targets = vec![
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
+    app.sdk_inventory.rewind_targets = vec![
         model::RewindTarget {
             uuid: "user-1".to_owned(),
             first_text: "first prompt".to_owned(),
@@ -779,8 +779,8 @@ fn rewind_argument_candidates_use_cached_targets() {
 fn rewind_argument_candidates_hide_stale_targets() {
     let mut app = App::test_default();
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -805,7 +805,7 @@ fn rewind_argument_context_requests_targets_when_cache_is_stale() {
 
     sync_with_cursor(&mut app);
 
-    assert!(app.rewind_targets_in_flight);
+    assert!(app.sdk_inventory.rewind_targets_in_flight);
     let envelope = rx.try_recv().expect("rewind target request");
     assert!(matches!(
         envelope.command,
@@ -836,7 +836,7 @@ fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
     app.session_runtime.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
@@ -851,8 +851,8 @@ fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result(
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
     app.session_runtime.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -946,7 +946,7 @@ fn docs_without_args_returns_usage() {
 #[test]
 fn docs_models_show_advertised_effort_levels() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
             .description("Balanced model")
             .supports_effort(true)
@@ -975,7 +975,8 @@ fn docs_models_show_advertised_effort_levels() {
 #[test]
 fn docs_commands_reuse_help_rows() {
     let mut app = App::test_default();
-    app.available_commands = vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
+    app.sdk_inventory.available_commands =
+        vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
 
     let consumed = try_handle_submit(&mut app, "/docs commands");
 
@@ -1002,7 +1003,7 @@ fn docs_commands_reuse_help_rows() {
 #[test]
 fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     let mut app = App::test_default();
-    app.available_commands = vec![
+    app.sdk_inventory.available_commands = vec![
         crate::agent::model::AvailableCommand::new("/config", "SDK config command")
             .input_hint("<setting>"),
     ];
@@ -1123,7 +1124,8 @@ async fn login_is_handled_as_builtin_even_when_advertised() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
+            app.sdk_inventory.available_commands =
+                vec![model::AvailableCommand::new("/login", "Login")];
 
             let consumed = try_handle_submit(&mut app, "/login");
             assert!(consumed, "/login should be handled locally even when SDK advertises it");
@@ -1196,7 +1198,7 @@ fn rewind_with_missing_target_returns_usage() {
 #[test]
 fn rewind_with_cached_target_requires_connection() {
     let mut app = App::test_default();
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -1224,7 +1226,7 @@ fn rewind_with_cached_target_sends_bridge_command() {
     app.session_runtime.conn =
         Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -1490,7 +1492,7 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
             app.session_runtime.conn =
                 Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
             app.session_runtime.session_id = Some("sess-1".into());
-            app.available_agents =
+            app.sdk_inventory.available_agents =
                 vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
             let consumed = try_handle_submit(&mut app, "/agent reviewer");
@@ -1592,7 +1594,7 @@ fn agent_rejects_unknown_when_available_agents_are_populated() {
     app.session_runtime.conn =
         Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
     app.session_runtime.session_id = Some("sess-1".into());
-    app.available_agents =
+    app.sdk_inventory.available_agents =
         vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
     let consumed = try_handle_submit(&mut app, "/agent planner");

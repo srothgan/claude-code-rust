@@ -337,6 +337,7 @@ impl OverlayModelOption {
 
 pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
     let mut options = app
+        .sdk_inventory
         .available_models
         .iter()
         .map(|model| OverlayModelOption {

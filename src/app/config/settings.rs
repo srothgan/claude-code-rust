@@ -561,7 +561,7 @@ pub fn setting_spec(id: SettingId) -> &'static SettingSpec {
 #[must_use]
 pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
     let document = app.config.document_for(spec.file);
-    resolve_setting_document(document, spec.id, &app.available_models)
+    resolve_setting_document(document, spec.id, &app.sdk_inventory.available_models)
 }
 
 #[must_use]
@@ -628,7 +628,7 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
                 options.iter().map(|option| option.label.to_owned()).collect()
             }
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
-                if app.available_models.is_empty() {
+                if app.sdk_inventory.available_models.is_empty() {
                     vec![
                         DEFAULT_MODEL_ALIAS_LABEL.to_owned(),
                         "Connect to load available models".to_owned(),

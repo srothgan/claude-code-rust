@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn bare_subagent_trigger_renders_single_placeholder_row() {
         let mut app = App::test_default();
-        app.available_agents =
+        app.sdk_inventory.available_agents =
             vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
         app.input.set_text("&");
         let _ = app.input.set_cursor(0, 1);

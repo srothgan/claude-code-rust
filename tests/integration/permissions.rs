@@ -206,11 +206,11 @@ async fn turn_complete_does_not_clear_tool_call_index() {
 async fn turn_complete_does_not_clear_tasks() {
     let mut app = test_app();
 
-    app.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
+    app.sdk_inventory.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert_eq!(app.tasks.len(), 1, "tasks should persist across turns");
+    assert_eq!(app.sdk_inventory.tasks.len(), 1, "tasks should persist across turns");
 }
 
 #[tokio::test]
