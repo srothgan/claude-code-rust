@@ -31,6 +31,7 @@ const failures = [];
 const packageManifests = [];
 
 verifyDistDir();
+exitIfFailures();
 fs.rmSync(manifestsDir, { recursive: true, force: true });
 fs.mkdirSync(manifestsDir, { recursive: true });
 
@@ -54,11 +55,7 @@ writeJson(path.join(manifestsDir, "summary.json"), {
 });
 
 if (failures.length > 0) {
-  console.error(`npm package verification failed with ${failures.length} issue(s):`);
-  for (const failure of failures) {
-    console.error(`- ${failure}`);
-  }
-  process.exit(1);
+  exitIfFailures();
 }
 
 console.log(`Verified ${packageManifests.length} npm packages in ${path.relative(repoRoot, distDir)}`);
@@ -160,6 +157,11 @@ function readPackageJson(packageDir) {
 }
 
 function listPackageFiles(packageDir) {
+  if (!fs.existsSync(packageDir)) {
+    fail(`Missing package directory: ${path.relative(repoRoot, packageDir)}`);
+    return [];
+  }
+
   const files = [];
   collectFiles(packageDir, packageDir, files);
   return files.sort();
@@ -182,6 +184,10 @@ function collectFiles(root, currentDir, files) {
 }
 
 function packAndVerify(packageDir, context, allowedFile) {
+  if (!fs.existsSync(packageDir)) {
+    return { files: [] };
+  }
+
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-npm-pack-cache-"));
   try {
     const output = runNpm(["pack", ".", "--dry-run", "--json", "--cache", cacheDir], packageDir);
@@ -382,6 +388,18 @@ function expectDeepEqual(actual, expected, label) {
 
 function fail(message) {
   failures.push(message);
+}
+
+function exitIfFailures() {
+  if (failures.length === 0) {
+    return;
+  }
+
+  console.error(`npm package verification failed with ${failures.length} issue(s):`);
+  for (const failure of failures) {
+    console.error(`- ${failure}`);
+  }
+  process.exit(1);
 }
 
 function writeJson(destination, value) {
