@@ -1,0 +1,213 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  DIST_NPM_DIR,
+  PLATFORM_PACKAGES,
+  buildPlatformPackageJson,
+  buildRootPackageJson,
+  readCargoPackageMetadata,
+  readJson
+} from "./npm-package-config.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "..");
+
+const options = parseArgs(process.argv.slice(2));
+if (options.help) {
+  printHelp();
+  process.exit(0);
+}
+
+const outDir = path.resolve(repoRoot, options.outDir ?? DIST_NPM_DIR);
+const binaryRoot = path.resolve(repoRoot, options.binaryRoot ?? "dist-platform");
+const cargoPackage = readCargoPackageMetadata(path.join(repoRoot, "Cargo.toml"));
+const version = options.version ?? cargoPackage.version;
+const rootPackageJson = readJson(path.join(repoRoot, "package.json"));
+const agentSdkPackageJson = readJson(path.join(repoRoot, "agent-sdk", "package.json"));
+
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  throw new Error(`Invalid package version: ${version}`);
+}
+
+fs.rmSync(outDir, { recursive: true, force: true });
+fs.mkdirSync(outDir, { recursive: true });
+
+generateRootPackage();
+for (const platformPackage of PLATFORM_PACKAGES) {
+  generatePlatformPackage(platformPackage);
+}
+
+console.log(`Generated npm packages in ${path.relative(repoRoot, outDir)}`);
+
+function generateRootPackage() {
+  const packageDir = path.join(outDir, "root");
+  fs.mkdirSync(packageDir, { recursive: true });
+
+  writeJson(
+    path.join(packageDir, "package.json"),
+    buildRootPackageJson({ version, rootPackageJson, agentSdkPackageJson })
+  );
+  copyFileFromRepo("bin/claude-rs.js", path.join(packageDir, "bin", "claude-rs.js"));
+  copyAgentSdkRuntime(path.join(packageDir, "agent-sdk"));
+  copyFileFromRepo("README.md", path.join(packageDir, "README.md"));
+  copyFileFromRepo("LICENSE", path.join(packageDir, "LICENSE"));
+}
+
+function generatePlatformPackage(platformPackage) {
+  const packageDir = path.join(outDir, platformPackage.dir);
+  fs.mkdirSync(packageDir, { recursive: true });
+
+  writeJson(
+    path.join(packageDir, "package.json"),
+    buildPlatformPackageJson({ platformPackage, version, rootPackageJson })
+  );
+  copyFileFromRepo("README.md", path.join(packageDir, "README.md"));
+  copyFileFromRepo("LICENSE", path.join(packageDir, "LICENSE"));
+
+  const destination = path.join(packageDir, "bin", platformPackage.binaryName);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+
+  if (options.mockBinaries) {
+    writeMockBinary(platformPackage, destination);
+    return;
+  }
+
+  const source = path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.binaryName);
+  if (!fs.existsSync(source)) {
+    throw new Error(
+      `Missing binary for ${platformPackage.packageName}: ${path.relative(repoRoot, source)}. ` +
+        "Build/stage binaries first or pass --mock-binaries."
+    );
+  }
+
+  fs.copyFileSync(source, destination);
+  ensureExecutableMode(platformPackage, destination);
+}
+
+function copyAgentSdkRuntime(destinationDir) {
+  const sourceDist = path.join(repoRoot, "agent-sdk", "dist");
+  if (!fs.existsSync(path.join(sourceDist, "bridge.js"))) {
+    throw new Error(
+      "Missing agent-sdk/dist/bridge.js. Run `npm --prefix agent-sdk run build` before generating packages."
+    );
+  }
+
+  fs.mkdirSync(destinationDir, { recursive: true });
+  writeJson(path.join(destinationDir, "package.json"), {
+    private: true,
+    type: "module"
+  });
+  copyDirectoryFiltered(sourceDist, path.join(destinationDir, "dist"), (sourcePath) => {
+    const relativePath = path.relative(sourceDist, sourcePath).replaceAll(path.sep, "/");
+    return !relativePath.endsWith(".test.js") && !relativePath.endsWith(".map");
+  });
+}
+
+function copyDirectoryFiltered(sourceDir, destinationDir, includePath) {
+  fs.mkdirSync(destinationDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const source = path.join(sourceDir, entry.name);
+    const destination = path.join(destinationDir, entry.name);
+
+    if (!includePath(source)) {
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      copyDirectoryFiltered(source, destination, includePath);
+      continue;
+    }
+
+    if (entry.isFile()) {
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(source, destination);
+    }
+  }
+}
+
+function copyFileFromRepo(relativeSource, destination) {
+  const source = path.join(repoRoot, relativeSource);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+}
+
+function writeMockBinary(platformPackage, destination) {
+  const isWindows = platformPackage.os.includes("win32");
+  const content = isWindows
+    ? "@echo off\r\necho claude-rs 0.0.0-mock\r\n"
+    : "#!/usr/bin/env sh\necho \"claude-rs 0.0.0-mock\"\n";
+
+  fs.writeFileSync(destination, content, "utf8");
+  ensureExecutableMode(platformPackage, destination);
+}
+
+function ensureExecutableMode(platformPackage, destination) {
+  if (!platformPackage.os.includes("win32")) {
+    fs.chmodSync(destination, 0o755);
+  }
+}
+
+function writeJson(destination, value) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function parseArgs(args) {
+  const parsed = {
+    help: false,
+    mockBinaries: false,
+    version: undefined,
+    binaryRoot: undefined,
+    outDir: undefined
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    switch (arg) {
+      case "--help":
+      case "-h":
+        parsed.help = true;
+        break;
+      case "--mock-binaries":
+        parsed.mockBinaries = true;
+        break;
+      case "--version":
+        parsed.version = readArgValue(args, ++index, arg);
+        break;
+      case "--binary-root":
+        parsed.binaryRoot = readArgValue(args, ++index, arg);
+        break;
+      case "--out-dir":
+        parsed.outDir = readArgValue(args, ++index, arg);
+        break;
+      default:
+        throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return parsed;
+}
+
+function readArgValue(args, index, flag) {
+  const value = args[index];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`Missing value for ${flag}`);
+  }
+  return value;
+}
+
+function printHelp() {
+  console.log(`Usage: node scripts/generate-npm-packages.mjs [options]
+
+Options:
+  --version <version>       Override the package version. Defaults to Cargo.toml.
+  --binary-root <dir>       Directory containing staged platform binaries.
+                            Defaults to dist-platform.
+  --out-dir <dir>           Output directory. Defaults to dist-npm.
+  --mock-binaries           Generate placeholder platform binaries for layout tests.
+  -h, --help                Show this help.
+`);
+}

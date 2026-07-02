@@ -6,56 +6,23 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const TARGETS = {
-  "darwin:arm64": { target: "aarch64-apple-darwin", exe: "claude-rs" },
-  "darwin:x64": { target: "x86_64-apple-darwin", exe: "claude-rs" },
-  "linux:x64": { target: "x86_64-unknown-linux-gnu", exe: "claude-rs" },
-  "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rs.exe" }
-};
-
-const BRIDGE_RUNTIME_EXE =
-  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
-const BRIDGE_RUNTIME_VERSION_MARKER = ".bridge-node-version";
-
-// Postinstall copies the installing Node as the bridge runtime, but postinstall
-// only runs on package install - a later Node upgrade leaves the copy stale.
-// Since this launcher runs under the user's current Node on every start, it can
-// cheaply detect the mismatch via the version marker and refresh the copy.
-// Best-effort: if the copy is locked by a running session or anything else
-// fails, keep the existing runtime and retry on a future launch.
-function refreshBridgeRuntime(installDir) {
-  const runtimePath = path.join(installDir, BRIDGE_RUNTIME_EXE);
-  const markerPath = path.join(installDir, BRIDGE_RUNTIME_VERSION_MARKER);
-  const tempPath = `${runtimePath}.tmp-${process.pid}`;
-
-  try {
-    if (!fs.existsSync(runtimePath)) {
-      return;
-    }
-
-    let markerVersion = "";
-    try {
-      markerVersion = fs.readFileSync(markerPath, "utf8").trim();
-    } catch {
-      // Missing or unreadable marker: treat the copy as stale and refresh.
-    }
-    if (markerVersion === process.version) {
-      return;
-    }
-
-    fs.copyFileSync(process.execPath, tempPath);
-    if (process.platform !== "win32") {
-      fs.chmodSync(tempPath, 0o755);
-    }
-    fs.renameSync(tempPath, runtimePath);
-    fs.writeFileSync(markerPath, `${process.version}\n`);
-  } catch {
-    try {
-      fs.rmSync(tempPath, { force: true });
-    } catch {
-      // Leave the temp file for the OS/next run; the old runtime still works.
-    }
+  "darwin:arm64": {
+    packageName: "@srothgan/claude-code-rust-darwin-arm64",
+    exe: "claude-rs"
+  },
+  "darwin:x64": {
+    packageName: "@srothgan/claude-code-rust-darwin-x64",
+    exe: "claude-rs"
+  },
+  "linux:x64": {
+    packageName: "@srothgan/claude-code-rust-linux-x64-gnu",
+    exe: "claude-rs"
+  },
+  "win32:x64": {
+    packageName: "@srothgan/claude-code-rust-win32-x64-msvc",
+    exe: "claude-rs.exe"
   }
-}
+};
 
 function resolveInstall() {
   const key = `${process.platform}:${process.arch}`;
@@ -64,16 +31,43 @@ function resolveInstall() {
     return { error: `Unsupported platform/arch for claude-rs: ${key}` };
   }
 
-  const binaryPath = path.join(__dirname, "..", "vendor", info.target, info.exe);
+  let packageJsonPath;
+  try {
+    packageJsonPath = require.resolve(`${info.packageName}/package.json`);
+  } catch (error) {
+    if (error && error.code === "MODULE_NOT_FOUND") {
+      return {
+        error:
+          `Missing platform package ${info.packageName} for ${key}.\n` +
+          "This usually means npm optional dependencies were omitted.\n" +
+          "Check `npm config get omit`, then reinstall with:\n" +
+          "  npm install -g claude-code-rust"
+      };
+    }
+    throw error;
+  }
+
+  const binaryPath = path.join(path.dirname(packageJsonPath), "bin", info.exe);
   if (!fs.existsSync(binaryPath)) {
     return {
       error:
         `Missing binary at ${binaryPath}\n` +
-        "Reinstall with `npm install -g claude-code-rust` to fetch release artifacts."
+        `The installed ${info.packageName} package is incomplete. Reinstall with:\n` +
+        "  npm install -g claude-code-rust"
     };
   }
 
-  return { binaryPath };
+  const bundledBridgeScript = path.join(__dirname, "..", "agent-sdk", "dist", "bridge.js");
+  if (!fs.existsSync(bundledBridgeScript)) {
+    return {
+      error:
+        `Missing bundled bridge at ${bundledBridgeScript}\n` +
+        "The installed claude-code-rust package is incomplete. Reinstall with:\n" +
+        "  npm install -g claude-code-rust"
+    };
+  }
+
+  return { binaryPath, bundledBridgeScript };
 }
 
 const resolved = resolveInstall();
@@ -82,9 +76,11 @@ if (resolved.error) {
   process.exit(1);
 }
 
-refreshBridgeRuntime(path.dirname(resolved.binaryPath));
-
 const child = spawn(resolved.binaryPath, process.argv.slice(2), {
+  env: {
+    ...process.env,
+    CLAUDE_RS_AGENT_BRIDGE: process.env.CLAUDE_RS_AGENT_BRIDGE || resolved.bundledBridgeScript
+  },
   stdio: "inherit",
   windowsHide: true
 });
