@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-07-02 [Changes][v0.13.1]
+
+### Release and Packaging
+
+- **Platform npm packages** (#232, @srothgan): Replace the install-time GitHub Release downloader with a root launcher plus platform-specific optional npm packages for macOS arm64/x64, Linux x64 glibc, and Windows x64 MSVC.
+- **Trusted Publishing release flow** (#232, @srothgan): Publish platform packages before the root package from a protected `npm-release` environment, with package-content manifests, checksums, provenance, and binary attestations.
+- **Package validation** (#232, @srothgan): Add generated package assembly, package layout verification, and tarball smoke tests so release candidates and npm releases validate the installed launcher and platform binary layout before publishing.
+
+### Documentation
+
+- **Install architecture** (#232, @srothgan): Document the optional-dependency install model, platform package troubleshooting, source-build bridge behavior, and release invariants for contributors.
+
 ## [0.13.0] - 2026-07-02 [Changes][v0.13.0]
 
 ### Features
@@ -661,6 +673,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.13.1]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.1
 [v0.13.0]: https://github.com/srothgan/claude-code-rust/compare/v0.12.4...v0.13.0
 [v0.12.4]: https://github.com/srothgan/claude-code-rust/compare/v0.12.3...v0.12.4
 [v0.12.3]: https://github.com/srothgan/claude-code-rust/compare/v0.12.2...v0.12.3
