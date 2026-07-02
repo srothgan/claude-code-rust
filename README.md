@@ -30,7 +30,14 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 npm install -g claude-code-rust
 ```
 
-The published package installs a `claude-rs` command and fetches the matching prebuilt release binary for your platform during install.
+The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary for your OS and architecture.
+
+If `claude-rs` reports a missing platform package, check whether optional dependencies were omitted:
+
+```bash
+npm config get omit
+npm install -g claude-code-rust
+```
 
 If `claude-rs` resolves to an older global shim, ensure your npm global bin directory comes first on `PATH` or remove the stale shim before retrying.
 

@@ -93,6 +93,20 @@ cargo fetch --locked
 cargo +1.88.0 check --all-features
 ```
 
+### Release And Packaging Changes
+
+Release workflow changes are maintainer-owned and should preserve the package architecture described in `docs/src/architecture.md`.
+
+Important invariants:
+
+- The root npm package must not use `postinstall` or install-time binary downloads.
+- Native binaries live in platform-specific optional npm packages.
+- Platform packages must publish before the root package for a given version.
+- npm publication must use Trusted Publishing, not a checked-in token or `NPM_TOKEN`.
+- Release artifacts should be generated, verified, packed, and smoke-tested before publication.
+
+Do not trigger releases, create tags, or publish npm packages from contributor PRs.
+
 ## Coding Standards
 
 - **Formatting**: Use `rustfmt` (configured via `rustfmt.toml`)
