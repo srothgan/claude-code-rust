@@ -18,18 +18,31 @@ claude-rs --version
 claude-rs
 ```
 
-The package installs a `claude-rs` launcher. During `postinstall`, it downloads the matching prebuilt Rust binary from GitHub Releases into the package `vendor/` directory.
+The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary for your OS and architecture. No install-time binary download or `postinstall` script is used.
 
-Supported published binary targets:
+Supported npm platform packages:
 
-| Platform | Target |
+| Platform | Package |
 | --- | --- |
-| Linux x64 | `x86_64-unknown-linux-gnu` |
-| Windows x64 | `x86_64-pc-windows-msvc` |
-| macOS x64 | `x86_64-apple-darwin` |
-| macOS arm64 | `aarch64-apple-darwin` |
+| Linux x64 glibc | `@srothgan/claude-code-rust-linux-x64-gnu` |
+| Windows x64 | `@srothgan/claude-code-rust-win32-x64-msvc` |
+| macOS x64 | `@srothgan/claude-code-rust-darwin-x64` |
+| macOS arm64 | `@srothgan/claude-code-rust-darwin-arm64` |
 
-The installer also tries to copy the current Node.js executable next to the Rust binary as `claude-rs-bridge-node` or `claude-rs-bridge-node.exe`. If that copy fails, the Rust binary falls back to `node` on `PATH`.
+The root package exposes the global `claude-rs` command. The launcher resolves the matching platform package, passes the bundled Agent SDK bridge path to the Rust binary, and forwards CLI arguments unchanged.
+
+## Troubleshooting npm Installs
+
+If npm omitted optional dependencies, the launcher cannot find the native platform package. Check your npm config and reinstall:
+
+```bash
+npm config get omit
+npm install -g claude-code-rust
+```
+
+Avoid installing with `--omit=optional`; that prevents npm from installing the native binary package.
+
+If `claude-rs` resolves to an older global shim, ensure your npm global bin directory comes first on `PATH` or remove the stale shim before retrying.
 
 ## Build From Source
 
@@ -40,106 +53,50 @@ git clone https://github.com/srothgan/claude-code-rust.git
 cd claude-code-rust
 npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
-cargo run 
+cargo run
 ```
+
+Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built.
+
+For a release-mode source binary:
+
+```bash
+npm ci --prefix agent-sdk
+npm run build --prefix agent-sdk
+cargo build --release --locked --bin claude-rs
+./target/release/claude-rs --bridge-script ./agent-sdk/dist/bridge.js
+```
+
+On Windows, run `.\target\release\claude-rs.exe --bridge-script .\agent-sdk\dist\bridge.js`.
 
 ## Install A Source Or Fork Build Globally
 
-Use this path when you want a fully local build that can be launched as `claude-rs` from any directory. It installs through npm's global package location under the package name `claude-code-rust`, the same package name used by the published npm install. That means a later `npm install -g claude-code-rust` replaces the same global package and shim instead of competing with a separate `cargo install` binary on `PATH`.
+For a local global install that mirrors the published npm layout, generate local npm tarballs and install the root tarball together with the matching platform tarball.
 
-Do not use `cargo install --path .` for the global command if you want this behavior. `cargo install` writes to Cargo's bin directory and can create a separate `claude-rs` earlier or later on `PATH`.
+Build and stage the native binary under `dist-platform/<platform>/bin/`:
 
-### Windows x64
-
-```powershell
-git clone https://github.com/<you>/claude-code-rust.git
-cd claude-code-rust
-
-npm ci --prefix agent-sdk
-npm run build --prefix agent-sdk
-
-cargo build --release --locked --target x86_64-pc-windows-msvc --bin claude-rs
-
-$target = "x86_64-pc-windows-msvc"
-New-Item -ItemType Directory -Force "vendor\$target" | Out-Null
-Copy-Item "target\$target\release\claude-rs.exe" "vendor\$target\claude-rs.exe" -Force
-Copy-Item (Get-Command node).Source "vendor\$target\claude-rs-bridge-node.exe" -Force
-
-npm install -g . --ignore-scripts
-claude-rs --version
-```
-
-### Linux x64
-
-```bash
-git clone https://github.com/<you>/claude-code-rust.git
-cd claude-code-rust
-
-npm ci --prefix agent-sdk
-npm run build --prefix agent-sdk
-
-target=x86_64-unknown-linux-gnu
-cargo build --release --locked --target "$target" --bin claude-rs
-
-mkdir -p "vendor/$target"
-cp "target/$target/release/claude-rs" "vendor/$target/claude-rs"
-chmod +x "vendor/$target/claude-rs"
-cp "$(command -v node)" "vendor/$target/claude-rs-bridge-node"
-chmod +x "vendor/$target/claude-rs-bridge-node"
-
-npm install -g . --ignore-scripts
-claude-rs --version
-```
-
-### macOS
-
-For Apple Silicon:
-
-```bash
-target=aarch64-apple-darwin
-```
-
-For Intel macOS:
-
-```bash
-target=x86_64-apple-darwin
-```
+| Platform directory | Rust target | Binary |
+| --- | --- | --- |
+| `linux-x64-gnu` | `x86_64-unknown-linux-gnu` | `claude-rs` |
+| `win32-x64-msvc` | `x86_64-pc-windows-msvc` | `claude-rs.exe` |
+| `darwin-x64` | `x86_64-apple-darwin` | `claude-rs` |
+| `darwin-arm64` | `aarch64-apple-darwin` | `claude-rs` |
 
 Then run:
 
 ```bash
-git clone https://github.com/<you>/claude-code-rust.git
-cd claude-code-rust
-
+npm ci
 npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
-
-cargo build --release --locked --target "$target" --bin claude-rs
-
-mkdir -p "vendor/$target"
-cp "target/$target/release/claude-rs" "vendor/$target/claude-rs"
-chmod +x "vendor/$target/claude-rs"
-cp "$(command -v node)" "vendor/$target/claude-rs-bridge-node"
-chmod +x "vendor/$target/claude-rs-bridge-node"
-
-npm install -g . --ignore-scripts
-claude-rs --version
+node scripts/generate-npm-packages.mjs
+node scripts/verify-npm-packages.mjs
+node scripts/smoke-npm-package-install.mjs --platform <platform> --real-binary
+npm install -g ./dist-pack/claude-code-rust-<version>.tgz ./dist-pack/<platform-package-tarball>.tgz
 ```
 
-The local global install relies on the same launcher shape as the published npm package:
+The smoke command packs the generated packages into `dist-pack/` before installing them in a temporary project.
 
-- `bin/claude-rs.js` is installed as the global `claude-rs` shim.
-- `vendor/<target>/claude-rs` or `vendor/<target>/claude-rs.exe` is the Rust binary the shim launches.
-- `agent-sdk/dist/bridge.js` is included from the source checkout after `npm run build --prefix agent-sdk`.
-- `claude-rs-bridge-node` is a copied Node runtime, matching the published installer behavior. If that file is missing, the Rust binary falls back to `node` on `PATH`.
-
-To go back to the published package later:
-
-```bash
-npm install -g claude-code-rust
-```
-
-That overwrites the same global npm package and command shim.
+Do not use `cargo install --path .` if you want to test the npm install shape. `cargo install` writes only the Rust binary to Cargo's bin directory and does not install the bundled Agent SDK bridge or platform package layout.
 
 ## Manual Bridge Overrides
 
@@ -155,22 +112,21 @@ You can also set:
 CLAUDE_RS_AGENT_BRIDGE=/path/to/agent-sdk/dist/bridge.js
 ```
 
-If the bundled or system Node runtime needs an explicit override, set:
+If Node needs an explicit override, set:
 
 ```bash
 CLAUDE_RS_AGENT_BRIDGE_NODE=/path/to/node
 ```
 
-## Troubleshooting
+## Reporting Install Problems
 
-If `claude-rs` does not launch after npm install:
+Include:
 
-- Confirm the npm global bin directory is first on `PATH`.
-- Remove stale global shims from older installs.
-- Reinstall with `npm install -g claude-code-rust`.
-- Confirm your platform is one of the published targets above.
-- Confirm Node.js 18 or newer is available.
-- Confirm Claude Code authentication exists at `~/.claude/config.json`.
-- If running from source, confirm `agent-sdk/dist/bridge.js` exists.
-
-When reporting install problems, include the install method, OS, terminal, `node --version`, `claude-rs --version`, the command you ran, and the exact error output.
+- install method
+- OS and architecture
+- terminal
+- `node --version`
+- `npm config get omit`
+- `claude-rs --version`
+- the command you ran
+- the exact error output

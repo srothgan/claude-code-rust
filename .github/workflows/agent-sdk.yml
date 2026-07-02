@@ -1,6 +1,7 @@
 name: Agent SDK
 
 on:
+  workflow_call:
   push:
     branches: [main]
     paths:
@@ -35,15 +36,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run raw audit report
-        run: npm run audit:raw
-        continue-on-error: true
+      - name: Build bridge
+        run: npm run build
 
-      - name: Run direct dependency audit gate
-        run: npm run audit
+      - name: Run tests
+        run: npm run test
 
       - name: Run lint
         run: npm run lint
 
       - name: Run Knip
         run: npm run knip
+
+      - name: Run raw audit report
+        run: npm run audit:raw
+        continue-on-error: true
+
+      - name: Run direct dependency audit gate
+        run: npm run audit

@@ -5,148 +5,437 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Cargo.toml'
+      - "Cargo.toml"
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   verify:
+    name: Verify release inputs
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      tag: ${{ steps.get_version.outputs.tag }}
-      tag-exists: ${{ steps.check_tag.outputs.exists }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
 
-      - name: Get crate version
-        id: get_version
-        run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
 
-      - name: Check if tag exists
-        id: check_tag
+      - name: Require main branch
         run: |
-          if git rev-parse "refs/tags/${{ steps.get_version.outputs.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Release publishing is only allowed from refs/heads/main. Current ref: $GITHUB_REF"
+            exit 1
           fi
 
-  build-binaries:
+      - name: Read crate version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Invalid Cargo.toml package version: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      - name: Require new git tag
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release tag already exists: $TAG"
+            exit 1
+          fi
+
+      - name: Require new npm versions
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          check_absent() {
+            local package_name="$1"
+            local output
+            local status
+            set +e
+            output=$(npm view "${package_name}@${VERSION}" version --json 2>&1)
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "::error::npm package version already exists: ${package_name}@${VERSION}"
+              echo "$output"
+              exit 1
+            fi
+            if ! printf '%s\n' "$output" | grep -q 'E404'; then
+              echo "::error::Could not verify npm package absence for ${package_name}@${VERSION}"
+              echo "$output"
+              exit 1
+            fi
+            echo "OK: ${package_name}@${VERSION} is not published"
+          }
+
+          check_absent "claude-code-rust"
+          check_absent "@srothgan/claude-code-rust-darwin-arm64"
+          check_absent "@srothgan/claude-code-rust-darwin-x64"
+          check_absent "@srothgan/claude-code-rust-linux-x64-gnu"
+          check_absent "@srothgan/claude-code-rust-win32-x64-msvc"
+
+  agent-sdk-preflight:
     needs: [verify]
-    if: needs.verify.outputs.tag-exists == 'false'
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    uses: ./.github/workflows/agent-sdk.yml
+    permissions:
+      contents: read
+
+  build-binaries:
+    needs: [verify, agent-sdk-preflight]
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            exe_suffix: ""
-          - os: windows-latest
+            package_dir: linux-x64-gnu
+            exe: claude-rs
+            asset: claude-code-rust-x86_64-unknown-linux-gnu
+          - runner: windows-latest
             target: x86_64-pc-windows-msvc
-            exe_suffix: ".exe"
-          - os: macos-15-intel
+            package_dir: win32-x64-msvc
+            exe: claude-rs.exe
+            asset: claude-code-rust-x86_64-pc-windows-msvc.exe
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
-            exe_suffix: ""
-          - os: macos-15
+            package_dir: darwin-x64
+            exe: claude-rs
+            asset: claude-code-rust-x86_64-apple-darwin
+          - runner: macos-15
             target: aarch64-apple-darwin
-            exe_suffix: ""
+            package_dir: darwin-arm64
+            exe: claude-rs
+            asset: claude-code-rust-aarch64-apple-darwin
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }} --bin claude-rs
 
-      - name: Stage release asset
+      - name: Stage release artifacts
         shell: bash
         run: |
-          BINARY="claude-rs${{ matrix.exe_suffix }}"
-          ASSET="claude-code-rust-${{ matrix.target }}${{ matrix.exe_suffix }}"
-          mkdir -p dist
-          cp "target/${{ matrix.target }}/release/$BINARY" "dist/$ASSET"
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/${{ matrix.exe }}"
+          mkdir -p "dist-assets" "dist-platform/${{ matrix.package_dir }}/bin"
+          cp "$binary" "dist-assets/${{ matrix.asset }}"
+          cp "$binary" "dist-platform/${{ matrix.package_dir }}/bin/${{ matrix.exe }}"
+          chmod +x "dist-assets/${{ matrix.asset }}" "dist-platform/${{ matrix.package_dir }}/bin/${{ matrix.exe }}" 2>/dev/null || true
+          {
+            echo "git_sha=${{ github.sha }}"
+            echo "version=${{ needs.verify.outputs.version }}"
+            echo "rust_target=${{ matrix.target }}"
+            echo "runner_os=${{ runner.os }}"
+            echo "asset=${{ matrix.asset }}"
+            echo "package_dir=${{ matrix.package_dir }}"
+            echo "rustc_version<<EOF"
+            rustc -Vv
+            echo "EOF"
+          } > "dist-assets/${{ matrix.asset }}.build-metadata.txt"
 
-      - name: Upload staged asset
-        uses: actions/upload-artifact@v7
+      - name: Generate binary attestation
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
         with:
-          name: claude-code-rust-${{ matrix.target }}
-          path: dist/*
+          subject-path: dist-assets/${{ matrix.asset }}
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-binary-${{ matrix.package_dir }}
+          path: |
+            dist-assets/*
+            dist-platform/${{ matrix.package_dir }}/bin/*
           if-no-files-found: error
 
-  create-release:
-    needs: [verify, build-binaries]
-    if: needs.verify.outputs.tag-exists == 'false'
+  assemble-npm-packages:
+    needs: [verify, agent-sdk-preflight, build-binaries]
+    name: Assemble npm packages
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ needs.verify.outputs.tag }}" -m "Release ${{ needs.verify.outputs.tag }}"
-          git push origin "${{ needs.verify.outputs.tag }}"
-
-      - name: Download all assets
-        uses: actions/download-artifact@v8
-        with:
-          pattern: claude-code-rust-*
-          merge-multiple: true
-          path: dist
-
-      - name: Extract changelog entry
-        run: |
-          VERSION="${{ needs.verify.outputs.version }}"
-          awk '/^## \['"$VERSION"'\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md > release-notes.md
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.verify.outputs.tag }}
-          files: dist/*
-          fail_on_unmatched_files: true
-          body_path: release-notes.md
-
-  publish-npm:
-    needs: [verify, create-release]
-    if: needs.verify.outputs.tag-exists == 'false'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-sdk/package-lock.json
+
+      - name: Download staged binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-binary-*
+          merge-multiple: true
+          path: .
+
+      - name: Install root dependencies
+        run: npm ci
 
       - name: Install agent-sdk dependencies
         run: npm ci --prefix agent-sdk
 
-      - name: Sync package version from Cargo.toml
-        run: npm version "${{ needs.verify.outputs.version }}" --no-git-tag-version --allow-same-version
+      - name: Build agent-sdk bridge
+        run: npm --prefix agent-sdk run build
 
-      - name: Publish package to npm
-        run: npm publish --access public --provenance
+      - name: Assemble npm package directories
+        run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
+
+      - name: Verify npm package layout
+        run: node scripts/verify-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
+
+      - name: Pack npm tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p dist-pack
+          npm pack ./dist-npm/darwin-arm64 --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/darwin-x64 --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/linux-x64-gnu --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/win32-x64-msvc --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/root --pack-destination ./dist-pack --json
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          find dist-assets dist-pack dist-npm/manifests -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release package set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: |
+            dist-assets/*
+            dist-npm/manifests/*.json
+            dist-pack/*.tgz
+            SHA256SUMS
+          if-no-files-found: error
+
+  smoke-test-packages:
+    needs: [verify, assemble-npm-packages]
+    name: Smoke ${{ matrix.package_dir }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            package_dir: linux-x64-gnu
+          - runner: windows-latest
+            package_dir: win32-x64-msvc
+          - runner: macos-15-intel
+            package_dir: darwin-x64
+          - runner: macos-15
+            package_dir: darwin-arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Smoke-test installed npm tarballs
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
+
+  create-github-release:
+    needs: [verify, smoke-test-packages]
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Create release notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          awk '/^## \['"$VERSION"'\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            {
+              echo "Release ${{ needs.verify.outputs.tag }}"
+              echo
+              echo "Automated npm platform-package release for claude-code-rust $VERSION."
+            } > release-notes.md
+          fi
+
+      - name: Create annotated tag
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify.outputs.tag }}"
+          mapfile -t release_assets < <(find dist-assets dist-pack dist-npm/manifests -type f | sort)
+          release_assets+=(SHA256SUMS)
+          gh release create "$TAG" "${release_assets[@]}" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file release-notes.md
+
+  verify-release-attestations:
+    needs: [verify, create-github-release]
+    name: Verify binary attestations
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Verify build provenance attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          signer_workflow="srothgan/claude-code-rust/.github/workflows/release-npm.yml@refs/heads/main"
+          gh attestation verify dist-assets/claude-code-rust-x86_64-unknown-linux-gnu \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+          gh attestation verify dist-assets/claude-code-rust-x86_64-pc-windows-msvc.exe \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+          gh attestation verify dist-assets/claude-code-rust-x86_64-apple-darwin \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+          gh attestation verify dist-assets/claude-code-rust-aarch64-apple-darwin \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+
+  publish-platform-packages:
+    needs: [verify, verify-release-attestations]
+    name: Publish platform npm packages
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@11
+          npm --version
+
+      - name: Publish platform tarballs
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          publish_package() {
+            local package_name="$1"
+            local filename="${package_name#@}"
+            filename="${filename/\//-}-${VERSION}.tgz"
+            npm publish "dist-pack/$filename" --access public
+          }
+          publish_package "@srothgan/claude-code-rust-darwin-arm64"
+          publish_package "@srothgan/claude-code-rust-darwin-x64"
+          publish_package "@srothgan/claude-code-rust-linux-x64-gnu"
+          publish_package "@srothgan/claude-code-rust-win32-x64-msvc"
+
+  publish-root-package:
+    needs: [verify, publish-platform-packages]
+    name: Publish root npm package
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@11
+          npm --version
+
+      - name: Publish root tarball
+        run: npm publish "dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz" --access public

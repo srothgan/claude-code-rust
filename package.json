@@ -1,6 +1,6 @@
 {
   "name": "claude-code-rust",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Claude Code Rust - native Rust terminal interface for Claude Code",
   "keywords": [
     "cli",
@@ -29,7 +29,6 @@
   "files": [
     "bin",
     "agent-sdk/dist",
-    "scripts",
     "LICENSE",
     "README.md"
   ],
@@ -40,7 +39,6 @@
     "zod": "4.4.3"
   },
   "scripts": {
-    "postinstall": "node ./scripts/postinstall.js",
     "prepack": "npm --prefix agent-sdk run build",
     "quality:duplicates": "jscpd --config .jscpd.json src agent-sdk/src scripts bin --no-tips --no-colors",
     "quality:duplicates:summary": "node scripts/jscpd-warning-summary.mjs jscpd-report/jscpd-report.json"

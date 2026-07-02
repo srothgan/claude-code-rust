@@ -36,14 +36,36 @@ Rust sends commands such as session creation, session resume, prompt submission,
 
 ## Packaging
 
-The npm package exposes a `claude-rs` JavaScript launcher. That launcher finds the platform-specific Rust binary downloaded during npm `postinstall` and forwards CLI arguments to it.
+The npm install is split across a root launcher package and platform-specific optional packages.
 
-Release packaging includes:
+The root package is `claude-code-rust`. It exposes the global `claude-rs` JavaScript launcher and includes the built Agent SDK bridge under:
 
-- Prebuilt Rust binaries attached to GitHub Releases.
-- `agent-sdk/dist/bridge.js` in the npm package.
-- A copied Node runtime next to the Rust binary when postinstall can validate it.
-- Fallback to `node` on `PATH` when the copied runtime is unavailable.
+```text
+agent-sdk/dist/bridge.js
+```
+
+The native Rust binaries live in platform packages:
+
+```text
+@srothgan/claude-code-rust-darwin-arm64
+@srothgan/claude-code-rust-darwin-x64
+@srothgan/claude-code-rust-linux-x64-gnu
+@srothgan/claude-code-rust-win32-x64-msvc
+```
+
+The root launcher resolves the package for the current OS and CPU, sets `CLAUDE_RS_AGENT_BRIDGE` to the bundled bridge path in the root package, and forwards CLI arguments to the native binary. There is no npm `postinstall` script and no install-time binary download.
+
+## Release Model
+
+Release packaging is designed around immutable artifacts:
+
+- Native binaries are built on GitHub-hosted runners for Linux x64 glibc, Windows x64, macOS x64, and macOS arm64.
+- Generated npm package directories are verified against allowlisted package contents before packing.
+- Packed npm tarballs are smoke-tested before publication.
+- GitHub Releases include native binaries, npm tarballs, package-content manifests, build metadata, and `SHA256SUMS`.
+- The release workflow generates and verifies build provenance attestations for native binaries before npm publication.
+- npm publication uses Trusted Publishing rather than a long-lived npm token.
+- Platform packages are published before the root package so users never receive a root package version whose optional native packages do not exist.
 
 Source builds are different: `cargo build` or `cargo install --path .` produce only the Rust binary. They do not build or install the JavaScript bridge. Build the bridge with npm and provide it through the checkout fallback, `--bridge-script`, or `CLAUDE_RS_AGENT_BRIDGE`.
 

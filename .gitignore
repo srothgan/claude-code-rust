@@ -29,6 +29,8 @@ Thumbs.db
 node_modules/
 .npm-cache/
 /vendor/
+/dist-npm/
+/dist-pack/
 /agent-sdk/dist/
 /docs/book/
 /jscpd-report/
