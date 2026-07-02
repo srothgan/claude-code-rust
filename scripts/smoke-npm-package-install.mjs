@@ -15,6 +15,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
+const npmCliPath = resolveNpmCliPath();
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -174,9 +175,9 @@ function smokeInstall({ projectDir, rootTarball, platformTarball, platformPackag
     throw new Error(`Installed platform version ${installedPlatform.version} does not match ${cargoPackage.version}`);
   }
 
-  const binPath = path.join(projectDir, "node_modules", ".bin", process.platform === "win32" ? "claude-rs.cmd" : "claude-rs");
-  const versionOutput = runInstalledCommand(binPath, ["--version"], projectDir);
-  const helpOutput = runInstalledCommand(binPath, ["--help"], projectDir);
+  const installedCommand = installedLauncherCommand(projectDir);
+  const versionOutput = runInstalledCommand(installedCommand, ["--version"], projectDir);
+  const helpOutput = runInstalledCommand(installedCommand, ["--help"], projectDir);
 
   if (realBinary) {
     printCommandOutput("--version", versionOutput);
@@ -194,9 +195,23 @@ function assertMockOutput(output, commandName) {
   }
 }
 
-function runInstalledCommand(binPath, args, cwd) {
+function installedLauncherCommand(projectDir) {
+  if (process.platform === "win32") {
+    return {
+      command: process.execPath,
+      baseArgs: [path.join(projectDir, "node_modules", ROOT_PACKAGE_NAME, "bin", "claude-rs.js")]
+    };
+  }
+
+  return {
+    command: path.join(projectDir, "node_modules", ".bin", "claude-rs"),
+    baseArgs: []
+  };
+}
+
+function runInstalledCommand(installedCommand, args, cwd) {
   try {
-    const stdout = execFileSync(binPath, args, {
+    const stdout = execFileSync(installedCommand.command, [...installedCommand.baseArgs, ...args], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -244,14 +259,30 @@ function printManifestSummary(distDir) {
 }
 
 function runNpm(args, cwd) {
-  const command = process.platform === "win32" ? "cmd.exe" : "npm";
-  const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npm.cmd", ...args] : args;
-  return execFileSync(command, commandArgs, {
+  return execFileSync(process.execPath, [npmCliPath, ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
     windowsHide: true
   });
+}
+
+function resolveNpmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    "Could not locate npm's CLI entrypoint. Re-run this script with npm_execpath set to npm-cli.js."
+  );
 }
 
 function writeJson(destination, value) {
