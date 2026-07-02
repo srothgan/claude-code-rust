@@ -1142,7 +1142,7 @@ fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
         message = "inline chat draw payload prepared",
         outcome = "prepared",
         status = ?summary.app.status,
-        mode = summary.app.mode.as_ref().map_or_else(|| "none".to_owned(), |mode| mode.current_mode_name.clone()),
+        mode = summary.app.session_runtime.mode.as_ref().map_or_else(|| "none".to_owned(), |mode| mode.current_mode_name.clone()),
         terminal_width = summary.app.chat_render.terminal_width,
         terminal_height = summary.app.chat_render.terminal_height,
         anchor_valid = summary.app.chat_render.live_region.anchor_valid,
@@ -1330,7 +1330,7 @@ mod tests {
         );
         let message_id = message.id;
         let mut app = App::test_default();
-        app.messages.push(message);
+        app.transcript.messages.push(message);
 
         let serialized =
             serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new());
@@ -1364,7 +1364,7 @@ mod tests {
             "| Scrollback destroyed |  | #42002 |\n",
         );
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(TextBlock::from_complete(table)),
             MessageBlock::Text(TextBlock::from_complete("streaming tail remains mutable")),
         ]));

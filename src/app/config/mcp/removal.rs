@@ -84,7 +84,7 @@ fn remove_dynamic_mcp_server_from_config(app: &mut App, server_name: &str) {
         app.config.status_message = None;
         return;
     }
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         apply_mcp_config_remove_failure(
             app,
             server_name,
@@ -93,7 +93,7 @@ fn remove_dynamic_mcp_server_from_config(app: &mut App, server_name: &str) {
         );
         return;
     };
-    let Some(session_id) = app.session_id.as_ref().map(ToString::to_string) else {
+    let Some(session_id) = app.session_runtime.session_id.as_ref().map(ToString::to_string) else {
         apply_mcp_config_remove_failure(
             app,
             server_name,

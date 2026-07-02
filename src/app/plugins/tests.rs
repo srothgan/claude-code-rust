@@ -10,8 +10,9 @@ fn app_with_connection()
 -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = crate::app::App::test_default();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     (app, rx)
 }
 

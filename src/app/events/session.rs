@@ -41,7 +41,7 @@ pub(super) fn handle_connected_client_event(
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
     if let Some(slot) = take_connection_slot() {
-        app.conn = Some(slot.conn);
+        app.session_runtime.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
     reset_for_new_session(
@@ -52,7 +52,7 @@ pub(super) fn handle_connected_client_event(
         true,
         ChatResetRenderMode::PreserveInlineViewport,
     );
-    app.available_models = available_models;
+    app.sdk_inventory.available_models = available_models;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
@@ -71,7 +71,7 @@ pub(super) fn handle_connected_client_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
     );
@@ -123,7 +123,7 @@ pub(super) fn handle_sessions_listed_event(
             });
         }
     }
-    app.startup_recent_sessions_loaded = true;
+    app.startup.mark_recent_sessions_loaded();
     reconcile_session_picker_selection(app, selected_session_id.as_deref());
     maybe_open_startup_session_picker(app);
     tracing::info!(
@@ -146,21 +146,18 @@ pub(super) fn handle_auth_required_event(
     clear_pending_command(app);
     app.status = AppStatus::Ready;
     app.resuming_session_id = None;
-    app.login_hint = Some(LoginHint { method_name, method_description });
+    app.session_runtime.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
-    app.last_rate_limit_update = None;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
-    app.account_info = None;
+    app.session_runtime.last_rate_limit_update = None;
+    app.turn.clear_cancel_state();
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.clear_active_turn_assistant();
-    super::notices::clear_turn_notice_tracking(app);
+    app.turn.reset_for_new_session();
     tracing::warn!(
         target: crate::logging::targets::APP_AUTH,
         event_name = "auth_required_detected",
@@ -174,23 +171,18 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
-    app.last_rate_limit_update = None;
-    app.account_info = None;
+    app.turn.clear_cancel_state();
+    app.session_runtime.last_rate_limit_update = None;
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.resuming_session_id = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
-    app.clear_active_turn_assistant();
-    super::notices::clear_turn_notice_tracking(app);
+    app.turn.reset_for_new_session();
     push_connection_error_message(app, msg);
     tracing::error!(
         target: crate::logging::targets::APP_SESSION,
@@ -202,8 +194,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    app.rewind_targets_in_flight = false;
-    app.rewind_targets_session_id = None;
+    app.sdk_inventory.rewind_targets_in_flight = false;
+    app.sdk_inventory.rewind_targets_session_id = None;
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
@@ -216,9 +208,9 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnection>) {
-    app.login_hint = None;
-    app.pending_command_label = Some("Starting session...".to_owned());
-    app.pending_command_ack = None;
+    app.session_runtime.login_hint = None;
+    app.turn.pending_command_label = Some("Starting session...".to_owned());
+    app.turn.pending_command_ack = None;
     push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
@@ -254,7 +246,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
-    app.account_info = None;
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -266,9 +258,9 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         outcome = "success",
     );
 
-    if let Some(conn) = app.conn.clone() {
-        app.pending_command_label = Some("Starting session...".to_owned());
-        app.pending_command_ack = None;
+    if let Some(conn) = app.session_runtime.conn.clone() {
+        app.turn.pending_command_label = Some("Starting session...".to_owned());
+        app.turn.pending_command_ack = None;
         if let Err(e) = start_new_session(app, &conn, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
@@ -315,10 +307,8 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
     apply_session_cwd(app, cwd);
-    app.available_models = available_models;
+    app.sdk_inventory.available_models = available_models;
     reset_for_new_session(
         app,
         session_id,
@@ -340,7 +330,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
     // After session replacement, terminal scrollback is stale. Rebuild from
-    // app.messages, which was rebuilt only from bridge-reported session history.
+    // app.transcript.messages, which was rebuilt only from bridge-reported session history.
     app.request_chat_purge_replay_rebuild(crate::app::ChatPurgeReplayOptions::session_replacement());
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -349,7 +339,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
         restored_input = restored_input.is_some(),
@@ -357,7 +347,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
 }
 
 pub(super) fn handle_rewind_result_event(app: &mut App, result: &model::RewindResult) {
-    if app.session_id.as_ref().map(ToString::to_string).as_deref()
+    if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
         != Some(result.session_id.as_str())
     {
         tracing::debug!(
@@ -440,14 +430,14 @@ pub(super) fn ensure_update_notice_message(app: &mut App) {
     let Some(notice) = app.update_notice.as_ref() else {
         return;
     };
-    if notice.emitted_session_scope_epoch == Some(app.session_scope_epoch) {
+    if notice.emitted_session_scope_epoch == Some(app.session_runtime.session_scope_epoch) {
         return;
     }
 
     let message = format_update_available_message(&notice.latest_version, &notice.current_version);
     push_system_message_with_severity(app, Some(SystemSeverity::Warning), &message);
     if let Some(notice) = app.update_notice.as_mut() {
-        notice.emitted_session_scope_epoch = Some(app.session_scope_epoch);
+        notice.emitted_session_scope_epoch = Some(app.session_runtime.session_scope_epoch);
     }
 }
 
@@ -489,19 +479,17 @@ pub(super) fn handle_service_status_event(
 
 pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.clear_active_turn_assistant();
+    app.turn.reset_for_new_session();
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;
     app.pending_submit = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
 }
 
 /// Clear pending slash-command UI. Turn and session lifecycle handlers own non-command status.
 pub(super) fn clear_pending_command(app: &mut App) {
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    app.turn.pending_command_label = None;
+    app.turn.pending_command_ack = None;
     if matches!(app.status, AppStatus::CommandPending) {
         app.status = AppStatus::Ready;
     }
@@ -557,14 +545,11 @@ fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option
 }
 
 fn maybe_open_startup_session_picker(app: &mut App) {
-    if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
-        return;
-    }
-    if app.conn.is_none() || !app.startup_recent_sessions_loaded {
+    if app.session_runtime.conn.is_none() || !app.startup.startup_picker_is_ready() {
         return;
     }
 
-    app.startup_session_picker_resolved = true;
+    app.startup.resolve_session_picker();
     let session_count = super::super::session_picker::picker_session_count(app);
     if session_count == 0 {
         push_system_message_with_severity(

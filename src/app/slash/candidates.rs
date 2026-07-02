@@ -148,7 +148,8 @@ pub(super) fn detect_slash_at_cursor(
 }
 
 fn advertised_commands(app: &App) -> Vec<String> {
-    app.available_commands
+    app.sdk_inventory
+        .available_commands
         .iter()
         .map(|cmd| normalize_slash_name(&cmd.name))
         .filter(|name| command_spec(name).is_none())
@@ -162,7 +163,10 @@ pub(super) fn find_advertised_command<'a>(
     if command_spec(command_name).is_some() {
         return None;
     }
-    app.available_commands.iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
+    app.sdk_inventory
+        .available_commands
+        .iter()
+        .find(|cmd| normalize_slash_name(&cmd.name) == command_name)
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
@@ -205,7 +209,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
         by_name.insert(spec.name.to_owned(), spec.short_description.to_owned());
     }
 
-    for cmd in &app.available_commands {
+    for cmd in &app.sdk_inventory.available_commands {
         let name = normalize_slash_name(&cmd.name);
         if command_spec(&name).is_some() {
             continue;
@@ -283,7 +287,7 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
 }
 
 fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let mut levels = match app.current_model.as_ref() {
+    let mut levels = match app.session_runtime.current_model.as_ref() {
         Some(model) if !model.supports_effort => Vec::new(),
         Some(model) if !model.supported_effort_levels.is_empty() => {
             model.supported_effort_levels.clone()
@@ -305,13 +309,13 @@ fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
 }
 
 fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let mut candidates = Vec::with_capacity(app.available_agents.len() + 1);
+    let mut candidates = Vec::with_capacity(app.sdk_inventory.available_agents.len() + 1);
     candidates.push(SlashCandidate {
         insert_value: "reset".to_owned(),
         primary: "reset".to_owned(),
         secondary: Some("Clear active agent".to_owned()),
     });
-    candidates.extend(app.available_agents.iter().map(|agent| {
+    candidates.extend(app.sdk_inventory.available_agents.iter().map(|agent| {
         let description = agent.description.trim();
         let model = agent.model.as_deref().map(str::trim).filter(|model| !model.is_empty());
         let secondary = match (description.is_empty(), model) {
@@ -398,8 +402,11 @@ pub(super) fn argument_candidates(
             if arg_index == 1 {
                 return rewind_restore_mode_candidates();
             }
-            if app.session_id.as_ref() == app.rewind_targets_session_id.as_ref() {
-                app.rewind_targets
+            if app.session_runtime.session_id.as_ref()
+                == app.sdk_inventory.rewind_targets_session_id.as_ref()
+            {
+                app.sdk_inventory
+                    .rewind_targets
                     .iter()
                     .map(|target| SlashCandidate {
                         insert_value: target.uuid.clone(),
@@ -412,6 +419,7 @@ pub(super) fn argument_candidates(
             }
         }
         "/mode" => app
+            .session_runtime
             .mode
             .as_ref()
             .map(|mode| {
@@ -426,6 +434,7 @@ pub(super) fn argument_candidates(
             })
             .unwrap_or_default(),
         "/model" => app
+            .sdk_inventory
             .available_models
             .iter()
             .map(|model| SlashCandidate {
@@ -459,22 +468,22 @@ fn rewind_restore_mode_candidates() -> Vec<SlashCandidate> {
 }
 
 fn rewind_placeholder(app: &App, query: &str) -> String {
-    if app.rewind_targets_in_flight {
+    if app.sdk_inventory.rewind_targets_in_flight {
         return "Loading messages".to_owned();
     }
 
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
         return "Connect to load messages".to_owned();
     };
 
-    if app.rewind_targets_session_id.as_ref() != Some(session_id) {
-        if app.conn.is_none() {
+    if app.sdk_inventory.rewind_targets_session_id.as_ref() != Some(session_id) {
+        if app.session_runtime.conn.is_none() {
             return "Connect to load messages".to_owned();
         }
         return "Loading messages".to_owned();
     }
 
-    if app.rewind_targets.is_empty() || query.trim().is_empty() {
+    if app.sdk_inventory.rewind_targets.is_empty() || query.trim().is_empty() {
         "No previous user messages".to_owned()
     } else {
         "No matching messages".to_owned()

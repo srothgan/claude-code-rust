@@ -408,11 +408,11 @@ fn respond_question(app: &mut App) {
         return;
     };
 
-    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -473,11 +473,11 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
 
-    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -542,13 +542,13 @@ mod tests {
         prompt: model::QuestionPrompt,
         focused: bool,
     ) -> oneshot::Receiver<model::RequestQuestionResponse> {
-        let msg_idx = app.messages.len();
-        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        let msg_idx = app.transcript.messages.len();
+        app.transcript.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.transcript.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_question = Some(InlineQuestion {
                 prompt,
@@ -563,7 +563,7 @@ mod tests {
                 total_questions: 1,
             });
         }
-        app.pending_interaction_ids.push(tool_id.to_owned());
+        app.turn.pending_interaction_ids.push(tool_id.to_owned());
         rx
     }
 
@@ -600,7 +600,7 @@ mod tests {
 
         assert_eq!(consumed_right, KeyOutcome::Handled(true));
         assert_eq!(consumed_enter, KeyOutcome::Handled(true));
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.turn.pending_interaction_ids.is_empty());
 
         let resp = rx.try_recv().expect("question should be answered");
         let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {

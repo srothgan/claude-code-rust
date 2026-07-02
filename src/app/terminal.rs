@@ -64,11 +64,13 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     let mut dirty_slots = Vec::new();
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
-    for terminal_ref in &app.terminal_tool_calls {
+    let terminal_tool_calls = app.terminal_tool_calls().to_vec();
+    for terminal_ref in terminal_tool_calls {
         let Some(terminal) = terminals.get(terminal_ref.terminal_id.as_str()) else {
             continue;
         };
         let Some(MessageBlock::ToolCall(tc)) = app
+            .transcript
             .messages
             .get_mut(terminal_ref.msg_idx)
             .and_then(|m| m.blocks.get_mut(terminal_ref.block_idx))
@@ -113,7 +115,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
                 event_name = "terminal_output_summary",
                 message = "terminal output updated",
                 outcome = "success",
-                session_id = %app.session_id.as_ref().map_or_else(String::new, ToString::to_string),
+                session_id = %app.session_runtime.session_id.as_ref().map_or_else(String::new, ToString::to_string),
                 tool_call_id = %tc.id,
                 terminal_id = %terminal_ref.terminal_id,
                 terminal_update_mode = update_mode,
@@ -187,7 +189,7 @@ mod tests {
     #[test]
     fn terminal_output_poll_updates_canonical_tool_output() {
         let mut app = App::test_default();
-        app.messages.push(bash_tool_message("bash-1", "term-1"));
+        app.transcript.messages.push(bash_tool_message("bash-1", "term-1"));
         app.bind_active_turn_assistant(0);
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
@@ -202,7 +204,7 @@ mod tests {
 
         assert!(update_terminal_outputs(&mut app));
 
-        let Some(MessageBlock::ToolCall(tool)) = app.messages[0].blocks.first() else {
+        let Some(MessageBlock::ToolCall(tool)) = app.transcript.messages[0].blocks.first() else {
             panic!("expected tool call block");
         };
         assert_eq!(tool.terminal_output.as_deref(), Some("alpha\n"));

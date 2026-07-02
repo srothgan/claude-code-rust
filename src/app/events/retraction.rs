@@ -25,8 +25,8 @@ pub(super) fn handle_transcript_retraction(
     let mut changed = false;
     let mut rebuild_indices = false;
 
-    for msg_idx in (0..app.messages.len()).rev() {
-        let (removed, empty_assistant) = match app.messages.get_mut(msg_idx) {
+    for msg_idx in (0..app.transcript.messages.len()).rev() {
+        let (removed, empty_assistant) = match app.transcript.messages.get_mut(msg_idx) {
             Some(message) => {
                 let before_len = message.blocks.len();
                 message.blocks.retain(|block| {

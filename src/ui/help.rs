@@ -47,7 +47,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 
     let context = active_key_help_context(app);
     let mut items = keymap_help_rows(app, context);
-    if app.is_compacting {
+    if app.turn.is_compacting {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
     items.push(("Mouse wheel".to_owned(), "Scroll chat".to_owned()));
@@ -89,7 +89,7 @@ fn keymap_help_rows(app: &App, context: KeyContext) -> Vec<(String, String)> {
 fn should_show_help_binding(app: &App, context: KeyContext, binding: &ResolvedHelpBinding) -> bool {
     if context == KeyContext::ChatInput
         && matches!(binding.action, KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion))
-        && app.pending_interaction_ids.is_empty()
+        && app.turn.pending_interaction_ids.is_empty()
     {
         return false;
     }
@@ -105,7 +105,7 @@ fn help_action_label(app: &App, action: KeyAction) -> &'static str {
         }
         KeyAction::App(AppAction::CancelTurn) => "Clear pending input state",
         KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion)
-            if !app.pending_interaction_ids.is_empty() =>
+            if !app.turn.pending_interaction_ids.is_empty() =>
         {
             "Focus pending prompt"
         }
@@ -128,14 +128,14 @@ fn active_key_help_context(app: &App) -> KeyContext {
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_interaction_ids.first() else {
+    let Some(tool_id) = app.turn.pending_interaction_ids.first() else {
         return false;
     };
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         return false;
     };
     let Some(crate::app::MessageBlock::ToolCall(tc)) =
-        app.messages.get(mi).and_then(|message| message.blocks.get(bi))
+        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
     else {
         return false;
     };
@@ -192,7 +192,7 @@ fn format_help_key_code(code: KeyCodeSpec) -> String {
 }
 
 fn pending_command_help_label(app: &App) -> String {
-    app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
+    app.turn.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
@@ -217,7 +217,7 @@ fn build_slash_command_items(app: &App) -> Vec<(String, String)> {
         .map(|spec| (spec.name.to_owned(), spec.long_description.to_owned()))
         .collect();
 
-    for cmd in &app.available_commands {
+    for cmd in &app.sdk_inventory.available_commands {
         let name =
             if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
         if crate::app::slash::app_owned_command_name(&name).is_some() {
@@ -255,6 +255,7 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     let mut agents: Vec<(String, String)> = app
+        .sdk_inventory
         .available_agents
         .iter()
         .filter(|agent| !agent.name.trim().is_empty())

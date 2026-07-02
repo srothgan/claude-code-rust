@@ -21,13 +21,24 @@ pub(super) fn submit_input(app: &mut App) {
     if text.trim().is_empty() {
         return;
     }
-    app.prompt_suggestion = None;
+    app.session_runtime.prompt_suggestion = None;
 
     // `/cancel` is an explicit control action: execute immediately.
     if slash::is_cancel_command(&text) {
-        app.pending_auto_submit_after_cancel = false;
+        app.turn.pending_auto_submit_after_cancel = false;
         app.input.clear();
         dispatch_submission(app, text);
+        return;
+    }
+
+    if app.turn.is_compacting {
+        app.turn.pending_auto_submit_after_cancel = false;
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "submit_blocked_by_compaction",
+            message = "input submit ignored while compaction is active",
+            outcome = "blocked",
+        );
         return;
     }
 
@@ -36,7 +47,7 @@ pub(super) fn submit_input(app: &mut App) {
     if is_turn_busy(app) {
         match request_cancel(app, CancelOrigin::AutoQueue) {
             Ok(()) => {
-                app.pending_auto_submit_after_cancel = true;
+                app.turn.pending_auto_submit_after_cancel = true;
                 tracing::debug!(
                     target: crate::logging::targets::APP_INPUT,
                     event_name = "submit_deferred_for_cancel",
@@ -45,7 +56,7 @@ pub(super) fn submit_input(app: &mut App) {
                 );
             }
             Err(message) => {
-                app.pending_auto_submit_after_cancel = false;
+                app.turn.pending_auto_submit_after_cancel = false;
                 tracing::error!(
                     target: crate::logging::targets::APP_INPUT,
                     event_name = "cancel_request_failed",
@@ -58,47 +69,47 @@ pub(super) fn submit_input(app: &mut App) {
         return;
     }
 
-    app.pending_auto_submit_after_cancel = false;
+    app.turn.pending_auto_submit_after_cancel = false;
     app.input.clear();
     dispatch_submission(app, text);
 }
 
 fn is_turn_busy(app: &App) -> bool {
     matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        || app.pending_cancel_origin.is_some()
-        || app.is_compacting
+        || app.turn.pending_cancel_origin.is_some()
+        || app.turn.is_compacting
 }
 
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
     if matches!(origin, CancelOrigin::Manual) {
-        app.pending_auto_submit_after_cancel = false;
+        app.turn.pending_auto_submit_after_cancel = false;
     }
 
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return Ok(());
     }
 
-    if let Some(existing_origin) = app.pending_cancel_origin {
+    if let Some(existing_origin) = app.turn.pending_cancel_origin {
         if matches!(existing_origin, CancelOrigin::AutoQueue)
             && matches!(origin, CancelOrigin::Manual)
         {
-            app.pending_cancel_origin = Some(CancelOrigin::Manual);
-            app.cancelled_turn_pending_hint = true;
+            app.turn.pending_cancel_origin = Some(CancelOrigin::Manual);
+            app.turn.cancelled_pending_hint = true;
         }
         return Ok(());
     }
 
-    let Some(ref conn) = app.conn else {
+    let Some(ref conn) = app.session_runtime.conn else {
         return Err("not connected yet".to_owned());
     };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(sid) = app.session_runtime.session_id.clone() else {
         return Err("no active session".to_owned());
     };
 
     let session_id = sid.to_string();
     conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
-    app.pending_cancel_origin = Some(origin);
-    app.cancelled_turn_pending_hint = matches!(origin, CancelOrigin::Manual);
+    app.turn.pending_cancel_origin = Some(origin);
+    app.turn.cancelled_pending_hint = matches!(origin, CancelOrigin::Manual);
     let _ = app.event_tx.send(ClientEvent::TurnCancelled);
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
@@ -112,17 +123,17 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
 }
 
 pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
-    if !app.pending_auto_submit_after_cancel {
+    if !app.turn.pending_auto_submit_after_cancel {
         return;
     }
-    if !matches!(app.status, AppStatus::Ready) || app.pending_cancel_origin.is_some() {
+    if !matches!(app.status, AppStatus::Ready) || app.turn.pending_cancel_origin.is_some() {
         return;
     }
     if app.input.text().trim().is_empty() {
-        app.pending_auto_submit_after_cancel = false;
+        app.turn.pending_auto_submit_after_cancel = false;
         return;
     }
-    app.pending_auto_submit_after_cancel = false;
+    app.turn.pending_auto_submit_after_cancel = false;
     submit_input(app);
 }
 
@@ -138,8 +149,8 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(conn) = app.conn.clone() else { return };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else { return };
+    let Some(sid) = app.session_runtime.session_id.clone() else {
         return;
     };
     let input_chars = text.chars().count();
@@ -193,8 +204,9 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.session_runtime.conn =
+            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
 
@@ -207,10 +219,10 @@ mod tests {
         submit_input(&mut app);
 
         assert_eq!(app.input.text(), "queued prompt");
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.turn.pending_auto_submit_after_cancel);
         assert!(matches!(app.status, AppStatus::Running));
-        assert!(app.messages.is_empty());
+        assert!(app.transcript.messages.is_empty());
         let envelope = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             envelope.command,
@@ -222,14 +234,14 @@ mod tests {
     fn manual_cancel_promotes_existing_auto_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
-        app.pending_auto_submit_after_cancel = true;
+        app.turn.pending_auto_submit_after_cancel = true;
 
         request_cancel(&mut app, CancelOrigin::AutoQueue).expect("auto cancel request");
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
 
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
-        assert!(app.cancelled_turn_pending_hint);
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
+        assert!(app.turn.cancelled_pending_hint);
+        assert!(!app.turn.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope.command,
@@ -245,24 +257,24 @@ mod tests {
         app.input.set_text("draft");
 
         submit_input(&mut app);
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.turn.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
         ));
 
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
+        assert!(!app.turn.pending_auto_submit_after_cancel);
 
         app.status = AppStatus::Ready;
-        app.pending_cancel_origin = None;
+        app.turn.pending_cancel_origin = None;
         maybe_auto_submit_after_cancel(&mut app);
 
         assert_eq!(app.input.text(), "draft");
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.messages.is_empty());
+        assert!(app.transcript.messages.is_empty());
         assert!(rx.try_recv().is_err(), "manual cancel should suppress queued prompt submit");
     }
 
@@ -276,8 +288,8 @@ mod tests {
         submit_input(&mut app);
 
         assert_eq!(app.input.text(), "draft");
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.turn.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("first cancel command should be sent");
         assert!(matches!(
             envelope.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
@@ -294,7 +306,7 @@ mod tests {
         submit_input(&mut app);
 
         assert!(app.input.text().is_empty());
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
         let envelope = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             envelope.command,
@@ -312,7 +324,7 @@ mod tests {
 
         assert!(app.surface_dirty.chat.repaint);
         assert!(app.input.text().is_empty());
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected docs system message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
@@ -321,7 +333,7 @@ mod tests {
     #[test]
     fn supported_advertised_slash_submit_falls_through_to_prompt_turn() {
         let (mut app, mut rx) = app_with_connection();
-        app.available_commands =
+        app.sdk_inventory.available_commands =
             vec![model::AvailableCommand::new("/remote-command", "Remote command")];
         app.input.set_text("/remote-command");
 
@@ -329,9 +341,9 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+        assert_eq!(app.transcript.messages.len(), 2);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
         let envelope = rx.try_recv().expect("advertised slash command should be sent");
         match envelope.command {
             BridgeCommand::Prompt { session_id, chunks } => {
@@ -375,7 +387,7 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected /1m-context status message");
         };
         assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
@@ -391,7 +403,7 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected /login usage message");
         };
         assert!(matches!(
@@ -408,24 +420,24 @@ mod tests {
         app.input.set_text("send after cancel");
 
         submit_input(&mut app);
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.turn.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
         ));
 
         app.status = AppStatus::Ready;
-        app.pending_cancel_origin = None;
+        app.turn.pending_cancel_origin = None;
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.turn.pending_auto_submit_after_cancel);
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
-        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.transcript.messages.len(), 2);
         assert_eq!(app.active_turn_assistant_idx(), Some(1));
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
-        assert!(app.messages[1].blocks.is_empty());
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
+        assert!(app.transcript.messages[1].blocks.is_empty());
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt.command,
@@ -446,18 +458,18 @@ mod tests {
 
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert_eq!(app.input.text(), "/config");
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
+        assert!(app.turn.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel.command, BridgeCommand::CancelTurn { session_id } if session_id == "session-1"
         ));
 
         app.status = AppStatus::Ready;
-        app.pending_cancel_origin = None;
+        app.turn.pending_cancel_origin = None;
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.turn.pending_auto_submit_after_cancel);
         assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
@@ -468,12 +480,13 @@ mod tests {
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_runtime.conn =
+            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());
 
-        assert!(app.messages.is_empty());
+        assert!(app.transcript.messages.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
     }
 }

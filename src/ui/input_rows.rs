@@ -14,7 +14,7 @@ const SPINNER_FRAMES: &[char] = &[
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
 
-    if let Some(hint) = &app.login_hint {
+    if let Some(hint) = &app.session_runtime.login_hint {
         rows.push(Line::from(Span::styled(
             format!("Authentication required: {} -- {}", hint.method_name, hint.method_description),
             Style::default().fg(ratatui::style::Color::Yellow),
@@ -25,7 +25,7 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         )));
     }
 
-    if app.pending_cancel_origin.is_some() {
+    if app.turn.pending_cancel_origin.is_some() {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
         rows.push(Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
@@ -36,11 +36,22 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         ]));
     }
 
+    if app.turn.is_compacting {
+        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        rows.push(Line::from(vec![
+            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+            Span::styled(
+                "Compacting session... you can draft, submit is paused.",
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+
     if autocomplete::is_active(app) {
         rows.extend(autocomplete::composer_hint_rows(app));
     } else if app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
-        && let Some(suggestion) = app.prompt_suggestion.as_deref()
+        && let Some(suggestion) = app.session_runtime.prompt_suggestion.as_deref()
         && !suggestion.trim().is_empty()
     {
         rows.push(Line::from(vec![
@@ -67,7 +78,8 @@ pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
         }
         AppStatus::CommandPending => {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-            let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
+            let label =
+                app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
                 Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
@@ -99,7 +111,7 @@ mod tests {
     #[test]
     fn build_composer_hint_rows_preserves_login_hint_content() {
         let mut app = App::test_default();
-        app.login_hint = Some(LoginHint {
+        app.session_runtime.login_hint = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
@@ -112,8 +124,8 @@ mod tests {
     #[test]
     fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
         let mut app = App::test_default();
-        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
-        app.prompt_suggestion = Some("Write tests".to_owned());
+        app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
         assert_eq!(rows.len(), 2);
@@ -122,11 +134,23 @@ mod tests {
     }
 
     #[test]
+    fn build_composer_hint_rows_shows_compaction_draft_hint() {
+        let mut app = App::test_default();
+        app.turn.is_compacting = true;
+
+        let rows = build_composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("Compacting session"));
+        assert!(line_text(&rows[0]).contains("you can draft"));
+    }
+
+    #[test]
     fn build_composer_hint_rows_prefers_autocomplete_over_prompt_suggestion() {
         let mut app = App::test_default();
         app.input.set_text("@");
         let _ = app.input.set_cursor(0, 1);
-        app.prompt_suggestion = Some("Write tests".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
         crate::app::mention::activate(&mut app);
 
         let rows = build_composer_hint_rows(&app);
@@ -139,8 +163,8 @@ mod tests {
     #[test]
     fn prompt_suggestion_hint_requires_input_focus() {
         let mut app = App::test_default();
-        app.prompt_suggestion = Some("Write tests".to_owned());
-        app.pending_interaction_ids.push("perm-1".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
+        app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
         let rows = build_composer_hint_rows(&app);
@@ -163,7 +187,7 @@ mod tests {
     fn blocked_input_lines_shows_pending_command_label() {
         let mut app = App::test_default();
         app.status = AppStatus::CommandPending;
-        app.pending_command_label = Some("Switching model...".to_owned());
+        app.turn.pending_command_label = Some("Switching model...".to_owned());
 
         let rows = blocked_input_lines(&app);
 

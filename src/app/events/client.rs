@@ -96,7 +96,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::config::handle_mcp_operation_error(app, &error);
         }
         ClientEvent::McpSetServersResult { session_id, result } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 return;
@@ -190,7 +190,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.request_chat_visible_rebuild();
         }
         ClientEvent::RuntimeReloadCompleted { session_id } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 return;
@@ -198,7 +198,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::plugins::apply_runtime_reload_success(app);
         }
         ClientEvent::RuntimeReloadFailed { session_id, message } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 return;
@@ -248,7 +248,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             session::handle_logout_completed_event(app);
         }
         ClientEvent::StatusSnapshotReceived { session_id, account } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 tracing::debug!(
@@ -267,7 +267,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let token_source = account.token_source.clone();
             let api_key_source = account.api_key_source.clone();
             let api_provider = account.api_provider.clone();
-            app.account_info = Some(account);
+            app.session_runtime.account_info = Some(account);
             app.sync_welcome_snapshot();
             app.request_active_surface_repaint();
             tracing::info!(
@@ -285,7 +285,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::ContextUsageReceived { session_id, percentage } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 tracing::debug!(
@@ -301,7 +301,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
         ClientEvent::RewindTargetsReceived { session_id, targets } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 tracing::debug!(
@@ -314,16 +314,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 );
                 return;
             }
-            app.rewind_targets = targets;
-            app.rewind_targets_session_id = Some(crate::agent::model::SessionId::new(session_id));
-            app.rewind_targets_in_flight = false;
+            app.sdk_inventory.rewind_targets = targets;
+            app.sdk_inventory.rewind_targets_session_id =
+                Some(crate::agent::model::SessionId::new(session_id));
+            app.sdk_inventory.rewind_targets_in_flight = false;
             crate::app::slash::sync_with_cursor(app);
         }
         ClientEvent::RewindResultReceived { result } => {
             session::handle_rewind_result_event(app, &result);
         }
         ClientEvent::McpSnapshotReceived { session_id, mut servers, source, error } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
                 != Some(session_id.as_str())
             {
                 tracing::debug!(
@@ -402,19 +403,19 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_runtime.session_scope_epoch != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_started(app);
         }
         ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_runtime.session_scope_epoch != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_success(app, snapshot);
         }
         ClientEvent::UsageRefreshFailed { epoch, message, source } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_runtime.session_scope_epoch != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_failure(app, message, source);

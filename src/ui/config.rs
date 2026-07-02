@@ -128,7 +128,7 @@ fn config_help_text(app: &App) -> String {
                 .to_owned()
         }
         ConfigTab::Status => {
-            if app.session_id.is_some() {
+            if app.session_runtime.session_id.is_some() {
                 "g generate | r rename | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
                     .to_owned()
             } else {
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.sdk_inventory.available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7")
                 .supports_effort(true)
@@ -1267,7 +1267,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_accounts_for_wrapped_lines() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.sdk_inventory.available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("1234567890")
                 .supports_effort(true)
@@ -1290,7 +1290,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_accounts_for_badge_padding_width() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.sdk_inventory.available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("Frontier")
                 .supports_effort(true)
@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn effort_overlay_filters_session_only_max_from_persisted_settings() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.sdk_inventory.available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .supports_effort(true)
                 .supported_effort_levels(EffortLevel::ALL.to_vec()),
@@ -1353,7 +1353,7 @@ mod tests {
     #[test]
     fn model_overlay_lines_show_positive_capability_badges_only() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.sdk_inventory.available_models = vec![
             AvailableModel::new("sonnet", "Sonnet")
                 .description("Everyday tasks")
                 .supports_effort(true)
@@ -2395,7 +2395,7 @@ mod tests {
         let mut app = App::test_default();
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Status;
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
 
         terminal
             .draw(|frame| {

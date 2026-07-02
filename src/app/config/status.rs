@@ -8,10 +8,10 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     if app.config.active_tab != ConfigTab::Status {
         return;
     }
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();

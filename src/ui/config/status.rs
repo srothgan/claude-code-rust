@@ -26,6 +26,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     kv_line(&mut lines, "Session name", &derive_session_name(app));
 
     let session_id_str = app
+        .session_runtime
         .session_id
         .as_ref()
         .map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
@@ -40,7 +41,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     // ---- Account ----
-    if let Some(ref account) = app.account_info {
+    if let Some(ref account) = app.session_runtime.account_info {
         section_header(&mut lines, "Account");
         kv_line(&mut lines, "Login method", &login_method_label(account));
         if let Some(ref provider) = account.api_provider {
@@ -67,7 +68,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     // ---- Model ----
     section_header(&mut lines, "Model");
     kv_line(&mut lines, "Model", &model_display(app));
-    if let Some(current_model) = app.current_model.as_ref() {
+    if let Some(current_model) = app.session_runtime.current_model.as_ref() {
         kv_line(&mut lines, "Resolved model ID", &current_model.resolved_id);
         if let Some(requested_id) = current_model.requested_id.as_deref()
             && requested_id != current_model.resolved_id
@@ -76,7 +77,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         }
     }
 
-    if let Some(ref mode) = app.mode {
+    if let Some(ref mode) = app.session_runtime.mode {
         kv_line(&mut lines, "Mode", &mode.current_mode_name);
     }
 
@@ -109,7 +110,7 @@ fn kv_line(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
 }
 
 fn derive_session_name(app: &App) -> String {
-    if let Some(ref sid) = app.session_id {
+    if let Some(ref sid) = app.session_runtime.session_id {
         let sid_str = sid.to_string();
         if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
             if let Some(ref title) = session.custom_title
@@ -140,7 +141,7 @@ fn derive_session_name(app: &App) -> String {
 }
 
 fn model_display(app: &App) -> String {
-    let Some(current_model) = app.current_model.as_ref() else {
+    let Some(current_model) = app.session_runtime.current_model.as_ref() else {
         return "(not set)".to_owned();
     };
     current_model.display_name_long.clone()
@@ -205,7 +206,7 @@ mod tests {
     #[test]
     fn status_lines_shows_model() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.session_runtime.current_model = Some(
             crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
                 .authoritative(true),
         );
@@ -223,7 +224,7 @@ mod tests {
     #[test]
     fn status_lines_uses_custom_title() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
         app.recent_sessions = vec![crate::app::RecentSessionInfo {
             session_id: "test-sess-1".to_owned(),
             summary: String::new(),
@@ -290,7 +291,7 @@ mod tests {
     #[test]
     fn status_lines_render_api_provider() {
         let mut app = App::test_default();
-        app.account_info = Some(crate::agent::model::AccountInfo {
+        app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
             api_provider: Some(crate::agent::model::AccountApiProvider::Gateway),
             ..Default::default()
         });

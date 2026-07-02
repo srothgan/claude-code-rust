@@ -44,8 +44,8 @@ fn app_with_status_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = App::test_default();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
         session_id: "session-1".to_owned(),
@@ -184,7 +184,7 @@ fn open_does_not_force_stop_active_turn() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
     assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.pending_cancel_origin.is_none());
+    assert!(app.turn.pending_cancel_origin.is_none());
 }
 
 #[test]
@@ -958,7 +958,8 @@ fn thinking_effort_rejects_max_as_persisted_setting() {
 #[test]
 fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_list() {
     let (_dir, mut app) = open_settings_test_app();
-    app.available_models = vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
+    app.sdk_inventory.available_models =
+        vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
     store::set_model(&mut app.config.committed_settings_document, Some("opus"));
     select_setting(&mut app, SettingId::ThinkingEffort);
 
@@ -974,7 +975,7 @@ fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_
 #[test]
 fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
     let (_dir, mut app) = open_settings_test_app();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(EffortLevel::ALL.to_vec()),
@@ -996,7 +997,7 @@ fn model_overlay_confirm_persists_model_without_rewriting_effort() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = open_settings_app_in_dir(&dir);
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("fable", "Fable 5").supports_effort(true),
         AvailableModel::new("opus", "Opus").supports_effort(true),
     ];
@@ -1025,7 +1026,7 @@ fn thinking_effort_overlay_confirm_persists_effort_without_rewriting_model() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = open_settings_app_in_dir(&dir);
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("fable", "Fable 5")
             .supports_effort(true)
             .supported_effort_levels(EffortLevel::PERSISTABLE_SETTINGS.to_vec()),
@@ -1108,7 +1109,7 @@ fn save_preserves_invalid_unedited_values() {
 #[test]
 fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let mut app = App::test_default();
-    app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
+    app.sdk_inventory.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
     store::set_model(&mut app.config.committed_settings_document, Some("unknown"));
 
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
@@ -1120,7 +1121,7 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
 #[test]
 fn resolved_model_accepts_runtime_alias_resolved_model_id() {
     let mut app = App::test_default();
-    app.available_models =
+    app.sdk_inventory.available_models =
         vec![AvailableModel::new("fable", "Fable 5").resolved_model("claude-fable-5")];
     store::set_model(&mut app.config.committed_settings_document, Some("claude-fable-5"));
 
@@ -1133,7 +1134,7 @@ fn resolved_model_accepts_runtime_alias_resolved_model_id() {
 #[test]
 fn model_overlay_options_are_sorted_alphabetically() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         AvailableModel::new("sonnet", "Sonnet"),
         AvailableModel::new("haiku", "Haiku"),
         AvailableModel::new("opus", "Opus"),
@@ -1565,7 +1566,7 @@ fn enter_closes_settings_without_editing_selected_row() {
 fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![crate::agent::model::McpServerStatus {
         name: "filesystem".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -1754,8 +1755,8 @@ fn mcp_manage_plugin_action_opens_installed_plugin_actions_overlay() {
 fn unknown_plugin_owned_mcp_server_does_not_call_set_servers_for_dynamic_remove() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![dynamic_http_mcp_server_status(
         "plugin:Unknown:unknown",
         "https://unknown.example.test/mcp",
@@ -1893,8 +1894,8 @@ fn non_config_mcp_server_does_not_offer_remove_action() {
 fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![
         crate::agent::model::McpServerStatus {
             name: "filesystem".to_owned(),
@@ -1956,8 +1957,8 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
 fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_servers() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     let mut keep_headers = BTreeMap::new();
     keep_headers.insert("Authorization".to_owned(), "Bearer token".to_owned());
     app.mcp.servers = vec![
@@ -2062,8 +2063,8 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
 fn dynamic_mcp_config_remove_waits_for_snapshot_when_sdk_result_does_not_name_server() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![connected_mcp_server_status(
         "session-search",
         "dynamic",
@@ -2263,8 +2264,8 @@ fn removed_config_guard_stops_suppressing_when_confirming_snapshot_still_contain
 fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![connected_mcp_server_status(
         "session-search",
         "dynamic",
@@ -2314,8 +2315,8 @@ fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
 fn dynamic_mcp_config_remove_refuses_to_drop_unrepresentable_dynamic_servers() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![
         connected_mcp_server_status(
             "session-search",
@@ -2398,8 +2399,8 @@ fn empty_mcp_callback_url_sets_overlay_error_and_keeps_overlay_open() {
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
@@ -2431,8 +2432,8 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::request_mcp_snapshot(&mut app);
@@ -2449,8 +2450,8 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -2476,8 +2477,8 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::refresh_mcp_snapshot_if_needed(&mut app);

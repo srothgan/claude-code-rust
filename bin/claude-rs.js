@@ -12,6 +12,51 @@ const TARGETS = {
   "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rs.exe" }
 };
 
+const BRIDGE_RUNTIME_EXE =
+  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
+const BRIDGE_RUNTIME_VERSION_MARKER = ".bridge-node-version";
+
+// Postinstall copies the installing Node as the bridge runtime, but postinstall
+// only runs on package install - a later Node upgrade leaves the copy stale.
+// Since this launcher runs under the user's current Node on every start, it can
+// cheaply detect the mismatch via the version marker and refresh the copy.
+// Best-effort: if the copy is locked by a running session or anything else
+// fails, keep the existing runtime and retry on a future launch.
+function refreshBridgeRuntime(installDir) {
+  const runtimePath = path.join(installDir, BRIDGE_RUNTIME_EXE);
+  const markerPath = path.join(installDir, BRIDGE_RUNTIME_VERSION_MARKER);
+  const tempPath = `${runtimePath}.tmp-${process.pid}`;
+
+  try {
+    if (!fs.existsSync(runtimePath)) {
+      return;
+    }
+
+    let markerVersion = "";
+    try {
+      markerVersion = fs.readFileSync(markerPath, "utf8").trim();
+    } catch {
+      // Missing or unreadable marker: treat the copy as stale and refresh.
+    }
+    if (markerVersion === process.version) {
+      return;
+    }
+
+    fs.copyFileSync(process.execPath, tempPath);
+    if (process.platform !== "win32") {
+      fs.chmodSync(tempPath, 0o755);
+    }
+    fs.renameSync(tempPath, runtimePath);
+    fs.writeFileSync(markerPath, `${process.version}\n`);
+  } catch {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // Leave the temp file for the OS/next run; the old runtime still works.
+    }
+  }
+}
+
 function resolveInstall() {
   const key = `${process.platform}:${process.arch}`;
   const info = TARGETS[key];
@@ -36,6 +81,8 @@ if (resolved.error) {
   console.error(resolved.error);
   process.exit(1);
 }
+
+refreshBridgeRuntime(path.dirname(resolved.binaryPath));
 
 const child = spawn(resolved.binaryPath, process.argv.slice(2), {
   stdio: "inherit",

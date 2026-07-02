@@ -20,12 +20,12 @@ impl TerminalToolCallRef {
 impl App {
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
-        self.active_task_ids.insert(id);
+        self.turn.active_task_ids.insert(id);
     }
 
     /// Remove a Task/Agent tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
-        self.active_task_ids.remove(id);
+        self.turn.active_task_ids.remove(id);
     }
 
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
@@ -50,18 +50,37 @@ impl App {
 
     pub fn clear_tool_scope_tracking(&mut self) {
         self.tool_call_scopes.clear();
-        self.active_task_ids.clear();
+        self.turn.active_task_ids.clear();
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
     #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
-        self.tool_call_index.get(id).copied()
+        self.transcript.tool_call_index.get(id).copied()
     }
 
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
-        self.tool_call_index.insert(id, (msg_idx, block_idx));
+        self.transcript.tool_call_index.insert(id, (msg_idx, block_idx));
+    }
+
+    pub fn clear_tool_call_index(&mut self) {
+        self.transcript.tool_call_index.clear();
+    }
+
+    #[must_use]
+    pub(crate) fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
+        &self.transcript.terminal_tool_calls
+    }
+
+    #[must_use]
+    pub fn has_tool_call(&self, id: &str) -> bool {
+        self.lookup_tool_call(id).is_some()
+    }
+
+    #[must_use]
+    pub fn tool_call_index_len(&self) -> usize {
+        self.transcript.tool_call_index.len()
     }
 
     pub(crate) fn sync_terminal_tool_call(
@@ -71,16 +90,17 @@ impl App {
         block_idx: usize,
     ) {
         let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.terminal_tool_call_membership.contains(&desired) {
+        if self.transcript.terminal_tool_call_membership.contains(&desired) {
             return;
         }
         self.untrack_terminal_tool_call(msg_idx, block_idx);
-        self.terminal_tool_call_membership.insert(desired.clone());
-        self.terminal_tool_calls.push(desired);
+        self.transcript.terminal_tool_call_membership.insert(desired.clone());
+        self.transcript.terminal_tool_calls.push(desired);
     }
 
     pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
         let removed: Vec<_> = self
+            .transcript
             .terminal_tool_calls
             .iter()
             .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
@@ -89,16 +109,17 @@ impl App {
         if removed.is_empty() {
             return;
         }
-        self.terminal_tool_calls
+        self.transcript
+            .terminal_tool_calls
             .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
         for entry in removed {
-            self.terminal_tool_call_membership.remove(&entry);
+            self.transcript.terminal_tool_call_membership.remove(&entry);
         }
     }
 
     pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
-        self.terminal_tool_calls.clear();
-        self.terminal_tool_call_membership.clear();
+        self.transcript.terminal_tool_calls.clear();
+        self.transcript.terminal_tool_call_membership.clear();
     }
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
@@ -117,7 +138,7 @@ impl App {
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
@@ -160,7 +181,7 @@ impl App {
 
         if changed > 0 || cleared_interaction {
             self.invalidate_message_set(changed_message_indices.iter().copied());
-            self.pending_interaction_ids.clear();
+            self.turn.pending_interaction_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -174,7 +195,7 @@ impl App {
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
@@ -211,8 +232,8 @@ impl App {
             self.invalidate_message_set(changed_message_indices.iter().copied());
         }
 
-        if changed > 0 || !self.pending_interaction_ids.is_empty() {
-            self.pending_interaction_ids.clear();
+        if changed > 0 || !self.turn.pending_interaction_ids.is_empty() {
+            self.turn.pending_interaction_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 

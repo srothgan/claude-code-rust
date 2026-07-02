@@ -59,7 +59,7 @@ pub(super) fn execute_user_dialog_action(
 
 fn focused_dialog_slot(app: &App) -> Option<(usize, usize)> {
     let tool_id = focused_interaction_id(app)?;
-    app.tool_call_index.get(tool_id).copied()
+    app.lookup_tool_call(tool_id)
 }
 
 fn move_dialog_selection(app: &mut App, delta: i32) {
@@ -68,7 +68,7 @@ fn move_dialog_selection(app: &mut App, delta: i32) {
     };
     let mut changed = false;
     if let Some(MessageBlock::UserDialog(dialog)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         if dialog.options.is_empty() {
             return;
@@ -103,11 +103,11 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
     let Some(tool_id) = pop_next_valid_interaction_id(app) else {
         return;
     };
-    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         return;
     };
     let Some(MessageBlock::UserDialog(dialog)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -167,7 +167,7 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
 }
 
 fn repopulate_composer_from_last_user_message(app: &mut App) {
-    let last_user_text = app.messages.iter().rev().find_map(|message| {
+    let last_user_text = app.transcript.messages.iter().rev().find_map(|message| {
         if !matches!(message.role, MessageRole::User) {
             return None;
         }
@@ -212,17 +212,17 @@ mod tests {
         request_id: &str,
         focused: bool,
     ) -> oneshot::Receiver<model::RequestUserDialogResponse> {
-        let msg_idx = app.messages.len();
+        let msg_idx = app.transcript.messages.len();
         let (tx, rx) = oneshot::channel();
         let mut block = UserDialogBlock::new(dialog_request(request_id), tx);
         block.focused = focused;
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::System(Some(SystemSeverity::Warning)),
             vec![MessageBlock::UserDialog(block)],
             None,
         ));
         app.index_tool_call(request_id.to_owned(), msg_idx, 0);
-        app.pending_interaction_ids.push(request_id.to_owned());
+        app.turn.pending_interaction_ids.push(request_id.to_owned());
         rx
     }
 
@@ -245,14 +245,14 @@ mod tests {
             panic!("expected a selected outcome");
         };
         assert_eq!(selected.option_id, "retry_fallback");
-        assert!(!app.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
+        assert!(!app.turn.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
     }
 
     #[test]
     fn move_next_then_confirm_sends_edit_prompt_and_repopulates_composer() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("original prompt text"))],
             None,
@@ -288,7 +288,7 @@ mod tests {
         let response = rx.try_recv().expect("dialog should receive a response");
         assert!(matches!(response.outcome, model::RequestUserDialogOutcome::Cancelled));
         assert!(app.input.text().is_empty());
-        assert!(!app.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
+        assert!(!app.turn.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
 
         let (mi, bi) = app.lookup_tool_call("dialog-1").expect("indexed dialog");
         let Some(MessageBlock::UserDialog(dialog)) =
-            app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+            app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
         else {
             panic!("expected user dialog block");
         };

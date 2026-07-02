@@ -17,7 +17,7 @@ use crate::helpers::{send_client_event, test_app};
 #[tokio::test]
 async fn agent_thought_chunk_sets_thinking_without_writing_transcript() {
     let mut app = test_app();
-    let original_message_count = app.messages.len();
+    let original_message_count = app.transcript.messages.len();
     let thought_text = "Planning...";
     let thought =
         model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(thought_text)));
@@ -28,9 +28,9 @@ async fn agent_thought_chunk_sets_thinking_without_writing_transcript() {
     );
 
     assert!(matches!(app.status, AppStatus::Thinking));
-    assert_eq!(app.messages.len(), original_message_count);
+    assert_eq!(app.transcript.messages.len(), original_message_count);
     assert!(
-        !app.messages.iter().any(|message| {
+        !app.transcript.messages.iter().any(|message| {
             message.blocks.iter().any(|block| match block {
                 MessageBlock::Text(text) => text.text.contains(thought_text),
                 _ => false,
@@ -67,7 +67,7 @@ async fn full_turn_lifecycle_text_only() {
     // Turn completes
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.transcript.messages.len(), 1);
 }
 
 #[tokio::test]
@@ -135,8 +135,8 @@ async fn todowrite_tool_call_does_not_update_task_state() {
         .meta(meta);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    assert!(app.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
-    assert!(app.tool_call_index.contains_key("todo-1"));
+    assert!(app.sdk_inventory.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
+    assert!(app.has_tool_call("todo-1"));
 }
 
 // --- Error recovery ---
@@ -179,7 +179,7 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
         ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
     );
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.transcript.messages.len(), 1);
 
     // Second turn: chunks append to the last assistant message (no user message between turns)
     let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
@@ -189,9 +189,9 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
     );
 
     // Still one message - consecutive assistant chunks always merge
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.transcript.messages.len(), 1);
     if let MessageBlock::Text(block) =
-        &app.messages.last().expect("message").blocks.last().expect("block")
+        &app.transcript.messages.last().expect("message").blocks.last().expect("block")
     {
         assert!(block.text.contains("Turn 1"), "first turn text present");
         assert!(block.text.contains("Turn 2"), "second turn text appended");
@@ -218,8 +218,8 @@ async fn tool_call_content_update() {
         )),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-content"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-content").expect("tc-content indexed");
+    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
         assert!(!tc.content.is_empty(), "content should be set");
     } else {
         panic!("expected ToolCall block");
@@ -239,7 +239,7 @@ async fn stress_many_tool_calls_in_one_turn() {
         send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     }
 
-    assert_eq!(app.tool_call_index.len(), 50);
+    assert_eq!(app.tool_call_index_len(), 50);
 
     // Complete all
     for i in 0..50 {
@@ -261,7 +261,7 @@ async fn stress_many_tool_calls_in_one_turn() {
 async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
     let mut app = test_app();
 
-    app.mode = Some(claude_code_rust::app::ModeState {
+    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
@@ -276,7 +276,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("plan"),
         )),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
 
@@ -286,7 +286,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("unknown-mode"),
         )),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
     assert_eq!(mode.current_mode_name, "unknown-mode");
 
@@ -297,7 +297,10 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("plan-mode"),
         )),
     );
-    assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
+    assert!(
+        no_mode_app.session_runtime.mode.is_none(),
+        "update without existing mode state is a no-op"
+    );
 }
 
 // --- Edge cases: interleaved events ---
@@ -336,13 +339,13 @@ async fn text_between_tool_calls_creates_separate_blocks() {
     );
 
     // Should be: Text, ToolCall, Text, ToolCall, Text = 5 blocks
-    assert_eq!(app.messages.len(), 1);
-    assert_eq!(app.messages[0].blocks.len(), 5);
-    assert!(matches!(app.messages[0].blocks[0], MessageBlock::Text(..)));
-    assert!(matches!(app.messages[0].blocks[1], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages[0].blocks[2], MessageBlock::Text(..)));
-    assert!(matches!(app.messages[0].blocks[3], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages[0].blocks[4], MessageBlock::Text(..)));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert_eq!(app.transcript.messages[0].blocks.len(), 5);
+    assert!(matches!(app.transcript.messages[0].blocks[0], MessageBlock::Text(..)));
+    assert!(matches!(app.transcript.messages[0].blocks[1], MessageBlock::ToolCall(_)));
+    assert!(matches!(app.transcript.messages[0].blocks[2], MessageBlock::Text(..)));
+    assert!(matches!(app.transcript.messages[0].blocks[3], MessageBlock::ToolCall(_)));
+    assert!(matches!(app.transcript.messages[0].blocks[4], MessageBlock::Text(..)));
 }
 
 #[tokio::test]
@@ -387,7 +390,7 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update1)),
     );
-    assert_eq!(app.available_commands.len(), 2);
+    assert_eq!(app.sdk_inventory.available_commands.len(), 2);
 
     // New update replaces, not appends
     let cmd3 = model::AvailableCommand::new("/commit", "Commit");
@@ -396,7 +399,7 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update2)),
     );
-    assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
+    assert_eq!(app.sdk_inventory.available_commands.len(), 1, "replaced, not appended");
 }
 
 #[tokio::test]
@@ -423,18 +426,18 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
-    assert!(app.tool_call_index.contains_key("tc-err"));
-    assert_eq!(app.messages.len(), 2, "assistant message + system error message");
-    assert!(matches!(app.messages[0].role, MessageRole::Assistant));
-    assert_eq!(app.messages[0].blocks.len(), 2, "text + tool call preserved");
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.get(1) else {
+    assert!(app.has_tool_call("tc-err"));
+    assert_eq!(app.transcript.messages.len(), 2, "assistant message + system error message");
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Assistant));
+    assert_eq!(app.transcript.messages[0].blocks.len(), 2, "text + tool call preserved");
+    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.get(1) else {
         panic!("expected preserved tool call block");
     };
     assert_eq!(tc.id, "tc-err");
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
-    assert!(matches!(app.messages[1].role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = app.messages[1].blocks.first() else {
+    assert!(matches!(app.transcript.messages[1].role, MessageRole::System(_)));
+    let Some(MessageBlock::Text(block)) = app.transcript.messages[1].blocks.first() else {
         panic!("expected system error text block");
     };
     assert!(block.text.contains("Turn failed: crashed"));

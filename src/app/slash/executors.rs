@@ -328,7 +328,7 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    app.is_compacting = true;
+    app.turn.is_compacting = true;
     false
 }
 
@@ -466,7 +466,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, "Authenticating...", None);
 
     let tx = app.event_tx.clone();
-    let conn = app.conn.clone();
+    let conn = app.session_runtime.conn.clone();
     tokio::task::spawn_local(async move {
         tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -672,7 +672,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if let Some(ref mode) = app.mode
+    if let Some(ref mode) = app.session_runtime.mode
         && !mode.available_modes.iter().any(|m| m.id == requested_mode)
     {
         push_system_message(app, format!("Unknown mode: {requested_mode}"));
@@ -714,8 +714,8 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if !app.available_models.is_empty()
-        && !app.available_models.iter().any(|candidate| candidate.id == model_name)
+    if !app.sdk_inventory.available_models.is_empty()
+        && !app.sdk_inventory.available_models.iter().any(|candidate| candidate.id == model_name)
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
         return true;
@@ -759,7 +759,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if app.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
+    if app.session_runtime.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
         push_system_message(app, "Cannot switch effort: current model does not support effort.");
         return true;
     }
@@ -806,8 +806,12 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
     let agent = if requested_agent == "reset" {
         None
     } else {
-        if !app.available_agents.is_empty()
-            && !app.available_agents.iter().any(|candidate| candidate.name == requested_agent)
+        if !app.sdk_inventory.available_agents.is_empty()
+            && !app
+                .sdk_inventory
+                .available_agents
+                .iter()
+                .any(|candidate| candidate.name == requested_agent)
         {
             push_system_message(app, format!("Unknown agent: {requested_agent}"));
             return true;
@@ -898,7 +902,9 @@ fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, usage(AppSlashCommand::Rewind));
         return true;
     };
-    let Some(target) = app.rewind_targets.iter().find(|target| target.uuid == target_uuid) else {
+    let Some(target) =
+        app.sdk_inventory.rewind_targets.iter().find(|target| target.uuid == target_uuid)
+    else {
         push_system_message(app, format!("Unknown rewind target: {target_uuid}"));
         return true;
     };
@@ -938,7 +944,7 @@ fn docs_usage() -> &'static str {
 }
 
 fn build_docs_mode_markdown(app: &App) -> String {
-    let rows = app.mode.as_ref().map_or_else(
+    let rows = app.session_runtime.mode.as_ref().map_or_else(
         || vec![("Unavailable".to_owned(), "Connect to load the current session mode.".to_owned())],
         |mode| {
             let mut rows: Vec<(String, String)> = mode
@@ -971,10 +977,11 @@ fn build_docs_mode_markdown(app: &App) -> String {
 }
 
 fn build_docs_models_markdown(app: &App) -> String {
-    let rows = if app.available_models.is_empty() {
+    let rows = if app.sdk_inventory.available_models.is_empty() {
         vec![("Unavailable".to_owned(), "Connect to load advertised models.".to_owned())]
     } else {
-        app.available_models
+        app.sdk_inventory
+            .available_models
             .iter()
             .map(|model| {
                 let name = if model.display_name.trim().is_empty() {

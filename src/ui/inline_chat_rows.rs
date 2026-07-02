@@ -170,15 +170,16 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> SerializedLiveRows {
-    let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+    let current_mode_id =
+        app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
     let active_msg_idx = app.active_turn_assistant_idx();
     let runtime_indicator = sync_runtime_indicator(app);
     let mut rows = Vec::new();
     let mut row_boundaries = Vec::new();
     let mut previous_block_kind = None;
 
-    for msg_idx in 0..app.messages.len() {
-        let role = app.messages[msg_idx].role.clone();
+    for msg_idx in 0..app.transcript.messages.len() {
+        let role = app.transcript.messages[msg_idx].role.clone();
         let block_kind = message_block_kind(&role);
         let rendered_message = render_live_message_rows(
             app,
@@ -250,8 +251,8 @@ fn render_welcome_live_rows(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> RenderedMessageRows {
-    let ids = welcome_output_ids(&app.messages[msg_idx]);
-    let commit_ready = message_commit_ready(&app.messages[msg_idx]);
+    let ids = welcome_output_ids(&app.transcript.messages[msg_idx]);
+    let commit_ready = message_commit_ready(&app.transcript.messages[msg_idx]);
     if ids_are_excluded(&ids, excluded_ids) {
         return RenderedMessageRows::skipped_transcript_content();
     }
@@ -276,7 +277,7 @@ fn render_user_system_live_rows(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> RenderedMessageRows {
-    let ids = vec![HistoryOutputId::Message(app.messages[msg_idx].id)];
+    let ids = vec![HistoryOutputId::Message(app.transcript.messages[msg_idx].id)];
     if ids_are_excluded(&ids, excluded_ids) {
         return RenderedMessageRows::skipped_transcript_content();
     }
@@ -284,9 +285,9 @@ fn render_user_system_live_rows(
     // A message hosting an unanswered user dialog must stay in the live
     // (mutable) region so its chooser re-renders on focus/selection changes;
     // committing it would freeze it in immutable scrollback.
-    let commit_ready = !message_has_pending_user_dialog(&app.messages[msg_idx]);
+    let commit_ready = !message_has_pending_user_dialog(&app.transcript.messages[msg_idx]);
     let rendered = build_user_system_message_rows(
-        &mut app.messages[msg_idx],
+        &mut app.transcript.messages[msg_idx],
         message_render_context(current_mode_id, width),
     );
     RenderedMessageRows::message(
@@ -319,8 +320,11 @@ fn render_assistant_live_rows(
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> RenderedMessageRows {
     let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
-    let items =
-        assistant_render_items_from_message(&app.messages[msg_idx], msg_idx, active_mutable);
+    let items = assistant_render_items_from_message(
+        &app.transcript.messages[msg_idx],
+        msg_idx,
+        active_mutable,
+    );
     let selection = select_unexcluded_assistant_items(items, excluded_ids);
     let indicator = assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
     if selection.items.is_empty() && indicator.is_none() {
@@ -331,7 +335,7 @@ fn render_assistant_live_rows(
         };
     }
 
-    let message_id = app.messages[msg_idx].id;
+    let message_id = app.transcript.messages[msg_idx].id;
     let label_ids = vec![HistoryOutputId::AssistantLabel(message_id)];
     let show_label = !ids_are_excluded(&label_ids, excluded_ids);
     let skipped_static_body = selection.skipped_body_before_rendered_content;
@@ -352,7 +356,7 @@ fn render_assistant_live_rows(
     tracing::debug!(
         target: crate::logging::targets::APP_RENDER,
         event_name = "inline_chat_assistant_block_built",
-        message = "assistant message block rendered from canonical app.messages",
+        message = "assistant message block rendered from canonical app.transcript.messages",
         outcome = "success",
         assistant_turn_id = tracing::field::Empty,
         show_label,
@@ -468,7 +472,7 @@ fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<
     if !app.show_session_overview {
         return Vec::new();
     }
-    let Some(message) = app.messages.get(msg_idx) else {
+    let Some(message) = app.transcript.messages.get(msg_idx) else {
         return Vec::new();
     };
     let Some(MessageBlock::Welcome(welcome)) =
@@ -518,7 +522,7 @@ fn welcome_value_ready(value: &str) -> bool {
 }
 
 fn sync_runtime_indicator(app: &mut App) -> Option<AssistantRuntimeIndicator> {
-    if app.is_compacting {
+    if app.turn.is_compacting {
         app.chat_render.thinking_verb = None;
         return Some(AssistantRuntimeIndicator::Compacting);
     }
@@ -527,7 +531,7 @@ fn sync_runtime_indicator(app: &mut App) -> Option<AssistantRuntimeIndicator> {
         || (matches!(app.status, crate::app::AppStatus::Running)
             && app
                 .active_turn_assistant_idx()
-                .and_then(|idx| app.messages.get(idx))
+                .and_then(|idx| app.transcript.messages.get(idx))
                 .is_some_and(|msg| msg.blocks.is_empty()));
 
     if thinking {
@@ -627,7 +631,8 @@ impl RenderedMessageRows {
 
 fn active_assistant_message_is_mutable(app: &App, msg_idx: usize) -> bool {
     app.active_turn_assistant_idx() == Some(msg_idx)
-        && (app.is_compacting || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
+        && (app.turn.is_compacting
+            || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
 }
 
 struct PendingAssistantTextRun {
@@ -1253,8 +1258,11 @@ fn render_canonical_tool_rows(
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
 ) -> Vec<Line<'static>> {
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(msg_idx).and_then(|message| message.blocks.get_mut(block_idx))
+    let Some(MessageBlock::ToolCall(tc)) = app
+        .transcript
+        .messages
+        .get_mut(msg_idx)
+        .and_then(|message| message.blocks.get_mut(block_idx))
     else {
         return Vec::new();
     };
@@ -1610,7 +1618,7 @@ mod tests {
     #[test]
     fn live_rows_do_not_start_with_synthetic_blank_row() {
         let mut app = App::test_default();
-        app.messages.push(assistant_text_message("hi"));
+        app.transcript.messages.push(assistant_text_message("hi"));
 
         let rows = serialize_live_rows(&mut app, 120);
 
@@ -1622,7 +1630,7 @@ mod tests {
     fn live_rows_render_user_row_while_assistant_streams() {
         let mut app = App::test_default();
         app.push_message_tracked(user_text_message("hello"));
-        app.messages.push(assistant_text_message("still streaming"));
+        app.transcript.messages.push(assistant_text_message("still streaming"));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -1637,8 +1645,8 @@ mod tests {
             "Resize should rebuild canonical user prose from messages with enough words to wrap \
              differently at narrow widths.",
         ));
-        app.messages.push(assistant_text_message(
-            "Assistant rows also come directly from app.messages, so changing width changes \
+        app.transcript.messages.push(assistant_text_message(
+            "Assistant rows also come directly from app.transcript.messages, so changing width changes \
              physical row count without changing semantic text.",
         ));
 
@@ -1662,7 +1670,7 @@ mod tests {
     fn live_row_boundaries_stop_stable_prefix_before_active_assistant() {
         let mut app = App::test_default();
         app.push_message_tracked(user_text_message("hello"));
-        app.messages.push(assistant_text_message("still streaming"));
+        app.transcript.messages.push(assistant_text_message("still streaming"));
         app.bind_active_turn_assistant(1);
         app.status = AppStatus::Running;
 
@@ -1674,7 +1682,7 @@ mod tests {
     #[test]
     fn active_assistant_commits_completed_text_before_streaming_tail() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(TextBlock::from_complete("prefix")),
             MessageBlock::Text(TextBlock::from_complete("tail")),
         ]));
@@ -1692,7 +1700,7 @@ mod tests {
     #[test]
     fn active_assistant_commits_completed_tool_before_pending_permission_tool() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             tool_call_block("done-tool", false),
             tool_call_block_with_status_interaction(
                 "pending-tool",
@@ -1718,7 +1726,9 @@ mod tests {
     #[test]
     fn active_assistant_completed_tool_is_commit_ready() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block("done-tool", false)]));
+        app.transcript
+            .messages
+            .push(assistant_blocks_message(vec![tool_call_block("done-tool", false)]));
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
@@ -1730,13 +1740,15 @@ mod tests {
     #[test]
     fn active_assistant_in_progress_tool_keeps_label_mutable() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_status_interaction(
-            "running-tool",
-            model::ToolCallStatus::InProgress,
-            false,
-            false,
-            false,
-        )]));
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_status_interaction(
+                "running-tool",
+                model::ToolCallStatus::InProgress,
+                false,
+                false,
+                false,
+            ),
+        ]));
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
 
@@ -1752,7 +1764,7 @@ mod tests {
     #[test]
     fn live_rows_render_committed_assistant_prefix_before_live_tail() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(TextBlock::from_complete("prefix")),
             MessageBlock::Text(TextBlock::from_complete("tail")),
         ]));
@@ -1766,7 +1778,7 @@ mod tests {
     #[test]
     fn live_adjacent_text_blocks_preserve_paragraph_gap() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
                 TextBlock::from_complete("line 1: ready\n\n")
                     .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
@@ -1782,7 +1794,7 @@ mod tests {
     #[test]
     fn live_assistant_text_suppresses_paragraph_gap_before_list_block() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
                 TextBlock::from_complete("Intro\n\n")
                     .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
@@ -1798,7 +1810,7 @@ mod tests {
     #[test]
     fn live_assistant_text_suppresses_paragraph_gap_after_list_block() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
                 TextBlock::from_complete("- One\n- Two\n\n")
                     .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
@@ -1814,7 +1826,9 @@ mod tests {
     #[test]
     fn live_assistant_text_preserves_single_newline_rows() {
         let mut app = App::test_default();
-        app.messages.push(assistant_text_message("line 1: ready\nline 2: ready\nline 3: ready"));
+        app.transcript
+            .messages
+            .push(assistant_text_message("line 1: ready\nline 2: ready\nline 3: ready"));
 
         let rows = serialize_live_rows(&mut app, 120);
 
@@ -1827,7 +1841,7 @@ mod tests {
     #[test]
     fn live_rows_render_assistant_notice_from_messages() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![MessageBlock::Notice(
+        app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Notice(
             NoticeBlock::from_complete(crate::app::SystemSeverity::Warning, "watch this"),
         )]));
 
@@ -1840,7 +1854,9 @@ mod tests {
     #[test]
     fn live_rows_render_visible_tool_from_canonical_message_block() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block("tool-1", false)]));
+        app.transcript
+            .messages
+            .push(assistant_blocks_message(vec![tool_call_block("tool-1", false)]));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -1860,7 +1876,7 @@ mod tests {
             assistant_blocks_message(vec![MessageBlock::Text(first), MessageBlock::Text(second)]);
         let message_id = message.id;
         let mut app = App::test_default();
-        app.messages.push(message);
+        app.transcript.messages.push(message);
         let excluded_ids = BTreeSet::from([
             HistoryOutputId::AssistantLabel(message_id),
             HistoryOutputId::Block(first_id),
@@ -1896,7 +1912,7 @@ mod tests {
             "| Slow startup | Startup output lands after a long delay | #42002 |\n",
         );
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(first),
             MessageBlock::Text(second),
         ]));
@@ -1948,7 +1964,7 @@ mod tests {
         let message = assistant_blocks_message(vec![done, running]);
         let message_id = message.id;
         let mut app = App::test_default();
-        app.messages.push(message);
+        app.transcript.messages.push(message);
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Running;
         let excluded_ids = BTreeSet::from([
@@ -1973,7 +1989,7 @@ mod tests {
     #[test]
     fn empty_active_assistant_renders_thinking_from_runtime_state() {
         let mut app = App::test_default();
-        app.messages.push(assistant_message());
+        app.transcript.messages.push(assistant_message());
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Thinking;
         app.chat_render.thinking_verb = Some("Pondering");
@@ -1988,7 +2004,7 @@ mod tests {
     #[test]
     fn thinking_remains_render_only_across_width_rebuilds() {
         let mut app = App::test_default();
-        app.messages.push(assistant_message());
+        app.transcript.messages.push(assistant_message());
         app.bind_active_turn_assistant(0);
         app.status = AppStatus::Thinking;
         app.chat_render.thinking_verb = Some("Pondering");
@@ -2003,8 +2019,8 @@ mod tests {
                 "thinking indicator missing at width {width}: {text:?}"
             );
             assert!(
-                app.messages[0].blocks.is_empty(),
-                "thinking indicator must not be persisted into app.messages"
+                app.transcript.messages[0].blocks.is_empty(),
+                "thinking indicator must not be persisted into app.transcript.messages"
             );
         }
     }
@@ -2012,7 +2028,7 @@ mod tests {
     #[test]
     fn live_rows_keep_system_row_after_active_assistant_turn() {
         let mut app = App::test_default();
-        app.messages.push(assistant_text_message("streaming"));
+        app.transcript.messages.push(assistant_text_message("streaming"));
         app.push_message_tracked(system_text_message("during turn"));
 
         let rows = serialize_live_rows(&mut app, 120);
@@ -2026,7 +2042,12 @@ mod tests {
     #[test]
     fn live_rows_render_welcome_once() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-123",
+        ));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -2037,7 +2058,12 @@ mod tests {
     #[test]
     fn welcome_renders_once_across_repeated_width_rebuilds() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-123",
+        ));
 
         for width in [36, 120, 36] {
             let rows = serialize_live_rows(&mut app, width);
@@ -2069,7 +2095,12 @@ mod tests {
     #[test]
     fn finalized_welcome_rows_are_commit_ready() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123"));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-123",
+        ));
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
@@ -2081,7 +2112,7 @@ mod tests {
     fn live_rows_render_uncommitted_loading_welcome() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
-        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
 
         let rows = serialize_live_rows(&mut app, 120);
         let text = line_texts(&rows);
@@ -2096,7 +2127,7 @@ mod tests {
     fn loading_welcome_rows_are_not_commit_ready() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
-        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
@@ -2108,7 +2139,7 @@ mod tests {
     fn loading_welcome_blocks_later_stable_rows_from_scrollback() {
         let mut app = App::test_default();
         app.status = AppStatus::Connecting;
-        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
         app.push_message_tracked(user_text_message("queued while connecting"));
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
@@ -2120,7 +2151,9 @@ mod tests {
     #[test]
     fn hidden_canonical_tool_renders_no_rows_or_label() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
+        app.transcript
+            .messages
+            .push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
 
         for width in [32, 120, 32] {
             let rows = serialize_live_rows(&mut app, width);
@@ -2132,9 +2165,9 @@ mod tests {
     #[test]
     fn hidden_canonical_tool_with_focused_permission_without_subagent_context_has_no_header() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_interaction(
-            "child-1", true, true, false,
-        )]));
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_interaction("child-1", true, true, false),
+        ]));
 
         for width in [32, 120, 32] {
             let rows = serialize_live_rows(&mut app, width);
@@ -2159,9 +2192,9 @@ mod tests {
     #[test]
     fn hidden_canonical_tool_with_unfocused_permission_renders_interaction_rows() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_pending_permission(
-            "child-1", true, false,
-        )]));
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_pending_permission("child-1", true, false),
+        ]));
 
         for width in [32, 120, 32] {
             let rows = serialize_live_rows(&mut app, width);
@@ -2190,7 +2223,7 @@ mod tests {
     #[test]
     fn hidden_canonical_tool_with_subagent_permission_prefixes_child_tool_title() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             tool_call_block_with_subagent_pending_permission("child-1"),
         ]));
 
@@ -2227,9 +2260,9 @@ mod tests {
     #[test]
     fn hidden_canonical_tool_with_focused_question_renders_interaction_rows() {
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![tool_call_block_with_interaction(
-            "child-1", true, false, true,
-        )]));
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_interaction("child-1", true, false, true),
+        ]));
 
         for width in [32, 120, 32] {
             let rows = serialize_live_rows(&mut app, width);

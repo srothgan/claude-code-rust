@@ -337,6 +337,7 @@ impl OverlayModelOption {
 
 pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
     let mut options = app
+        .sdk_inventory
         .available_models
         .iter()
         .map(|model| OverlayModelOption {
@@ -518,7 +519,7 @@ fn open_language_overlay(app: &mut App) {
 }
 
 pub(super) fn open_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
         return;
     };
     let session_id = session_id.to_string();
@@ -536,10 +537,12 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref().map(std::string::ToString::to_string) else {
+    let Some(session_id) =
+        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
+    else {
         return;
     };
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         app.config.last_error = Some("No active bridge connection".to_owned());
         app.config.status_message = None;
         return;
@@ -729,11 +732,13 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 fn confirm_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref().map(std::string::ToString::to_string) else {
+    let Some(session_id) =
+        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
+    else {
         app.config.clear_overlay();
         return;
     };
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         app.config.set_overlay_error("No active bridge connection");
         return;
     };

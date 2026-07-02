@@ -17,7 +17,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     }
     if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages.get_mut(owner_idx)
+        && let Some(owner) = app.transcript.messages.get_mut(owner_idx)
     {
         append_agent_stream_text(
             &mut owner.blocks,
@@ -28,7 +28,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     }
 
-    if let Some(last) = app.messages.last_mut()
+    if let Some(last) = app.transcript.messages.last_mut()
         && matches!(last.role, MessageRole::Assistant)
     {
         append_agent_stream_text(
@@ -36,7 +36,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
             &text.text,
             chunk.source_message_uuid.as_deref(),
         );
-        let last_idx = app.messages.len().saturating_sub(1);
+        let last_idx = app.transcript.messages.len().saturating_sub(1);
         app.bind_active_turn_assistant(last_idx);
         app.sync_after_message_blocks_changed(last_idx);
         return;
@@ -156,7 +156,7 @@ mod tests {
     fn streaming_text_chunk_appends_to_canonical_active_assistant_message() {
         let mut app = App::test_default();
         app.status = crate::app::AppStatus::Thinking;
-        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
 
         handle_agent_message_chunk(
@@ -167,11 +167,11 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), Some(0));
-        assert_eq!(app.messages[0].blocks.len(), 2);
-        let Some(MessageBlock::Text(first)) = app.messages[0].blocks.first() else {
+        assert_eq!(app.transcript.messages[0].blocks.len(), 2);
+        let Some(MessageBlock::Text(first)) = app.transcript.messages[0].blocks.first() else {
             panic!("expected first text block");
         };
-        let Some(MessageBlock::Text(second)) = app.messages[0].blocks.get(1) else {
+        let Some(MessageBlock::Text(second)) = app.transcript.messages[0].blocks.get(1) else {
             panic!("expected second text block");
         };
         assert_eq!(first.text, "first\n\n");
@@ -184,7 +184,7 @@ mod tests {
     fn streaming_text_keeps_contiguous_chunks_in_one_block_when_source_uuid_changes() {
         let mut app = App::test_default();
         app.status = crate::app::AppStatus::Thinking;
-        app.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
 
         for (text, source_message_uuid) in
@@ -197,8 +197,8 @@ mod tests {
             );
         }
 
-        assert_eq!(app.messages[0].blocks.len(), 1);
-        let Some(MessageBlock::Text(block)) = app.messages[0].blocks.first() else {
+        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
+        let Some(MessageBlock::Text(block)) = app.transcript.messages[0].blocks.first() else {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Hello!");

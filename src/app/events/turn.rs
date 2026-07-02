@@ -62,7 +62,7 @@ pub(super) fn handle_permission_request_event(
         return;
     };
 
-    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.turn.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_request_rejected",
@@ -77,9 +77,10 @@ pub(super) fn handle_permission_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus =
+        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_permission = Some(InlinePermission {
@@ -92,7 +93,7 @@ pub(super) fn handle_permission_request_event(
         });
         tc.invalidate_render_cache();
         layout_dirty = true;
-        app.pending_interaction_ids.push(tool_id.clone());
+        app.turn.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -227,7 +228,7 @@ fn resolve_permission_context(app: &App, tool_call_id: &str) -> Option<SubagentP
 
 fn indexed_tool_call<'a>(app: &'a App, tool_call_id: &str) -> Option<&'a ToolCallInfo> {
     let (mi, bi) = app.lookup_tool_call(tool_call_id)?;
-    let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
+    let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
         return None;
     };
     Some(tc.as_ref())
@@ -268,7 +269,7 @@ pub(super) fn handle_question_request_event(
         return;
     };
 
-    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.turn.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_request_rejected",
@@ -284,9 +285,10 @@ pub(super) fn handle_question_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus =
+        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
@@ -303,7 +305,7 @@ pub(super) fn handle_question_request_event(
         });
         tc.invalidate_render_cache();
         layout_dirty = true;
-        app.pending_interaction_ids.push(tool_id.clone());
+        app.turn.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -355,7 +357,7 @@ pub(super) fn handle_user_dialog_request_event(
     let dialog_kind = request.dialog_kind.clone();
     let option_count = request.options.len();
 
-    if app.pending_interaction_ids.iter().any(|id| id == &request_id) {
+    if app.turn.pending_interaction_ids.iter().any(|id| id == &request_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "user_dialog_request_rejected",
@@ -371,8 +373,9 @@ pub(super) fn handle_user_dialog_request_event(
         return;
     }
 
-    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
-    let mi = app.messages.len();
+    let auto_focus =
+        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let mi = app.transcript.messages.len();
     let bi = 0;
     let mut block = UserDialogBlock::new(request, response_tx);
     block.focused = auto_focus;
@@ -382,7 +385,7 @@ pub(super) fn handle_user_dialog_request_event(
         None,
     ));
     app.index_tool_call(request_id.clone(), mi, bi);
-    app.pending_interaction_ids.push(request_id.clone());
+    app.turn.pending_interaction_ids.push(request_id.clone());
     if auto_focus {
         app.claim_focus_target(FocusTarget::Permission);
     }
@@ -421,27 +424,28 @@ fn reject_permission_request(
 }
 
 pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    if app.pending_cancel_origin.is_none() {
-        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+    if app.turn.pending_cancel_origin.is_none() {
+        app.turn.pending_cancel_origin = Some(CancelOrigin::Manual);
     }
-    app.cancelled_turn_pending_hint =
-        matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+    app.turn.cancelled_pending_hint =
+        matches!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
     let state = TurnExitState {
         tail_assistant_idx: app
+            .transcript
             .messages
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant)),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        cancelled_requested: app.pending_cancel_origin,
-        show_interrupted_hint: matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual)),
+        cancelled_requested: app.turn.pending_cancel_origin,
+        show_interrupted_hint: matches!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual)),
     };
     clear_compaction_state(app, emit_manual_compaction_success);
-    app.pending_cancel_origin = None;
-    app.cancelled_turn_pending_hint = false;
+    app.turn.pending_cancel_origin = None;
+    app.turn.cancelled_pending_hint = false;
     state
 }
 
@@ -449,8 +453,8 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.finalize_turn_runtime_artifacts(tool_status);
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
-    app.rewind_targets_session_id = None;
-    app.rewind_targets_in_flight = false;
+    app.sdk_inventory.rewind_targets_session_id = None;
+    app.sdk_inventory.rewind_targets_in_flight = false;
     app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
@@ -462,8 +466,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     {
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
-    app.clear_active_turn_assistant();
-    super::notices::clear_turn_notice_tracking(app);
+    app.turn.reset_for_turn_exit();
 }
 
 pub(super) fn handle_turn_complete_event(
@@ -544,12 +547,13 @@ pub(super) fn handle_turn_error_event(
     );
     apply_turn_error_class_side_effects(app, error_class, &summary, api_error_status);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.pending_auto_submit_after_cancel = false;
+    app.turn.pending_auto_submit_after_cancel = false;
     app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
-        app.last_rate_limit_update
+        app.session_runtime
+            .last_rate_limit_update
             .clone()
             .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
     } else {
@@ -560,8 +564,7 @@ pub(super) fn handle_turn_error_event(
     if removed_tail_assistant.is_none() && exit.turn_was_active {
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
-    app.clear_active_turn_assistant();
-    super::notices::clear_turn_notice_tracking(app);
+    app.turn.reset_for_turn_exit();
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
 }
@@ -668,6 +671,7 @@ fn push_interrupted_hint(app: &mut App) {
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
     let idx = idx?;
     let should_remove = app
+        .transcript
         .messages
         .get(idx)
         .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
@@ -682,7 +686,12 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
     let Some(idx) = idx else {
         return;
     };
-    if app.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
+    if app
+        .transcript
+        .messages
+        .get(idx)
+        .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+    {
         app.invalidate_layout(InvalidationLevel::MessageChanged(idx));
     }
 }
@@ -813,9 +822,9 @@ mod tests {
     }
 
     fn push_tool(app: &mut App, tool: crate::app::ToolCallInfo) {
-        let msg_idx = app.messages.len();
+        let msg_idx = app.transcript.messages.len();
         let tool_id = tool.id.clone();
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tool))],
             None,
@@ -842,7 +851,7 @@ mod tests {
     ) -> Option<crate::app::SubagentPermissionContext> {
         let (mi, bi) = app.lookup_tool_call(tool_id)?;
         let Some(MessageBlock::ToolCall(tool)) =
-            app.messages.get(mi).and_then(|msg| msg.blocks.get(bi))
+            app.transcript.messages.get(mi).and_then(|msg| msg.blocks.get(bi))
         else {
             return None;
         };
@@ -877,50 +886,53 @@ mod tests {
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(empty_assistant_message());
 
         handle_turn_complete_event(&mut app, None);
 
-        assert_eq!(app.messages.len(), 1);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
     }
 
     #[test]
     fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.pending_cancel_origin = Some(CancelOrigin::Manual);
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.turn.pending_cancel_origin = Some(CancelOrigin::Manual);
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(empty_assistant_message());
 
         handle_turn_error_event(&mut app, "cancelled", None, None, None);
 
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+        assert_eq!(app.transcript.messages.len(), 2);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert!(matches!(
+            app.transcript.messages[1].role,
+            MessageRole::System(Some(SystemSeverity::Info))
+        ));
     }
 
     #[test]
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(empty_assistant_message());
 
         handle_turn_error_event(&mut app, "boom", None, None, None);
 
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::System(None)));
+        assert_eq!(app.transcript.messages.len(), 2);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::System(None)));
     }
 
     #[test]
     fn turn_complete_keeps_canonical_assistant_and_clears_active_owner() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages.push(user_message("hello"));
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("done"))],
             None,
@@ -931,8 +943,8 @@ mod tests {
 
         assert_eq!(app.status, AppStatus::Ready);
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert_eq!(app.messages.len(), 2);
-        let Some(MessageBlock::Text(text)) = app.messages[1].blocks.first() else {
+        assert_eq!(app.transcript.messages.len(), 2);
+        let Some(MessageBlock::Text(text)) = app.transcript.messages[1].blocks.first() else {
             panic!("expected assistant text block");
         };
         assert_eq!(text.text, "done");
@@ -944,8 +956,8 @@ mod tests {
         app.surface_dirty = crate::app::SurfaceDirtyState::default();
         app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
         app.status = AppStatus::Running;
-        app.messages.push(user_message("hello"));
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("streamed"))],
             None,
@@ -967,7 +979,7 @@ mod tests {
     fn permission_request_marks_canonical_tool_pending_permission() {
         let mut app = App::test_default();
         let tool_id = "bash-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
                 id: tool_id.to_owned(),
@@ -1010,7 +1022,7 @@ mod tests {
 
         handle_permission_request_event(&mut app, request, tx);
 
-        let Some(MessageBlock::ToolCall(tool)) = app.messages[0].blocks.first() else {
+        let Some(MessageBlock::ToolCall(tool)) = app.transcript.messages[0].blocks.first() else {
             panic!("expected tool call block");
         };
         assert!(tool.pending_permission.is_some());

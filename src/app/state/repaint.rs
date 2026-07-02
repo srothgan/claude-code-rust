@@ -102,7 +102,7 @@ impl App {
         I: IntoIterator<Item = usize>,
     {
         let unique: BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+            indices.into_iter().filter(|&idx| idx < self.transcript.messages.len()).collect();
         if !unique.is_empty() {
             self.invalidate_layout(LayoutInvalidation::Global);
         }

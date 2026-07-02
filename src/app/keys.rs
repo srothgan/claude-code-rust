@@ -91,9 +91,7 @@ pub(super) fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> KeyOutcome {
-    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
-        || app.is_compacting
-    {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         return handle_keymap_context(app, KeyContext::ChatBlocked, key);
     }
 
@@ -185,7 +183,7 @@ fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
     if app.pending_submit.is_some() && is_editing_like_key(key) {
         app.pending_submit = None;
     }
-    !app.pending_paste_text.is_empty() && is_editing_like_key(key)
+    app.paste.has_pending_text() && is_editing_like_key(key)
 }
 
 fn paste_suppression_bypass_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
@@ -270,7 +268,7 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
 fn clear_input_or_quit(app: &mut App) -> bool {
     let has_local_input = !app.input.is_empty()
         || !app.pending_images.is_empty()
-        || !app.pending_paste_text.is_empty()
+        || app.paste.has_pending_text()
         || app.pending_submit.is_some();
     if !has_local_input {
         app.should_quit = true;
@@ -279,9 +277,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
 
     app.input.clear();
     app.pending_images.clear();
-    app.pending_paste_text.clear();
-    app.pending_paste_session = None;
-    app.active_paste_session = None;
+    app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.request_chat_repaint();
     true
@@ -353,7 +349,7 @@ fn delete_input_word_after(app: &mut App) -> bool {
 }
 
 fn insert_explicit_newline(app: &mut App) -> bool {
-    if app.paste_burst.on_enter(Instant::now()) {
+    if app.paste.burst.on_enter(Instant::now()) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "enter_routed_to_paste_buffer",
@@ -481,7 +477,7 @@ fn handle_submit(app: &mut App) -> bool {
 
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
-    if app.paste_burst.on_enter(now) {
+    if app.paste.burst.on_enter(now) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "enter_routed_to_paste_buffer",
@@ -502,7 +498,7 @@ fn handle_submit(app: &mut App) -> bool {
 }
 
 fn handle_focus_toggle(app: &mut App) -> bool {
-    if app.pending_interaction_ids.is_empty() {
+    if app.turn.pending_interaction_ids.is_empty() {
         false
     } else {
         match app.focus_owner() {
@@ -524,7 +520,7 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
         return false;
     }
 
-    let Some(suggestion) = app.prompt_suggestion.take() else {
+    let Some(suggestion) = app.session_runtime.prompt_suggestion.take() else {
         return false;
     };
     if suggestion.trim().is_empty() {
@@ -535,7 +531,7 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
 }
 
 fn handle_mode_cycle(app: &mut App) -> bool {
-    let Some(ref mode) = app.mode else {
+    let Some(ref mode) = app.session_runtime.mode else {
         return true;
     };
     if mode.available_modes.len() <= 1 {
@@ -547,8 +543,8 @@ fn handle_mode_cycle(app: &mut App) -> bool {
     let next_idx = (current_idx + 1) % mode.available_modes.len();
     let next = &mode.available_modes[next_idx];
 
-    if let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+    if let Some(ref conn) = app.session_runtime.conn
+        && let Some(sid) = app.session_runtime.session_id.clone()
     {
         let mode_id = next.id.clone();
         let conn = Rc::clone(conn);
@@ -572,7 +568,7 @@ fn handle_mode_cycle(app: &mut App) -> bool {
         .iter()
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
         .collect();
-    app.mode = Some(ModeState {
+    app.session_runtime.mode = Some(ModeState {
         current_mode_id: next_id,
         current_mode_name: next_name,
         available_modes: modes,
@@ -673,18 +669,7 @@ fn try_delete_input_atom(app: &mut App, direction: AtomicDeleteDirection) -> boo
             app.request_chat_repaint();
         }
         InputAtomKind::PasteBlock { index, .. } => {
-            if app
-                .active_paste_session
-                .is_some_and(|session| session.placeholder_index == Some(index))
-            {
-                app.active_paste_session = None;
-            }
-            if app
-                .pending_paste_session
-                .is_some_and(|session| session.placeholder_index == Some(index))
-            {
-                app.pending_paste_session = None;
-            }
+            app.paste.clear_sessions_for_placeholder(index);
             app.request_chat_repaint();
         }
     }
@@ -694,7 +679,7 @@ fn try_delete_input_atom(app: &mut App, direction: AtomicDeleteDirection) -> boo
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
         // Non-char key: reset burst state to prevent leakage.
-        app.paste_burst.on_non_char_key(Instant::now());
+        app.paste.burst.on_non_char_key(Instant::now());
         return false;
     };
     if !is_printable_text_modifiers(m) {
@@ -703,7 +688,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     reclaim_input_from_inline_prompt_if_needed(app);
 
     let now = Instant::now();
-    match app.paste_burst.on_char(c, now) {
+    match app.paste.burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
             return false;
@@ -922,7 +907,7 @@ mod tests {
     #[test]
     fn queued_paste_still_blocks_overlapping_key_text() {
         let mut app = App::test_default();
-        app.pending_paste_text = "clipboard".to_owned();
+        app.paste.pending_text = "clipboard".to_owned();
 
         let blocked = should_ignore_key_during_paste(
             &mut app,
@@ -934,7 +919,7 @@ mod tests {
     #[test]
     fn queued_paste_allows_app_control_shortcuts() {
         let mut app = App::test_default();
-        app.pending_paste_text = "clipboard".to_owned();
+        app.paste.pending_text = "clipboard".to_owned();
 
         let blocked = should_ignore_key_during_paste(
             &mut app,
@@ -1009,12 +994,12 @@ mod tests {
         app.input.insert_paste_block("a\r\nb\rc");
         app.input.insert_str(" after");
         let _ = app.input.set_cursor_col("before ".chars().count());
-        app.active_paste_session = Some(crate::app::PasteSessionState {
+        app.paste.active_session = Some(crate::app::PasteSessionState {
             id: 1,
             start: crate::app::SelectionPoint { row: 0, col: "before ".chars().count() },
             placeholder_index: Some(0),
         });
-        app.pending_paste_session = app.active_paste_session;
+        app.paste.pending_session = app.paste.active_session;
         app.surface_dirty.chat.repaint = false;
 
         let outcome = execute_key_action(
@@ -1027,8 +1012,8 @@ mod tests {
         assert_eq!(app.input.lines(), vec!["before  after"]);
         assert_eq!(app.input.text(), "before  after");
         assert_eq!(app.input.paste_blocks, vec!["a\nb\nc"]);
-        assert!(app.active_paste_session.is_none());
-        assert!(app.pending_paste_session.is_none());
+        assert!(app.paste.active_session.is_none());
+        assert!(app.paste.pending_session.is_none());
         assert!(app.surface_dirty.chat.repaint);
     }
 
@@ -1141,12 +1126,12 @@ mod tests {
         let mut app = App::test_default();
         let t0 = Instant::now();
 
-        assert_eq!(app.paste_burst.on_char('a', t0), CharAction::Passthrough('a'));
+        assert_eq!(app.paste.burst.on_char('a', t0), CharAction::Passthrough('a'));
         assert_eq!(
-            app.paste_burst.on_char('b', t0 + Duration::from_millis(1)),
+            app.paste.burst.on_char('b', t0 + Duration::from_millis(1)),
             CharAction::Consumed
         );
-        assert!(app.paste_burst.is_buffering());
+        assert!(app.paste.burst.is_buffering());
 
         let blocked = should_ignore_key_during_paste(
             &mut app,

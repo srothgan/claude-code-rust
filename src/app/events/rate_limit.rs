@@ -125,7 +125,7 @@ fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
 }
 
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
-    app.last_rate_limit_update = Some(update.clone());
+    app.session_runtime.last_rate_limit_update = Some(update.clone());
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "rate_limit_update_applied",
@@ -171,12 +171,12 @@ pub(super) fn handle_compaction_boundary_update(
     app: &mut App,
     boundary: model::CompactionBoundary,
 ) {
-    app.is_compacting = true;
+    app.turn.is_compacting = true;
     if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
-        app.pending_compact_clear = true;
+        app.turn.pending_compact_clear = true;
     }
-    app.session_usage.last_compaction_trigger = Some(boundary.trigger);
-    app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    app.session_runtime.session_usage.last_compaction_trigger = Some(boundary.trigger);
+    app.session_runtime.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
     tracing::debug!(
         "CompactionBoundary: trigger={:?} pre_tokens={}",
         boundary.trigger,

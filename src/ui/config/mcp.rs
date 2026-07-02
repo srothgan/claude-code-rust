@@ -31,7 +31,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .split(content_area);
     frame.render_widget(Paragraph::new(summary).wrap(Wrap { trim: false }), sections[0]);
 
-    if app.session_id.is_none() {
+    if app.session_runtime.session_id.is_none() {
         render_message(
             frame,
             sections[1],
@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn renders_live_server_snapshot_as_list_only() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
         app.mcp.servers = vec![
             McpServerStatus {
                 name: "notion".to_owned(),

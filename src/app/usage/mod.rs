@@ -30,7 +30,7 @@ pub(crate) fn request_refresh(app: &mut App) {
     apply_refresh_started(app);
 
     let event_tx = app.event_tx.clone();
-    let epoch = app.session_scope_epoch;
+    let epoch = app.session_runtime.session_scope_epoch;
     let source_mode = app.usage.active_source;
     let cwd_raw = app.cwd_raw.clone();
 

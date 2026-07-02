@@ -175,7 +175,7 @@ fn log_resize_classification(app: &App, size_change: TerminalSizeChange, action:
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> TerminalEventOutcome {
     match app.surface_mode {
         SurfaceMode::Chat => {
-            app.active_paste_session = None;
+            app.paste.clear_active_session();
             TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
@@ -196,7 +196,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
 fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.surface_mode {
         SurfaceMode::Chat => {
-            app.active_paste_session = None;
+            app.paste.clear_active_session();
             let _ = mouse;
         }
         SurfaceMode::Fullscreen(_) => {
@@ -211,8 +211,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             if !matches!(
                 app.status,
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
-            ) && !app.is_compacting
-            {
+            ) {
                 reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
                 return true;
@@ -290,7 +289,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 source = cmds.source.as_deref().unwrap_or("unknown"),
                 generation = cmds.generation,
             );
-            app.available_commands = cmds.available_commands;
+            app.sdk_inventory.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
             if app.slash.is_some() {
                 super::slash::update_query(app);
@@ -304,26 +303,27 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 outcome = "success",
                 agent_count = agents.available_agents.len(),
             );
-            app.available_agents = agents.available_agents;
+            app.sdk_inventory.available_agents = agents.available_agents;
             if app.subagent.is_some() {
                 super::subagent::update_query(app);
             }
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
-            let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
-                != Some(mode.current_mode_id.as_str());
-            app.mode = Some(mode);
+            let mode_changed =
+                app.session_runtime.mode.as_ref().map(|current| current.current_mode_id.as_str())
+                    != Some(mode.current_mode_id.as_str());
+            app.session_runtime.mode = Some(mode);
             if mode_changed {
                 app.invalidate_layout(InvalidationLevel::Global);
             }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
             }
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
             let mode_id = update.current_mode_id.to_string();
             let mut mode_changed = false;
-            if let Some(ref mut mode) = app.mode {
+            if let Some(ref mut mode) = app.session_runtime.mode {
                 mode_changed = mode.current_mode_id != mode_id;
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
                     mode.current_mode_name.clone_from(&info.name);
@@ -336,7 +336,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             if mode_changed {
                 app.invalidate_layout(InvalidationLevel::Global);
             }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
                 session::clear_pending_command(app);
             }
         }
@@ -344,11 +344,11 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             let next_resolved_id = update.current_model.resolved_id.clone();
             let next_display_short = update.current_model.display_name_short.clone();
             let next_display_long = update.current_model.display_name_long.clone();
-            let pending_ack_before = format!("{:?}", app.pending_command_ack);
-            app.current_model = Some(update.current_model);
+            let pending_ack_before = format!("{:?}", app.turn.pending_command_ack);
+            app.session_runtime.current_model = Some(update.current_model);
             let clearing_pending =
-                matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
+                matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel));
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
                 session::clear_pending_command(app);
             }
             tracing::debug!(
@@ -367,7 +367,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_config_option_update(app, config);
         }
         model::SessionUpdate::FastModeUpdate(state) => {
-            app.fast_mode_state = state;
+            app.session_runtime.fast_mode_state = state;
         }
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);
@@ -389,7 +389,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
-            app.prompt_suggestion = (!suggestion.trim().is_empty()).then_some(suggestion);
+            app.session_runtime.prompt_suggestion =
+                (!suggestion.trim().is_empty()).then_some(suggestion);
         }
         model::SessionUpdate::RuntimeSessionStateUpdate(state) => {
             handle_runtime_session_state_update(app, state);
@@ -400,9 +401,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::SessionStatusUpdate(status) => {
             // TODO(runtime-verification): confirm in real SDK sessions that compaction
             // status updates are emitted consistently; if not, add a fallback indicator.
-            let was_compacting = app.is_compacting;
+            let was_compacting = app.turn.is_compacting;
             if matches!(status, model::SessionStatus::Compacting) {
-                app.is_compacting = true;
+                app.turn.is_compacting = true;
             } else {
                 clear_compaction_state(app, true);
             }
@@ -415,7 +416,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 message = "session status update applied",
                 outcome = "success",
                 session_status = ?status,
-                compacting = app.is_compacting,
+                compacting = app.turn.is_compacting,
             );
         }
         model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
@@ -433,11 +434,11 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
 }
 
 fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
-    app.runtime_session_state = Some(state);
+    app.session_runtime.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
-                && !app.is_compacting
+                && !app.turn.is_compacting
             {
                 app.status = AppStatus::Running;
             }
@@ -445,8 +446,8 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
         model::RuntimeSessionState::RequiresAction => {}
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && !app.is_compacting
-                && app.pending_cancel_origin.is_none()
+                && !app.turn.is_compacting
+                && app.turn.pending_cancel_origin.is_none()
             {
                 app.status = AppStatus::Ready;
             }
@@ -482,12 +483,12 @@ pub(crate) fn push_system_message_with_severity(
 }
 
 pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
-    if !app.is_compacting && !app.pending_compact_clear {
+    if !app.turn.is_compacting && !app.turn.pending_compact_clear {
         return;
     }
-    let should_emit_success = emit_manual_success && app.pending_compact_clear;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    let should_emit_success = emit_manual_success && app.turn.pending_compact_clear;
+    app.turn.pending_compact_clear = false;
+    app.turn.is_compacting = false;
     if should_emit_success {
         push_system_message_with_severity(
             app,
@@ -508,7 +509,7 @@ fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate)
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
     };
-    app.config_options.insert(option_id.clone(), value);
+    app.session_runtime.config_options.insert(option_id.clone(), value);
     tracing::debug!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "config_option_update_applied",
@@ -519,7 +520,7 @@ fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate)
     );
 
     if matches!(
-        app.pending_command_ack.as_ref(),
+        app.turn.pending_command_ack.as_ref(),
         Some(PendingCommandAck::ConfigOption { option_id: expected }) if expected == &option_id
     ) {
         session::clear_pending_command(app);

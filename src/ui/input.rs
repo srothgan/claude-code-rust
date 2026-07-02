@@ -43,18 +43,22 @@ pub(crate) struct InputRenderGeometry {
 
 /// Whether a login hint banner is active.
 fn has_login_hint(app: &App) -> bool {
-    app.login_hint.is_some()
+    app.session_runtime.login_hint.is_some()
 }
 
 fn has_cancel_hint(app: &App) -> bool {
-    app.pending_cancel_origin.is_some()
+    app.turn.pending_cancel_origin.is_some()
 }
 
 fn has_prompt_suggestion_hint(app: &App) -> bool {
     app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
         && !autocomplete::is_active(app)
-        && app.prompt_suggestion.as_deref().is_some_and(|suggestion| !suggestion.trim().is_empty())
+        && app
+            .session_runtime
+            .prompt_suggestion
+            .as_deref()
+            .is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
 
 pub(crate) fn hint_line_count(app: &App) -> u16 {
@@ -241,7 +245,7 @@ mod tests {
     #[test]
     fn visual_line_count_includes_login_hint_rows() {
         let mut app = App::test_default();
-        app.login_hint = Some(LoginHint {
+        app.session_runtime.login_hint = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
@@ -251,14 +255,14 @@ mod tests {
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
-        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
         assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
     }
 
     #[test]
     fn visual_line_count_includes_prompt_suggestion_hint_row() {
         let mut app = App::test_default();
-        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
     }
 
@@ -275,7 +279,7 @@ mod tests {
     #[test]
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_not_empty() {
         let mut app = App::test_default();
-        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         app.input.set_text("draft");
         assert_eq!(visual_line_count(&mut app, 80), 1);
     }
@@ -283,8 +287,8 @@ mod tests {
     #[test]
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
         let mut app = App::test_default();
-        app.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
-        app.pending_interaction_ids.push("perm-1".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
+        app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(visual_line_count(&mut app, 80), 1);
     }

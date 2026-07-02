@@ -8,8 +8,9 @@ fn app_with_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = App::test_default();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     (app, rx)
 }
 
@@ -23,7 +24,7 @@ fn pending_paste_chunks_are_merged_before_threshold_check() {
 
     // Not applied until post-drain finalization.
     assert!(app.input.is_empty());
-    assert!(!app.pending_paste_text.is_empty());
+    assert!(!app.paste.pending_text.is_empty());
 
     finalize_pending_paste_event(&mut app);
 
@@ -35,13 +36,13 @@ fn pending_paste_chunks_are_merged_before_threshold_check() {
 fn pending_paste_chunk_appends_to_same_session_placeholder() {
     let mut app = App::test_default();
     app.input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-    app.active_paste_session = Some(state::PasteSessionState {
+    app.paste.active_session = Some(state::PasteSessionState {
         id: 7,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(0),
     });
-    app.pending_paste_session = app.active_paste_session;
-    app.pending_paste_text = "\nl\nm".to_owned();
+    app.paste.pending_session = app.paste.active_session;
+    app.paste.pending_text = "\nl\nm".to_owned();
 
     finalize_pending_paste_event(&mut app);
 
@@ -52,7 +53,7 @@ fn pending_paste_chunk_appends_to_same_session_placeholder() {
 #[test]
 fn pending_paste_exact_1000_chars_stays_inline() {
     let mut app = App::test_default();
-    app.pending_paste_text = "x".repeat(1000);
+    app.paste.pending_text = "x".repeat(1000);
 
     finalize_pending_paste_event(&mut app);
 
@@ -63,7 +64,7 @@ fn pending_paste_exact_1000_chars_stays_inline() {
 fn pending_paste_finalization_marks_redraw() {
     let mut app = App::test_default();
     app.surface_dirty.chat.repaint = false;
-    app.pending_paste_text = "hello\nworld".to_owned();
+    app.paste.pending_text = "hello\nworld".to_owned();
 
     finalize_pending_paste_event(&mut app);
 
@@ -76,21 +77,21 @@ fn suppressed_enter_preserves_multiline_inline_paste() {
     let mut app = App::test_default();
     let t0 = Instant::now();
 
-    assert_eq!(app.paste_burst.on_char('a', t0), paste_burst::CharAction::Passthrough('a'));
+    assert_eq!(app.paste.burst.on_char('a', t0), paste_burst::CharAction::Passthrough('a'));
     let _ = app.input.textarea_insert_char('a');
     assert_eq!(
-        app.paste_burst.on_char('b', t0 + Duration::from_millis(2)),
+        app.paste.burst.on_char('b', t0 + Duration::from_millis(2)),
         paste_burst::CharAction::Consumed
     );
     assert_eq!(
-        app.paste_burst.on_char('c', t0 + Duration::from_millis(4)),
+        app.paste.burst.on_char('c', t0 + Duration::from_millis(4)),
         paste_burst::CharAction::RetroCapture(1)
     );
     let _ = app.input.textarea_delete_char_before();
 
     let t_flush = t0 + Duration::from_millis(200);
     assert_eq!(
-        app.paste_burst.tick(t_flush),
+        app.paste.burst.tick(t_flush),
         Some(paste_burst::FlushAction::EmitPaste("abc".to_owned()))
     );
     app.queue_paste_text("abc");
@@ -98,23 +99,23 @@ fn suppressed_enter_preserves_multiline_inline_paste() {
     assert_eq!(app.input.text(), "abc");
 
     let t_enter = t_flush + Duration::from_millis(10);
-    assert!(app.paste_burst.on_enter(t_enter));
+    assert!(app.paste.burst.on_enter(t_enter));
     assert_eq!(
-        app.paste_burst.on_char('d', t_enter + Duration::from_millis(1)),
+        app.paste.burst.on_char('d', t_enter + Duration::from_millis(1)),
         paste_burst::CharAction::Consumed
     );
     assert_eq!(
-        app.paste_burst.on_char('e', t_enter + Duration::from_millis(2)),
+        app.paste.burst.on_char('e', t_enter + Duration::from_millis(2)),
         paste_burst::CharAction::Consumed
     );
     assert_eq!(
-        app.paste_burst.on_char('f', t_enter + Duration::from_millis(3)),
+        app.paste.burst.on_char('f', t_enter + Duration::from_millis(3)),
         paste_burst::CharAction::Consumed
     );
 
     let t_second_flush = t_enter + Duration::from_millis(200);
     assert_eq!(
-        app.paste_burst.tick(t_second_flush),
+        app.paste.burst.tick(t_second_flush),
         Some(paste_burst::FlushAction::EmitPaste("\ndef".to_owned()))
     );
     app.queue_paste_text("\ndef");
@@ -127,7 +128,7 @@ fn suppressed_enter_preserves_multiline_inline_paste() {
 #[test]
 fn pending_paste_1001_chars_becomes_placeholder() {
     let mut app = App::test_default();
-    app.pending_paste_text = "x".repeat(1001);
+    app.paste.pending_text = "x".repeat(1001);
 
     finalize_pending_paste_event(&mut app);
 
@@ -138,7 +139,7 @@ fn pending_paste_1001_chars_becomes_placeholder() {
 #[test]
 fn pending_paste_session_isolation_prevents_unintended_append() {
     let mut app = App::test_default();
-    app.pending_paste_text = "a".repeat(1001);
+    app.paste.pending_text = "a".repeat(1001);
     finalize_pending_paste_event(&mut app);
     events::handle_terminal_event(
         &mut app,
@@ -148,7 +149,7 @@ fn pending_paste_session_isolation_prevents_unintended_append() {
         )),
     );
 
-    app.pending_paste_text = "b".repeat(1001);
+    app.paste.pending_text = "b".repeat(1001);
     finalize_pending_paste_event(&mut app);
 
     assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]);
@@ -174,10 +175,10 @@ fn plain_enter_preserves_single_line_draft_before_submit() {
 
     assert!(app.pending_submit.is_none());
     assert!(app.input.text().is_empty());
-    assert_eq!(app.messages.len(), 2);
-    assert!(matches!(app.messages[0].role, MessageRole::User));
+    assert_eq!(app.transcript.messages.len(), 2);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
     assert!(matches!(
-        app.messages[0].blocks.as_slice(),
+        app.transcript.messages[0].blocks.as_slice(),
         [MessageBlock::Text(block)] if block.text == "hello world"
     ));
     let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -185,6 +186,43 @@ fn plain_enter_preserves_single_line_draft_before_submit() {
         envelope.command,
         BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
     ));
+}
+
+#[test]
+fn compaction_allows_drafting_but_blocks_submit() {
+    let (mut app, mut rx) = app_with_connection();
+    app.turn.is_compacting = true;
+    app.input.set_text("draft");
+
+    events::handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)),
+    );
+
+    assert_eq!(app.input.text(), "draft!");
+
+    events::handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    );
+    assert!(app.pending_submit.is_some());
+
+    finalize_deferred_submit(&mut app);
+
+    assert!(app.pending_submit.is_none());
+    assert_eq!(app.input.text(), "draft!");
+    assert!(app.transcript.messages.is_empty());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn compaction_allows_paste_drafting() {
+    let (mut app, _rx) = app_with_connection();
+    app.turn.is_compacting = true;
+
+    events::handle_terminal_event(&mut app, Event::Paste(" pasted".into()));
+
+    assert_eq!(app.paste.pending_text, " pasted");
 }
 
 #[test]
@@ -206,7 +244,7 @@ fn plain_enter_preserves_multiline_draft_with_mid_buffer_cursor() {
 
     assert!(app.pending_submit.is_none());
     assert!(matches!(
-        app.messages[0].blocks.as_slice(),
+        app.transcript.messages[0].blocks.as_slice(),
         [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
     ));
     let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -238,7 +276,7 @@ fn sending_lone_question_mark_submits_as_prompt() {
     assert!(app.pending_submit.is_none());
     assert!(app.input.text().is_empty());
     assert!(matches!(
-        app.messages[0].blocks.as_slice(),
+        app.transcript.messages[0].blocks.as_slice(),
         [MessageBlock::Text(block)] if block.text == "?"
     ));
     let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -277,7 +315,7 @@ fn docs_topic_selected_with_enter_then_second_enter_submits() {
     finalize_deferred_submit(&mut app);
 
     assert!(app.pending_submit.is_none());
-    let last = app.messages.last().expect("expected docs system message");
+    let last = app.transcript.messages.last().expect("expected docs system message");
     assert!(matches!(last.role, MessageRole::System(_)));
     assert!(matches!(
         last.blocks.as_slice(),
@@ -330,7 +368,7 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
 
     finalize_deferred_submit(&mut app);
 
-    let last = app.messages.last().expect("expected docs system message");
+    let last = app.transcript.messages.last().expect("expected docs system message");
     assert!(matches!(
         last.blocks.as_slice(),
         [MessageBlock::Text(block)] if block.text.contains("| Command | Description |")
@@ -340,7 +378,7 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
 #[test]
 fn mode_selection_then_second_enter_arms_submit() {
     let mut app = App::test_default();
-    app.mode = Some(ModeState {
+    app.session_runtime.mode = Some(ModeState {
         current_mode_id: "code".to_owned(),
         current_mode_name: "Code".to_owned(),
         available_modes: vec![
@@ -372,7 +410,7 @@ fn mode_selection_then_second_enter_arms_submit() {
 #[test]
 fn model_selection_then_second_enter_arms_submit() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         model::AvailableModel::new("sonnet", "Claude Sonnet"),
         model::AvailableModel::new("haiku", "Claude Haiku"),
     ];
@@ -445,7 +483,7 @@ fn paste_event_cancels_deferred_submit_snapshot() {
     events::handle_terminal_event(&mut app, Event::Paste("pasted".into()));
 
     assert!(app.pending_submit.is_none());
-    assert_eq!(app.pending_paste_text, "pasted");
+    assert_eq!(app.paste.pending_text, "pasted");
     assert_eq!(app.input.text(), "draft");
 }
 
@@ -468,7 +506,7 @@ fn esc_cancels_deferred_submit_snapshot_before_finalize() {
     assert!(app.pending_submit.is_none());
     finalize_deferred_submit(&mut app);
     assert_eq!(app.input.text(), "draft");
-    assert!(app.messages.is_empty());
+    assert!(app.transcript.messages.is_empty());
     assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
 }
 

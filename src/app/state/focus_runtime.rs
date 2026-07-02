@@ -22,7 +22,7 @@ impl App {
 
         self.normalize_focus_stack();
 
-        if self.pending_interaction_ids.is_empty() {
+        if self.turn.pending_interaction_ids.is_empty() {
             clear_inline_interaction_focus(self);
         } else if self.focus_owner() == FocusOwner::Permission || !self.has_draft_input_for_focus()
         {
@@ -63,7 +63,7 @@ impl App {
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
             self.autocomplete_focus_available(),
-            !self.pending_interaction_ids.is_empty(),
+            !self.turn.pending_interaction_ids.is_empty(),
         )
     }
 }

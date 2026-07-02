@@ -56,9 +56,7 @@ pub fn set_chat_surface(app: &mut App) {
 }
 
 fn clear_transient_view_state(app: &mut App) {
-    app.active_paste_session = None;
-    app.pending_paste_session = None;
-    app.pending_paste_text.clear();
+    app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.mention = None;
     app.slash = None;
@@ -67,7 +65,7 @@ fn clear_transient_view_state(app: &mut App) {
         app.config.clear_overlay();
     }
     app.release_focus_target(crate::app::FocusTarget::Mention);
-    app.paste_burst.on_non_char_key(Instant::now());
+    app.paste.burst.on_non_char_key(Instant::now());
 }
 
 #[cfg(test)]

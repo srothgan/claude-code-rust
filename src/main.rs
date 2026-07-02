@@ -88,7 +88,7 @@ fn maybe_print_resume_hint(app: &claude_code_rust::app::App, success: bool) {
     if !success {
         return;
     }
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
         return;
     };
     let mut stderr = std::io::stderr().lock();

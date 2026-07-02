@@ -9,7 +9,7 @@ pub(crate) fn send_mcp_elicitation_response(
     action: crate::agent::types::ElicitationAction,
     content: Option<serde_json::Value>,
 ) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -21,7 +21,7 @@ pub(crate) fn send_mcp_elicitation_response(
         );
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",

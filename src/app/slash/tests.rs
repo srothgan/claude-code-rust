@@ -24,7 +24,7 @@ fn unsupported_command_is_handled_locally() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/definitely-unknown");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -33,7 +33,7 @@ fn unsupported_command_is_handled_locally() {
 #[test]
 fn advertised_command_is_forwarded() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/remote-command", "Remote command")];
     let consumed = try_handle_submit(&mut app, "/remote-command");
     assert!(!consumed);
@@ -85,7 +85,7 @@ fn app_config_shadows_advertised_config_command() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
 
     let consumed = try_handle_submit(&mut app, "/config");
@@ -100,7 +100,7 @@ fn app_config_shadows_advertised_config_command() {
 #[test]
 fn app_config_candidate_ignores_advertised_config_metadata() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
     app.input.set_text("/config");
     let _ = app.input.set_cursor(0, "/config".chars().count());
@@ -116,7 +116,7 @@ fn app_config_candidate_ignores_advertised_config_metadata() {
 #[test]
 fn app_config_does_not_enter_advertised_argument_mode() {
     let mut app = App::test_default();
-    app.available_commands =
+    app.sdk_inventory.available_commands =
         vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
     app.input.set_text("/config ");
     let _ = app.input.set_cursor(0, "/config ".chars().count());
@@ -147,7 +147,7 @@ fn config_with_extra_args_returns_usage_message() {
     let consumed = try_handle_submit(&mut app, "/config extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -169,7 +169,7 @@ fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() 
     let settings_path = dir.path().join(".claude").join("settings.local.json");
     let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
     assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -199,7 +199,7 @@ fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
     let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
     assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
     assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -226,7 +226,7 @@ fn one_m_context_status_reports_disabled_folder_local_override() {
     let consumed = try_handle_submit(&mut app, "/1m-context status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -278,7 +278,7 @@ fn opus_version_45_persists_folder_local_override_and_hints_new_session() {
     let settings_path = dir.path().join(".claude").join("settings.local.json");
     let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
     assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-20251101\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -353,7 +353,7 @@ fn opus_version_default_removes_folder_local_override_and_preserves_neighbor_key
     let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
     assert!(!raw.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"));
     assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -380,7 +380,7 @@ fn opus_version_status_reports_known_folder_local_override() {
     let consumed = try_handle_submit(&mut app, "/opus-version status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -400,7 +400,7 @@ fn opus_version_status_reports_default_when_unset() {
     let consumed = try_handle_submit(&mut app, "/opus-version status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -415,7 +415,7 @@ fn opus_version_with_missing_arg_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -430,7 +430,7 @@ fn opus_version_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version 4.7 extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -445,7 +445,7 @@ fn opus_version_with_unknown_arg_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version 9.9");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -462,7 +462,7 @@ fn opus_version_requires_trusted_project_for_mutation() {
     let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected error message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -510,7 +510,7 @@ fn mcp_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/mcp extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -573,7 +573,7 @@ fn login_rejects_extra_args() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/login somearg");
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     assert!(matches!(last.role, MessageRole::System(_)));
 }
 
@@ -597,7 +597,7 @@ fn detect_slash_argument_context_after_first_space() {
 #[test]
 fn mode_argument_candidates_are_dynamic() {
     let mut app = App::test_default();
-    app.mode = Some(super::super::ModeState {
+    app.session_runtime.mode = Some(super::super::ModeState {
         current_mode_id: "plan".to_owned(),
         current_mode_name: "Plan".to_owned(),
         available_modes: vec![
@@ -616,7 +616,7 @@ fn mode_argument_candidates_are_dynamic() {
 #[test]
 fn model_argument_candidates_are_dynamic() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
             .description("Balanced coding model"),
         crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -631,7 +631,7 @@ fn model_argument_candidates_are_dynamic() {
 #[test]
 fn model_argument_candidates_include_sdk_default_option() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("default", "Default")
             .description("Default (recommended)"),
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -655,7 +655,7 @@ fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
             "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
         }
     });
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("opus", "Opus")
             .description("Opus 4.7 · Most capable for complex work"),
     ];
@@ -673,7 +673,7 @@ fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
 #[test]
 fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("opus", "Opus")
             .description("Opus 4.7 · Most capable for complex work"),
     ];
@@ -691,7 +691,7 @@ fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
 #[test]
 fn agent_argument_candidates_include_reset_and_available_agents() {
     let mut app = App::test_default();
-    app.available_agents = vec![
+    app.sdk_inventory.available_agents = vec![
         crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("claude-opus"),
         crate::agent::model::AvailableAgent::new("planner", "Plan work"),
     ];
@@ -713,7 +713,7 @@ fn agent_argument_candidates_include_reset_and_available_agents() {
 #[test]
 fn agent_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
-    app.available_agents = vec![
+    app.sdk_inventory.available_agents = vec![
         crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
         crate::agent::model::AvailableAgent::new("planner", "Plan work"),
     ];
@@ -737,9 +737,9 @@ fn agent_argument_candidates_filter_by_query() {
 fn rewind_argument_candidates_use_cached_targets() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
-    app.rewind_targets = vec![
+    app.session_runtime.session_id = Some(session_id.clone());
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
+    app.sdk_inventory.rewind_targets = vec![
         model::RewindTarget {
             uuid: "user-1".to_owned(),
             first_text: "first prompt".to_owned(),
@@ -778,9 +778,9 @@ fn rewind_argument_candidates_use_cached_targets() {
 #[test]
 fn rewind_argument_candidates_hide_stale_targets() {
     let mut app = App::test_default();
-    app.session_id = Some(model::SessionId::new("session-1"));
-    app.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
-    app.rewind_targets = vec![model::RewindTarget {
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+    app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -797,14 +797,15 @@ fn rewind_argument_candidates_hide_stale_targets() {
 fn rewind_argument_context_requests_targets_when_cache_is_stale() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
     sync_with_cursor(&mut app);
 
-    assert!(app.rewind_targets_in_flight);
+    assert!(app.sdk_inventory.rewind_targets_in_flight);
     let envelope = rx.try_recv().expect("rewind target request");
     assert!(matches!(
         envelope.command,
@@ -817,8 +818,9 @@ fn rewind_argument_context_requests_targets_when_cache_is_stale() {
 fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
     let mut app = App::test_default();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
@@ -833,8 +835,8 @@ fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
 fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
+    app.session_runtime.session_id = Some(session_id.clone());
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
@@ -848,9 +850,9 @@ fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
 fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
-    app.rewind_targets_session_id = Some(session_id);
-    app.rewind_targets = vec![model::RewindTarget {
+    app.session_runtime.session_id = Some(session_id.clone());
+    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -869,7 +871,7 @@ fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result(
 #[test]
 fn effort_argument_candidates_include_session_only_max() {
     let mut app = App::test_default();
-    app.current_model = Some(
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(vec![
@@ -895,7 +897,7 @@ fn effort_argument_candidates_include_session_only_max() {
 #[test]
 fn effort_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
-    app.current_model = Some(
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
@@ -934,7 +936,7 @@ fn docs_without_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -944,7 +946,7 @@ fn docs_without_args_returns_usage() {
 #[test]
 fn docs_models_show_advertised_effort_levels() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.sdk_inventory.available_models = vec![
         crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
             .description("Balanced model")
             .supports_effort(true)
@@ -961,7 +963,7 @@ fn docs_models_show_advertised_effort_levels() {
     let consumed = try_handle_submit(&mut app, "/docs models");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -973,12 +975,13 @@ fn docs_models_show_advertised_effort_levels() {
 #[test]
 fn docs_commands_reuse_help_rows() {
     let mut app = App::test_default();
-    app.available_commands = vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
+    app.sdk_inventory.available_commands =
+        vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
 
     let consumed = try_handle_submit(&mut app, "/docs commands");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1000,7 +1003,7 @@ fn docs_commands_reuse_help_rows() {
 #[test]
 fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     let mut app = App::test_default();
-    app.available_commands = vec![
+    app.sdk_inventory.available_commands = vec![
         crate::agent::model::AvailableCommand::new("/config", "SDK config command")
             .input_hint("<setting>"),
     ];
@@ -1008,7 +1011,7 @@ fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     let consumed = try_handle_submit(&mut app, "/docs commands");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1023,7 +1026,7 @@ fn docs_shortcuts_use_live_help_state() {
     let consumed = try_handle_submit(&mut app, "/docs shortcuts");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1039,7 +1042,7 @@ fn docs_with_unknown_topic_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs nope");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1054,7 +1057,7 @@ fn docs_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs commands extra");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1073,7 +1076,7 @@ fn non_variable_command_argument_mode_is_disabled() {
 #[test]
 fn variable_command_argument_mode_stays_active_without_matches() {
     let mut app = App::test_default();
-    app.mode = Some(super::super::ModeState {
+    app.session_runtime.mode = Some(super::super::ModeState {
         current_mode_id: "plan".to_owned(),
         current_mode_name: "Plan".to_owned(),
         available_modes: vec![super::super::ModeInfo {
@@ -1121,7 +1124,8 @@ async fn login_is_handled_as_builtin_even_when_advertised() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
+            app.sdk_inventory.available_commands =
+                vec![model::AvailableCommand::new("/login", "Login")];
 
             let consumed = try_handle_submit(&mut app, "/login");
             assert!(consumed, "/login should be handled locally even when SDK advertises it");
@@ -1135,9 +1139,9 @@ fn new_session_command_is_rendered_as_user_message() {
 
     let consumed = try_handle_submit(&mut app, "/new-session");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
+    assert!(app.transcript.messages.len() >= 2);
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("expected first message");
     };
     assert!(matches!(first.role, MessageRole::User));
@@ -1152,7 +1156,7 @@ fn resume_with_missing_id_returns_usage() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/resume");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1166,7 +1170,7 @@ fn resume_with_extra_args_returns_usage() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1182,7 +1186,7 @@ fn rewind_with_missing_target_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/rewind");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1194,7 +1198,7 @@ fn rewind_with_missing_target_returns_usage() {
 #[test]
 fn rewind_with_cached_target_requires_connection() {
     let mut app = App::test_default();
-    app.rewind_targets = vec![model::RewindTarget {
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -1205,7 +1209,7 @@ fn rewind_with_cached_target_requires_connection() {
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected selection message");
     };
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
@@ -1219,9 +1223,10 @@ fn rewind_with_cached_target_requires_connection() {
 fn rewind_with_cached_target_sends_bridge_command() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
-    app.rewind_targets = vec![model::RewindTarget {
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
         input_text: "first prompt".to_owned(),
@@ -1232,7 +1237,7 @@ fn rewind_with_cached_target_sends_bridge_command() {
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
 
     assert!(consumed);
-    assert_eq!(app.pending_command_label.as_deref(), Some("Rewinding conversation..."));
+    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Rewinding conversation..."));
     let envelope = rx.try_recv().expect("rewind command");
     let crate::agent::wire::BridgeCommand::Rewind {
         session_id,
@@ -1254,9 +1259,9 @@ fn resume_command_is_rendered_as_user_message() {
 
     let consumed = try_handle_submit(&mut app, "/resume abc-123");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
+    assert!(app.transcript.messages.len() >= 2);
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("expected user message");
     };
     assert!(matches!(first.role, MessageRole::User));
@@ -1272,7 +1277,8 @@ async fn resume_sets_command_pending_when_connected() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
             let consumed = try_handle_submit(&mut app, "/resume abc-123");
             assert!(consumed);
@@ -1291,9 +1297,10 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.mode = Some(super::super::ModeState {
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.mode = Some(super::super::ModeState {
                 current_mode_id: "code".to_owned(),
                 current_mode_name: "Code".to_owned(),
                 available_modes: vec![
@@ -1309,7 +1316,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching mode..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching mode..."));
 
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
@@ -1325,7 +1332,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected Ready after CurrentModeUpdate ack, got {:?}",
                 app.status
             );
-            assert!(app.pending_command_label.is_none());
+            assert!(app.turn.pending_command_label.is_none());
         })
         .await;
 }
@@ -1336,9 +1343,10 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                     .authoritative(true),
             );
@@ -1350,9 +1358,9 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
             assert_eq!(
-                app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("old-model")
             );
 
@@ -1373,10 +1381,10 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 app.status
             );
             assert_eq!(
-                app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("sonnet")
             );
-            assert!(app.pending_command_label.is_none());
+            assert!(app.turn.pending_command_label.is_none());
         })
         .await;
 }
@@ -1387,9 +1395,10 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
                     .supports_effort(true)
                     .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
@@ -1398,9 +1407,9 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/effort xhigh");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching effort..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching effort..."));
             assert!(matches!(
-                app.pending_command_ack.as_ref(),
+                app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
                     if option_id == "effortLevel"
             ));
@@ -1427,7 +1436,10 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 ),
             );
             assert!(matches!(app.status, AppStatus::Ready));
-            assert_eq!(app.config_options.get("effortLevel"), Some(&serde_json::json!("xhigh")));
+            assert_eq!(
+                app.session_runtime.config_options.get("effortLevel"),
+                Some(&serde_json::json!("xhigh"))
+            );
             assert_eq!(
                 app.session_thinking_effort_effective(),
                 crate::agent::model::EffortLevel::XHigh
@@ -1442,9 +1454,10 @@ async fn effort_accepts_session_only_max() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
                     .supports_effort(true)
                     .supported_effort_levels(vec![
@@ -1476,17 +1489,18 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.available_agents =
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.sdk_inventory.available_agents =
                 vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
             let consumed = try_handle_submit(&mut app, "/agent reviewer");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching agent..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching agent..."));
             assert!(matches!(
-                app.pending_command_ack.as_ref(),
+                app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
                     if option_id == "agent"
             ));
@@ -1513,7 +1527,10 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
                 ),
             );
             assert!(matches!(app.status, AppStatus::Ready));
-            assert_eq!(app.config_options.get("agent"), Some(&serde_json::json!("reviewer")));
+            assert_eq!(
+                app.session_runtime.config_options.get("agent"),
+                Some(&serde_json::json!("reviewer"))
+            );
         })
         .await;
 }
@@ -1524,8 +1541,9 @@ async fn agent_reset_sends_null_agent() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent reset");
             assert!(consumed);
@@ -1549,8 +1567,9 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent custom-agent");
             assert!(consumed);
@@ -1572,9 +1591,10 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
 fn agent_rejects_unknown_when_available_agents_are_populated() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some("sess-1".into());
-    app.available_agents =
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some("sess-1".into());
+    app.sdk_inventory.available_agents =
         vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
     let consumed = try_handle_submit(&mut app, "/agent planner");
@@ -1582,7 +1602,7 @@ fn agent_rejects_unknown_when_available_agents_are_populated() {
     assert!(consumed);
     assert!(rx.try_recv().is_err());
     assert!(!matches!(app.status, AppStatus::CommandPending));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1599,7 +1619,7 @@ fn agent_invalid_arguments_return_usage() {
         let consumed = try_handle_submit(&mut app, input);
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected system usage message for {input}");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1618,7 +1638,7 @@ fn effort_invalid_arguments_return_usage() {
         let consumed = try_handle_submit(&mut app, input);
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected system usage message for {input}");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1633,9 +1653,10 @@ fn effort_invalid_arguments_return_usage() {
 fn effort_rejects_models_without_effort_support() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some("sess-1".into());
-    app.current_model = Some(
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some("sess-1".into());
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
     );
 
@@ -1643,7 +1664,7 @@ fn effort_rejects_models_without_effort_support() {
 
     assert!(consumed);
     assert!(rx.try_recv().is_err());
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1658,7 +1679,8 @@ async fn new_session_sets_command_pending() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
             let consumed = try_handle_submit(&mut app, "/new-session");
             assert!(consumed);
@@ -1667,7 +1689,7 @@ async fn new_session_sets_command_pending() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Starting new session..."));
         })
         .await;
 }
@@ -1678,8 +1700,8 @@ fn compact_without_connection_is_handled_locally() {
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(consumed);
-    assert!(!app.pending_compact_clear);
-    let Some(last) = app.messages.last() else {
+    assert!(!app.turn.pending_compact_clear);
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1693,19 +1715,20 @@ fn compact_without_connection_is_handled_locally() {
 fn compact_with_active_session_sets_compacting_without_success_pending() {
     let mut app = App::test_default();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(!consumed);
-    assert!(!app.pending_compact_clear);
-    assert!(app.is_compacting);
+    assert!(!app.turn.pending_compact_clear);
+    assert!(app.turn.is_compacting);
 }
 
 #[test]
 fn compact_with_args_returns_usage_message() {
     let mut app = App::test_default();
-    app.messages.push(ChatMessage::new(
+    app.transcript.messages.push(ChatMessage::new(
         MessageRole::User,
         vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
         None,
@@ -1713,8 +1736,8 @@ fn compact_with_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/compact now");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
-    let Some(last) = app.messages.last() else {
+    assert!(app.transcript.messages.len() >= 2);
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1730,7 +1753,7 @@ fn mode_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/mode plan extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1746,7 +1769,7 @@ fn model_with_missing_id_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/model");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1761,7 +1784,7 @@ fn model_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/model sonnet extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1905,7 +1928,7 @@ fn status_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/status extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1921,7 +1944,7 @@ fn usage_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/usage extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {

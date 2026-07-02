@@ -19,7 +19,7 @@ fn initialize_routes_untrusted_projects_to_trusted_view() {
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
     assert!(!app.is_project_trusted());
     assert_eq!(app.trust.selection, TrustSelection::Yes);
-    assert!(!app.startup_connection_requested);
+    assert!(!app.startup.connection_requested());
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn initialize_allows_trusted_projects_into_chat() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.is_project_trusted());
-    assert!(app.startup_connection_requested);
+    assert!(app.startup.connection_requested());
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn accept_persists_trust_and_switches_to_chat() {
     assert!(raw.contains("\"hasTrustDialogAccepted\": true"));
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.is_project_trusted());
-    assert!(app.startup_connection_requested);
+    assert!(app.startup.connection_requested());
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
 
     let mut app = App::test_default();
     app.cwd_raw = project_path.to_owned();
-    app.startup_session_picker_requested = true;
+    app.startup = crate::app::state::StartupState::new(None, None, true);
     app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
     let mut prefs = json!({ "projects": {} });
     prefs["projects"][project_path] = json!({
@@ -81,7 +81,7 @@ fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
     initialize(&mut app);
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup_connection_requested);
+    assert!(app.startup.connection_requested());
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
 
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
-    app.startup_session_picker_requested = true;
+    app.startup = crate::app::state::StartupState::new(None, None, true);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
     app.config.preferences_path = Some(path);
     app.trust.status = TrustStatus::Untrusted;
@@ -101,7 +101,7 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
     accept(&mut app).expect("accept");
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup_connection_requested);
+    assert!(app.startup.connection_requested());
 }
 
 #[test]

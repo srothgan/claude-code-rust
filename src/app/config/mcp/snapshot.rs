@@ -16,11 +16,11 @@ pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
 }
 
 pub(crate) fn request_mcp_snapshot(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         app.mcp.in_flight = false;
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         app.mcp.in_flight = false;
         return;
     };
