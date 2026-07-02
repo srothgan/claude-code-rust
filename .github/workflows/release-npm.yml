@@ -404,7 +404,12 @@ jobs:
             local package_name="$1"
             local filename="${package_name#@}"
             filename="${filename/\//-}-${VERSION}.tgz"
-            npm publish "dist-pack/$filename" --access public
+            local tarball="./dist-pack/$filename"
+            if [ ! -f "$tarball" ]; then
+              echo "::error::Missing npm package tarball: $tarball"
+              exit 1
+            fi
+            npm publish "$tarball" --access public
           }
           publish_package "@srothgan/claude-code-rust-darwin-arm64"
           publish_package "@srothgan/claude-code-rust-darwin-x64"
@@ -438,4 +443,11 @@ jobs:
           npm --version
 
       - name: Publish root tarball
-        run: npm publish "dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz" --access public
+        run: |
+          set -euo pipefail
+          tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
+          if [ ! -f "$tarball" ]; then
+            echo "::error::Missing npm package tarball: $tarball"
+            exit 1
+          fi
+          npm publish "$tarball" --access public
