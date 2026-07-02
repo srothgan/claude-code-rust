@@ -520,7 +520,7 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
         return false;
     }
 
-    let Some(suggestion) = app.prompt_suggestion.take() else {
+    let Some(suggestion) = app.session_runtime.prompt_suggestion.take() else {
         return false;
     };
     if suggestion.trim().is_empty() {
@@ -531,7 +531,7 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
 }
 
 fn handle_mode_cycle(app: &mut App) -> bool {
-    let Some(ref mode) = app.mode else {
+    let Some(ref mode) = app.session_runtime.mode else {
         return true;
     };
     if mode.available_modes.len() <= 1 {
@@ -543,8 +543,8 @@ fn handle_mode_cycle(app: &mut App) -> bool {
     let next_idx = (current_idx + 1) % mode.available_modes.len();
     let next = &mode.available_modes[next_idx];
 
-    if let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+    if let Some(ref conn) = app.session_runtime.conn
+        && let Some(sid) = app.session_runtime.session_id.clone()
     {
         let mode_id = next.id.clone();
         let conn = Rc::clone(conn);
@@ -568,7 +568,7 @@ fn handle_mode_cycle(app: &mut App) -> bool {
         .iter()
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
         .collect();
-    app.mode = Some(ModeState {
+    app.session_runtime.mode = Some(ModeState {
         current_mode_id: next_id,
         current_mode_name: next_name,
         available_modes: modes,

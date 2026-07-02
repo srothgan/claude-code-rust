@@ -261,7 +261,7 @@ async fn stress_many_tool_calls_in_one_turn() {
 async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
     let mut app = test_app();
 
-    app.mode = Some(claude_code_rust::app::ModeState {
+    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
@@ -276,7 +276,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("plan"),
         )),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
 
@@ -286,7 +286,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("unknown-mode"),
         )),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
     assert_eq!(mode.current_mode_name, "unknown-mode");
 
@@ -297,7 +297,10 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
             model::CurrentModeUpdate::new("plan-mode"),
         )),
     );
-    assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
+    assert!(
+        no_mode_app.session_runtime.mode.is_none(),
+        "update without existing mode state is a no-op"
+    );
 }
 
 // --- Edge cases: interleaved events ---

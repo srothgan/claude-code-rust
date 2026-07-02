@@ -217,7 +217,7 @@ async fn turn_complete_does_not_clear_tasks() {
 async fn turn_complete_does_not_affect_mode() {
     let mut app = test_app();
 
-    app.mode = Some(claude_code_rust::app::ModeState {
+    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
         available_modes: vec![claude_code_rust::app::ModeInfo {
@@ -228,5 +228,5 @@ async fn turn_complete_does_not_affect_mode() {
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert!(app.mode.is_some(), "mode should persist across turns");
+    assert!(app.session_runtime.mode.is_some(), "mode should persist across turns");
 }

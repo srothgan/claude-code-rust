@@ -309,9 +309,10 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             }
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
-            let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
-                != Some(mode.current_mode_id.as_str());
-            app.mode = Some(mode);
+            let mode_changed =
+                app.session_runtime.mode.as_ref().map(|current| current.current_mode_id.as_str())
+                    != Some(mode.current_mode_id.as_str());
+            app.session_runtime.mode = Some(mode);
             if mode_changed {
                 app.invalidate_layout(InvalidationLevel::Global);
             }
@@ -322,7 +323,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::CurrentModeUpdate(update) => {
             let mode_id = update.current_mode_id.to_string();
             let mut mode_changed = false;
-            if let Some(ref mut mode) = app.mode {
+            if let Some(ref mut mode) = app.session_runtime.mode {
                 mode_changed = mode.current_mode_id != mode_id;
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
                     mode.current_mode_name.clone_from(&info.name);
@@ -344,7 +345,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             let next_display_short = update.current_model.display_name_short.clone();
             let next_display_long = update.current_model.display_name_long.clone();
             let pending_ack_before = format!("{:?}", app.turn.pending_command_ack);
-            app.current_model = Some(update.current_model);
+            app.session_runtime.current_model = Some(update.current_model);
             let clearing_pending =
                 matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel));
             if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
@@ -366,7 +367,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_config_option_update(app, config);
         }
         model::SessionUpdate::FastModeUpdate(state) => {
-            app.fast_mode_state = state;
+            app.session_runtime.fast_mode_state = state;
         }
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);
@@ -388,7 +389,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
-            app.prompt_suggestion = (!suggestion.trim().is_empty()).then_some(suggestion);
+            app.session_runtime.prompt_suggestion =
+                (!suggestion.trim().is_empty()).then_some(suggestion);
         }
         model::SessionUpdate::RuntimeSessionStateUpdate(state) => {
             handle_runtime_session_state_update(app, state);
@@ -432,7 +434,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
 }
 
 fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
-    app.runtime_session_state = Some(state);
+    app.session_runtime.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
@@ -507,7 +509,7 @@ fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate)
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
     };
-    app.config_options.insert(option_id.clone(), value);
+    app.session_runtime.config_options.insert(option_id.clone(), value);
     tracing::debug!(
         target: crate::logging::targets::APP_CONFIG,
         event_name = "config_option_update_applied",

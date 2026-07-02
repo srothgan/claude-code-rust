@@ -393,8 +393,9 @@ mod tests {
     fn slash_empty_state_renders_command_placeholder() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.session_runtime.conn =
+            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
         app.input.set_text("/rewind ");
         let _ = app.input.set_cursor(0, "/rewind ".chars().count());
         slash::sync_with_cursor(&mut app);

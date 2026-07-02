@@ -283,7 +283,7 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
 }
 
 fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let mut levels = match app.current_model.as_ref() {
+    let mut levels = match app.session_runtime.current_model.as_ref() {
         Some(model) if !model.supports_effort => Vec::new(),
         Some(model) if !model.supported_effort_levels.is_empty() => {
             model.supported_effort_levels.clone()
@@ -398,7 +398,7 @@ pub(super) fn argument_candidates(
             if arg_index == 1 {
                 return rewind_restore_mode_candidates();
             }
-            if app.session_id.as_ref() == app.rewind_targets_session_id.as_ref() {
+            if app.session_runtime.session_id.as_ref() == app.rewind_targets_session_id.as_ref() {
                 app.rewind_targets
                     .iter()
                     .map(|target| SlashCandidate {
@@ -412,6 +412,7 @@ pub(super) fn argument_candidates(
             }
         }
         "/mode" => app
+            .session_runtime
             .mode
             .as_ref()
             .map(|mode| {
@@ -463,12 +464,12 @@ fn rewind_placeholder(app: &App, query: &str) -> String {
         return "Loading messages".to_owned();
     }
 
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
         return "Connect to load messages".to_owned();
     };
 
     if app.rewind_targets_session_id.as_ref() != Some(session_id) {
-        if app.conn.is_none() {
+        if app.session_runtime.conn.is_none() {
             return "Connect to load messages".to_owned();
         }
         return "Loading messages".to_owned();

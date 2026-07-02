@@ -37,10 +37,10 @@ pub(crate) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();
@@ -69,10 +69,10 @@ pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: bool) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();
@@ -103,10 +103,10 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
 }
 
 pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();
@@ -137,10 +137,10 @@ pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();

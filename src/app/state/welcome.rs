@@ -15,7 +15,8 @@ impl App {
 
     #[must_use]
     fn welcome_subscription_display(&self) -> &str {
-        self.account_info
+        self.session_runtime
+            .account_info
             .as_ref()
             .and_then(|account| account.subscription_type.as_deref())
             .map(str::trim)
@@ -31,7 +32,8 @@ impl App {
 
     #[must_use]
     fn welcome_session_id_display(&self) -> String {
-        self.session_id
+        self.session_runtime
+            .session_id
             .as_ref()
             .map(std::string::ToString::to_string)
             .map(|value| value.trim().to_owned())

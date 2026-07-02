@@ -36,28 +36,30 @@ fn reset_session_identity_state(
     mode: Option<super::super::ModeState>,
 ) {
     app.bump_session_scope_epoch();
-    app.session_id = Some(session_id);
-    app.current_model = Some(current_model.clone());
-    app.mode = mode;
-    app.config_options.clear();
+    app.session_runtime.session_id = Some(session_id);
+    app.session_runtime.current_model = Some(current_model.clone());
+    app.session_runtime.mode = mode;
+    app.session_runtime.config_options.clear();
     if let Some(requested_id) = current_model.requested_id {
-        app.config_options.insert("model".to_owned(), serde_json::Value::String(requested_id));
+        app.session_runtime
+            .config_options
+            .insert("model".to_owned(), serde_json::Value::String(requested_id));
     }
-    app.login_hint = None;
+    app.session_runtime.login_hint = None;
     super::clear_compaction_state(app, false);
-    app.session_usage = super::super::SessionUsageState::default();
+    app.session_runtime.session_usage = super::super::SessionUsageState::default();
     app.rewind_targets.clear();
     app.rewind_targets_session_id = None;
     app.rewind_targets_in_flight = false;
     app.status = super::super::AppStatus::Ready;
-    app.fast_mode_state = model::FastModeState::Off;
-    app.runtime_session_state = None;
-    app.prompt_suggestion = None;
-    app.last_rate_limit_update = None;
+    app.session_runtime.fast_mode_state = model::FastModeState::Off;
+    app.session_runtime.runtime_session_state = None;
+    app.session_runtime.prompt_suggestion = None;
+    app.session_runtime.last_rate_limit_update = None;
     app.should_quit = false;
     app.files_accessed = 0;
     app.turn.clear_cancel_state();
-    app.account_info = None;
+    app.session_runtime.account_info = None;
 }
 
 fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: bool) {

@@ -115,7 +115,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
                 event_name = "terminal_output_summary",
                 message = "terminal output updated",
                 outcome = "success",
-                session_id = %app.session_id.as_ref().map_or_else(String::new, ToString::to_string),
+                session_id = %app.session_runtime.session_id.as_ref().map_or_else(String::new, ToString::to_string),
                 tool_call_id = %tc.id,
                 terminal_id = %terminal_ref.terminal_id,
                 terminal_update_mode = update_mode,

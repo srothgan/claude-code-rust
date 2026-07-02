@@ -12,6 +12,7 @@ pub struct App {
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub transcript: Transcript,
+    pub session_runtime: SessionRuntimeState,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
@@ -21,20 +22,9 @@ pub struct App {
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
-    pub session_id: Option<model::SessionId>,
-    /// Agent connection handle. `None` while connecting (before bridge is ready).
-    pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
-    /// Monotonic session authority epoch used to ignore stale async view data.
-    pub session_scope_epoch: u64,
-    pub current_model: Option<model::CurrentModel>,
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
-    pub mode: Option<ModeState>,
-    /// Latest config options observed from bridge `config_option_update` events.
-    pub config_options: BTreeMap<String, serde_json::Value>,
-    /// Login hint shown when authentication is required. Rendered above the input field.
-    pub login_hint: Option<LoginHint>,
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, inline interactions, turn-local notices).
     pub turn: TurnState,
@@ -99,22 +89,10 @@ pub struct App {
     pub(crate) git_context: GitContextState,
     /// Update availability state for the current app lifetime.
     pub update_notice: Option<UpdateNoticeState>,
-    /// Session-wide usage and cost telemetry from the bridge.
-    pub session_usage: SessionUsageState,
     /// Config > Usage snapshot and refresh lifecycle.
     pub usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub mcp: McpState,
-    /// Fast mode state telemetry from the SDK.
-    pub fast_mode_state: model::FastModeState,
-    /// Latest SDK runtime liveness state.
-    pub runtime_session_state: Option<model::RuntimeSessionState>,
-    /// Latest prompt suggestion from the SDK, shown in the input hint band.
-    pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
-    pub last_rate_limit_update: Option<model::RateLimitUpdate>,
-    /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<model::AccountInfo>,
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub notifications: notify::NotificationManager,
@@ -143,7 +121,8 @@ pub struct App {
 impl App {
     #[must_use]
     pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
-        self.config_options
+        self.session_runtime
+            .config_options
             .get("effortLevel")
             .and_then(serde_json::Value::as_str)
             .and_then(model::EffortLevel::from_stored)
@@ -191,6 +170,7 @@ impl App {
             trust: TrustState::default(),
             settings_home_override: None,
             transcript: Transcript::default(),
+            session_runtime: SessionRuntimeState::test_default(),
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
@@ -198,19 +178,9 @@ impl App {
             turn: TurnState::default(),
             should_quit: false,
             exit_error: None,
-            session_id: None,
-            conn: None,
-            session_scope_epoch: 0,
-            current_model: Some(
-                model::CurrentModel::new("test-model", "test-model", "test-model")
-                    .authoritative(true),
-            ),
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
             files_accessed: 0,
-            mode: None,
-            config_options: BTreeMap::new(),
-            login_hint: None,
             event_tx: tx,
             event_rx: rx,
             file_index_event_tx: file_index_tx,
@@ -241,14 +211,8 @@ impl App {
             pending_images: Vec::new(),
             git_context: GitContextState::default(),
             update_notice: None,
-            session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
             mcp: McpState::default(),
-            fast_mode_state: model::FastModeState::Off,
-            runtime_session_state: None,
-            prompt_suggestion: None,
-            last_rate_limit_update: None,
-            account_info: None,
             notifications: notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),

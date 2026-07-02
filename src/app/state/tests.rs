@@ -181,28 +181,28 @@ fn cache_height_invalidated_returns_none() {
 #[test]
 fn clear_session_runtime_identity_resets_session_usage() {
     let mut app = App::test_default();
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.current_model = Some(
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
             .authoritative(true),
     );
-    app.mode = Some(crate::app::ModeState {
+    app.session_runtime.mode = Some(crate::app::ModeState {
         current_mode_id: "plan".to_owned(),
         current_mode_name: "Plan".to_owned(),
         available_modes: Vec::new(),
     });
-    app.session_usage.context_usage_percent = Some(62);
-    app.session_usage.context_usage_in_flight = true;
-    app.session_usage.context_usage_refresh_pending = true;
-    app.session_usage.context_usage_last_requested_at = Some(Instant::now());
-    app.session_usage.last_compaction_pre_tokens = Some(123_456);
+    app.session_runtime.session_usage.context_usage_percent = Some(62);
+    app.session_runtime.session_usage.context_usage_in_flight = true;
+    app.session_runtime.session_usage.context_usage_refresh_pending = true;
+    app.session_runtime.session_usage.context_usage_last_requested_at = Some(Instant::now());
+    app.session_runtime.session_usage.last_compaction_pre_tokens = Some(123_456);
 
     app.clear_session_runtime_identity();
 
-    assert!(app.session_id.is_none());
-    assert!(app.current_model.is_none());
-    assert!(app.mode.is_none());
-    assert_eq!(app.session_usage, SessionUsageState::default());
+    assert!(app.session_runtime.session_id.is_none());
+    assert!(app.session_runtime.current_model.is_none());
+    assert!(app.session_runtime.mode.is_none());
+    assert_eq!(app.session_runtime.session_usage, SessionUsageState::default());
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn user_text_image_message(text: &str, image_count: usize) -> ChatMessage {
 }
 
 fn set_account_subscription(app: &mut App, subscription: &str) {
-    app.account_info = Some(crate::agent::model::AccountInfo {
+    app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
         subscription_type: Some(subscription.to_owned()),
         ..Default::default()
     });
@@ -361,7 +361,7 @@ fn sync_welcome_snapshot_updates_canonical_welcome_message() {
     let mut app = make_test_app();
     app.ensure_welcome_message();
 
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     set_account_subscription(&mut app, "Pro");
 
     app.sync_welcome_snapshot();
@@ -378,7 +378,7 @@ fn sync_welcome_snapshot_updates_canonical_welcome_message() {
 fn sync_welcome_snapshot_updates_existing_canonical_welcome_in_place() {
     let mut app = make_test_app();
     app.ensure_welcome_message();
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     set_account_subscription(&mut app, "Pro");
     app.sync_welcome_snapshot();
 

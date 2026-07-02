@@ -772,7 +772,7 @@ fn app_with_bridge_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = make_test_app();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     (app, rx)
 }
 
@@ -1157,7 +1157,7 @@ fn test_app_defaults() {
     assert!(!app.surface_dirty.fullscreen.redraw);
     assert!(!app.surface_dirty.terminal_mode);
     assert!(!app.should_quit);
-    assert!(app.session_id.is_none());
+    assert!(app.session_runtime.session_id.is_none());
     assert_eq!(app.files_accessed, 0);
     assert!(app.turn.pending_interaction_ids.is_empty());
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
@@ -1507,8 +1507,8 @@ fn connected_updates_welcome_once_even_after_chat_started() {
 #[test]
 fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("session-1"));
-    app.current_model = Some(test_current_model("opus"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.current_model = Some(test_current_model("opus"));
     app.transcript.messages =
         vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
     crate::app::config::store::set_model(&mut app.config.committed_settings_document, Some("opus"));
@@ -1548,7 +1548,7 @@ fn connected_resets_session_scoped_view_data() {
         seven_day_sonnet: None,
         extra_usage: None,
     });
-    app.account_info = Some(crate::agent::model::AccountInfo {
+    app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
         email: Some("old@example.com".into()),
         organization: None,
         subscription_type: None,
@@ -1571,7 +1571,7 @@ fn connected_resets_session_scoped_view_data() {
     assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert_eq!(app.files_accessed, 0);
     assert!(app.usage.snapshot.is_none());
-    assert!(app.account_info.is_none());
+    assert!(app.session_runtime.account_info.is_none());
     assert!(app.plugins.installed.is_empty());
     assert!(app.plugins.last_inventory_refresh_at.is_none());
     assert!(app.config.pending_session_title_change.is_none());
@@ -1580,7 +1580,7 @@ fn connected_resets_session_scoped_view_data() {
 #[test]
 fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
     let mut app = make_test_app();
-    app.current_model = Some(test_current_model("opus"));
+    app.session_runtime.current_model = Some(test_current_model("opus"));
     app.transcript.messages.push(ChatMessage::welcome(
         env!("CARGO_PKG_VERSION"),
         "-",
@@ -1635,7 +1635,7 @@ fn auth_required_sets_hint_without_prefilling_login_command() {
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.input.text(), "keep me");
-    let Some(hint) = &app.login_hint else {
+    let Some(hint) = &app.session_runtime.login_hint else {
         panic!("expected login hint");
     };
     assert_eq!(hint.method_name, "oauth");
@@ -1669,7 +1669,10 @@ fn update_available_pushes_warning_system_message_with_versions_and_install_comm
     };
     assert_eq!(update_notice.current_version, "0.2.0");
     assert_eq!(update_notice.latest_version, "0.3.0");
-    assert_eq!(update_notice.emitted_session_scope_epoch, Some(app.session_scope_epoch));
+    assert_eq!(
+        update_notice.emitted_session_scope_epoch,
+        Some(app.session_runtime.session_scope_epoch)
+    );
 }
 
 #[test]
@@ -1799,9 +1802,12 @@ fn session_replaced_resets_chat_and_transient_state() {
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("replacement"));
     assert_eq!(
-        app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+        app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
+        Some("replacement")
+    );
+    assert_eq!(
+        app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
         Some("new-model")
     );
     assert_eq!(app.transcript.messages.len(), 1);
@@ -1899,7 +1905,7 @@ async fn connected_requests_usage_refresh_when_usage_tab_is_open() {
 #[test]
 fn stale_status_snapshot_for_old_session_is_ignored() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("current-session"));
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
 
     handle_client_event(
         &mut app,
@@ -1916,7 +1922,7 @@ fn stale_status_snapshot_for_old_session_is_ignored() {
         },
     );
 
-    assert!(app.account_info.is_none());
+    assert!(app.session_runtime.account_info.is_none());
 }
 
 #[test]
@@ -1928,7 +1934,7 @@ fn status_snapshot_updates_welcome_subscription() {
         "/test",
         "session-1",
     ));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     handle_client_event(
         &mut app,
@@ -1962,7 +1968,7 @@ fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed()
         "/test",
         "session-1",
     ));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     handle_client_event(
         &mut app,
@@ -1989,7 +1995,7 @@ fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed()
 #[test]
 fn stale_mcp_snapshot_for_old_session_is_ignored() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("current-session"));
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "current".into(),
         status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -2025,7 +2031,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
 #[test]
 fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("current-session"));
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
     app.mcp.removed_config_servers.insert(
         crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
         crate::app::state::types::RemovedMcpServerGuard {
@@ -2070,7 +2076,7 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
 #[test]
 fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("current-session"));
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
     app.mcp.removed_config_servers.insert(
         crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
         crate::app::state::types::RemovedMcpServerGuard {
@@ -2104,7 +2110,7 @@ fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence
 #[test]
 fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("current-session"));
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
     app.mcp.removed_config_servers.insert(
         crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
         crate::app::state::types::RemovedMcpServerGuard {
@@ -2138,7 +2144,7 @@ fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
 #[test]
 fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
     let mut app = make_test_app();
-    app.session_scope_epoch = 5;
+    app.session_runtime.session_scope_epoch = 5;
 
     handle_client_event(
         &mut app,
@@ -2487,7 +2493,7 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
     assert!(!app.startup.session_picker_resolved());
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     handle_client_event(&mut app, connected_event("claude-updated"));
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
@@ -2501,7 +2507,7 @@ fn startup_picker_empty_list_stays_in_chat_with_info_message() {
     app.startup.request_connection();
     assert!(app.startup.mark_connection_started());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
     handle_client_event(&mut app, connected_event("claude-updated"));
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
@@ -2569,7 +2575,7 @@ fn current_model_update_updates_state_and_clears_pending_when_expected() {
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some("Switching model...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
-    app.current_model = Some(test_current_model("old-model"));
+    app.session_runtime.current_model = Some(test_current_model("old-model"));
 
     handle_client_event(
         &mut app,
@@ -2579,7 +2585,10 @@ fn current_model_update_updates_state_and_clears_pending_when_expected() {
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.current_model.as_ref().map(|model| model.resolved_id.as_str()), Some("sonnet"));
+    assert_eq!(
+        app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+        Some("sonnet")
+    );
     assert!(app.turn.pending_command_label.is_none());
     assert!(app.turn.pending_command_ack.is_none());
 }
@@ -2603,7 +2612,10 @@ fn non_matching_config_option_update_keeps_pending() {
     );
 
     assert!(matches!(app.status, AppStatus::CommandPending));
-    assert_eq!(app.config_options.get("max_thinking_tokens"), Some(&serde_json::json!(2048)));
+    assert_eq!(
+        app.session_runtime.config_options.get("max_thinking_tokens"),
+        Some(&serde_json::json!(2048))
+    );
     assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
     assert!(matches!(
         app.turn.pending_command_ack.as_ref(),
@@ -2958,7 +2970,7 @@ fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
 #[test]
 fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("session-x"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-x"));
     app.transcript.messages.push(user_msg("/compact"));
     app.transcript
         .messages
@@ -2987,7 +2999,10 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
         panic!("expected text block");
     };
     assert_eq!(block.text, "Session successfully compacted.");
-    assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("session-x"));
+    assert_eq!(
+        app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
+        Some("session-x")
+    );
 }
 
 #[test]
@@ -3278,14 +3293,14 @@ fn turn_error_clears_tool_scope_tracking() {
 fn auth_required_clears_active_turn_runtime_tracking() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.session_id = Some(model::SessionId::new("session-auth"));
-    app.current_model = Some(test_current_model("claude-old"));
-    app.mode = Some(crate::app::ModeState {
+    app.session_runtime.session_id = Some(model::SessionId::new("session-auth"));
+    app.session_runtime.current_model = Some(test_current_model("claude-old"));
+    app.session_runtime.mode = Some(crate::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
         available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
     });
-    app.fast_mode_state = model::FastModeState::On;
+    app.session_runtime.fast_mode_state = model::FastModeState::On;
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "task-1",
         model::ToolCallStatus::InProgress,
@@ -3312,30 +3327,30 @@ fn auth_required_clears_active_turn_runtime_tracking() {
         panic!("expected tool call block");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Failed);
-    assert!(app.session_id.is_none());
-    assert!(app.current_model.is_none());
-    assert!(app.mode.is_none());
-    assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+    assert!(app.session_runtime.session_id.is_none());
+    assert!(app.session_runtime.current_model.is_none());
+    assert!(app.session_runtime.mode.is_none());
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
 }
 
 #[test]
 fn logout_completed_clears_session_runtime_identity_caches() {
     let mut app = make_test_app();
-    app.session_id = Some(model::SessionId::new("session-x"));
-    app.current_model = Some(test_current_model("claude-old"));
-    app.mode = Some(crate::app::ModeState {
+    app.session_runtime.session_id = Some(model::SessionId::new("session-x"));
+    app.session_runtime.current_model = Some(test_current_model("claude-old"));
+    app.session_runtime.mode = Some(crate::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
         available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
     });
-    app.fast_mode_state = model::FastModeState::On;
+    app.session_runtime.fast_mode_state = model::FastModeState::On;
 
     handle_client_event(&mut app, ClientEvent::LogoutCompleted);
 
-    assert!(app.session_id.is_none());
-    assert!(app.current_model.is_none());
-    assert!(app.mode.is_none());
-    assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+    assert!(app.session_runtime.session_id.is_none());
+    assert!(app.session_runtime.current_model.is_none());
+    assert!(app.session_runtime.mode.is_none());
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
 }
 
 #[test]
@@ -3416,8 +3431,11 @@ fn compaction_boundary_enables_compacting_and_records_boundary() {
 
     assert!(app.turn.is_compacting);
     assert!(app.turn.pending_compact_clear);
-    assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Manual));
-    assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
+    assert_eq!(
+        app.session_runtime.session_usage.last_compaction_trigger,
+        Some(model::CompactionTrigger::Manual)
+    );
+    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(123_456));
 }
 
 #[test]
@@ -3437,14 +3455,17 @@ fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
 
     assert!(app.turn.is_compacting);
     assert!(!app.turn.pending_compact_clear);
-    assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Auto));
-    assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(234_567));
+    assert_eq!(
+        app.session_runtime.session_usage.last_compaction_trigger,
+        Some(model::CompactionTrigger::Auto)
+    );
+    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(234_567));
 }
 
 #[test]
 fn fast_mode_update_sets_state() {
     let mut app = make_test_app();
-    assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
 
     handle_client_event(
         &mut app,
@@ -3453,7 +3474,7 @@ fn fast_mode_update_sets_state() {
         )),
     );
 
-    assert_eq!(app.fast_mode_state, model::FastModeState::Cooldown);
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
 }
 
 #[test]
@@ -3567,7 +3588,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
 #[test]
 fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     let mut app = make_test_app();
-    app.last_rate_limit_update = Some(model::RateLimitUpdate {
+    app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
         status: model::RateLimitStatus::AllowedWarning,
         error_code: None,
         resets_at: Some(1_741_280_000.0),
@@ -4004,7 +4025,7 @@ fn enter_submits_draft_when_permission_arrives_mid_compose() {
     let (mut app, mut bridge_rx) = app_with_bridge_connection();
     let tool_id = "perm-submit";
     append_tool_call_block(&mut app, tool_id);
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("ship the fix");
 
     let (response_tx, mut response_rx) = oneshot::channel();
@@ -4242,7 +4263,7 @@ fn update_notice_is_not_duplicated_within_same_session_epoch() {
     );
     assert_eq!(
         app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
-        Some(app.session_scope_epoch)
+        Some(app.session_runtime.session_scope_epoch)
     );
 }
 
@@ -4265,7 +4286,7 @@ fn update_notice_is_re_emitted_after_epoch_change() {
     );
     assert_eq!(
         app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
-        Some(app.session_scope_epoch)
+        Some(app.session_runtime.session_scope_epoch)
     );
 }
 
@@ -4304,7 +4325,7 @@ fn update_available_persists_across_connected_session_reset() {
         app.update_notice
             .as_ref()
             .and_then(|update_notice| update_notice.emitted_session_scope_epoch),
-        Some(app.session_scope_epoch)
+        Some(app.session_runtime.session_scope_epoch)
     );
 }
 
@@ -4354,7 +4375,7 @@ fn update_available_persists_across_session_replaced_reset() {
         app.update_notice
             .as_ref()
             .and_then(|update_notice| update_notice.emitted_session_scope_epoch),
-        Some(app.session_scope_epoch)
+        Some(app.session_runtime.session_scope_epoch)
     );
 }
 
@@ -4567,7 +4588,7 @@ fn plan_approval_raw_ctrl_y_does_not_resolve_permission() {
 fn second_esc_after_permission_rejection_requests_turn_cancel() {
     let (mut app, mut rx) = app_with_bridge_connection();
     app.status = AppStatus::Running;
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     let mut response_rx = attach_pending_permission(
         &mut app,
         "perm-1",
@@ -5024,12 +5045,12 @@ fn available_commands_update_replaces_previous_commands() {
 #[test]
 fn prompt_suggestion_tab_accepts_empty_input() {
     let mut app = make_test_app();
-    app.prompt_suggestion = Some("Write focused tests".to_owned());
+    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
 
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
     assert_eq!(app.input.text(), "Write focused tests");
-    assert!(app.prompt_suggestion.is_none());
+    assert!(app.session_runtime.prompt_suggestion.is_none());
 }
 
 #[test]
@@ -5041,7 +5062,10 @@ fn runtime_session_state_updates_status_with_guards() {
             model::RuntimeSessionState::Running,
         )),
     );
-    assert_eq!(app.runtime_session_state, Some(model::RuntimeSessionState::Running));
+    assert_eq!(
+        app.session_runtime.runtime_session_state,
+        Some(model::RuntimeSessionState::Running)
+    );
     assert!(matches!(app.status, AppStatus::Running));
 
     app.status = AppStatus::Error;

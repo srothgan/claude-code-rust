@@ -21,7 +21,7 @@ pub(super) fn submit_input(app: &mut App) {
     if text.trim().is_empty() {
         return;
     }
-    app.prompt_suggestion = None;
+    app.session_runtime.prompt_suggestion = None;
 
     // `/cancel` is an explicit control action: execute immediately.
     if slash::is_cancel_command(&text) {
@@ -99,10 +99,10 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         return Ok(());
     }
 
-    let Some(ref conn) = app.conn else {
+    let Some(ref conn) = app.session_runtime.conn else {
         return Err("not connected yet".to_owned());
     };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(sid) = app.session_runtime.session_id.clone() else {
         return Err("no active session".to_owned());
     };
 
@@ -149,8 +149,8 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(conn) = app.conn.clone() else { return };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else { return };
+    let Some(sid) = app.session_runtime.session_id.clone() else {
         return;
     };
     let input_chars = text.chars().count();
@@ -204,8 +204,9 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.session_runtime.conn =
+            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
 
@@ -479,7 +480,8 @@ mod tests {
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_runtime.conn =
+            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

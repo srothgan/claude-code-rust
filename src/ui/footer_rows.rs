@@ -64,7 +64,7 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
 }
 
 fn footer_context_usage_hint(app: &App) -> FooterItem {
-    app.session_usage.context_usage_percent.map(|percentage| {
+    app.session_runtime.session_usage.context_usage_percent.map(|percentage| {
         let remaining = 100_u8.saturating_sub(percentage);
         (format!("{remaining}%"), FOOTER_CONTEXT_VALUE)
     })
@@ -139,9 +139,10 @@ fn compose_footer_row(
 }
 
 fn build_primary_line(app: &App) -> Line<'static> {
-    if let Some(ref mode) = app.mode {
+    if let Some(ref mode) = app.session_runtime.mode {
         let color = mode_color(&mode.current_mode_id);
-        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
+        let (fast_mode_text, fast_mode_color) =
+            fast_mode_badge(app.session_runtime.fast_mode_state);
         let mut spans = Vec::new();
         push_badge(&mut spans, mode.current_mode_name.clone(), color);
         if let Some(model_badge) = footer_model_badge(app) {
@@ -152,7 +153,8 @@ fn build_primary_line(app: &App) -> Line<'static> {
         push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
         Line::from(spans)
     } else {
-        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
+        let (fast_mode_text, fast_mode_color) =
+            fast_mode_badge(app.session_runtime.fast_mode_state);
         let mut spans = Vec::new();
         if let Some((status_text, status_color)) = startup_status_badge(app) {
             push_badge(&mut spans, status_text.to_owned(), status_color);
@@ -170,7 +172,7 @@ fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
 }
 
 fn footer_model_badge(app: &App) -> Option<String> {
-    let current_model = app.current_model.as_ref()?;
+    let current_model = app.session_runtime.current_model.as_ref()?;
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
         badge.push('/');
@@ -465,7 +467,7 @@ mod tests {
 
     fn app_with_mode() -> App {
         let mut app = App::test_default();
-        app.mode = Some(ModeState {
+        app.session_runtime.mode = Some(ModeState {
             current_mode_id: "default".to_owned(),
             current_mode_name: "default".to_owned(),
             available_modes: Vec::new(),
@@ -592,7 +594,7 @@ mod tests {
     #[test]
     fn mcp_auth_hint_wins_over_context_usage_on_second_row() {
         let mut app = App::test_default();
-        app.session_usage.context_usage_percent = Some(62);
+        app.session_runtime.session_usage.context_usage_percent = Some(62);
         app.mcp.servers.push(McpServerStatus {
             name: "filesystem".to_owned(),
             status: McpServerConnectionStatus::NeedsAuth,

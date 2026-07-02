@@ -597,7 +597,7 @@ fn detect_slash_argument_context_after_first_space() {
 #[test]
 fn mode_argument_candidates_are_dynamic() {
     let mut app = App::test_default();
-    app.mode = Some(super::super::ModeState {
+    app.session_runtime.mode = Some(super::super::ModeState {
         current_mode_id: "plan".to_owned(),
         current_mode_name: "Plan".to_owned(),
         available_modes: vec![
@@ -737,7 +737,7 @@ fn agent_argument_candidates_filter_by_query() {
 fn rewind_argument_candidates_use_cached_targets() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
+    app.session_runtime.session_id = Some(session_id.clone());
     app.rewind_targets_session_id = Some(session_id);
     app.rewind_targets = vec![
         model::RewindTarget {
@@ -778,7 +778,7 @@ fn rewind_argument_candidates_use_cached_targets() {
 #[test]
 fn rewind_argument_candidates_hide_stale_targets() {
     let mut app = App::test_default();
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.rewind_targets_session_id = Some(model::SessionId::new("old-session"));
     app.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
@@ -797,8 +797,9 @@ fn rewind_argument_candidates_hide_stale_targets() {
 fn rewind_argument_context_requests_targets_when_cache_is_stale() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
@@ -817,8 +818,9 @@ fn rewind_argument_context_requests_targets_when_cache_is_stale() {
 fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
     let mut app = App::test_default();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
@@ -833,7 +835,7 @@ fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
 fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
+    app.session_runtime.session_id = Some(session_id.clone());
     app.rewind_targets_session_id = Some(session_id);
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
@@ -848,7 +850,7 @@ fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
 fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result() {
     let mut app = App::test_default();
     let session_id = model::SessionId::new("session-1");
-    app.session_id = Some(session_id.clone());
+    app.session_runtime.session_id = Some(session_id.clone());
     app.rewind_targets_session_id = Some(session_id);
     app.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
@@ -869,7 +871,7 @@ fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result(
 #[test]
 fn effort_argument_candidates_include_session_only_max() {
     let mut app = App::test_default();
-    app.current_model = Some(
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(vec![
@@ -895,7 +897,7 @@ fn effort_argument_candidates_include_session_only_max() {
 #[test]
 fn effort_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
-    app.current_model = Some(
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
             .supports_effort(true)
             .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
@@ -1073,7 +1075,7 @@ fn non_variable_command_argument_mode_is_disabled() {
 #[test]
 fn variable_command_argument_mode_stays_active_without_matches() {
     let mut app = App::test_default();
-    app.mode = Some(super::super::ModeState {
+    app.session_runtime.mode = Some(super::super::ModeState {
         current_mode_id: "plan".to_owned(),
         current_mode_name: "Plan".to_owned(),
         available_modes: vec![super::super::ModeInfo {
@@ -1219,8 +1221,9 @@ fn rewind_with_cached_target_requires_connection() {
 fn rewind_with_cached_target_sends_bridge_command() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
         first_text: "first prompt".to_owned(),
@@ -1272,7 +1275,8 @@ async fn resume_sets_command_pending_when_connected() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
             let consumed = try_handle_submit(&mut app, "/resume abc-123");
             assert!(consumed);
@@ -1291,9 +1295,10 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.mode = Some(super::super::ModeState {
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.mode = Some(super::super::ModeState {
                 current_mode_id: "code".to_owned(),
                 current_mode_name: "Code".to_owned(),
                 available_modes: vec![
@@ -1336,9 +1341,10 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                     .authoritative(true),
             );
@@ -1352,7 +1358,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
             );
             assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
             assert_eq!(
-                app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("old-model")
             );
 
@@ -1373,7 +1379,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 app.status
             );
             assert_eq!(
-                app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
+                app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("sonnet")
             );
             assert!(app.turn.pending_command_label.is_none());
@@ -1387,9 +1393,10 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
                     .supports_effort(true)
                     .supported_effort_levels(crate::agent::model::EffortLevel::ALL.to_vec()),
@@ -1427,7 +1434,10 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 ),
             );
             assert!(matches!(app.status, AppStatus::Ready));
-            assert_eq!(app.config_options.get("effortLevel"), Some(&serde_json::json!("xhigh")));
+            assert_eq!(
+                app.session_runtime.config_options.get("effortLevel"),
+                Some(&serde_json::json!("xhigh"))
+            );
             assert_eq!(
                 app.session_thinking_effort_effective(),
                 crate::agent::model::EffortLevel::XHigh
@@ -1442,9 +1452,10 @@ async fn effort_accepts_session_only_max() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
-            app.current_model = Some(
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
                     .supports_effort(true)
                     .supported_effort_levels(vec![
@@ -1476,8 +1487,9 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
             app.available_agents =
                 vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
@@ -1513,7 +1525,10 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
                 ),
             );
             assert!(matches!(app.status, AppStatus::Ready));
-            assert_eq!(app.config_options.get("agent"), Some(&serde_json::json!("reviewer")));
+            assert_eq!(
+                app.session_runtime.config_options.get("agent"),
+                Some(&serde_json::json!("reviewer"))
+            );
         })
         .await;
 }
@@ -1524,8 +1539,9 @@ async fn agent_reset_sends_null_agent() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent reset");
             assert!(consumed);
@@ -1549,8 +1565,9 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-            app.session_id = Some("sess-1".into());
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent custom-agent");
             assert!(consumed);
@@ -1572,8 +1589,9 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
 fn agent_rejects_unknown_when_available_agents_are_populated() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some("sess-1".into());
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some("sess-1".into());
     app.available_agents =
         vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
 
@@ -1633,9 +1651,10 @@ fn effort_invalid_arguments_return_usage() {
 fn effort_rejects_models_without_effort_support() {
     let mut app = App::test_default();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some("sess-1".into());
-    app.current_model = Some(
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some("sess-1".into());
+    app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
     );
 
@@ -1658,7 +1677,8 @@ async fn new_session_sets_command_pending() {
         .run_until(async {
             let mut app = App::test_default();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
             let consumed = try_handle_submit(&mut app, "/new-session");
             assert!(consumed);
@@ -1693,8 +1713,9 @@ fn compact_without_connection_is_handled_locally() {
 fn compact_with_active_session_sets_compacting_without_success_pending() {
     let mut app = App::test_default();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(!consumed);

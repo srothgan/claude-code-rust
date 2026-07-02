@@ -170,7 +170,8 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> SerializedLiveRows {
-    let current_mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+    let current_mode_id =
+        app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
     let active_msg_idx = app.active_turn_assistant_idx();
     let runtime_indicator = sync_runtime_indicator(app);
     let mut rows = Vec::new();

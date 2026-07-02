@@ -14,7 +14,7 @@ pub(crate) fn picker_session_count(app: &App) -> usize {
 }
 
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
-    app.startup.startup_picker_is_loading(app.conn.is_some())
+    app.startup.startup_picker_is_loading(app.session_runtime.conn.is_some())
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -62,7 +62,7 @@ fn activate_selection(app: &mut App) {
         return;
     };
     let session_id = session.session_id.clone();
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         app.startup.resolve_session_picker();
         view::set_chat_surface(app);
         return;
@@ -139,7 +139,7 @@ mod tests {
         app.startup = crate::app::state::StartupState::new(None, None, true);
         app.startup.request_connection();
         assert!(app.startup.mark_connection_started());
-        app.conn = None;
+        app.session_runtime.conn = None;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
@@ -162,7 +162,7 @@ mod tests {
     fn enter_triggers_resume() {
         let mut app = picker_app();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
-        app.conn = Some(Rc::new(AgentConnection::new(tx)));
+        app.session_runtime.conn = Some(Rc::new(AgentConnection::new(tx)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -194,7 +194,7 @@ mod tests {
         let mut app = picker_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
         drop(rx);
-        app.conn = Some(Rc::new(AgentConnection::new(tx)));
+        app.session_runtime.conn = Some(Rc::new(AgentConnection::new(tx)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

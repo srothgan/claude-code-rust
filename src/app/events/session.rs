@@ -41,7 +41,7 @@ pub(super) fn handle_connected_client_event(
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
     if let Some(slot) = take_connection_slot() {
-        app.conn = Some(slot.conn);
+        app.session_runtime.conn = Some(slot.conn);
     }
     apply_session_cwd(app, cwd);
     reset_for_new_session(
@@ -71,7 +71,7 @@ pub(super) fn handle_connected_client_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
     );
@@ -146,13 +146,13 @@ pub(super) fn handle_auth_required_event(
     clear_pending_command(app);
     app.status = AppStatus::Ready;
     app.resuming_session_id = None;
-    app.login_hint = Some(LoginHint { method_name, method_description });
+    app.session_runtime.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
-    app.last_rate_limit_update = None;
+    app.session_runtime.last_rate_limit_update = None;
     app.turn.clear_cancel_state();
-    app.account_info = None;
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -172,8 +172,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.turn.clear_cancel_state();
-    app.last_rate_limit_update = None;
-    app.account_info = None;
+    app.session_runtime.last_rate_limit_update = None;
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -208,7 +208,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnection>) {
-    app.login_hint = None;
+    app.session_runtime.login_hint = None;
     app.turn.pending_command_label = Some("Starting session...".to_owned());
     app.turn.pending_command_ack = None;
     push_system_message_with_severity(
@@ -246,7 +246,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
-    app.account_info = None;
+    app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -258,7 +258,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         outcome = "success",
     );
 
-    if let Some(conn) = app.conn.clone() {
+    if let Some(conn) = app.session_runtime.conn.clone() {
         app.turn.pending_command_label = Some("Starting session...".to_owned());
         app.turn.pending_command_ack = None;
         if let Err(e) = start_new_session(app, &conn, SessionStartReason::Logout) {
@@ -339,7 +339,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.clone()),
         history_update_count,
         available_model_count,
         restored_input = restored_input.is_some(),
@@ -347,7 +347,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
 }
 
 pub(super) fn handle_rewind_result_event(app: &mut App, result: &model::RewindResult) {
-    if app.session_id.as_ref().map(ToString::to_string).as_deref()
+    if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
         != Some(result.session_id.as_str())
     {
         tracing::debug!(
@@ -430,14 +430,14 @@ pub(super) fn ensure_update_notice_message(app: &mut App) {
     let Some(notice) = app.update_notice.as_ref() else {
         return;
     };
-    if notice.emitted_session_scope_epoch == Some(app.session_scope_epoch) {
+    if notice.emitted_session_scope_epoch == Some(app.session_runtime.session_scope_epoch) {
         return;
     }
 
     let message = format_update_available_message(&notice.latest_version, &notice.current_version);
     push_system_message_with_severity(app, Some(SystemSeverity::Warning), &message);
     if let Some(notice) = app.update_notice.as_mut() {
-        notice.emitted_session_scope_epoch = Some(app.session_scope_epoch);
+        notice.emitted_session_scope_epoch = Some(app.session_runtime.session_scope_epoch);
     }
 }
 
@@ -545,7 +545,7 @@ fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option
 }
 
 fn maybe_open_startup_session_picker(app: &mut App) {
-    if app.conn.is_none() || !app.startup.startup_picker_is_ready() {
+    if app.session_runtime.conn.is_none() || !app.startup.startup_picker_is_ready() {
         return;
     }
 

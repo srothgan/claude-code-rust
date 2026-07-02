@@ -36,15 +36,11 @@ impl App {
     }
 
     pub fn bump_session_scope_epoch(&mut self) {
-        self.session_scope_epoch = self.session_scope_epoch.saturating_add(1);
+        self.session_runtime.bump_session_scope_epoch();
     }
 
     pub fn clear_session_runtime_identity(&mut self) {
-        self.session_id = None;
-        self.current_model = None;
-        self.mode = None;
-        self.fast_mode_state = model::FastModeState::Off;
-        self.session_usage = SessionUsageState::default();
+        self.session_runtime.clear_identity();
         self.rewind_targets.clear();
         self.rewind_targets_session_id = None;
         self.rewind_targets_in_flight = false;

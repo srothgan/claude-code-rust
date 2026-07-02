@@ -346,8 +346,8 @@ fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::Termin
 
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+        && let Some(ref conn) = app.session_runtime.conn
+        && let Some(sid) = app.session_runtime.session_id.clone()
     {
         let _ = conn.cancel(sid.to_string());
     }

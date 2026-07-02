@@ -1142,7 +1142,7 @@ fn log_inline_chat_draw(summary: &InlineChatDrawSummary<'_>) {
         message = "inline chat draw payload prepared",
         outcome = "prepared",
         status = ?summary.app.status,
-        mode = summary.app.mode.as_ref().map_or_else(|| "none".to_owned(), |mode| mode.current_mode_name.clone()),
+        mode = summary.app.session_runtime.mode.as_ref().map_or_else(|| "none".to_owned(), |mode| mode.current_mode_name.clone()),
         terminal_width = summary.app.chat_render.terminal_width,
         terminal_height = summary.app.chat_render.terminal_height,
         anchor_valid = summary.app.chat_render.live_region.anchor_valid,

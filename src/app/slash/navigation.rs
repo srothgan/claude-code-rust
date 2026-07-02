@@ -69,13 +69,13 @@ fn request_rewind_targets_for_active_argument(app: &mut App) {
     if command != "/rewind" || arg_index != 0 || app.rewind_targets_in_flight {
         return;
     }
-    let Some(session_id) = app.session_id.clone() else {
+    let Some(session_id) = app.session_runtime.session_id.clone() else {
         return;
     };
     if app.rewind_targets_session_id.as_ref() == Some(&session_id) {
         return;
     }
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         return;
     };
     let session_id_text = session_id.to_string();

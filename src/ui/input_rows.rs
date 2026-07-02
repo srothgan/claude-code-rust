@@ -14,7 +14,7 @@ const SPINNER_FRAMES: &[char] = &[
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
 
-    if let Some(hint) = &app.login_hint {
+    if let Some(hint) = &app.session_runtime.login_hint {
         rows.push(Line::from(Span::styled(
             format!("Authentication required: {} -- {}", hint.method_name, hint.method_description),
             Style::default().fg(ratatui::style::Color::Yellow),
@@ -51,7 +51,7 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         rows.extend(autocomplete::composer_hint_rows(app));
     } else if app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
-        && let Some(suggestion) = app.prompt_suggestion.as_deref()
+        && let Some(suggestion) = app.session_runtime.prompt_suggestion.as_deref()
         && !suggestion.trim().is_empty()
     {
         rows.push(Line::from(vec![
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn build_composer_hint_rows_preserves_login_hint_content() {
         let mut app = App::test_default();
-        app.login_hint = Some(LoginHint {
+        app.session_runtime.login_hint = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
@@ -125,7 +125,7 @@ mod tests {
     fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
         let mut app = App::test_default();
         app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
-        app.prompt_suggestion = Some("Write tests".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
         assert_eq!(rows.len(), 2);
@@ -150,7 +150,7 @@ mod tests {
         let mut app = App::test_default();
         app.input.set_text("@");
         let _ = app.input.set_cursor(0, 1);
-        app.prompt_suggestion = Some("Write tests".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
         crate::app::mention::activate(&mut app);
 
         let rows = build_composer_hint_rows(&app);
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn prompt_suggestion_hint_requires_input_focus() {
         let mut app = App::test_default();
-        app.prompt_suggestion = Some("Write tests".to_owned());
+        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
         app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 

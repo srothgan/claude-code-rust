@@ -466,7 +466,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, "Authenticating...", None);
 
     let tx = app.event_tx.clone();
-    let conn = app.conn.clone();
+    let conn = app.session_runtime.conn.clone();
     tokio::task::spawn_local(async move {
         tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -672,7 +672,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if let Some(ref mode) = app.mode
+    if let Some(ref mode) = app.session_runtime.mode
         && !mode.available_modes.iter().any(|m| m.id == requested_mode)
     {
         push_system_message(app, format!("Unknown mode: {requested_mode}"));
@@ -759,7 +759,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if app.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
+    if app.session_runtime.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
         push_system_message(app, "Cannot switch effort: current model does not support effort.");
         return true;
     }
@@ -938,7 +938,7 @@ fn docs_usage() -> &'static str {
 }
 
 fn build_docs_mode_markdown(app: &App) -> String {
-    let rows = app.mode.as_ref().map_or_else(
+    let rows = app.session_runtime.mode.as_ref().map_or_else(
         || vec![("Unavailable".to_owned(), "Connect to load the current session mode.".to_owned())],
         |mode| {
             let mut rows: Vec<(String, String)> = mode

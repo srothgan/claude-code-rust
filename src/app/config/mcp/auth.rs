@@ -8,10 +8,10 @@ pub(crate) fn submit_mcp_oauth_callback_url(
     server_name: &str,
     callback_url: String,
 ) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.as_ref() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(ref sid) = app.session_runtime.session_id else {
         return;
     };
     let session_id = sid.to_string();

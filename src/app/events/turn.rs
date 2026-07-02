@@ -552,7 +552,8 @@ pub(super) fn handle_turn_error_event(
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
-        app.last_rate_limit_update
+        app.session_runtime
+            .last_rate_limit_update
             .clone()
             .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
     } else {

@@ -8,8 +8,9 @@ fn app_with_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = App::test_default();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    app.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     (app, rx)
 }
 
@@ -377,7 +378,7 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
 #[test]
 fn mode_selection_then_second_enter_arms_submit() {
     let mut app = App::test_default();
-    app.mode = Some(ModeState {
+    app.session_runtime.mode = Some(ModeState {
         current_mode_id: "code".to_owned(),
         current_mode_name: "Code".to_owned(),
         available_modes: vec![

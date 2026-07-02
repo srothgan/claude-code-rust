@@ -17,7 +17,7 @@ use super::config::ConfigState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
-    SessionPickerState, StartupState, Transcript,
+    SessionPickerState, SessionRuntimeState, StartupState, Transcript,
 };
 use super::trust;
 use super::view::SurfaceMode;
@@ -25,7 +25,6 @@ use super::{App, AppStatus, FocusManager};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
-use crate::agent::model;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
 use crate::{Cli, Command};
@@ -136,6 +135,7 @@ pub fn create_app(cli: &Cli) -> App {
             &cwd_display,
             "-",
         )]),
+        session_runtime: SessionRuntimeState::default(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
@@ -146,16 +146,9 @@ pub fn create_app(cli: &Cli) -> App {
         turn: super::state::TurnState::default(),
         should_quit: false,
         exit_error: None,
-        session_id: None,
-        conn: None,
-        session_scope_epoch: 0,
-        current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
-        mode: None,
-        config_options: std::collections::BTreeMap::new(),
-        login_hint: None,
         event_tx,
         event_rx,
         file_index_event_tx,
@@ -186,14 +179,8 @@ pub fn create_app(cli: &Cli) -> App {
         pending_images: Vec::new(),
         git_context: super::git_context::GitContextState::default(),
         update_notice: None,
-        session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
-        fast_mode_state: model::FastModeState::Off,
-        runtime_session_state: None,
-        prompt_suggestion: None,
-        last_rate_limit_update: None,
-        account_info: None,
         notifications: super::notify::NotificationManager::new(),
         perf,
         render_cache_budget: RenderCacheBudget::default(),
