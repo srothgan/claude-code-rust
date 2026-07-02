@@ -220,6 +220,9 @@ fn build_slash_command_items(app: &App) -> Vec<(String, String)> {
     for cmd in &app.available_commands {
         let name =
             if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
+        if crate::app::slash::app_owned_command_name(&name).is_some() {
+            continue;
+        }
         commands.entry(name).or_insert_with(|| cmd.description.clone());
     }
 

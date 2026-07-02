@@ -90,7 +90,7 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
-const STARTUP_FALLBACK_MODEL_ALIAS = "opus";
+const STARTUP_FALLBACK_MODEL_ALIAS = "fable";
 
 function permissionDisplayFromCanUseOptions(
   options: Parameters<CanUseTool>[2],
@@ -883,6 +883,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
   const modelOption = startupModelOption(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(params.launchSettings);
+  const shouldPassCanUseTool = permissionModeOptions.permissionMode !== "bypassPermissions";
   const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
@@ -947,7 +948,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     settingSources: DEFAULT_SETTING_SOURCES,
     resume: params.resume,
     ...(params.resumeSessionAt ? { resumeSessionAt: params.resumeSessionAt } : {}),
-    canUseTool: params.canUseTool,
+    ...(shouldPassCanUseTool ? { canUseTool: params.canUseTool } : {}),
     onElicitation: async (request: {
       mode?: string;
       serverName?: string;

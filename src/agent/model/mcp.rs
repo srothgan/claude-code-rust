@@ -117,6 +117,7 @@ pub enum McpServerStatusConfig {
         args: Vec<String>,
         env: BTreeMap<String, String>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Sse {
@@ -124,6 +125,7 @@ pub enum McpServerStatusConfig {
         headers: BTreeMap<String, String>,
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Http {
@@ -131,6 +133,7 @@ pub enum McpServerStatusConfig {
         headers: BTreeMap<String, String>,
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Sdk {

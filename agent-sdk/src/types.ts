@@ -40,6 +40,7 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AvailableModel {
   id: string;
+  resolved_model?: string;
   display_name: string;
   description?: string;
   supports_effort: boolean;
@@ -489,6 +490,7 @@ export type McpServerConfig =
       args?: string[];
       env?: Record<string, string>;
       timeout?: number;
+      request_timeout_ms?: number;
       always_load?: boolean;
     }
   | {
@@ -497,6 +499,7 @@ export type McpServerConfig =
       headers?: Record<string, string>;
       tools?: McpServerToolPolicy[];
       timeout?: number;
+      request_timeout_ms?: number;
       always_load?: boolean;
     }
   | {
@@ -505,6 +508,7 @@ export type McpServerConfig =
       headers?: Record<string, string>;
       tools?: McpServerToolPolicy[];
       timeout?: number;
+      request_timeout_ms?: number;
       always_load?: boolean;
     };
 

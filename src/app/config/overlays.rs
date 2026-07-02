@@ -7,16 +7,13 @@ use super::mcp::{
 };
 use super::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayFocus {
-    Model,
-    Effort,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOverlayState {
+    pub selected_model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelAndEffortOverlayState {
-    pub focus: OverlayFocus,
-    pub selected_model: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThinkingEffortOverlayState {
     pub selected_effort: EffortLevel,
 }
 
@@ -180,7 +177,8 @@ pub struct ConfirmationOverlayState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
-    ModelAndEffort(ModelAndEffortOverlayState),
+    Model(ModelOverlayState),
+    ThinkingEffort(ThinkingEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
     Language(LanguageOverlayState),
     SessionRename(SessionRenameOverlayState),

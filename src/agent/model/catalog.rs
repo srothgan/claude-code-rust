@@ -142,6 +142,7 @@ impl EffortLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
+    pub resolved_model: Option<String>,
     pub display_name: String,
     pub description: Option<String>,
     pub supports_effort: bool,
@@ -156,6 +157,7 @@ impl AvailableModel {
     pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            resolved_model: None,
             display_name: display_name.into(),
             description: None,
             supports_effort: false,
@@ -169,6 +171,12 @@ impl AvailableModel {
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn resolved_model(mut self, resolved_model: impl Into<String>) -> Self {
+        self.resolved_model = Some(resolved_model.into());
         self
     }
 

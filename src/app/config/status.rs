@@ -36,14 +36,14 @@ pub fn request_status_snapshot_if_needed(app: &App) {
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
     match model {
-        None => OPUS_MODEL_ALIAS_LABEL.to_owned(),
+        None => DEFAULT_MODEL_ALIAS_LABEL.to_owned(),
         Some(model_id) => model_overlay_options(app)
             .into_iter()
-            .find(|candidate| candidate.id == model_id)
+            .find(|candidate| candidate.matches_model_id(model_id))
             .map_or_else(
                 || {
-                    if model_id == OPUS_MODEL_ALIAS_ID {
-                        OPUS_MODEL_ALIAS_LABEL.to_owned()
+                    if model_id == DEFAULT_MODEL_ALIAS_ID {
+                        DEFAULT_MODEL_ALIAS_LABEL.to_owned()
                     } else {
                         model_id.to_owned()
                     }

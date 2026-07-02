@@ -93,7 +93,7 @@ impl ConfigState {
             .value
         {
             ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
-                Some(OPUS_MODEL_ALIAS_ID.to_owned())
+                Some(DEFAULT_MODEL_ALIAS_ID.to_owned())
             }
             ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
             ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,
@@ -173,16 +173,33 @@ impl ConfigState {
     }
 
     #[must_use]
-    pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
-        if let Some(ConfigOverlayState::ModelAndEffort(overlay)) = &self.overlay {
+    pub fn model_overlay(&self) -> Option<&ModelOverlayState> {
+        if let Some(ConfigOverlayState::Model(overlay)) = &self.overlay {
             Some(overlay)
         } else {
             None
         }
     }
 
-    pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
-        if let Some(ConfigOverlayState::ModelAndEffort(overlay)) = &mut self.overlay {
+    pub fn model_overlay_mut(&mut self) -> Option<&mut ModelOverlayState> {
+        if let Some(ConfigOverlayState::Model(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn thinking_effort_overlay(&self) -> Option<&ThinkingEffortOverlayState> {
+        if let Some(ConfigOverlayState::ThinkingEffort(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
+    }
+
+    pub fn thinking_effort_overlay_mut(&mut self) -> Option<&mut ThinkingEffortOverlayState> {
+        if let Some(ConfigOverlayState::ThinkingEffort(overlay)) = &mut self.overlay {
             Some(overlay)
         } else {
             None

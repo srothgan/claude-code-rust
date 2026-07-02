@@ -813,6 +813,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 tools: Vec::new(),
                 timeout: Some(5000),
+                request_timeout_ms: Some(30000),
                 always_load: Some(true),
             },
         )]);

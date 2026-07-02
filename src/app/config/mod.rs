@@ -36,8 +36,10 @@ pub(crate) use mcp::{
 };
 pub use overlays::*;
 pub(crate) use resolve::language_input_validation_message;
+#[allow(unused_imports)]
 pub(crate) use settings::{
-    DEFAULT_PERMISSION_OPTIONS, LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS, OPUS_MODEL_ALIAS_ID,
+    DEFAULT_MODEL_ALIAS_ID, DEFAULT_MODEL_ALIAS_LABEL, DEFAULT_PERMISSION_OPTIONS,
+    LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS,
 };
 #[allow(unused_imports)]
 pub use settings::{

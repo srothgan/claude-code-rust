@@ -467,6 +467,7 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
             "X-Test": "1",
           },
           timeout: 5000,
+          request_timeout_ms: 30000,
           always_load: true,
           tools: [
             {
@@ -501,6 +502,7 @@ test("parseCommandEnvelope validates mcp_set_servers command", () => {
         "X-Test": "1",
       },
       timeout: 5000,
+      request_timeout_ms: 30000,
       always_load: true,
       tools: [
         {
@@ -549,6 +551,24 @@ test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
         }),
       ),
     /mcp_set_servers\.servers\.bad\.timeout must be an integer >= 1000/,
+  );
+
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "mcp_set_servers",
+          session_id: "session-123",
+          servers: {
+            bad: {
+              type: "http",
+              url: "https://mcp.example.com",
+              request_timeout_ms: 999,
+            },
+          },
+        }),
+      ),
+    /mcp_set_servers\.servers\.bad\.request_timeout_ms must be an integer >= 1000/,
   );
 
   assert.throws(
@@ -642,6 +662,7 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
             type: "http",
             url: "https://example.test/mcp",
             always_load: true,
+            request_timeout_ms: 30000,
           },
         },
       },
@@ -654,6 +675,7 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
       type: "http",
       url: "https://example.test/mcp",
       alwaysLoad: true,
+      requestTimeoutMs: 30000,
     },
   });
   assert.deepEqual(events, [
@@ -738,6 +760,7 @@ test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
       type: "sse",
       url: "https://mcp.example.com/sse",
       timeout: 2500,
+      request_timeout_ms: 30000,
       always_load: true,
       tools: [
         { name: "search" },
@@ -748,6 +771,7 @@ test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
       type: "sse",
       url: "https://mcp.example.com/sse",
       timeout: 2500,
+      requestTimeoutMs: 30000,
       alwaysLoad: true,
       tools: [
         { name: "search" },
@@ -766,12 +790,13 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
       url: "https://mcp.notion.com/mcp",
       headers: { Authorization: "Bearer token" },
       timeout: 5000,
+      requestTimeoutMs: 30000,
       alwaysLoad: true,
       tools: [
         { name: "search" },
         { name: "write", permission_policy: "always_deny", org_max_permission: "ask" },
       ],
-    },
+    } as unknown as NonNullable<import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]>,
     tools: [],
   });
 
@@ -780,6 +805,7 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
     url: "https://mcp.notion.com/mcp",
     headers: { Authorization: "Bearer token" },
     timeout: 5000,
+    request_timeout_ms: 30000,
     always_load: true,
     tools: [
       { name: "search" },
@@ -1400,6 +1426,7 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
 
   assert.equal(options.permissionMode, "bypassPermissions");
   assert.equal(options.allowDangerouslySkipPermissions, true);
+  assert.equal("canUseTool" in options, false);
 });
 
 test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
@@ -5112,6 +5139,7 @@ test("createToolCall maps project and artifact tools to compact titles", () => {
     file_path: "C:/work/report.html",
     favicon: "R",
     label: "report-v2",
+    description: "Quarterly report",
   });
   const artifactFallback = createToolCall("tc-artifact-path", "Artifact", {
     file_path: "C:/work/report.html",
@@ -5125,6 +5153,10 @@ test("createToolCall maps project and artifact tools to compact titles", () => {
   assert.equal(projectSearch.title, "Projects: search migration");
   assert.equal(artifactWithLabel.kind, "other");
   assert.equal(artifactWithLabel.title, "Artifact: report-v2");
+  assert.equal(
+    (artifactWithLabel.raw_input as Record<string, unknown>).description,
+    "Quarterly report",
+  );
   assert.equal(artifactFallback.title, "Artifact: C:/work/report.html");
   assert.equal(rolePicker.kind, "other");
   assert.equal(rolePicker.title, "ShowOnboardingRolePicker");
@@ -5979,7 +6011,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.193");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.198");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -7302,6 +7334,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
   const mapped = mapAvailableModels([
     {
       value: "sonnet",
+      resolvedModel: "claude-sonnet-5",
       displayName: "Claude Sonnet",
       description: "Balanced model",
       supportsEffort: true,
@@ -7321,6 +7354,7 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
   assert.deepEqual(mapped, [
     {
       id: "sonnet",
+      resolved_model: "claude-sonnet-5",
       display_name: "Claude Sonnet",
       description: "Balanced model",
       supports_effort: true,
@@ -7339,12 +7373,13 @@ test("mapAvailableModels preserves optional fast and auto mode metadata", () => 
   ]);
 });
 
-test("mapAvailableModels filters unavailable Fable models while preserving unknown ids", () => {
+test("mapAvailableModels preserves Fable models and unknown ids", () => {
   const mapped = mapAvailableModels([
     {
       value: "fable",
+      resolvedModel: "claude-fable-5",
       displayName: "Claude Fable",
-      description: "Unavailable model alias",
+      description: "Default model alias",
       supportsEffort: true,
     },
     {
@@ -7369,6 +7404,28 @@ test("mapAvailableModels filters unavailable Fable models while preserving unkno
 
   assert.deepEqual(mapped, [
     {
+      id: "fable",
+      resolved_model: "claude-fable-5",
+      display_name: "Claude Fable",
+      description: "Default model alias",
+      supports_effort: true,
+      supported_effort_levels: [],
+    },
+    {
+      id: "claude-fable-5",
+      display_name: "Claude Fable 5",
+      description: "Unavailable model",
+      supports_effort: true,
+      supported_effort_levels: [],
+    },
+    {
+      id: "claude-fable-5-20260612",
+      display_name: "Claude Fable 5 dated",
+      description: "Unavailable dated model",
+      supports_effort: true,
+      supported_effort_levels: [],
+    },
+    {
       id: "claude-unknown-1",
       display_name: "Claude Unknown",
       description: "Unrecognized but available model",
@@ -7376,6 +7433,29 @@ test("mapAvailableModels filters unavailable Fable models while preserving unkno
       supported_effort_levels: [],
     },
   ]);
+});
+
+test("resolveCurrentModel matches full Fable runtime ids to the fable alias", () => {
+  const session = makeSessionState();
+  session.model = "fable";
+  session.requestedModelId = "fable";
+  session.resolvedRuntimeModelId = "claude-fable-5-20260612";
+  session.availableModels = [
+    {
+      id: "fable",
+      resolved_model: "claude-fable-5",
+      display_name: "Claude Fable 5",
+      supports_effort: true,
+      supported_effort_levels: ["low", "medium", "high", "xhigh", "max"],
+    },
+  ];
+
+  const currentModel = resolveCurrentModel(session);
+
+  assert.equal(currentModel.display_name_short, "Fable 5");
+  assert.equal(currentModel.display_name_long, "Claude Fable 5");
+  assert.equal(currentModel.catalog_id, "fable");
+  assert.equal(currentModel.supports_effort, true);
 });
 
 test("resolveCurrentModel keeps 1M context suffix in short and long display names", () => {

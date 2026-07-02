@@ -36,6 +36,9 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(label) = json_string(input, "label") {
             artifact_fields.push(ToolField::new("Label", label));
         }
+        if let Some(description) = json_string(input, "description") {
+            artifact_fields.push(ToolField::new("Description", description));
+        }
         if let Some(file_path) = json_string(input, "file_path") {
             artifact_fields.push(ToolField::new("File path", file_path));
         }
@@ -159,6 +162,7 @@ mod tests {
             json!({
                 "file_path": "C:/work/dashboard.html",
                 "label": "dashboard",
+                "description": "Interactive dashboard",
                 "url": "https://artifact.local/old"
             }),
             Some(
@@ -172,6 +176,7 @@ mod tests {
             rendered_line_texts(&lines),
             vec![
                 "Label: dashboard",
+                "Description: Interactive dashboard",
                 "File path: C:/work/dashboard.html",
                 "URL: https://artifact.local/old",
                 "Title: Dashboard",

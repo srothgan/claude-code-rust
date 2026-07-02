@@ -320,7 +320,7 @@ mod tests {
             session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
 
         assert_eq!(launch_settings.language, None);
-        assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
+        assert_setting_value(&launch_settings, "model", &Value::String("fable".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
         assert_permission_mode(&launch_settings, "default");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_launch_settings_include_supported_settings_json_with_explicit_opus_when_unset() {
+    fn persisted_launch_settings_include_supported_settings_json_with_explicit_fable_when_unset() {
         let mut app = App::test_default();
         store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
         store::set_thinking_effort_level(
@@ -354,7 +354,7 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language, None);
-        assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
+        assert_setting_value(&launch_settings, "model", &Value::String("fable".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
         assert_permission_mode(&launch_settings, "default");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));

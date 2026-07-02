@@ -312,8 +312,8 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "vim", label: "Vim" },
 ];
-pub(crate) const OPUS_MODEL_ALIAS_ID: &str = "opus";
-pub(crate) const OPUS_MODEL_ALIAS_LABEL: &str = "Opus";
+pub(crate) const DEFAULT_MODEL_ALIAS_ID: &str = "fable";
+pub(crate) const DEFAULT_MODEL_ALIAS_LABEL: &str = "Fable 5";
 pub(crate) const LANGUAGE_MIN_CHARS: usize = 2;
 pub(crate) const LANGUAGE_MAX_CHARS: usize = 30;
 
@@ -336,7 +336,7 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         id: SettingId::Model,
         entry_id: "A19",
         label: "Model",
-        description: "Sets the model for new sessions and opens the combined model and thinking effort picker.",
+        description: "Sets the model for new sessions.",
         file: SettingFile::Settings,
         json_path: &["model"],
         kind: SettingKind::DynamicEnum,
@@ -582,7 +582,7 @@ pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedS
             }
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
-            OPUS_MODEL_ALIAS_LABEL.to_owned()
+            DEFAULT_MODEL_ALIAS_LABEL.to_owned()
         }
         (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), SettingId::Model) => {
             model_status_label(Some(value), app)
@@ -630,7 +630,7 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
                 if app.available_models.is_empty() {
                     vec![
-                        OPUS_MODEL_ALIAS_LABEL.to_owned(),
+                        DEFAULT_MODEL_ALIAS_LABEL.to_owned(),
                         "Connect to load available models".to_owned(),
                     ]
                 } else {

@@ -126,6 +126,7 @@ fn dynamic_http_mcp_server_status(name: &str, url: &str) -> McpServerStatus {
             url: url.to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -958,6 +959,7 @@ fn thinking_effort_rejects_max_as_persisted_setting() {
 fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_list() {
     let (_dir, mut app) = open_settings_test_app();
     app.available_models = vec![AvailableModel::new("opus", "Opus").supports_effort(true)];
+    store::set_model(&mut app.config.committed_settings_document, Some("opus"));
     select_setting(&mut app, SettingId::ThinkingEffort);
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
@@ -965,7 +967,7 @@ fn model_effort_overlay_uses_persistable_effort_levels_when_runtime_omits_level_
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
 
-    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    let overlay = app.config.thinking_effort_overlay().expect("thinking effort overlay");
     assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
 }
 
@@ -977,6 +979,7 @@ fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
             .supports_effort(true)
             .supported_effort_levels(EffortLevel::ALL.to_vec()),
     ];
+    store::set_model(&mut app.config.committed_settings_document, Some("opus"));
     select_setting(&mut app, SettingId::ThinkingEffort);
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
@@ -984,8 +987,61 @@ fn model_effort_overlay_filters_session_only_max_from_runtime_levels() {
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
 
-    let overlay = app.config.model_and_effort_overlay().expect("model and effort overlay");
+    let overlay = app.config.thinking_effort_overlay().expect("thinking effort overlay");
     assert_eq!(overlay.selected_effort, EffortLevel::XHigh);
+}
+
+#[test]
+fn model_overlay_confirm_persists_model_without_rewriting_effort() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = open_settings_app_in_dir(&dir);
+    app.available_models = vec![
+        AvailableModel::new("fable", "Fable 5").supports_effort(true),
+        AvailableModel::new("opus", "Opus").supports_effort(true),
+    ];
+    store::set_model(&mut app.config.committed_settings_document, Some("fable"));
+    store::set_thinking_effort_level(
+        &mut app.config.committed_settings_document,
+        EffortLevel::High,
+    )
+    .expect("high is persistable");
+
+    select_setting(&mut app, SettingId::Model);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(app.config.model_overlay().is_some());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let saved = read_json_file(&path);
+    assert_eq!(json_at(&saved, &["model"]), Some(&Value::String("opus".to_owned())));
+    assert_eq!(json_at(&saved, &["effortLevel"]), Some(&Value::String("high".to_owned())));
+    assert_eq!(app.config.thinking_effort_effective(), EffortLevel::High);
+    assert!(app.config.overlay.is_none());
+}
+
+#[test]
+fn thinking_effort_overlay_confirm_persists_effort_without_rewriting_model() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude").join("settings.json");
+    let mut app = open_settings_app_in_dir(&dir);
+    app.available_models = vec![
+        AvailableModel::new("fable", "Fable 5")
+            .supports_effort(true)
+            .supported_effort_levels(EffortLevel::PERSISTABLE_SETTINGS.to_vec()),
+    ];
+    store::set_model(&mut app.config.committed_settings_document, Some("fable"));
+
+    select_setting(&mut app, SettingId::ThinkingEffort);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert!(app.config.thinking_effort_overlay().is_some());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let saved = read_json_file(&path);
+    assert_eq!(json_at(&saved, &["model"]), Some(&Value::String("fable".to_owned())));
+    assert_eq!(json_at(&saved, &["effortLevel"]), Some(&Value::String("high".to_owned())));
+    assert!(app.config.overlay.is_none());
 }
 
 #[test]
@@ -1058,7 +1114,20 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
 
     assert_eq!(resolved.validation, SettingValidation::UnavailableOption);
-    assert_eq!(setting_display_value(&app, setting_spec(SettingId::Model), &resolved), "Opus");
+    assert_eq!(setting_display_value(&app, setting_spec(SettingId::Model), &resolved), "Fable 5");
+}
+
+#[test]
+fn resolved_model_accepts_runtime_alias_resolved_model_id() {
+    let mut app = App::test_default();
+    app.available_models =
+        vec![AvailableModel::new("fable", "Fable 5").resolved_model("claude-fable-5")];
+    store::set_model(&mut app.config.committed_settings_document, Some("claude-fable-5"));
+
+    let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
+
+    assert_eq!(resolved.validation, SettingValidation::Valid);
+    assert_eq!(setting_display_value(&app, setting_spec(SettingId::Model), &resolved), "Fable 5");
 }
 
 #[test]
@@ -1507,6 +1576,7 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
             args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
             env: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             always_load: None,
         }),
         scope: Some("project".to_owned()),
@@ -1898,6 +1968,7 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
                 url: "https://search.example.test/mcp".to_owned(),
                 headers: std::collections::BTreeMap::new(),
                 timeout: None,
+                request_timeout_ms: None,
                 tools: Vec::new(),
                 always_load: None,
             }),
@@ -1909,6 +1980,7 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
                 url: "https://example.test/mcp".to_owned(),
                 headers: keep_headers.clone(),
                 timeout: Some(5_000),
+                request_timeout_ms: Some(30_000),
                 tools: vec![crate::agent::model::McpServerToolPolicy {
                     name: "search".to_owned(),
                     permission_policy: Some(
@@ -1945,6 +2017,7 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
                 org_max_permission: Some(crate::agent::types::McpServerOrgMaxPermission::Ask),
             }],
             timeout: Some(5_000),
+            request_timeout_ms: Some(30_000),
             always_load: Some(true),
         })
     );
@@ -1998,6 +2071,7 @@ fn dynamic_mcp_config_remove_waits_for_snapshot_when_sdk_result_does_not_name_se
             url: "https://search.example.test/mcp".to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -2045,6 +2119,7 @@ fn dynamic_mcp_config_remove_fails_when_confirming_snapshot_still_contains_serve
             url: "https://search.example.test/mcp".to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -2084,6 +2159,7 @@ fn dynamic_mcp_config_remove_succeeds_when_confirming_snapshot_proves_absence() 
                 url: "https://search.example.test/mcp".to_owned(),
                 headers: BTreeMap::new(),
                 timeout: None,
+                request_timeout_ms: None,
                 tools: Vec::new(),
                 always_load: None,
             }),
@@ -2095,6 +2171,7 @@ fn dynamic_mcp_config_remove_succeeds_when_confirming_snapshot_proves_absence() 
                 url: "https://example.test/mcp".to_owned(),
                 headers: BTreeMap::new(),
                 timeout: None,
+                request_timeout_ms: None,
                 tools: Vec::new(),
                 always_load: None,
             }),
@@ -2107,6 +2184,7 @@ fn dynamic_mcp_config_remove_succeeds_when_confirming_snapshot_proves_absence() 
             url: "https://example.test/mcp".to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -2155,6 +2233,7 @@ fn removed_config_guard_stops_suppressing_when_confirming_snapshot_still_contain
             url: "https://search.example.test/mcp".to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -2193,6 +2272,7 @@ fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
             url: "https://search.example.test/mcp".to_owned(),
             headers: BTreeMap::new(),
             timeout: None,
+            request_timeout_ms: None,
             tools: Vec::new(),
             always_load: None,
         }),
@@ -2244,6 +2324,7 @@ fn dynamic_mcp_config_remove_refuses_to_drop_unrepresentable_dynamic_servers() {
                 url: "https://search.example.test/mcp".to_owned(),
                 headers: BTreeMap::new(),
                 timeout: None,
+                request_timeout_ms: None,
                 tools: Vec::new(),
                 always_load: None,
             }),

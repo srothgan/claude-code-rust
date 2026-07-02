@@ -194,33 +194,51 @@ fn dynamic_mcp_server_config_for_set_servers(
     };
 
     match config {
-        model::McpServerStatusConfig::Stdio { command, args, env, timeout, always_load } => {
-            Ok(types::McpServerConfig::Stdio {
-                command: command.clone(),
-                args: args.clone(),
-                env: env.clone(),
-                timeout: *timeout,
-                always_load: *always_load,
-            })
-        }
-        model::McpServerStatusConfig::Sse { url, headers, tools, timeout, always_load } => {
-            Ok(types::McpServerConfig::Sse {
-                url: url.clone(),
-                headers: headers.clone(),
-                tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
-                timeout: *timeout,
-                always_load: *always_load,
-            })
-        }
-        model::McpServerStatusConfig::Http { url, headers, tools, timeout, always_load } => {
-            Ok(types::McpServerConfig::Http {
-                url: url.clone(),
-                headers: headers.clone(),
-                tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
-                timeout: *timeout,
-                always_load: *always_load,
-            })
-        }
+        model::McpServerStatusConfig::Stdio {
+            command,
+            args,
+            env,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => Ok(types::McpServerConfig::Stdio {
+            command: command.clone(),
+            args: args.clone(),
+            env: env.clone(),
+            timeout: *timeout,
+            request_timeout_ms: *request_timeout_ms,
+            always_load: *always_load,
+        }),
+        model::McpServerStatusConfig::Sse {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => Ok(types::McpServerConfig::Sse {
+            url: url.clone(),
+            headers: headers.clone(),
+            tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
+            timeout: *timeout,
+            request_timeout_ms: *request_timeout_ms,
+            always_load: *always_load,
+        }),
+        model::McpServerStatusConfig::Http {
+            url,
+            headers,
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+        } => Ok(types::McpServerConfig::Http {
+            url: url.clone(),
+            headers: headers.clone(),
+            tools: tools.iter().map(dynamic_mcp_tool_policy_for_set_servers).collect(),
+            timeout: *timeout,
+            request_timeout_ms: *request_timeout_ms,
+            always_load: *always_load,
+        }),
         model::McpServerStatusConfig::Sdk { .. } => Err(format!(
             "Cannot safely preserve dynamic MCP server {} because SDK-server instances cannot be represented by the Rust bridge.",
             server.name

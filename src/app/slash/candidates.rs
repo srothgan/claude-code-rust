@@ -148,13 +148,20 @@ pub(super) fn detect_slash_at_cursor(
 }
 
 fn advertised_commands(app: &App) -> Vec<String> {
-    app.available_commands.iter().map(|cmd| normalize_slash_name(&cmd.name)).collect()
+    app.available_commands
+        .iter()
+        .map(|cmd| normalize_slash_name(&cmd.name))
+        .filter(|name| command_spec(name).is_none())
+        .collect()
 }
 
 pub(super) fn find_advertised_command<'a>(
     app: &'a App,
     command_name: &str,
 ) -> Option<&'a crate::agent::model::AvailableCommand> {
+    if command_spec(command_name).is_some() {
+        return None;
+    }
     app.available_commands.iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
 }
 
@@ -200,6 +207,9 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
 
     for cmd in &app.available_commands {
         let name = normalize_slash_name(&cmd.name);
+        if command_spec(&name).is_some() {
+            continue;
+        }
         by_name.entry(name).or_insert_with(|| cmd.description.clone());
     }
 

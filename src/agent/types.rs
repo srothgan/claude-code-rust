@@ -102,6 +102,7 @@ pub enum EffortLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
+    pub resolved_model: Option<String>,
     pub display_name: String,
     pub description: Option<String>,
     pub supports_effort: bool,
@@ -825,6 +826,8 @@ pub enum McpServerConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        request_timeout_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         always_load: Option<bool>,
     },
     Sse {
@@ -836,6 +839,8 @@ pub enum McpServerConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        request_timeout_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         always_load: Option<bool>,
     },
     Http {
@@ -846,6 +851,8 @@ pub enum McpServerConfig {
         tools: Vec<McpServerToolPolicy>,
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_timeout_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         always_load: Option<bool>,
     },
@@ -861,6 +868,7 @@ pub enum McpServerStatusConfig {
         #[serde(default)]
         env: BTreeMap<String, String>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Sse {
@@ -870,6 +878,7 @@ pub enum McpServerStatusConfig {
         #[serde(default)]
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Http {
@@ -879,6 +888,7 @@ pub enum McpServerStatusConfig {
         #[serde(default)]
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
+        request_timeout_ms: Option<u64>,
         always_load: Option<bool>,
     },
     Sdk {
@@ -1121,17 +1131,25 @@ mod tests {
                     }
                 ],
                 "timeout": 5000,
+                "request_timeout_ms": 30000,
                 "always_load": true
             },
             "tools": []
         }))
         .expect("deserialize MCP server status");
 
-        let Some(McpServerStatusConfig::Http { tools, timeout, always_load, .. }) = server.config
+        let Some(McpServerStatusConfig::Http {
+            tools,
+            timeout,
+            request_timeout_ms,
+            always_load,
+            ..
+        }) = server.config
         else {
             panic!("expected http MCP config");
         };
         assert_eq!(timeout, Some(5000));
+        assert_eq!(request_timeout_ms, Some(30000));
         assert_eq!(always_load, Some(true));
         assert_eq!(tools.len(), 3);
         assert_eq!(tools[0].permission_policy, Some(McpServerToolPermissionPolicy::Ask));

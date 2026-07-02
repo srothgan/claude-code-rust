@@ -13,6 +13,9 @@ on:
       - ".github/workflows/agent-sdk.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check agent-sdk
