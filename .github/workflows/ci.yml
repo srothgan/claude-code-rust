@@ -90,3 +90,45 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check lockfile
         run: cargo fetch --locked
+
+  npm-package-layout:
+    name: npm Package Layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-sdk/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install agent-sdk dependencies
+        run: npm ci --prefix agent-sdk
+
+      - name: Build agent-sdk bridge
+        run: npm --prefix agent-sdk run build
+
+      - name: Generate mock npm packages
+        run: node scripts/generate-npm-packages.mjs --mock-binaries
+
+      - name: Verify npm package layout
+        run: node scripts/verify-npm-packages.mjs
+
+      - name: Smoke-test packed npm install
+        run: node scripts/smoke-npm-package-install.mjs
+
+      - name: Upload package layout artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package-layout
+          path: |
+            dist-npm/manifests/*.json
+            dist-pack/*.tgz
+          if-no-files-found: warn
