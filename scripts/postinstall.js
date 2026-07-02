@@ -17,6 +17,7 @@ const TARGETS = {
 const MAX_REDIRECTS = 5;
 const BRIDGE_RUNTIME_EXE =
   process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
+const BRIDGE_RUNTIME_VERSION_MARKER = ".bridge-node-version";
 
 function getTargetInfo() {
   return TARGETS[`${process.platform}:${process.arch}`];
@@ -62,6 +63,7 @@ async function downloadFile(url, outPath, redirects = 0) {
 function installRenamedBridgeRuntime(installDir) {
   const sourcePath = process.execPath;
   const runtimePath = path.join(installDir, BRIDGE_RUNTIME_EXE);
+  const markerPath = path.join(installDir, BRIDGE_RUNTIME_VERSION_MARKER);
 
   try {
     if (!sourcePath || !fs.existsSync(sourcePath)) {
@@ -88,10 +90,15 @@ function installRenamedBridgeRuntime(installDir) {
       );
     }
 
+    // Record the copied runtime's version so the `claude-rs` launcher can
+    // detect a stale copy after the user upgrades Node and refresh it.
+    fs.writeFileSync(markerPath, `${version}\n`);
+
     console.log(`Installed renamed Agent SDK bridge runtime ${BRIDGE_RUNTIME_EXE} (${version})`);
   } catch (error) {
     try {
       fs.rmSync(runtimePath, { force: true });
+      fs.rmSync(markerPath, { force: true });
     } catch {
       // Best-effort cleanup only; the Rust binary can still fall back to `node`.
     }
@@ -122,8 +129,14 @@ async function main() {
   const tempPath = `${binaryPath}.tmp`;
 
   fs.mkdirSync(installDir, { recursive: true });
-  await downloadFile(url, tempPath);
-  fs.renameSync(tempPath, binaryPath);
+  fs.rmSync(tempPath, { force: true });
+  try {
+    await downloadFile(url, tempPath);
+    fs.renameSync(tempPath, binaryPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
 
   if (process.platform !== "win32") {
     fs.chmodSync(binaryPath, 0o755);
