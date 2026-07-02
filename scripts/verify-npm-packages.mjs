@@ -15,6 +15,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
+const npmCliPath = resolveNpmCliPath();
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -182,49 +183,68 @@ function collectFiles(root, currentDir, files) {
 
 function packAndVerify(packageDir, context, allowedFile) {
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-npm-pack-cache-"));
-  const npmArgs = ["pack", ".", "--dry-run", "--json", "--cache", cacheDir];
-  const command = process.platform === "win32" ? "cmd.exe" : "npm";
-  const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npm.cmd", ...npmArgs] : npmArgs;
-  const output = execFileSync(
-    command,
-    commandArgs,
-    {
-      cwd: packageDir,
-      encoding: "utf8",
-      windowsHide: true
-    }
-  );
+  try {
+    const output = runNpm(["pack", ".", "--dry-run", "--json", "--cache", cacheDir], packageDir);
 
-  const parsed = JSON.parse(output);
-  const [packResult] = parsed;
-  if (!packResult) {
-    fail(`${context} npm pack returned no package metadata`);
-    return { files: [] };
+    const parsed = JSON.parse(output);
+    const [packResult] = parsed;
+    if (!packResult) {
+      fail(`${context} npm pack returned no package metadata`);
+      return { files: [] };
+    }
+
+    const files = packResult.files
+      .map((file) => ({
+        path: normalizePath(file.path),
+        size: file.size,
+        mode: file.mode
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+
+    expectNoForbiddenFiles(
+      files.map((file) => file.path),
+      `${context} packed tarball`
+    );
+
+    for (const file of files) {
+      if (!allowedFile(file.path)) {
+        fail(`${context} packed tarball contains unexpected file: ${file.path}`);
+      }
+    }
+
+    return {
+      filename: packResult.filename,
+      files
+    };
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
+function runNpm(args, cwd) {
+  return execFileSync(process.execPath, [npmCliPath, ...args], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true
+  });
+}
+
+function resolveNpmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    path.resolve(path.dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
   }
 
-  const files = packResult.files
-    .map((file) => ({
-      path: normalizePath(file.path),
-      size: file.size,
-      mode: file.mode
-    }))
-    .sort((left, right) => left.path.localeCompare(right.path));
-
-  expectNoForbiddenFiles(
-    files.map((file) => file.path),
-    `${context} packed tarball`
+  throw new Error(
+    "Could not locate npm's CLI entrypoint. Re-run this script with npm_execpath set to npm-cli.js."
   );
-
-  for (const file of files) {
-    if (!allowedFile(file.path)) {
-      fail(`${context} packed tarball contains unexpected file: ${file.path}`);
-    }
-  }
-
-  return {
-    filename: packResult.filename,
-    files
-  };
 }
 
 function writePackageManifest(directory, packageJson, files) {
