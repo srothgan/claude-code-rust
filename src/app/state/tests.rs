@@ -332,9 +332,9 @@ fn push_message_tracked_appends_user_message_and_requests_repaint() {
 
     app.push_message_tracked(user_text_message("hello"));
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::User));
-    let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+    let MessageBlock::Text(text) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected text block");
     };
     assert_eq!(text.text, "hello");
@@ -348,9 +348,12 @@ fn push_message_tracked_preserves_message_order() {
     app.push_message_tracked(user_text_message("first"));
     app.push_message_tracked(system_text_message("second"));
 
-    assert_eq!(app.messages.len(), 2);
-    assert!(matches!(app.messages[0].role, MessageRole::User));
-    assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+    assert_eq!(app.transcript.messages.len(), 2);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+    assert!(matches!(
+        app.transcript.messages[1].role,
+        MessageRole::System(Some(SystemSeverity::Info))
+    ));
 }
 
 #[test]
@@ -364,7 +367,7 @@ fn sync_welcome_snapshot_updates_canonical_welcome_message() {
     app.sync_welcome_snapshot();
     app.sync_welcome_snapshot();
 
-    let MessageBlock::Welcome(welcome) = &app.messages[0].blocks[0] else {
+    let MessageBlock::Welcome(welcome) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.subscription, "Pro");
@@ -382,10 +385,10 @@ fn sync_welcome_snapshot_updates_existing_canonical_welcome_in_place() {
     set_account_subscription(&mut app, "Claude Max");
     app.sync_welcome_snapshot();
 
-    let MessageBlock::Welcome(welcome) = &app.messages[0].blocks[0] else {
+    let MessageBlock::Welcome(welcome) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected welcome block");
     };
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.transcript.messages.len(), 1);
     assert_eq!(welcome.subscription, "Claude Max");
 }
 
@@ -395,13 +398,13 @@ fn push_message_tracked_preserves_user_image_attachment_block() {
 
     app.push_message_tracked(user_text_image_message("see attached", 2));
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::User));
-    let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+    let MessageBlock::Text(text) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected text block");
     };
     assert_eq!(text.text, "see attached");
-    let MessageBlock::ImageAttachment(image) = &app.messages[0].blocks[1] else {
+    let MessageBlock::ImageAttachment(image) = &app.transcript.messages[0].blocks[1] else {
         panic!("expected image attachment block");
     };
     assert_eq!(image.count, 2);
@@ -544,18 +547,18 @@ fn pending_user_dialog_message(request_id: &str) -> ChatMessage {
 #[test]
 fn enforce_render_cache_budget_evicts_lru_block() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
     ];
 
-    let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    let bytes_a = if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("x".repeat(2200))]);
         block.cache.cached_bytes()
     } else {
         0
     };
-    let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+    let bytes_b = if let MessageBlock::Text(block) = &mut app.transcript.messages[1].blocks[0] {
         block.cache.store(vec![Line::from("y".repeat(2200))]);
         let _ = block.cache.get();
         block.cache.cached_bytes()
@@ -570,12 +573,12 @@ fn enforce_render_cache_budget_evicts_lru_block() {
     assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
     assert_eq!(stats.protected_bytes, 0);
 
-    if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] {
         assert_eq!(block.cache.cached_bytes(), 0);
     } else {
         panic!("expected text block");
     }
-    if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+    if let MessageBlock::Text(block) = &app.transcript.messages[1].blocks[0] {
         assert_eq!(block.cache.cached_bytes(), bytes_b);
     } else {
         panic!("expected text block");
@@ -586,13 +589,13 @@ fn enforce_render_cache_budget_evicts_lru_block() {
 fn enforce_render_cache_budget_protects_streaming_tail_message() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.messages = vec![ChatMessage::new(
+    app.transcript.messages = vec![ChatMessage::new(
         MessageRole::Assistant,
         vec![assistant_text_block("streaming tail")],
         None,
     )];
 
-    let before = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    let before = if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("z".repeat(4096))]);
         block.cache.cached_bytes()
     } else {
@@ -604,7 +607,7 @@ fn enforce_render_cache_budget_protects_streaming_tail_message() {
     assert_eq!(stats.evicted_bytes, 0);
     assert_eq!(stats.protected_bytes, before);
 
-    if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] {
         assert_eq!(block.cache.cached_bytes(), before);
     } else {
         panic!("expected text block");
@@ -615,7 +618,7 @@ fn enforce_render_cache_budget_protects_streaming_tail_message() {
 fn enforce_render_cache_budget_excludes_protected_from_budget() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")], None),
         ChatMessage::new(
             MessageRole::Assistant,
@@ -624,13 +627,13 @@ fn enforce_render_cache_budget_excludes_protected_from_budget() {
         ),
     ];
 
-    let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    let bytes_a = if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("x".repeat(2200))]);
         block.cache.cached_bytes()
     } else {
         0
     };
-    let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+    let bytes_b = if let MessageBlock::Text(block) = &mut app.transcript.messages[1].blocks[0] {
         block.cache.store(vec![Line::from("y".repeat(5000))]);
         block.cache.cached_bytes()
     } else {
@@ -649,7 +652,7 @@ fn enforce_render_cache_budget_excludes_protected_from_budget() {
     assert_eq!(stats.evicted_blocks, 0);
     assert_eq!(stats.evicted_bytes, 0);
     // Old message cache intact.
-    if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] {
         assert_eq!(block.cache.cached_bytes(), bytes_a);
     } else {
         panic!("expected text block");
@@ -660,7 +663,7 @@ fn enforce_render_cache_budget_excludes_protected_from_budget() {
 fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old message")], None),
         ChatMessage::new(
             MessageRole::Assistant,
@@ -675,16 +678,17 @@ fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail
     ];
     app.bind_active_turn_assistant(1);
 
-    if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("x".repeat(2000))]);
     }
-    let protected_bytes = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
-        block.cache.store(vec![Line::from("y".repeat(4000))]);
-        block.cache.cached_bytes()
-    } else {
-        0
-    };
-    if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+    let protected_bytes =
+        if let MessageBlock::Text(block) = &mut app.transcript.messages[1].blocks[0] {
+            block.cache.store(vec![Line::from("y".repeat(4000))]);
+            block.cache.cached_bytes()
+        } else {
+            0
+        };
+    if let MessageBlock::Text(block) = &mut app.transcript.messages[2].blocks[0] {
         block.cache.store(vec![Line::from("z".repeat(5000))]);
     }
 
@@ -698,24 +702,24 @@ fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail
 fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
         ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
     ];
 
     // Populate caches: messages 0 and 1 evictable, message 2 protected.
-    if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("x".repeat(3000))]);
     }
-    let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+    let bytes_b = if let MessageBlock::Text(block) = &mut app.transcript.messages[1].blocks[0] {
         block.cache.store(vec![Line::from("y".repeat(3000))]);
         let _ = block.cache.get(); // touch to make more recently accessed
         block.cache.cached_bytes()
     } else {
         0
     };
-    let bytes_c = if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+    let bytes_c = if let MessageBlock::Text(block) = &mut app.transcript.messages[2].blocks[0] {
         block.cache.store(vec![Line::from("z".repeat(5000))]);
         block.cache.cached_bytes()
     } else {
@@ -730,7 +734,7 @@ fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
     assert_eq!(stats.protected_bytes, bytes_c);
     assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
     // Message B should survive (more recent access).
-    if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+    if let MessageBlock::Text(block) = &app.transcript.messages[1].blocks[0] {
         assert_eq!(block.cache.cached_bytes(), bytes_b);
     } else {
         panic!("expected text block");
@@ -741,10 +745,10 @@ fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
 fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
     let mut app = make_test_app();
     app.status = AppStatus::Ready;
-    app.messages =
+    app.transcript.messages =
         vec![ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("done")], None)];
 
-    if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+    if let MessageBlock::Text(block) = &mut app.transcript.messages[0].blocks[0] {
         block.cache.store(vec![Line::from("x".repeat(2000))]);
     }
     app.render_cache_budget.max_bytes = usize::MAX;
@@ -756,7 +760,7 @@ fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
 #[test]
 fn enforce_history_retention_noop_under_budget() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("small message"),
         user_text_message("another message"),
@@ -766,13 +770,13 @@ fn enforce_history_retention_noop_under_budget() {
     let stats = app.enforce_history_retention();
     assert_eq!(stats.dropped_messages, 0);
     assert_eq!(stats.total_dropped_messages, 0);
-    assert!(!app.messages.iter().any(App::is_history_hidden_marker_message));
+    assert!(!app.transcript.messages.iter().any(App::is_history_hidden_marker_message));
 }
 
 #[test]
 fn enforce_history_retention_drops_oldest_and_adds_marker() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("first old message"),
         user_text_message("second old message"),
@@ -782,15 +786,15 @@ fn enforce_history_retention_drops_oldest_and_adds_marker() {
 
     let stats = app.enforce_history_retention();
     assert_eq!(stats.dropped_messages, 3);
-    assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-    assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
-    assert_eq!(app.messages.len(), 2);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
+    assert!(app.transcript.messages.iter().any(App::is_history_hidden_marker_message));
+    assert_eq!(app.transcript.messages.len(), 2);
 }
 
 #[test]
 fn enforce_history_retention_preserves_in_progress_tool_message() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("droppable"),
         assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
@@ -799,7 +803,7 @@ fn enforce_history_retention_preserves_in_progress_tool_message() {
 
     let stats = app.enforce_history_retention();
     assert_eq!(stats.dropped_messages, 1);
-    assert!(app.messages.iter().any(|msg| {
+    assert!(app.transcript.messages.iter().any(|msg| {
         msg.blocks.iter().any(|block| {
             matches!(
                 block,
@@ -813,7 +817,7 @@ fn enforce_history_retention_preserves_in_progress_tool_message() {
 #[test]
 fn enforce_history_retention_preserves_pending_tool_message() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("droppable"),
         assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
@@ -822,7 +826,7 @@ fn enforce_history_retention_preserves_pending_tool_message() {
 
     let stats = app.enforce_history_retention();
     assert_eq!(stats.dropped_messages, 1);
-    assert!(app.messages.iter().any(|msg| {
+    assert!(app.transcript.messages.iter().any(|msg| {
         msg.blocks
             .iter()
             .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
@@ -832,7 +836,7 @@ fn enforce_history_retention_preserves_pending_tool_message() {
 #[test]
 fn enforce_history_retention_preserves_permission_tool_message() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("droppable"),
         assistant_tool_message_with_pending_permission("tool-perm"),
@@ -841,7 +845,7 @@ fn enforce_history_retention_preserves_permission_tool_message() {
 
     let stats = app.enforce_history_retention();
     assert_eq!(stats.dropped_messages, 1);
-    assert!(app.messages.iter().any(|msg| {
+    assert!(app.transcript.messages.iter().any(|msg| {
         msg.blocks
             .iter()
             .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
@@ -851,25 +855,25 @@ fn enforce_history_retention_preserves_permission_tool_message() {
 #[test]
 fn enforce_history_retention_preserves_and_rebuilds_pending_user_dialog() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("droppable"),
         pending_user_dialog_message("dialog-1"),
     ];
     app.index_tool_call("dialog-1".to_owned(), 99, 99);
-    app.pending_interaction_ids = vec!["stale-dialog".to_owned(), "dialog-1".to_owned()];
+    app.turn.pending_interaction_ids = vec!["stale-dialog".to_owned(), "dialog-1".to_owned()];
     app.history_retention.max_bytes = 1;
 
     let stats = app.enforce_history_retention();
 
     assert_eq!(stats.dropped_messages, 1);
     assert_eq!(app.lookup_tool_call("dialog-1"), Some((2, 0)));
-    assert_eq!(app.pending_interaction_ids, vec!["dialog-1".to_owned()]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["dialog-1".to_owned()]);
     let Some((msg_idx, block_idx)) = app.lookup_tool_call("dialog-1") else {
         panic!("expected rebuilt dialog index");
     };
     let Some(MessageBlock::UserDialog(dialog)) =
-        app.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
+        app.transcript.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
     else {
         panic!("expected user dialog block");
     };
@@ -880,7 +884,7 @@ fn enforce_history_retention_preserves_and_rebuilds_pending_user_dialog() {
 #[test]
 fn enforce_history_retention_rebuilds_tool_index_after_prune() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("drop this"),
         assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
@@ -891,18 +895,17 @@ fn enforce_history_retention_rebuilds_tool_index_after_prune() {
 
     let _ = app.enforce_history_retention();
     assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
-    assert_eq!(app.terminal_tool_calls.len(), 1);
-    assert_eq!(app.terminal_tool_call_membership.len(), 1);
-    assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
-    assert_eq!(app.terminal_tool_calls[0].msg_idx, 2);
-    assert_eq!(app.terminal_tool_calls[0].block_idx, 0);
+    assert_eq!(app.terminal_tool_calls().len(), 1);
+    assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
+    assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
+    assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
 }
 
 #[test]
 fn enforce_history_retention_preserves_active_turn_assistant_message() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("drop this"),
         ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
@@ -914,14 +917,14 @@ fn enforce_history_retention_preserves_active_turn_assistant_message() {
 
     assert_eq!(stats.dropped_messages, 1);
     assert_eq!(app.active_turn_assistant_idx(), Some(2));
-    assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+    assert!(matches!(app.transcript.messages[2].role, MessageRole::Assistant));
 }
 
 #[test]
 fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.messages = vec![
+    app.transcript.messages = vec![
         user_text_message("drop this"),
         ChatMessage::new(
             MessageRole::Assistant,
@@ -930,20 +933,20 @@ fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
         ),
     ];
     app.bind_active_turn_assistant(1);
-    app.history_retention.max_bytes = App::measure_message_bytes(&app.messages[1]);
+    app.history_retention.max_bytes = App::measure_message_bytes(&app.transcript.messages[1]);
 
     let stats = app.enforce_history_retention();
 
     assert_eq!(stats.dropped_messages, 1);
     assert_eq!(app.active_turn_assistant_idx(), Some(1));
-    assert!(App::is_history_hidden_marker_message(&app.messages[0]));
-    assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+    assert!(App::is_history_hidden_marker_message(&app.transcript.messages[0]));
+    assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
 }
 
 #[test]
 fn enforce_history_retention_keeps_single_marker_on_repeat() {
     let mut app = make_test_app();
-    app.messages = vec![
+    app.transcript.messages = vec![
         ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
         user_text_message("drop me"),
     ];
@@ -951,8 +954,12 @@ fn enforce_history_retention_keeps_single_marker_on_repeat() {
 
     let first = app.enforce_history_retention();
     let second = app.enforce_history_retention();
-    let marker_count =
-        app.messages.iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+    let marker_count = app
+        .transcript
+        .messages
+        .iter()
+        .filter(|msg| App::is_history_hidden_marker_message(msg))
+        .count();
 
     assert_eq!(first.dropped_messages, 1);
     assert_eq!(second.dropped_messages, 0);
@@ -1021,16 +1028,16 @@ fn index_unicode_id() {
 fn active_task_insert_remove() {
     let mut app = make_test_app();
     app.insert_active_task("task-1".into());
-    assert!(app.active_task_ids.contains("task-1"));
+    assert!(app.turn.active_task_ids.contains("task-1"));
     app.remove_active_task("task-1");
-    assert!(!app.active_task_ids.contains("task-1"));
+    assert!(!app.turn.active_task_ids.contains("task-1"));
 }
 
 #[test]
 fn remove_nonexistent_task_is_noop() {
     let mut app = make_test_app();
     app.remove_active_task("does-not-exist");
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 // active_task_ids
@@ -1041,9 +1048,9 @@ fn active_task_insert_duplicate() {
     let mut app = make_test_app();
     app.insert_active_task("task-1".into());
     app.insert_active_task("task-1".into());
-    assert_eq!(app.active_task_ids.len(), 1);
+    assert_eq!(app.turn.active_task_ids.len(), 1);
     app.remove_active_task("task-1");
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 /// Insert many tasks, remove in different order.
@@ -1053,12 +1060,12 @@ fn active_task_insert_many_remove_out_of_order() {
     for i in 0..100 {
         app.insert_active_task(format!("task-{i}"));
     }
-    assert_eq!(app.active_task_ids.len(), 100);
+    assert_eq!(app.turn.active_task_ids.len(), 100);
     // Remove in reverse order
     for i in (0..100).rev() {
         app.remove_active_task(&format!("task-{i}"));
     }
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 /// Mixed insert/remove interleaving.
@@ -1069,10 +1076,10 @@ fn active_task_interleaved_insert_remove() {
     app.insert_active_task("b".into());
     app.remove_active_task("a");
     app.insert_active_task("c".into());
-    assert!(!app.active_task_ids.contains("a"));
-    assert!(app.active_task_ids.contains("b"));
-    assert!(app.active_task_ids.contains("c"));
-    assert_eq!(app.active_task_ids.len(), 2);
+    assert!(!app.turn.active_task_ids.contains("a"));
+    assert!(app.turn.active_task_ids.contains("b"));
+    assert!(app.turn.active_task_ids.contains("c"));
+    assert_eq!(app.turn.active_task_ids.len(), 2);
 }
 
 /// Remove from empty set multiple times - no panic.
@@ -1082,7 +1089,7 @@ fn active_task_remove_from_empty_repeatedly() {
     for i in 0..100 {
         app.remove_active_task(&format!("ghost-{i}"));
     }
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
@@ -1092,15 +1099,15 @@ fn active_task_remove_from_empty_repeatedly() {
 fn clear_tool_scope_tracking_also_clears_active_task_ids() {
     let mut app = make_test_app();
     app.insert_active_task("task-leaked".into());
-    assert!(!app.active_task_ids.is_empty());
+    assert!(!app.turn.active_task_ids.is_empty());
     app.clear_tool_scope_tracking();
-    assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
+    assert!(app.turn.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
 }
 
 #[test]
 fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
     let mut app = make_test_app();
-    app.messages.push(assistant_bash_tool_message(
+    app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
         model::ToolCallStatus::InProgress,
         "term-1",
@@ -1111,9 +1118,8 @@ fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
     let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
     assert_eq!(changed, 1);
-    assert!(app.terminal_tool_calls.is_empty());
-    assert!(app.terminal_tool_call_membership.is_empty());
-    let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+    assert!(app.terminal_tool_calls().is_empty());
+    let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected tool call");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Completed);
@@ -1123,8 +1129,10 @@ fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
 #[test]
 fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
     let mut app = make_test_app();
-    app.messages.push(user_text_message("before"));
-    app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+    app.transcript.messages.push(user_text_message("before"));
+    app.transcript
+        .messages
+        .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
     app.index_tool_call("tool-1".to_owned(), 1, 0);
 
     let removed = app.remove_message_tracked(1);
@@ -1136,7 +1144,9 @@ fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
 #[test]
 fn remove_message_tracked_prunes_tool_scope_entries() {
     let mut app = make_test_app();
-    app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+    app.transcript
+        .messages
+        .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
     app.index_tool_call("tool-1".to_owned(), 0, 0);
     app.register_tool_call_scope(
         "tool-1".to_owned(),
@@ -1152,28 +1162,27 @@ fn remove_message_tracked_prunes_tool_scope_entries() {
 #[test]
 fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
     let mut app = make_test_app();
-    app.messages.push(assistant_bash_tool_message(
+    app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
         model::ToolCallStatus::InProgress,
         "term-1",
     ));
     app.index_tool_call("bash-1".to_owned(), 0, 0);
     app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-    app.pending_interaction_ids.push("bash-1".into());
+    app.turn.pending_interaction_ids.push("bash-1".into());
 
     app.clear_messages_tracked();
 
-    assert!(app.messages.is_empty());
-    assert!(app.tool_call_index.is_empty());
-    assert!(app.terminal_tool_calls.is_empty());
-    assert!(app.terminal_tool_call_membership.is_empty());
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.transcript.messages.is_empty());
+    assert!(app.transcript.tool_call_index.is_empty());
+    assert!(app.terminal_tool_calls().is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
 }
 
 #[test]
 fn rebuild_tool_indices_skips_completed_terminal_refs() {
     let mut app = make_test_app();
-    app.messages.push(assistant_bash_tool_message(
+    app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
         model::ToolCallStatus::Completed,
         "term-1",
@@ -1183,8 +1192,7 @@ fn rebuild_tool_indices_skips_completed_terminal_refs() {
 
     app.rebuild_tool_indices_and_terminal_refs();
 
-    assert!(app.terminal_tool_calls.is_empty());
-    assert!(app.terminal_tool_call_membership.is_empty());
+    assert!(app.terminal_tool_calls().is_empty());
 }
 
 // IncrementalMarkdown
@@ -1313,7 +1321,7 @@ fn incr_streaming_simulation() {
 
 fn focus_test_app_with_available_targets() -> App {
     let mut app = make_test_app();
-    app.pending_interaction_ids.push("perm-1".into());
+    app.turn.pending_interaction_ids.push("perm-1".into());
     app.slash = Some(SlashState {
         trigger_row: 0,
         trigger_col: 0,

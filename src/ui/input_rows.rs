@@ -25,12 +25,23 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         )));
     }
 
-    if app.pending_cancel_origin.is_some() {
+    if app.turn.pending_cancel_origin.is_some() {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
         rows.push(Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled(
                 "Cancelling current turn... draft will auto-submit when ready.",
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+
+    if app.turn.is_compacting {
+        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        rows.push(Line::from(vec![
+            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+            Span::styled(
+                "Compacting session... you can draft, submit is paused.",
                 Style::default().fg(theme::DIM),
             ),
         ]));
@@ -67,7 +78,8 @@ pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
         }
         AppStatus::CommandPending => {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-            let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
+            let label =
+                app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
                 Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
@@ -112,13 +124,25 @@ mod tests {
     #[test]
     fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
         let mut app = App::test_default();
-        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
         app.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Cancelling current turn"));
         assert!(line_text(&rows[1]).contains("Suggestion: Write tests"));
+    }
+
+    #[test]
+    fn build_composer_hint_rows_shows_compaction_draft_hint() {
+        let mut app = App::test_default();
+        app.turn.is_compacting = true;
+
+        let rows = build_composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("Compacting session"));
+        assert!(line_text(&rows[0]).contains("you can draft"));
     }
 
     #[test]
@@ -140,7 +164,7 @@ mod tests {
     fn prompt_suggestion_hint_requires_input_focus() {
         let mut app = App::test_default();
         app.prompt_suggestion = Some("Write tests".to_owned());
-        app.pending_interaction_ids.push("perm-1".to_owned());
+        app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
         let rows = build_composer_hint_rows(&app);
@@ -163,7 +187,7 @@ mod tests {
     fn blocked_input_lines_shows_pending_command_label() {
         let mut app = App::test_default();
         app.status = AppStatus::CommandPending;
-        app.pending_command_label = Some("Switching model...".to_owned());
+        app.turn.pending_command_label = Some("Switching model...".to_owned());
 
         let rows = blocked_input_lines(&app);
 

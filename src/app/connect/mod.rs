@@ -17,7 +17,7 @@ use super::config::ConfigState;
 use super::plugins::PluginsState;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
-    SessionPickerState,
+    SessionPickerState, StartupState, Transcript,
 };
 use super::trust;
 use super::view::SurfaceMode;
@@ -29,7 +29,7 @@ use crate::agent::model;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
 use crate::{Cli, Command};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -130,14 +130,12 @@ pub fn create_app(cli: &Cli) -> App {
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        messages: vec![super::ChatMessage::welcome(
+        transcript: Transcript::new(vec![super::ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             &cwd_display,
             "-",
-        )],
-        message_retained_bytes: Vec::new(),
-        retained_history_bytes: 0,
+        )]),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
@@ -145,8 +143,7 @@ pub fn create_app(cli: &Cli) -> App {
             &cli.command,
             Some(Command::Resume { session_id: Some(_) })
         ),
-        pending_command_label: None,
-        pending_command_ack: None,
+        turn: super::state::TurnState::default(),
         should_quit: false,
         exit_error: None,
         session_id: None,
@@ -159,22 +156,14 @@ pub fn create_app(cli: &Cli) -> App {
         mode: None,
         config_options: std::collections::BTreeMap::new(),
         login_hint: None,
-        pending_compact_clear: false,
-        pending_interaction_ids: Vec::new(),
-        cancelled_turn_pending_hint: false,
-        pending_cancel_origin: None,
-        pending_auto_submit_after_cancel: false,
         event_tx,
         event_rx,
         file_index_event_tx,
         file_index_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
-        active_turn_assistant_message_idx: None,
-        active_task_ids: HashSet::new(),
         tool_call_scopes: HashMap::new(),
         terminals,
-        tool_call_index: HashMap::new(),
         tasks: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
@@ -193,11 +182,7 @@ pub fn create_app(cli: &Cli) -> App {
         slash: None,
         subagent: None,
         pending_submit: None,
-        paste_burst: super::paste_burst::PasteBurstDetector::new(),
-        pending_paste_text: String::new(),
-        pending_paste_session: None,
-        active_paste_session: None,
-        next_paste_session_id: 1,
+        paste: super::state::PasteState::default(),
         pending_images: Vec::new(),
         git_context: super::git_context::GitContextState::default(),
         update_notice: None,
@@ -208,42 +193,24 @@ pub fn create_app(cli: &Cli) -> App {
         runtime_session_state: None,
         prompt_suggestion: None,
         last_rate_limit_update: None,
-        turn_notice_refs: Vec::new(),
-        is_compacting: false,
         account_info: None,
-        terminal_tool_calls: Vec::new(),
-        terminal_tool_call_membership: HashSet::new(),
         notifications: super::notify::NotificationManager::new(),
         perf,
         render_cache_budget: RenderCacheBudget::default(),
-        render_cache_slots: Vec::new(),
-        render_cache_total_bytes: 0,
-        render_cache_protected_bytes: 0,
-        render_cache_evictable: std::collections::BTreeSet::new(),
-        render_cache_tail_msg_idx: None,
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
         last_chat_render_trace_state: None,
-        startup_connection_requested: false,
-        connection_started: false,
-        startup_bridge_script: cli.bridge_script.clone(),
-        startup_resume_id: match &cli.command {
-            Some(Command::Resume { session_id: Some(id) }) => Some(id.clone()),
-            _ => None,
-        },
-        startup_resume_requested: matches!(
-            &cli.command,
-            Some(Command::Resume { session_id: Some(_) })
+        startup: StartupState::new(
+            cli.bridge_script.clone(),
+            match &cli.command {
+                Some(Command::Resume { session_id: Some(id) }) => Some(id.clone()),
+                _ => None,
+            },
+            matches!(&cli.command, Some(Command::Resume { session_id: None })),
         ),
-        startup_session_picker_requested: matches!(
-            &cli.command,
-            Some(Command::Resume { session_id: None })
-        ),
-        startup_recent_sessions_loaded: false,
-        startup_session_picker_resolved: false,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -267,17 +234,16 @@ pub fn create_app(cli: &Cli) -> App {
 
 /// Spawn the background bridge task.
 pub fn start_connection(app: &mut App) {
-    if !app.startup_connection_requested || app.connection_started {
+    if !app.startup.mark_connection_started() {
         return;
     }
 
-    app.connection_started = true;
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
         cwd_raw: app.cwd_raw.clone(),
-        bridge_script: app.startup_bridge_script.clone(),
-        resume_id: app.startup_resume_id.clone(),
-        resume_requested: app.startup_resume_requested,
+        bridge_script: app.startup.bridge_script().cloned(),
+        resume_id: app.startup.resume_id().map(str::to_owned),
+        resume_requested: app.startup.resume_requested(),
         session_launch_settings: session_start::session_launch_settings_for_reason(
             app,
             session_start::SessionStartReason::Startup,

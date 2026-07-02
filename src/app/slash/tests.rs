@@ -24,7 +24,7 @@ fn unsupported_command_is_handled_locally() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/definitely-unknown");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -147,7 +147,7 @@ fn config_with_extra_args_returns_usage_message() {
     let consumed = try_handle_submit(&mut app, "/config extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -169,7 +169,7 @@ fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() 
     let settings_path = dir.path().join(".claude").join("settings.local.json");
     let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
     assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -199,7 +199,7 @@ fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
     let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
     assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
     assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -226,7 +226,7 @@ fn one_m_context_status_reports_disabled_folder_local_override() {
     let consumed = try_handle_submit(&mut app, "/1m-context status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -278,7 +278,7 @@ fn opus_version_45_persists_folder_local_override_and_hints_new_session() {
     let settings_path = dir.path().join(".claude").join("settings.local.json");
     let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
     assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-20251101\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -353,7 +353,7 @@ fn opus_version_default_removes_folder_local_override_and_preserves_neighbor_key
     let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
     assert!(!raw.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"));
     assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected success message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -380,7 +380,7 @@ fn opus_version_status_reports_known_folder_local_override() {
     let consumed = try_handle_submit(&mut app, "/opus-version status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -400,7 +400,7 @@ fn opus_version_status_reports_default_when_unset() {
     let consumed = try_handle_submit(&mut app, "/opus-version status");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected status message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -415,7 +415,7 @@ fn opus_version_with_missing_arg_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -430,7 +430,7 @@ fn opus_version_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version 4.7 extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -445,7 +445,7 @@ fn opus_version_with_unknown_arg_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/opus-version 9.9");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -462,7 +462,7 @@ fn opus_version_requires_trusted_project_for_mutation() {
     let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected error message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -510,7 +510,7 @@ fn mcp_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/mcp extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -573,7 +573,7 @@ fn login_rejects_extra_args() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/login somearg");
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     assert!(matches!(last.role, MessageRole::System(_)));
 }
 
@@ -934,7 +934,7 @@ fn docs_without_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -961,7 +961,7 @@ fn docs_models_show_advertised_effort_levels() {
     let consumed = try_handle_submit(&mut app, "/docs models");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -978,7 +978,7 @@ fn docs_commands_reuse_help_rows() {
     let consumed = try_handle_submit(&mut app, "/docs commands");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1008,7 +1008,7 @@ fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     let consumed = try_handle_submit(&mut app, "/docs commands");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1023,7 +1023,7 @@ fn docs_shortcuts_use_live_help_state() {
     let consumed = try_handle_submit(&mut app, "/docs shortcuts");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1039,7 +1039,7 @@ fn docs_with_unknown_topic_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs nope");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1054,7 +1054,7 @@ fn docs_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/docs commands extra");
 
     assert!(consumed);
-    let last = app.messages.last().expect("expected system message");
+    let last = app.transcript.messages.last().expect("expected system message");
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
@@ -1135,9 +1135,9 @@ fn new_session_command_is_rendered_as_user_message() {
 
     let consumed = try_handle_submit(&mut app, "/new-session");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
+    assert!(app.transcript.messages.len() >= 2);
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("expected first message");
     };
     assert!(matches!(first.role, MessageRole::User));
@@ -1152,7 +1152,7 @@ fn resume_with_missing_id_returns_usage() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/resume");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1166,7 +1166,7 @@ fn resume_with_extra_args_returns_usage() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1182,7 +1182,7 @@ fn rewind_with_missing_target_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/rewind");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1205,7 +1205,7 @@ fn rewind_with_cached_target_requires_connection() {
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected selection message");
     };
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
@@ -1232,7 +1232,7 @@ fn rewind_with_cached_target_sends_bridge_command() {
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
 
     assert!(consumed);
-    assert_eq!(app.pending_command_label.as_deref(), Some("Rewinding conversation..."));
+    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Rewinding conversation..."));
     let envelope = rx.try_recv().expect("rewind command");
     let crate::agent::wire::BridgeCommand::Rewind {
         session_id,
@@ -1254,9 +1254,9 @@ fn resume_command_is_rendered_as_user_message() {
 
     let consumed = try_handle_submit(&mut app, "/resume abc-123");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
+    assert!(app.transcript.messages.len() >= 2);
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("expected user message");
     };
     assert!(matches!(first.role, MessageRole::User));
@@ -1309,7 +1309,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching mode..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching mode..."));
 
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
@@ -1325,7 +1325,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected Ready after CurrentModeUpdate ack, got {:?}",
                 app.status
             );
-            assert!(app.pending_command_label.is_none());
+            assert!(app.turn.pending_command_label.is_none());
         })
         .await;
 }
@@ -1350,7 +1350,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
             assert_eq!(
                 app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("old-model")
@@ -1376,7 +1376,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("sonnet")
             );
-            assert!(app.pending_command_label.is_none());
+            assert!(app.turn.pending_command_label.is_none());
         })
         .await;
 }
@@ -1398,9 +1398,9 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/effort xhigh");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching effort..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching effort..."));
             assert!(matches!(
-                app.pending_command_ack.as_ref(),
+                app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
                     if option_id == "effortLevel"
             ));
@@ -1484,9 +1484,9 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/agent reviewer");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.pending_command_label.as_deref(), Some("Switching agent..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching agent..."));
             assert!(matches!(
-                app.pending_command_ack.as_ref(),
+                app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
                     if option_id == "agent"
             ));
@@ -1582,7 +1582,7 @@ fn agent_rejects_unknown_when_available_agents_are_populated() {
     assert!(consumed);
     assert!(rx.try_recv().is_err());
     assert!(!matches!(app.status, AppStatus::CommandPending));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1599,7 +1599,7 @@ fn agent_invalid_arguments_return_usage() {
         let consumed = try_handle_submit(&mut app, input);
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected system usage message for {input}");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1618,7 +1618,7 @@ fn effort_invalid_arguments_return_usage() {
         let consumed = try_handle_submit(&mut app, input);
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.transcript.messages.last() else {
             panic!("expected system usage message for {input}");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1643,7 +1643,7 @@ fn effort_rejects_models_without_effort_support() {
 
     assert!(consumed);
     assert!(rx.try_recv().is_err());
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1667,7 +1667,7 @@ async fn new_session_sets_command_pending() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
+            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Starting new session..."));
         })
         .await;
 }
@@ -1678,8 +1678,8 @@ fn compact_without_connection_is_handled_locally() {
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(consumed);
-    assert!(!app.pending_compact_clear);
-    let Some(last) = app.messages.last() else {
+    assert!(!app.turn.pending_compact_clear);
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1698,14 +1698,14 @@ fn compact_with_active_session_sets_compacting_without_success_pending() {
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(!consumed);
-    assert!(!app.pending_compact_clear);
-    assert!(app.is_compacting);
+    assert!(!app.turn.pending_compact_clear);
+    assert!(app.turn.is_compacting);
 }
 
 #[test]
 fn compact_with_args_returns_usage_message() {
     let mut app = App::test_default();
-    app.messages.push(ChatMessage::new(
+    app.transcript.messages.push(ChatMessage::new(
         MessageRole::User,
         vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
         None,
@@ -1713,8 +1713,8 @@ fn compact_with_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/compact now");
     assert!(consumed);
-    assert!(app.messages.len() >= 2);
-    let Some(last) = app.messages.last() else {
+    assert!(app.transcript.messages.len() >= 2);
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1730,7 +1730,7 @@ fn mode_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/mode plan extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     assert!(matches!(last.role, MessageRole::System(_)));
@@ -1746,7 +1746,7 @@ fn model_with_missing_id_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/model");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1761,7 +1761,7 @@ fn model_with_extra_args_returns_usage_message() {
 
     let consumed = try_handle_submit(&mut app, "/model sonnet extra");
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1905,7 +1905,7 @@ fn status_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/status extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1921,7 +1921,7 @@ fn usage_with_extra_args_returns_usage() {
     let consumed = try_handle_submit(&mut app, "/usage extra");
 
     assert!(consumed);
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected usage message");
     };
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {

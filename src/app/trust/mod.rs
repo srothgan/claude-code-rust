@@ -47,9 +47,11 @@ pub fn initialize(app: &mut App) {
             .clone()
             .unwrap_or_else(|| "Trust preferences path is not available".to_owned())
     });
-    app.startup_connection_requested = app.trust.is_trusted();
     if app.trust.is_trusted() {
-        let next_view = if app.startup_session_picker_requested {
+        app.startup.request_connection();
+    }
+    if app.trust.is_trusted() {
+        let next_view = if app.startup.session_picker_requested() {
             SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
         } else {
             SurfaceMode::Chat
@@ -95,8 +97,8 @@ pub fn accept(app: &mut App) -> Result<(), String> {
     app.config.committed_preferences_document = next_document;
     app.trust.status = TrustStatus::Trusted;
     app.trust.last_error = None;
-    app.startup_connection_requested = true;
-    let next_view = if app.startup_session_picker_requested {
+    app.startup.request_connection();
+    let next_view = if app.startup.session_picker_requested() {
         SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
     } else {
         SurfaceMode::Chat

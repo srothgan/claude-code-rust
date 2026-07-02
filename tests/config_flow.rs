@@ -53,14 +53,14 @@ fn config_ignores_paste_until_returning_to_chat() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.input.is_empty());
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
     handle_terminal_event(&mut app, Event::Paste("allowed".into()));
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.pending_paste_text, "allowed");
+    assert_eq!(app.paste.pending_text, "allowed");
 }
 
 #[test]

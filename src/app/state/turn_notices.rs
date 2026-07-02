@@ -25,11 +25,11 @@ pub struct TurnNoticeRef {
 
 impl App {
     pub(crate) fn clear_turn_notice_refs(&mut self) {
-        self.turn_notice_refs.clear();
+        self.turn.notice_refs.clear();
     }
 
     pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
-        for notice_ref in &mut self.turn_notice_refs {
+        for notice_ref in &mut self.turn.notice_refs {
             match &mut notice_ref.location {
                 TurnNoticeLocation::Inline { msg_idx, .. }
                 | TurnNoticeLocation::Standalone { msg_idx }
@@ -43,7 +43,7 @@ impl App {
     }
 
     pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn.notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
                 std::cmp::Ordering::Less => {
@@ -60,7 +60,7 @@ impl App {
         &mut self,
         old_to_new: &[Option<usize>],
     ) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn.notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => {
                 let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {

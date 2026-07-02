@@ -29,14 +29,15 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
     }
     let tool_scope = app.tool_call_scope(&id_str);
-    let previous_status = app.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
-        |block| match block {
-            MessageBlock::ToolCall(tc) => Some(tc.status),
-            _ => None,
-        },
-    );
+    let previous_status =
+        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
+            |block| match block {
+                MessageBlock::ToolCall(tc) => Some(tc.status),
+                _ => None,
+            },
+        );
     let previous_terminal_id =
-        app.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
+        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
             |block| match block {
                 MessageBlock::ToolCall(tc) => tc.terminal_id.clone(),
                 _ => None,
@@ -105,7 +106,7 @@ fn apply_tool_call_update_to_indexed_block(
     let mut detach_terminal = false;
 
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         let mut changed = false;
@@ -382,7 +383,9 @@ fn log_tool_call_update_applied(
 
     let Some(tc) = app
         .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| app.messages.get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|(mi, bi)| {
+            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
+        })
         .and_then(|block| match block {
             MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
             _ => None,
@@ -579,7 +582,9 @@ fn log_command_update_applied(
 ) {
     let Some(tc) = app
         .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| app.messages.get(mi).and_then(|message| message.blocks.get(bi)))
+        .and_then(|(mi, bi)| {
+            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
+        })
         .and_then(|block| match block {
             MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
             _ => None,
@@ -736,7 +741,7 @@ mod tests {
     fn completed_execute_update_detaches_terminal_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -757,21 +762,20 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
         assert_eq!(tc.terminal_id, None);
         assert_eq!(tc.terminal_output.as_deref(), Some("done"));
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
+        assert!(app.terminal_tool_calls().is_empty());
     }
 
     #[test]
     fn repeated_terminal_updates_do_not_duplicate_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -790,16 +794,15 @@ mod tests {
         handle_tool_call_update_session(&mut app, &update);
         handle_tool_call_update_session(&mut app, &update);
 
-        assert_eq!(app.terminal_tool_calls.len(), 1);
-        assert_eq!(app.terminal_tool_call_membership.len(), 1);
-        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
+        assert_eq!(app.terminal_tool_calls().len(), 1);
+        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
     }
 
     #[test]
     fn terminal_update_replaces_stale_subscription_for_same_tool_call() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -818,10 +821,9 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        assert_eq!(app.terminal_tool_calls.len(), 1);
-        assert_eq!(app.terminal_tool_call_membership.len(), 1);
-        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-2");
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        assert_eq!(app.terminal_tool_calls().len(), 1);
+        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-2");
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
@@ -858,7 +860,7 @@ mod tests {
     fn task_metadata_update_is_applied_to_tool_call() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -879,7 +881,7 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(
@@ -896,7 +898,7 @@ mod tests {
     fn task_metadata_update_merges_partial_patches() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -943,7 +945,7 @@ mod tests {
         );
         handle_tool_call_update_session(&mut app, &terminal_update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(
@@ -971,7 +973,7 @@ mod tests {
     fn killed_task_update_clears_active_task_scope() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -990,18 +992,18 @@ mod tests {
 
         handle_tool_call_update_session(&mut app, &update);
 
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Killed);
-        assert!(!app.active_task_ids.contains(tool_id));
+        assert!(!app.turn.active_task_ids.contains(tool_id));
     }
 
     #[test]
     fn completed_tool_update_mutates_canonical_tool_block() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -1023,7 +1025,7 @@ mod tests {
         handle_tool_call_update_session(&mut app, &update);
 
         assert_eq!(app.active_turn_assistant_idx(), Some(0));
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);

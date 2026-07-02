@@ -17,7 +17,10 @@ mod git_runtime;
 mod paste;
 mod repaint;
 mod session_identity;
+mod startup;
 mod tool_tracking;
+mod transcript;
+mod turn;
 mod turn_notices;
 mod welcome;
 
@@ -36,13 +39,17 @@ pub use messages::{
     SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
+pub use paste::PasteState;
 pub use repaint::LayoutInvalidation as InvalidationLevel;
 pub use repaint::{ChatRenderTraceState, LayoutInvalidation};
+pub use startup::StartupState;
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, SubagentPermissionContext, TerminalSnapshotMode,
     ToolCallInfo, is_execute_tool_name,
 };
 pub use tool_tracking::TerminalToolCallRef;
+pub use transcript::Transcript;
+pub use turn::TurnState;
 pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
@@ -61,11 +68,15 @@ mod prelude {
     pub(super) use super::messages::{
         ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, WelcomeBlock,
     };
+    pub(super) use super::paste::PasteState;
     pub(super) use super::render_budget;
     pub(super) use super::repaint::LayoutInvalidation as InvalidationLevel;
     pub(super) use super::repaint::{ChatRenderTraceState, LayoutInvalidation};
+    pub(super) use super::startup::StartupState;
     pub(super) use super::tool_call_info::ToolCallInfo;
     pub(super) use super::tool_tracking::TerminalToolCallRef;
+    pub(super) use super::transcript::Transcript;
+    pub(super) use super::turn::TurnState;
     pub(super) use super::turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
     pub(super) use super::types::{
         AppStatus, CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,

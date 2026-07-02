@@ -12,13 +12,13 @@ fn busy_view_test_app() -> App {
     let mut app = App::test_default();
     app.input.set_text("draft");
     app.pending_submit = Some(app.input.snapshot());
-    app.pending_paste_text = "blocked".to_owned();
-    app.pending_paste_session = Some(PasteSessionState {
+    app.paste.pending_text = "blocked".to_owned();
+    app.paste.pending_session = Some(PasteSessionState {
         id: 1,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(0),
     });
-    app.active_paste_session = Some(PasteSessionState {
+    app.paste.active_session = Some(PasteSessionState {
         id: 2,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(1),
@@ -40,7 +40,7 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.pending_interaction_ids.push("perm-1".to_owned());
+    app.turn.pending_interaction_ids.push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
     app
 }
@@ -58,9 +58,9 @@ fn set_surface_mode_clears_transient_chat_state_but_keeps_draft() {
     assert!(app.mention.is_none());
     assert!(app.slash.is_none());
     assert!(app.subagent.is_none());
-    assert!(app.pending_paste_text.is_empty());
-    assert!(app.pending_paste_session.is_none());
-    assert!(app.active_paste_session.is_none());
+    assert!(app.paste.pending_text.is_empty());
+    assert!(app.paste.pending_session.is_none());
+    assert!(app.paste.active_session.is_none());
     assert!(app.pending_submit.is_none());
     assert!(!app.chat_render.live_region.anchor_valid);
     assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
@@ -74,7 +74,7 @@ fn set_surface_mode_switches_to_config_from_trusted() {
     set_surface_mode(&mut app, SurfaceMode::Fullscreen(FullscreenView::Config));
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn set_surface_mode_same_view_is_noop() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.mention.is_some());
-    assert!(!app.pending_paste_text.is_empty());
+    assert!(!app.paste.pending_text.is_empty());
     assert!(app.pending_submit.is_some());
     assert!(!app.surface_dirty.chat.repaint);
 }

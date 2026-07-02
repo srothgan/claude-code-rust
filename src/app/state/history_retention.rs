@@ -34,7 +34,7 @@ impl super::App {
 
     fn sync_after_message_topology_change(&mut self, start_idx: usize) {
         self.rebuild_tool_indices_and_terminal_refs();
-        if self.messages.is_empty() {
+        if self.transcript.messages.is_empty() {
             return;
         }
         self.invalidate_layout(InvalidationLevel::MessagesFrom(start_idx));
@@ -220,53 +220,59 @@ impl super::App {
     /// Measure the total in-memory byte footprint of all retained messages.
     #[must_use]
     pub fn measure_history_bytes(&self) -> usize {
-        self.messages.iter().map(Self::measure_message_bytes).sum()
+        self.transcript.messages.iter().map(Self::measure_message_bytes).sum()
     }
 
     pub(crate) fn rebuild_history_retention_accounting(&mut self) {
-        self.message_retained_bytes.clear();
-        self.message_retained_bytes.reserve(self.messages.len());
-        self.retained_history_bytes = 0;
+        self.transcript.message_retained_bytes.clear();
+        self.transcript.message_retained_bytes.reserve(self.transcript.messages.len());
+        self.transcript.retained_history_bytes = 0;
 
-        for msg in &self.messages {
+        for msg in &self.transcript.messages {
             let bytes = Self::measure_message_bytes(msg);
-            self.message_retained_bytes.push(bytes);
-            self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+            self.transcript.message_retained_bytes.push(bytes);
+            self.transcript.retained_history_bytes =
+                self.transcript.retained_history_bytes.saturating_add(bytes);
         }
     }
 
     pub(crate) fn ensure_history_retention_accounting(&mut self) {
-        if self.message_retained_bytes.len() != self.messages.len() {
+        if self.transcript.message_retained_bytes.len() != self.transcript.messages.len() {
             self.rebuild_history_retention_accounting();
         }
     }
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
-        let previous_tail = self.messages.len().checked_sub(1);
+        let previous_tail = self.transcript.messages.len().checked_sub(1);
         let bytes = Self::measure_message_bytes(&msg);
-        self.messages.push(msg);
-        self.message_retained_bytes.push(bytes);
-        self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+        self.transcript.messages.push(msg);
+        self.transcript.message_retained_bytes.push(bytes);
+        self.transcript.retained_history_bytes =
+            self.transcript.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
-        self.invalidate_tail_transition(previous_tail, self.messages.len().checked_sub(1));
+        self.invalidate_tail_transition(
+            previous_tail,
+            self.transcript.messages.len().checked_sub(1),
+        );
         self.request_chat_repaint();
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
         self.ensure_history_retention_accounting();
-        let insert_idx = idx.min(self.messages.len());
-        let appended_at_tail = insert_idx == self.messages.len();
+        let insert_idx = idx.min(self.transcript.messages.len());
+        let appended_at_tail = insert_idx == self.transcript.messages.len();
         if !appended_at_tail {
             self.shift_active_turn_assistant_for_insert(insert_idx);
             self.shift_turn_notice_refs_for_insert(insert_idx);
         }
         let bytes = Self::measure_message_bytes(&msg);
-        self.messages.insert(insert_idx, msg);
-        self.message_retained_bytes.insert(insert_idx, bytes);
-        self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+        self.transcript.messages.insert(insert_idx, msg);
+        self.transcript.message_retained_bytes.insert(insert_idx, bytes);
+        self.transcript.retained_history_bytes =
+            self.transcript.retained_history_bytes.saturating_add(bytes);
         self.rebuild_render_cache_accounting();
         if appended_at_tail {
-            let new_tail = self.messages.len().checked_sub(1);
+            let new_tail = self.transcript.messages.len().checked_sub(1);
             self.invalidate_tail_transition(
                 new_tail.and_then(|tail| tail.checked_sub(1)),
                 new_tail,
@@ -279,21 +285,22 @@ impl super::App {
 
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
         self.ensure_history_retention_accounting();
-        let old_len = self.messages.len();
+        let old_len = self.transcript.messages.len();
         if idx >= old_len {
             return None;
         }
         let removed_tail = idx + 1 == old_len;
         self.shift_active_turn_assistant_for_remove(idx);
         self.shift_turn_notice_refs_for_remove(idx);
-        let removed = self.messages.remove(idx);
-        let removed_bytes = self.message_retained_bytes.remove(idx);
-        self.retained_history_bytes = self.retained_history_bytes.saturating_sub(removed_bytes);
+        let removed = self.transcript.messages.remove(idx);
+        let removed_bytes = self.transcript.message_retained_bytes.remove(idx);
+        self.transcript.retained_history_bytes =
+            self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         if removed_tail {
-            self.invalidate_tail_transition(None, self.messages.len().checked_sub(1));
-        } else if !self.messages.is_empty() {
+            self.invalidate_tail_transition(None, self.transcript.messages.len().checked_sub(1));
+        } else if !self.transcript.messages.is_empty() {
             self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
         }
         self.request_chat_repaint();
@@ -301,9 +308,9 @@ impl super::App {
     }
 
     pub(crate) fn clear_messages_tracked(&mut self) {
-        self.messages.clear();
-        self.message_retained_bytes.clear();
-        self.retained_history_bytes = 0;
+        self.transcript.messages.clear();
+        self.transcript.message_retained_bytes.clear();
+        self.transcript.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
         self.rebuild_render_cache_accounting();
@@ -313,33 +320,36 @@ impl super::App {
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
         self.ensure_history_retention_accounting();
-        let Some(msg) = self.messages.get(idx) else {
+        let Some(msg) = self.transcript.messages.get(idx) else {
             return;
         };
         let new_bytes = Self::measure_message_bytes(msg);
-        let Some(old_bytes) = self.message_retained_bytes.get_mut(idx) else {
+        let Some(old_bytes) = self.transcript.message_retained_bytes.get_mut(idx) else {
             self.rebuild_history_retention_accounting();
             return;
         };
-        self.retained_history_bytes =
-            self.retained_history_bytes.saturating_sub(*old_bytes).saturating_add(new_bytes);
+        self.transcript.retained_history_bytes = self
+            .transcript
+            .retained_history_bytes
+            .saturating_sub(*old_bytes)
+            .saturating_add(new_bytes);
         *old_bytes = new_bytes;
     }
 
     pub(crate) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
-        self.tool_call_index.clear();
+        self.transcript.tool_call_index.clear();
         self.clear_terminal_tool_call_tracking();
-        self.active_task_ids.clear();
+        self.turn.active_task_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 match block {
                     MessageBlock::ToolCall(tc) => {
                         let tc = tc.as_mut();
-                        self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
+                        self.transcript.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
                         if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
                             let entry =
                                 super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
@@ -357,7 +367,8 @@ impl super::App {
                         }
                     }
                     MessageBlock::UserDialog(dialog) => {
-                        self.tool_call_index
+                        self.transcript
+                            .tool_call_index
                             .insert(dialog.request_id.clone(), (msg_idx, block_idx));
                         if !dialog.answered {
                             dialog.focused = false;
@@ -368,10 +379,15 @@ impl super::App {
                 }
             }
         }
-        self.terminal_tool_calls = terminal_tool_calls;
-        self.terminal_tool_call_membership = terminal_tool_call_membership;
-        self.tool_call_scopes.retain(|id, _| self.tool_call_index.contains_key(id));
-        for msg in &self.messages {
+        self.transcript.terminal_tool_calls = terminal_tool_calls;
+        self.transcript.terminal_tool_call_membership = terminal_tool_call_membership;
+        self.rebuild_active_task_tracking_from_tool_scopes();
+        self.sync_pending_interaction_focus(pending_interaction_ids);
+    }
+
+    fn rebuild_active_task_tracking_from_tool_scopes(&mut self) {
+        self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
+        for msg in &self.transcript.messages {
             for block in &msg.blocks {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
@@ -384,7 +400,7 @@ impl super::App {
                 }
                 match self.tool_call_scopes.get(&tc.id) {
                     Some(super::ToolCallScope::SubagentRoot) => {
-                        self.active_task_ids.insert(tc.id.clone());
+                        self.turn.active_task_ids.insert(tc.id.clone());
                     }
                     Some(
                         super::ToolCallScope::SubagentChild { .. }
@@ -394,21 +410,26 @@ impl super::App {
                 }
             }
         }
+    }
 
+    fn sync_pending_interaction_focus(&mut self, pending_interaction_ids: Vec<String>) {
         let interaction_set: HashSet<&str> =
             pending_interaction_ids.iter().map(String::as_str).collect();
-        self.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
+        self.turn.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
         for id in pending_interaction_ids {
-            if !self.pending_interaction_ids.iter().any(|existing| existing == &id) {
-                self.pending_interaction_ids.push(id);
+            if !self.turn.pending_interaction_ids.iter().any(|existing| existing == &id) {
+                self.turn.pending_interaction_ids.push(id);
             }
         }
 
-        if let Some(first_id) = self.pending_interaction_ids.first().cloned() {
+        if let Some(first_id) = self.turn.pending_interaction_ids.first().cloned() {
             self.claim_focus_target(super::super::focus::FocusTarget::Permission);
             if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
-                && let Some(block) =
-                    self.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+                && let Some(block) = self
+                    .transcript
+                    .messages
+                    .get_mut(msg_idx)
+                    .and_then(|m| m.blocks.get_mut(block_idx))
             {
                 match block {
                     MessageBlock::ToolCall(tc) => {
@@ -451,7 +472,8 @@ impl super::App {
 
     fn upsert_history_hidden_marker(&mut self) {
         self.ensure_history_retention_accounting();
-        let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
+        let marker_idx =
+            self.transcript.messages.iter().position(Self::is_history_hidden_marker_message);
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
@@ -466,7 +488,7 @@ impl super::App {
 
         if let Some(idx) = marker_idx {
             if let Some(MessageBlock::Text(block)) =
-                self.messages.get_mut(idx).and_then(|m| m.blocks.get_mut(0))
+                self.transcript.messages.get_mut(idx).and_then(|m| m.blocks.get_mut(0))
                 && block.text != marker_text
             {
                 block.text.clone_from(&marker_text);
@@ -480,7 +502,10 @@ impl super::App {
         }
 
         let insert_idx = usize::from(
-            self.messages.first().is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
+            self.transcript
+                .messages
+                .first()
+                .is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
         );
         self.insert_message_tracked(
             insert_idx,
@@ -497,19 +522,20 @@ impl super::App {
         let mut stats = HistoryRetentionStats::default();
         let max_bytes = self.history_retention.max_bytes.max(1);
         let active_turn_owner = self.active_turn_assistant_idx();
-        stats.total_before_bytes = self.retained_history_bytes;
+        stats.total_before_bytes = self.transcript.retained_history_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
         if stats.total_before_bytes > max_bytes {
             let mut candidates = Vec::new();
-            for (msg_idx, msg) in self.messages.iter().enumerate() {
+            for (msg_idx, msg) in self.transcript.messages.iter().enumerate() {
                 if Self::is_history_hidden_marker_message(msg)
                     || Self::is_history_protected_message(msg)
                     || active_turn_owner == Some(msg_idx)
                 {
                     continue;
                 }
-                let bytes = self.message_retained_bytes.get(msg_idx).copied().unwrap_or(0);
+                let bytes =
+                    self.transcript.message_retained_bytes.get(msg_idx).copied().unwrap_or(0);
                 if bytes == 0 {
                     continue;
                 }
@@ -544,7 +570,7 @@ impl super::App {
 
         self.upsert_history_hidden_marker();
 
-        stats.total_after_bytes = self.retained_history_bytes;
+        stats.total_after_bytes = self.transcript.retained_history_bytes;
         self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
         self.history_retention_stats.dropped_messages = stats.dropped_messages;
         self.history_retention_stats.dropped_bytes = stats.dropped_bytes;
@@ -569,27 +595,29 @@ impl super::App {
         let drop_set: HashSet<usize> =
             drop_candidates.iter().map(|candidate| candidate.msg_idx).collect();
 
-        let mut retained = Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
+        let mut retained =
+            Vec::with_capacity(self.transcript.messages.len().saturating_sub(drop_set.len()));
         let mut retained_bytes = Vec::with_capacity(retained.capacity());
-        let old_messages = std::mem::take(&mut self.messages);
-        let old_bytes = std::mem::take(&mut self.message_retained_bytes);
+        let old_messages = std::mem::take(&mut self.transcript.messages);
+        let old_bytes = std::mem::take(&mut self.transcript.message_retained_bytes);
         let mut old_to_new = vec![None; old_messages.len()];
         let mut remapped_active_turn_owner = None;
-        self.retained_history_bytes = 0;
+        self.transcript.retained_history_bytes = 0;
         for (msg_idx, (msg, bytes)) in old_messages.into_iter().zip(old_bytes).enumerate() {
             if !drop_set.contains(&msg_idx) {
                 if active_turn_owner == Some(msg_idx) {
                     remapped_active_turn_owner = Some(retained.len());
                 }
                 old_to_new[msg_idx] = Some(retained.len());
-                self.retained_history_bytes = self.retained_history_bytes.saturating_add(bytes);
+                self.transcript.retained_history_bytes =
+                    self.transcript.retained_history_bytes.saturating_add(bytes);
                 retained.push(msg);
                 retained_bytes.push(bytes);
             }
         }
-        self.messages = retained;
-        self.message_retained_bytes = retained_bytes;
-        self.active_turn_assistant_message_idx = remapped_active_turn_owner;
+        self.transcript.messages = retained;
+        self.transcript.message_retained_bytes = retained_bytes;
+        self.turn.assistant_message_idx = remapped_active_turn_owner;
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);
     }
 }

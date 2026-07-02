@@ -235,7 +235,7 @@ mod tests {
     fn renders_loading_state_before_sessions_are_ready() {
         let mut app = App::test_default();
         app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
-        app.startup_session_picker_requested = true;
+        app.test_request_startup_session_picker();
 
         let text = draw_text(&mut app);
 

@@ -341,14 +341,15 @@ fn fit_footer_suffix_text(text: &str, max_width: usize) -> Option<String> {
 }
 
 fn pending_permission_request_count(app: &App) -> usize {
-    app.pending_interaction_ids
+    app.turn
+        .pending_interaction_ids
         .iter()
         .filter(|tool_id| {
             let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
                 return false;
             };
             matches!(
-                app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
+                app.transcript.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
                 Some(MessageBlock::ToolCall(tc)) if tc.pending_permission.is_some()
             )
         })
@@ -366,7 +367,8 @@ fn mcp_needs_auth_count(app: &App) -> usize {
 }
 
 fn should_show_startup_mcp_hint(app: &App) -> bool {
-    !app.messages
+    !app.transcript
+        .messages
         .iter()
         .any(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
 }
@@ -545,7 +547,7 @@ mod tests {
     fn pending_permission_hint_wins_on_first_row() {
         let mut app = App::test_default();
         let (response_tx, _response_rx) = oneshot::channel();
-        app.messages.push(ChatMessage::new(
+        app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "perm-1".into(),
@@ -580,7 +582,7 @@ mod tests {
             None,
         ));
         app.index_tool_call("perm-1".into(), 0, 0);
-        app.pending_interaction_ids.push("perm-1".into());
+        app.turn.pending_interaction_ids.push("perm-1".into());
 
         let serialized = serialize_footer_rows(&app, 80);
         let text = line_text(&serialized.rows[0]);

@@ -161,7 +161,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     }
 
     if let Some(msg_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages.get_mut(msg_idx)
+        && let Some(owner) = app.transcript.messages.get_mut(msg_idx)
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
@@ -173,9 +173,9 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         return;
     }
 
-    let msg_idx = app.messages.len().saturating_sub(1);
-    if app.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
-        if let Some(last) = app.messages.last_mut() {
+    let msg_idx = app.transcript.messages.len().saturating_sub(1);
+    if app.transcript.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
+        if let Some(last) = app.transcript.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
@@ -188,7 +188,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     } else {
         let tc_id = tool_info.id.clone();
         let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
-        let new_idx = app.messages.len();
+        let new_idx = app.transcript.messages.len();
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tool_info))],
@@ -204,7 +204,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
     let mut layout_dirty = false;
     let mut terminal_tracking = None;
     if let Some(MessageBlock::ToolCall(existing)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let existing = existing.as_mut();
         let mut changed = false;
@@ -354,7 +354,7 @@ pub(super) fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
 /// Check if any tool call in the current assistant message is still in-progress.
 pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
     if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages.get(owner_idx)
+        && let Some(owner) = app.transcript.messages.get(owner_idx)
     {
         return owner.blocks.iter().any(|block| {
             matches!(

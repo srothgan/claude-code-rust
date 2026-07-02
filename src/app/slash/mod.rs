@@ -139,8 +139,8 @@ fn require_active_session(
 /// Block the input field while a slash command is in flight.
 fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some(label.to_owned());
-    app.pending_command_ack = ack;
+    app.turn.pending_command_label = Some(label.to_owned());
+    app.turn.pending_command_ack = ack;
 }
 
 #[cfg(test)]

@@ -14,9 +14,7 @@ pub(crate) fn picker_session_count(app: &App) -> usize {
 }
 
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
-    app.startup_session_picker_requested
-        && !app.startup_session_picker_resolved
-        && (app.conn.is_none() || !app.startup_recent_sessions_loaded)
+    app.startup.startup_picker_is_loading(app.conn.is_some())
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -32,7 +30,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     let session_count = picker_session_count(app);
     if session_count == 0 {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-            app.startup_session_picker_resolved = true;
+            app.startup.resolve_session_picker();
             view::set_chat_surface(app);
         }
         return;
@@ -50,7 +48,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::End, _) => app.session_picker.selected = session_count.saturating_sub(1),
         (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app),
         (KeyCode::Esc, KeyModifiers::NONE) => {
-            app.startup_session_picker_resolved = true;
+            app.startup.resolve_session_picker();
             view::set_chat_surface(app);
         }
         _ => {}
@@ -65,18 +63,18 @@ fn activate_selection(app: &mut App) {
     };
     let session_id = session.session_id.clone();
     let Some(conn) = app.conn.clone() else {
-        app.startup_session_picker_resolved = true;
+        app.startup.resolve_session_picker();
         view::set_chat_surface(app);
         return;
     };
 
-    app.startup_session_picker_resolved = true;
+    app.startup.resolve_session_picker();
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some(format!("Resuming session {session_id}..."));
-    app.pending_command_ack = None;
+    app.turn.pending_command_label = Some(format!("Resuming session {session_id}..."));
+    app.turn.pending_command_ack = None;
     if let Err(e) = begin_resume_session(app, &conn, session_id) {
-        app.pending_command_label = None;
-        app.pending_command_ack = None;
+        app.turn.pending_command_label = None;
+        app.turn.pending_command_ack = None;
         app.status = AppStatus::Ready;
         app.resuming_session_id = None;
         push_system_message_with_severity(
@@ -105,6 +103,11 @@ mod tests {
     fn picker_app() -> App {
         let mut app = App::test_default();
         app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
+        app.startup = crate::app::state::StartupState::new(None, None, true);
+        app.startup.request_connection();
+        assert!(app.startup.mark_connection_started());
+        app.startup.mark_recent_sessions_loaded();
+        app.startup.resolve_session_picker();
         app.recent_sessions = vec![
             RecentSessionInfo {
                 session_id: "session-1".to_owned(),
@@ -133,8 +136,9 @@ mod tests {
     #[test]
     fn loading_state_ignores_navigation_keys() {
         let mut app = picker_app();
-        app.startup_session_picker_requested = true;
-        app.startup_recent_sessions_loaded = false;
+        app.startup = crate::app::state::StartupState::new(None, None, true);
+        app.startup.request_connection();
+        assert!(app.startup.mark_connection_started());
         app.conn = None;
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -182,7 +186,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
-        assert!(app.startup_session_picker_resolved);
+        assert!(app.startup.session_picker_resolved());
     }
 
     #[test]
@@ -197,8 +201,8 @@ mod tests {
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
-        assert!(app.pending_command_label.is_none());
-        let last = app.messages.last().expect("error message");
+        assert!(app.turn.pending_command_label.is_none());
+        let last = app.transcript.messages.last().expect("error message");
         let text = match last.blocks.first().expect("text block") {
             crate::app::MessageBlock::Text(block) => block.text.as_str(),
             _ => panic!("expected text block"),

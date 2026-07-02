@@ -1330,7 +1330,7 @@ mod tests {
         );
         let message_id = message.id;
         let mut app = App::test_default();
-        app.messages.push(message);
+        app.transcript.messages.push(message);
 
         let serialized =
             serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new());
@@ -1364,7 +1364,7 @@ mod tests {
             "| Scrollback destroyed |  | #42002 |\n",
         );
         let mut app = App::test_default();
-        app.messages.push(assistant_blocks_message(vec![
+        app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(TextBlock::from_complete(table)),
             MessageBlock::Text(TextBlock::from_complete("streaming tail remains mutable")),
         ]));

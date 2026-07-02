@@ -51,7 +51,7 @@ fn refresh_task_tool_displays_with_previous(
     let current_tasks = app.tasks.clone();
     let mut dirty_blocks = Vec::new();
 
-    for (message_idx, message) in app.messages.iter_mut().enumerate() {
+    for (message_idx, message) in app.transcript.messages.iter_mut().enumerate() {
         for (block_idx, block) in message.blocks.iter_mut().enumerate() {
             let MessageBlock::ToolCall(tool_call) = block else {
                 continue;
@@ -252,7 +252,7 @@ mod tests {
 
     fn insert_tool_call(app: &mut App, tool_call: ToolCallInfo) {
         let id = tool_call.id.clone();
-        let message_idx = app.messages.len();
+        let message_idx = app.transcript.messages.len();
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tool_call))],
@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn only_tool_call(app: &App) -> &ToolCallInfo {
-        let MessageBlock::ToolCall(tool_call) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tool_call) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected task tool call");
         };
         tool_call

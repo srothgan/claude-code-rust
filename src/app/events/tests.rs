@@ -86,11 +86,11 @@ fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
 }
 
 fn append_tool_call_block(app: &mut App, tool_id: &str) -> (usize, usize) {
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         tool_id,
         model::ToolCallStatus::InProgress,
     )))]));
-    let msg_idx = app.messages.len().saturating_sub(1);
+    let msg_idx = app.transcript.messages.len().saturating_sub(1);
     app.index_tool_call(tool_id.into(), msg_idx, 0);
     (msg_idx, 0)
 }
@@ -165,7 +165,8 @@ enum BlockSnapshot {
 }
 
 fn message_snapshots(app: &App) -> Vec<MessageSnapshot> {
-    app.messages
+    app.transcript
+        .messages
         .iter()
         .map(|message| MessageSnapshot {
             role: message.role.clone(),
@@ -253,7 +254,7 @@ fn assert_seed_resize_measurements_preserved(app: &App) {
 #[test]
 fn transcript_retraction_removes_matching_text_blocks_only() {
     let mut app = App::test_default();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         source_text("stale", "old-assistant"),
         source_text("keep", "new-assistant"),
     ]));
@@ -266,9 +267,9 @@ fn transcript_retraction_removes_matching_text_blocks_only() {
         )),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert_eq!(app.messages[0].blocks.len(), 1);
-    let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert_eq!(app.transcript.messages[0].blocks.len(), 1);
+    let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected text block");
     };
     assert_eq!(block.text, "keep");
@@ -282,7 +283,7 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
     stale_tool.terminal_id = Some("term-old".to_owned());
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(stale_tool)),
         source_text("replacement", "assistant-new"),
     ]));
@@ -298,10 +299,10 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
     );
 
     assert!(app.lookup_tool_call("tool-old").is_none());
-    assert!(app.terminal_tool_calls.is_empty());
-    assert_eq!(app.messages.len(), 1);
-    assert_eq!(app.messages[0].blocks.len(), 1);
-    let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+    assert!(app.terminal_tool_calls().is_empty());
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert_eq!(app.transcript.messages[0].blocks.len(), 1);
+    let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected replacement text");
     };
     assert_eq!(block.text, "replacement");
@@ -310,7 +311,7 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
 #[test]
 fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
     let mut app = App::test_default();
-    app.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
+    app.transcript.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
 
     handle_client_event(
         &mut app,
@@ -329,8 +330,8 @@ fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
         )),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    let MessageBlock::Text(block) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected replacement text");
     };
     assert_eq!(block.text, "replacement");
@@ -411,14 +412,14 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(task_tc)),
     );
-    assert!(app.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
+    assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
     // Stale task ID must be gone after turn boundary
-    assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
+    assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
 
     // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
     let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
@@ -637,8 +638,8 @@ fn agent_message_chunk_splits_into_frozen_text_blocks() {
         )),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    let Some(last) = app.messages.last() else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
     };
     assert!(matches!(last.role, MessageRole::Assistant));
@@ -724,7 +725,7 @@ fn test_current_model(model_name: &str) -> model::CurrentModel {
 }
 
 fn canonical_messages_contain_text(app: &App, expected: &str) -> bool {
-    app.messages.iter().any(|message| {
+    app.transcript.messages.iter().any(|message| {
         message.blocks.iter().any(|block| match block {
             MessageBlock::Text(text) => text.text == expected,
             MessageBlock::Notice(notice) => notice.text.text == expected,
@@ -749,7 +750,11 @@ fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
 
 fn session_overview_has_welcome(app: &App) -> bool {
     app.show_session_overview
-        && app.messages.iter().any(|message| matches!(message.role, MessageRole::Welcome))
+        && app
+            .transcript
+            .messages
+            .iter()
+            .any(|message| matches!(message.role, MessageRole::Welcome))
 }
 
 fn connected_event(model_name: &str) -> ClientEvent {
@@ -819,7 +824,8 @@ fn execute_tool_update_uses_raw_output_fallback() {
     let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
         panic!("tool call not indexed");
     };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
     else {
         panic!("tool call block missing");
     };
@@ -846,7 +852,8 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
     let Some((mi, bi)) = app.lookup_tool_call("tc-pwsh") else {
         panic!("tool call not indexed");
     };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
     else {
         panic!("tool call block missing");
     };
@@ -858,7 +865,7 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
 #[test]
 fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tool-stale",
         model::ToolCallStatus::Completed,
     )))]));
@@ -881,7 +888,7 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 #[test]
@@ -921,16 +928,16 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
     );
 
     let (mi, bi) = app.lookup_tool_call("tc-dup").expect("tool call not indexed");
-    let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
+    let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] else {
         panic!("expected tool call block");
     };
     assert_eq!(tc.terminal_output.as_deref(), Some("second"));
     assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
     assert_eq!(tc.terminal_command.as_deref(), Some("echo second"));
-    assert!(app.terminal_tool_calls.iter().any(|entry| entry.terminal_id == "term-2"
+    assert!(app.terminal_tool_calls().iter().any(|entry| entry.terminal_id == "term-2"
         && entry.msg_idx == mi
         && entry.block_idx == bi));
-    assert!(app.terminal_tool_calls.iter().all(|entry| entry.terminal_id != "term-1"));
+    assert!(app.terminal_tool_calls().iter().all(|entry| entry.terminal_id != "term-1"));
 }
 
 #[test]
@@ -972,14 +979,16 @@ fn has_in_progress_empty_messages() {
 #[test]
 fn has_in_progress_no_tool_calls() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
+    app.transcript
+        .messages
+        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
     assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
 #[test]
 fn has_in_progress_with_pending_tool() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::Pending,
     )))]));
@@ -990,7 +999,7 @@ fn has_in_progress_with_pending_tool() {
 #[test]
 fn has_in_progress_with_in_progress_tool() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::InProgress,
     )))]));
@@ -1001,7 +1010,7 @@ fn has_in_progress_with_in_progress_tool() {
 #[test]
 fn has_in_progress_all_completed() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::Completed,
     )))]));
@@ -1011,7 +1020,7 @@ fn has_in_progress_all_completed() {
 #[test]
 fn has_in_progress_all_failed() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::Failed,
     )))]));
@@ -1023,7 +1032,7 @@ fn has_in_progress_all_failed() {
 #[test]
 fn has_in_progress_user_message_last() {
     let mut app = make_test_app();
-    app.messages.push(user_msg("hi"));
+    app.transcript.messages.push(user_msg("hi"));
     assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
@@ -1031,11 +1040,11 @@ fn has_in_progress_user_message_last() {
 #[test]
 fn has_in_progress_requires_explicit_owner() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::InProgress,
     )))]));
-    app.messages.push(user_msg("thanks"));
+    app.transcript.messages.push(user_msg("thanks"));
     assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
@@ -1043,12 +1052,12 @@ fn has_in_progress_requires_explicit_owner() {
 #[test]
 fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc1",
         model::ToolCallStatus::InProgress,
     )))]));
-    app.messages.push(user_msg("ok"));
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(user_msg("ok"));
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tc2",
         model::ToolCallStatus::Completed,
     )))]));
@@ -1059,7 +1068,7 @@ fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
 #[test]
 fn has_in_progress_mixed_completed_and_pending() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
     ]));
@@ -1071,7 +1080,7 @@ fn has_in_progress_mixed_completed_and_pending() {
 #[test]
 fn has_in_progress_text_and_tools_mixed() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::Text(TextBlock::from_complete("thinking...")),
         MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
         MessageBlock::Text(TextBlock::from_complete("done")),
@@ -1095,7 +1104,7 @@ fn has_in_progress_stress_100_tools_one_pending() {
         "tc_pending",
         model::ToolCallStatus::Pending,
     ))));
-    app.messages.push(assistant_msg(blocks));
+    app.transcript.messages.push(assistant_msg(blocks));
     app.bind_active_turn_assistant_to_tail();
     assert!(tool_calls::has_in_progress_tool_calls(&app));
 }
@@ -1112,7 +1121,7 @@ fn has_in_progress_stress_100_tools_all_done() {
             )))
         })
         .collect();
-    app.messages.push(assistant_msg(blocks));
+    app.transcript.messages.push(assistant_msg(blocks));
     assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
@@ -1120,7 +1129,7 @@ fn has_in_progress_stress_100_tools_all_done() {
 #[test]
 fn has_in_progress_failed_and_completed_mix() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
         MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
@@ -1132,7 +1141,7 @@ fn has_in_progress_failed_and_completed_mix() {
 #[test]
 fn has_in_progress_empty_assistant_blocks() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![]));
+    app.transcript.messages.push(assistant_msg(vec![]));
     assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
@@ -1141,7 +1150,7 @@ fn has_in_progress_empty_assistant_blocks() {
 #[test]
 fn test_app_defaults() {
     let app = make_test_app();
-    assert!(app.messages.is_empty());
+    assert!(app.transcript.messages.is_empty());
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
@@ -1150,11 +1159,11 @@ fn test_app_defaults() {
     assert!(!app.should_quit);
     assert!(app.session_id.is_none());
     assert_eq!(app.files_accessed, 0);
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
     assert!(app.tasks.is_empty());
     assert!(app.mention.is_none());
-    assert!(!app.cancelled_turn_pending_hint);
+    assert!(!app.turn.cancelled_pending_hint);
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -1244,8 +1253,8 @@ fn resize_while_released_to_child_stores_size_without_drawing_hidden_chat() {
 fn resize_does_not_mutate_messages() {
     let mut app = make_test_app();
     app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.messages.push(user_msg("hello"));
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(user_msg("hello"));
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::Text(TextBlock::from_complete("answer")),
         MessageBlock::ToolCall(Box::new(tool_call("tc-resize", model::ToolCallStatus::InProgress))),
     ]));
@@ -1260,10 +1269,10 @@ fn resize_does_not_mutate_messages() {
 fn resize_does_not_clear_active_assistant_ownership() {
     let mut app = make_test_app();
     app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.messages.push(user_msg("hello"));
-    app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-        "streaming answer",
-    ))]));
+    app.transcript.messages.push(user_msg("hello"));
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::Text(
+        TextBlock::from_complete("streaming answer"),
+    )]));
     app.bind_active_turn_assistant(1);
 
     handle_terminal_event(&mut app, Event::Resize(120, 40));
@@ -1293,12 +1302,12 @@ fn turn_complete_after_cancel_renders_interrupted_hint() {
     let mut app = make_test_app();
 
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
-    assert!(app.cancelled_turn_pending_hint);
+    assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert!(!app.cancelled_turn_pending_hint);
-    let last = app.messages.last().expect("expected interruption hint message");
+    assert!(!app.turn.cancelled_pending_hint);
+    let last = app.transcript.messages.last().expect("expected interruption hint message");
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
@@ -1309,15 +1318,20 @@ fn turn_complete_after_cancel_renders_interrupted_hint() {
 #[test]
 fn connected_updates_welcome_session_id_while_pristine() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
         panic!("expected welcome block");
     };
     welcome.tip_seed = 7;
 
     handle_client_event(&mut app, connected_event("claude-updated"));
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing welcome message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1330,7 +1344,12 @@ fn connected_updates_welcome_session_id_while_pristine() {
 #[test]
 fn connected_session_preserves_inline_viewport_for_startup_welcome_transition() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
     app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
     app.surface_dirty.chat.repaint = false;
 
@@ -1343,11 +1362,16 @@ fn connected_session_preserves_inline_viewport_for_startup_welcome_transition() 
 #[test]
 fn connected_keeps_subscription_placeholder_until_status_snapshot_arrives() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "old", "/test", "old"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "old",
+        "/test",
+        "old",
+    ));
 
     handle_client_event(&mut app, connected_event("opus"));
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing welcome message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1394,7 +1418,12 @@ fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
 #[test]
 fn connected_updates_cwd_and_clears_resuming_marker() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
     app.resuming_session_id = Some("resume-123".into());
 
     handle_client_event(
@@ -1412,7 +1441,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
     assert_eq!(app.cwd_raw, "/changed");
     assert_eq!(app.cwd, "/changed");
     assert!(app.resuming_session_id.is_none());
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing welcome message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1451,16 +1480,21 @@ fn connected_reconciles_trust_for_new_cwd() {
 #[test]
 fn connected_updates_welcome_once_even_after_chat_started() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
         panic!("expected welcome block");
     };
     welcome.tip_seed = 11;
-    app.messages.push(user_msg("hello"));
+    app.transcript.messages.push(user_msg("hello"));
 
     handle_client_event(&mut app, connected_event("claude-updated"));
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing first message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1475,7 +1509,8 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
     let mut app = make_test_app();
     app.session_id = Some(model::SessionId::new("session-1"));
     app.current_model = Some(test_current_model("opus"));
-    app.messages = vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
+    app.transcript.messages =
+        vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
     crate::app::config::store::set_model(&mut app.config.committed_settings_document, Some("opus"));
 
     crate::app::config::store::set_model(
@@ -1491,7 +1526,7 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
         )),
     );
 
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.session_id, "session-1");
@@ -1501,7 +1536,7 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
 #[test]
 fn connected_resets_session_scoped_view_data() {
     let mut app = make_test_app();
-    app.messages.push(user_msg("hello"));
+    app.transcript.messages.push(user_msg("hello"));
     app.status = AppStatus::Running;
     app.files_accessed = 9;
     app.usage.snapshot = Some(UsageSnapshot {
@@ -1532,8 +1567,8 @@ fn connected_resets_session_scoped_view_data() {
     handle_client_event(&mut app, connected_event("claude-updated"));
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert_eq!(app.files_accessed, 0);
     assert!(app.usage.snapshot.is_none());
     assert!(app.account_info.is_none());
@@ -1546,8 +1581,13 @@ fn connected_resets_session_scoped_view_data() {
 fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
     let mut app = make_test_app();
     app.current_model = Some(test_current_model("opus"));
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-    app.messages.push(user_msg("hello"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
+    app.transcript.messages.push(user_msg("hello"));
 
     handle_client_event(
         &mut app,
@@ -1556,7 +1596,7 @@ fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         )),
     );
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing first message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1571,7 +1611,7 @@ fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         )),
     );
 
-    let Some(first) = app.messages.first() else {
+    let Some(first) = app.transcript.messages.first() else {
         panic!("missing first message");
     };
     let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
@@ -1615,10 +1655,13 @@ fn update_available_pushes_warning_system_message_with_versions_and_install_comm
         },
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Warning))));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(
+        app.transcript.messages[0].role,
+        MessageRole::System(Some(SystemSeverity::Warning))
+    ));
     assert_eq!(
-        first_block_text(&app.messages[0]),
+        first_block_text(&app.transcript.messages[0]),
         "Update available: current v0.2.0, latest v0.3.0. Upgrade to latest version via npm install -g claude-code-rust."
     );
     let Some(update_notice) = app.update_notice.as_ref() else {
@@ -1642,7 +1685,7 @@ fn service_status_warning_pushes_system_warning_without_locking_input() {
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
@@ -1678,6 +1721,7 @@ fn service_status_warning_survives_status_snapshot_welcome_update() {
     );
 
     let warning_count = app
+        .transcript
         .messages
         .iter()
         .filter(|message| {
@@ -1703,7 +1747,7 @@ fn service_status_error_pushes_system_error_without_locking_input() {
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.input.text(), "draft stays");
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
@@ -1712,16 +1756,23 @@ fn service_status_error_pushes_system_error_without_locking_input() {
 #[test]
 fn session_replaced_resets_chat_and_transient_state() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first_mut() else {
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "-",
+    ));
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
         panic!("expected welcome block");
     };
     welcome.tip_seed = 5;
-    app.messages.push(user_msg("hello"));
-    app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
+    app.transcript.messages.push(user_msg("hello"));
+    app.transcript
+        .messages
+        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
     app.status = AppStatus::Running;
     app.files_accessed = 9;
-    app.pending_interaction_ids.push("perm-1".into());
+    app.turn.pending_interaction_ids.push("perm-1".into());
     app.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
     app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
@@ -1753,17 +1804,17 @@ fn session_replaced_resets_chat_and_transient_state() {
         app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
         Some("new-model")
     );
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert_eq!(app.files_accessed, 0);
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
     assert!(app.tasks.is_empty());
     assert!(app.mention.is_none());
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.removed_config_servers.is_empty());
     assert_eq!(app.cwd_raw, "/replacement");
     assert_eq!(app.cwd, "/replacement");
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.cwd, "/replacement");
@@ -1871,7 +1922,12 @@ fn stale_status_snapshot_for_old_session_is_ignored() {
 #[test]
 fn status_snapshot_updates_welcome_subscription() {
     let mut app = make_test_app();
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "session-1",
+    ));
     app.session_id = Some(model::SessionId::new("session-1"));
 
     handle_client_event(
@@ -1889,7 +1945,7 @@ fn status_snapshot_updates_welcome_subscription() {
         },
     );
 
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.subscription, "Claude Max");
@@ -1900,7 +1956,12 @@ fn status_snapshot_updates_welcome_subscription() {
 fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed() {
     let mut app = make_test_app();
     app.show_session_overview = false;
-    app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1"));
+    app.transcript.messages.push(ChatMessage::welcome(
+        env!("CARGO_PKG_VERSION"),
+        "-",
+        "/test",
+        "session-1",
+    ));
     app.session_id = Some(model::SessionId::new("session-1"));
 
     handle_client_event(
@@ -1918,7 +1979,7 @@ fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed()
         },
     );
 
-    let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.subscription, "Claude Max");
@@ -2157,26 +2218,26 @@ fn slash_command_error_clears_rewind_target_loading_state() {
 fn slash_command_error_during_running_turn_does_not_stop_turn_status() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.pending_command_label = Some("Switching mode...".into());
-    app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
     handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set mode".into()));
 
     assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.pending_command_label.is_none());
-    assert!(app.pending_command_ack.is_none());
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.turn.pending_command_ack.is_none());
 }
 
 #[test]
 fn slash_command_error_during_active_turn_inserts_inline_notice() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-        "streaming answer",
-    ))]));
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::Text(
+        TextBlock::from_complete("streaming answer"),
+    )]));
     app.bind_active_turn_assistant(0);
-    app.pending_command_label = Some("Switching mode...".into());
-    app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
     handle_client_event(
         &mut app,
@@ -2184,12 +2245,12 @@ fn slash_command_error_during_active_turn_inserts_inline_notice() {
     );
 
     assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.pending_command_label.is_none());
-    assert!(app.pending_command_ack.is_none());
-    assert_eq!(app.messages.len(), 1);
-    assert!(app.turn_notice_refs.is_empty());
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.turn.pending_command_ack.is_none());
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(app.turn.notice_refs.is_empty());
     let [MessageBlock::Text(text), MessageBlock::Notice(notice)] =
-        app.messages[0].blocks.as_slice()
+        app.transcript.messages[0].blocks.as_slice()
     else {
         panic!("expected assistant text followed by inline notice");
     };
@@ -2203,8 +2264,8 @@ fn slash_command_error_during_active_turn_inserts_inline_notice() {
 fn slash_command_error_without_active_turn_inserts_standalone_notice() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some("Switching mode...".into());
-    app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
     handle_client_event(
         &mut app,
@@ -2212,11 +2273,11 @@ fn slash_command_error_without_active_turn_inserts_standalone_notice() {
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert!(app.pending_command_label.is_none());
-    assert!(app.pending_command_ack.is_none());
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.turn.pending_command_ack.is_none());
     let Some(ChatMessage {
         role: MessageRole::System(Some(SystemSeverity::Error)), blocks, ..
-    }) = app.messages.last()
+    }) = app.transcript.messages.last()
     else {
         panic!("expected standalone system notice");
     };
@@ -2232,14 +2293,14 @@ fn slash_command_error_without_active_turn_inserts_standalone_notice() {
 fn slash_command_error_during_thinking_turn_does_not_stop_turn_status() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.pending_command_label = Some("Switching model...".into());
-    app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
+    app.turn.pending_command_label = Some("Switching model...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
 
     handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set model".into()));
 
     assert!(matches!(app.status, AppStatus::Thinking));
-    assert!(app.pending_command_label.is_none());
-    assert!(app.pending_command_ack.is_none());
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.turn.pending_command_ack.is_none());
 }
 
 #[test]
@@ -2343,7 +2404,7 @@ fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
     assert!(app.config.pending_session_title_change.is_none());
     assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
     assert!(app.config.status_message.is_none());
-    assert!(app.messages.is_empty());
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
@@ -2374,7 +2435,7 @@ fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
     assert_eq!(app.config.last_error, app.mcp.last_error);
     assert!(app.config.status_message.is_none());
     assert!(!app.mcp.in_flight);
-    assert!(app.messages.is_empty());
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
@@ -2410,7 +2471,9 @@ fn sessions_listed_completes_pending_session_title_generation() {
 #[test]
 fn startup_picker_waits_for_connected_after_sessions_listed() {
     let mut app = make_test_app();
-    app.startup_session_picker_requested = true;
+    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup.request_connection();
+    assert!(app.startup.mark_connection_started());
 
     handle_client_event(
         &mut app,
@@ -2420,33 +2483,35 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
     );
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.startup_recent_sessions_loaded);
-    assert!(!app.startup_session_picker_resolved);
+    assert!(app.startup.recent_sessions_loaded());
+    assert!(!app.startup.session_picker_resolved());
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
     handle_client_event(&mut app, connected_event("claude-updated"));
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup_session_picker_resolved);
+    assert!(app.startup.session_picker_resolved());
 }
 
 #[test]
 fn startup_picker_empty_list_stays_in_chat_with_info_message() {
     let mut app = make_test_app();
-    app.startup_session_picker_requested = true;
+    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup.request_connection();
+    assert!(app.startup.mark_connection_started());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
 
     handle_client_event(&mut app, connected_event("claude-updated"));
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(!app.startup_session_picker_resolved);
+    assert!(!app.startup.session_picker_resolved());
 
     handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.startup_session_picker_resolved);
-    let last = app.messages.last().expect("info message");
+    assert!(app.startup.session_picker_resolved());
+    let last = app.transcript.messages.last().expect("info message");
     let text = match last.blocks.first().expect("text block") {
         MessageBlock::Text(block) => block.text.as_str(),
         _ => panic!("expected text block"),
@@ -2502,8 +2567,8 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
 fn current_model_update_updates_state_and_clears_pending_when_expected() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some("Switching model...".into());
-    app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
+    app.turn.pending_command_label = Some("Switching model...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
     app.current_model = Some(test_current_model("old-model"));
 
     handle_client_event(
@@ -2515,16 +2580,16 @@ fn current_model_update_updates_state_and_clears_pending_when_expected() {
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.current_model.as_ref().map(|model| model.resolved_id.as_str()), Some("sonnet"));
-    assert!(app.pending_command_label.is_none());
-    assert!(app.pending_command_ack.is_none());
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.turn.pending_command_ack.is_none());
 }
 
 #[test]
 fn non_matching_config_option_update_keeps_pending() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some("Switching model...".into());
-    app.pending_command_ack =
+    app.turn.pending_command_label = Some("Switching model...".into());
+    app.turn.pending_command_ack =
         Some(PendingCommandAck::ConfigOption { option_id: "model".to_owned() });
 
     handle_client_event(
@@ -2539,9 +2604,9 @@ fn non_matching_config_option_update_keeps_pending() {
 
     assert!(matches!(app.status, AppStatus::CommandPending));
     assert_eq!(app.config_options.get("max_thinking_tokens"), Some(&serde_json::json!(2048)));
-    assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
+    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
     assert!(matches!(
-        app.pending_command_ack.as_ref(),
+        app.turn.pending_command_ack.as_ref(),
         Some(PendingCommandAck::ConfigOption { option_id }) if option_id == "model"
     ));
 }
@@ -2564,8 +2629,8 @@ fn resume_does_not_add_confirmation_system_message() {
         },
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert!(app.resuming_session_id.is_none());
     assert!(matches!(app.status, AppStatus::Ready));
 }
@@ -2595,12 +2660,12 @@ fn resume_history_renders_user_message_chunks() {
         },
     );
 
-    assert_eq!(app.messages.len(), 3);
-    assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-    assert!(matches!(app.messages[1].role, MessageRole::User));
-    assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+    assert_eq!(app.transcript.messages.len(), 3);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
+    assert!(matches!(app.transcript.messages[1].role, MessageRole::User));
+    assert!(matches!(app.transcript.messages[2].role, MessageRole::Assistant));
 
-    let Some(MessageBlock::Text(user_text)) = app.messages[1].blocks.first() else {
+    let Some(MessageBlock::Text(user_text)) = app.transcript.messages[1].blocks.first() else {
         panic!("expected user text block");
     };
     assert_eq!(user_text.text, "first user line");
@@ -2608,8 +2673,8 @@ fn resume_history_renders_user_message_chunks() {
     assert!(canonical_messages_contain_text(&app, "assistant reply"));
     assert!(!session_overview_has_welcome(&app));
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.pending_cancel_origin, None);
-    assert!(!app.pending_auto_submit_after_cancel);
+    assert_eq!(app.turn.pending_cancel_origin, None);
+    assert!(!app.turn.pending_auto_submit_after_cancel);
 
     handle_client_event(
         &mut app,
@@ -2632,7 +2697,7 @@ fn resume_history_renders_user_message_chunks() {
 #[test]
 fn session_replaced_restores_input_after_loading_history() {
     let mut app = make_test_app();
-    app.pending_command_label = Some("Rewinding conversation...".to_owned());
+    app.turn.pending_command_label = Some("Rewinding conversation...".to_owned());
     app.status = AppStatus::CommandPending;
     let history_updates = vec![model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
         model::ContentBlock::Text(model::TextContent::new("assistant reply")),
@@ -2652,7 +2717,7 @@ fn session_replaced_restores_input_after_loading_history() {
     );
 
     assert_eq!(app.input.text(), "selected prompt");
-    assert!(app.pending_command_label.is_none());
+    assert!(app.turn.pending_command_label.is_none());
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(canonical_messages_contain_text(&app, "assistant reply"));
 }
@@ -2687,8 +2752,8 @@ fn startup_resume_history_renders_from_canonical_messages() {
     assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
     assert!(!session_overview_has_welcome(&app));
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.pending_cancel_origin, None);
-    assert!(!app.pending_auto_submit_after_cancel);
+    assert_eq!(app.turn.pending_cancel_origin, None);
+    assert!(!app.turn.pending_auto_submit_after_cancel);
 
     handle_client_event(
         &mut app,
@@ -2743,8 +2808,8 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
         crate::agent::wire::BridgeCommand::Prompt { session_id, .. }
             if session_id == "startup-resume"
     ));
-    assert_eq!(app.pending_cancel_origin, None);
-    assert!(!app.pending_auto_submit_after_cancel);
+    assert_eq!(app.turn.pending_cancel_origin, None);
+    assert!(!app.turn.pending_auto_submit_after_cancel);
     assert!(rx.try_recv().is_err(), "resume submit should not send cancel");
 }
 
@@ -2780,6 +2845,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
     );
 
     let rendered: Vec<(MessageRole, String)> = app
+        .transcript
         .messages
         .iter()
         .filter_map(|message| {
@@ -2825,7 +2891,8 @@ fn resume_history_forces_open_tool_calls_to_failed() {
     let Some((mi, bi)) = app.lookup_tool_call("resume-open") else {
         panic!("missing tool call index");
     };
-    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
     else {
         panic!("expected tool call block");
     };
@@ -2877,7 +2944,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
         },
     );
 
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("resume-task"), None);
 }
 
@@ -2885,15 +2952,16 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
 fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
     let mut app = make_test_app();
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert!(app.messages.is_empty());
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
 fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
     let mut app = make_test_app();
     app.session_id = Some(model::SessionId::new("session-x"));
-    app.messages.push(user_msg("/compact"));
-    app.messages
+    app.transcript.messages.push(user_msg("/compact"));
+    app.transcript
+        .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
     handle_client_event(
         &mut app,
@@ -2904,14 +2972,14 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
             },
         )),
     );
-    assert!(app.pending_compact_clear);
+    assert!(app.turn.pending_compact_clear);
 
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert!(!app.pending_compact_clear);
-    assert_eq!(app.messages.len(), 3);
+    assert!(!app.turn.pending_compact_clear);
+    assert_eq!(app.transcript.messages.len(), 3);
     let Some(ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), blocks, .. }) =
-        app.messages.last()
+        app.transcript.messages.last()
     else {
         panic!("expected compaction success system message");
     };
@@ -2925,7 +2993,7 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
 #[test]
 fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
     let mut app = make_test_app();
-    app.is_compacting = true;
+    app.turn.is_compacting = true;
 
     handle_client_event(
         &mut app,
@@ -2936,9 +3004,9 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
         )),
     );
 
-    assert!(!app.is_compacting);
-    assert!(!app.pending_compact_clear);
-    assert!(app.messages.iter().all(|message| {
+    assert!(!app.turn.is_compacting);
+    assert!(!app.turn.pending_compact_clear);
+    assert!(app.transcript.messages.iter().all(|message| {
         !matches!(
             message,
             ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), .. }
@@ -2949,7 +3017,7 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
 #[test]
 fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
     let mut app = make_test_app();
-    app.is_compacting = true;
+    app.turn.is_compacting = true;
 
     handle_client_event(
         &mut app,
@@ -2958,16 +3026,16 @@ fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
         )),
     );
 
-    assert!(!app.is_compacting);
-    assert!(!app.pending_compact_clear);
-    assert!(app.messages.is_empty());
+    assert!(!app.turn.is_compacting);
+    assert!(!app.turn.pending_compact_clear);
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
 fn turn_error_keeps_history_when_compact_pending() {
     let mut app = make_test_app();
-    app.pending_compact_clear = true;
-    app.messages.push(user_msg("/compact"));
+    app.turn.pending_compact_clear = true;
+    app.transcript.messages.push(user_msg("/compact"));
 
     handle_client_event(
         &mut app,
@@ -2978,12 +3046,12 @@ fn turn_error_keeps_history_when_compact_pending() {
         },
     );
 
-    assert!(!app.pending_compact_clear);
+    assert!(!app.turn.pending_compact_clear);
     assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.messages.len(), 3);
-    assert!(matches!(app.messages[0].role, MessageRole::User));
+    assert_eq!(app.transcript.messages.len(), 3);
+    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
     let Some(ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), blocks, .. }) =
-        app.messages.get(1)
+        app.transcript.messages.get(1)
     else {
         panic!("expected compaction success system message");
     };
@@ -2991,7 +3059,9 @@ fn turn_error_keeps_history_when_compact_pending() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Session successfully compacted.");
-    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last() else {
+    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+        app.transcript.messages.last()
+    else {
         panic!("expected system error message");
     };
     let Some(MessageBlock::Text(block)) = blocks.first() else {
@@ -3004,21 +3074,21 @@ fn turn_error_keeps_history_when_compact_pending() {
 #[test]
 fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
     let mut app = make_test_app();
-    app.pending_compact_clear = true;
-    app.is_compacting = true;
+    app.turn.pending_compact_clear = true;
+    app.turn.is_compacting = true;
 
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
 
-    assert!(app.pending_compact_clear);
-    assert!(app.is_compacting);
+    assert!(app.turn.pending_compact_clear);
+    assert!(app.turn.is_compacting);
 }
 
 #[test]
 fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
     let mut app = make_test_app();
-    app.messages.push(user_msg("/compact"));
-    app.pending_compact_clear = true;
-    app.is_compacting = true;
+    app.transcript.messages.push(user_msg("/compact"));
+    app.turn.pending_compact_clear = true;
+    app.turn.is_compacting = true;
 
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
     handle_client_event(
@@ -3030,13 +3100,16 @@ fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
         },
     );
 
-    assert_eq!(app.messages.len(), 3);
-    assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
-    let Some(MessageBlock::Text(block)) = app.messages[1].blocks.first() else {
+    assert_eq!(app.transcript.messages.len(), 3);
+    assert!(matches!(
+        app.transcript.messages[1].role,
+        MessageRole::System(Some(SystemSeverity::Info))
+    ));
+    let Some(MessageBlock::Text(block)) = app.transcript.messages[1].blocks.first() else {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Session successfully compacted.");
-    let Some(MessageBlock::Text(block)) = app.messages[2].blocks.first() else {
+    let Some(MessageBlock::Text(block)) = app.transcript.messages[2].blocks.first() else {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
@@ -3056,11 +3129,13 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last() else {
+    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+        app.transcript.messages.last()
+    else {
         panic!("expected system error message");
     };
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
-    let text = first_block_text(app.messages.last().expect("expected message"));
+    let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
     assert!(text.contains("Next steps:"));
     assert!(text.contains("Check quota/billing"));
@@ -3081,11 +3156,13 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) = app.messages.last() else {
+    let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
+        app.transcript.messages.last()
+    else {
         panic!("expected system error message");
     };
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
-    let text = first_block_text(app.messages.last().expect("expected message"));
+    let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
     assert!(text.contains("Next steps:"));
 }
@@ -3126,7 +3203,7 @@ fn classified_turn_error_model_unavailable_suggests_model_switch() {
     assert!(matches!(app.status, AppStatus::Error));
     assert!(!app.should_quit);
     assert_eq!(app.exit_error, None);
-    let text = first_block_text(app.messages.last().expect("expected message"));
+    let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("The selected model is unavailable"));
     assert!(text.contains("Use /model"));
 }
@@ -3148,7 +3225,7 @@ fn classified_turn_error_account_access_does_not_quit_for_login() {
     assert!(matches!(app.status, AppStatus::Error));
     assert!(!app.should_quit);
     assert_eq!(app.exit_error, None);
-    let text = first_block_text(app.messages.last().expect("expected message"));
+    let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("current account or organization"));
     assert!(text.contains("cannot use the requested resource"));
 }
@@ -3169,7 +3246,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
 
     assert!(matches!(app.status, AppStatus::Error));
     assert!(!app.should_quit);
-    let text = first_block_text(app.messages.last().expect("expected message"));
+    let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("temporarily overloaded or unavailable"));
     assert!(text.contains("retry"));
 }
@@ -3177,7 +3254,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
 #[test]
 fn turn_error_clears_tool_scope_tracking() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "task-1",
         model::ToolCallStatus::InProgress,
     )))]));
@@ -3193,7 +3270,7 @@ fn turn_error_clears_tool_scope_tracking() {
         },
     );
 
-    assert!(app.active_task_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("task-1"), None);
 }
 
@@ -3209,14 +3286,14 @@ fn auth_required_clears_active_turn_runtime_tracking() {
         available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
     });
     app.fast_mode_state = model::FastModeState::On;
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "task-1",
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
     app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
     app.insert_active_task("task-1".into());
-    app.pending_interaction_ids.push("task-1".into());
+    app.turn.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
     handle_client_event(
@@ -3228,10 +3305,10 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.active_task_ids.is_empty());
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.turn.active_task_ids.is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
     assert_ne!(app.focus_owner(), FocusOwner::Permission);
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3279,7 +3356,7 @@ fn fatal_event_sets_exit_error_and_quits() {
 fn connection_failed_clears_active_turn_runtime_tracking() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "task-1",
         model::ToolCallStatus::InProgress,
     )))]));
@@ -3290,8 +3367,8 @@ fn connection_failed_clears_active_turn_runtime_tracking() {
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.active_task_ids.is_empty());
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+    assert!(app.turn.active_task_ids.is_empty());
+    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3301,7 +3378,7 @@ fn connection_failed_clears_active_turn_runtime_tracking() {
 fn fatal_event_clears_active_turn_runtime_tracking() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "task-1",
         model::ToolCallStatus::InProgress,
     )))]));
@@ -3315,8 +3392,8 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.active_task_ids.is_empty());
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.first() else {
+    assert!(app.turn.active_task_ids.is_empty());
+    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Failed);
@@ -3325,7 +3402,7 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
 #[test]
 fn compaction_boundary_enables_compacting_and_records_boundary() {
     let mut app = make_test_app();
-    assert!(!app.is_compacting);
+    assert!(!app.turn.is_compacting);
 
     handle_client_event(
         &mut app,
@@ -3337,8 +3414,8 @@ fn compaction_boundary_enables_compacting_and_records_boundary() {
         )),
     );
 
-    assert!(app.is_compacting);
-    assert!(app.pending_compact_clear);
+    assert!(app.turn.is_compacting);
+    assert!(app.turn.pending_compact_clear);
     assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Manual));
     assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
 }
@@ -3346,7 +3423,7 @@ fn compaction_boundary_enables_compacting_and_records_boundary() {
 #[test]
 fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
     let mut app = make_test_app();
-    assert!(!app.is_compacting);
+    assert!(!app.turn.is_compacting);
 
     handle_client_event(
         &mut app,
@@ -3358,8 +3435,8 @@ fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
         )),
     );
 
-    assert!(app.is_compacting);
-    assert!(!app.pending_compact_clear);
+    assert!(app.turn.is_compacting);
+    assert!(!app.turn.pending_compact_clear);
     assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Auto));
     assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(234_567));
 }
@@ -3407,9 +3484,12 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Warning))));
-    assert!(matches!(app.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(
+        app.transcript.messages[0].role,
+        MessageRole::System(Some(SystemSeverity::Warning))
+    ));
+    assert!(matches!(app.transcript.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
     let rejected_update =
         model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
@@ -3422,19 +3502,22 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Error))));
-    assert!(first_block_text(&app.messages[0]).contains("Rate limit reached"));
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(
+        app.transcript.messages[0].role,
+        MessageRole::System(Some(SystemSeverity::Error))
+    ));
+    assert!(first_block_text(&app.transcript.messages[0]).contains("Rate limit reached"));
 }
 
 #[test]
 fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.messages.push(user_msg("hello"));
-    app.messages.push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-        "partial response",
-    ))]));
+    app.transcript.messages.push(user_msg("hello"));
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::Text(
+        TextBlock::from_complete("partial response"),
+    )]));
     app.bind_active_turn_assistant(1);
 
     handle_client_event(
@@ -3454,10 +3537,10 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
             has_chargeable_saved_payment_method: None,
         })),
     );
-    assert_eq!(app.messages.len(), 2);
-    assert_eq!(app.messages[1].blocks.len(), 2);
-    assert!(matches!(app.messages[1].blocks[1], MessageBlock::Notice(_)));
-    assert_eq!(app.turn_notice_refs.len(), 1);
+    assert_eq!(app.transcript.messages.len(), 2);
+    assert_eq!(app.transcript.messages[1].blocks.len(), 2);
+    assert!(matches!(app.transcript.messages[1].blocks[1], MessageBlock::Notice(_)));
+    assert_eq!(app.turn.notice_refs.len(), 1);
 
     handle_client_event(
         &mut app,
@@ -3470,15 +3553,15 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.messages.len(), 2);
-    assert_eq!(app.messages[1].blocks.len(), 2);
-    let Some(MessageBlock::Notice(block)) = app.messages[1].blocks.get(1) else {
+    assert_eq!(app.transcript.messages.len(), 2);
+    assert_eq!(app.transcript.messages[1].blocks.len(), 2);
+    let Some(MessageBlock::Notice(block)) = app.transcript.messages[1].blocks.get(1) else {
         panic!("expected inline notice block");
     };
     assert_eq!(block.severity, SystemSeverity::Warning);
     assert!(block.text.text.contains("Approaching rate limit"));
     assert!(block.text.text.contains("Turn blocked by account or plan limits"));
-    assert!(app.turn_notice_refs.is_empty());
+    assert!(app.turn.notice_refs.is_empty());
 }
 
 #[test]
@@ -3499,8 +3582,8 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         has_chargeable_saved_payment_method: None,
     });
     app.status = AppStatus::Thinking;
-    app.messages.push(user_msg("first"));
-    app.messages.push(assistant_msg(vec![]));
+    app.transcript.messages.push(user_msg("first"));
+    app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(1);
 
     handle_client_event(
@@ -3512,16 +3595,16 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
             terminal_reason: None,
         },
     );
-    assert_eq!(app.messages.len(), 2);
-    let first_notice_text = match app.messages[1].blocks.as_slice() {
+    assert_eq!(app.transcript.messages.len(), 2);
+    let first_notice_text = match app.transcript.messages[1].blocks.as_slice() {
         [MessageBlock::Notice(block)] => block.text.text.clone(),
         _ => panic!("expected first turn notice"),
     };
     assert!(first_notice_text.contains("Approaching rate limit"));
 
     app.status = AppStatus::Thinking;
-    app.messages.push(user_msg("second"));
-    app.messages.push(assistant_msg(vec![]));
+    app.transcript.messages.push(user_msg("second"));
+    app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(3);
     handle_client_event(
         &mut app,
@@ -3541,12 +3624,13 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         })),
     );
 
-    assert_eq!(app.messages.len(), 4);
-    let Some(MessageBlock::Notice(first_notice)) = app.messages[1].blocks.first() else {
+    assert_eq!(app.transcript.messages.len(), 4);
+    let Some(MessageBlock::Notice(first_notice)) = app.transcript.messages[1].blocks.first() else {
         panic!("expected first turn notice");
     };
     assert_eq!(first_notice.text.text, first_notice_text);
-    let Some(MessageBlock::Notice(second_notice)) = app.messages[3].blocks.first() else {
+    let Some(MessageBlock::Notice(second_notice)) = app.transcript.messages[3].blocks.first()
+    else {
         panic!("expected second turn notice");
     };
     assert!(second_notice.text.text.contains("daily rate limit"));
@@ -3557,8 +3641,8 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
 fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
-    app.messages.push(user_msg("hello"));
-    app.messages.push(assistant_msg(vec![]));
+    app.transcript.messages.push(user_msg("hello"));
+    app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(1);
 
     handle_client_event(
@@ -3579,14 +3663,14 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
         })),
     );
 
-    assert_eq!(app.turn_notice_refs.len(), 1);
+    assert_eq!(app.turn.notice_refs.len(), 1);
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert!(app.turn_notice_refs.is_empty());
+    assert!(app.turn.notice_refs.is_empty());
 
     app.status = AppStatus::Thinking;
-    app.messages.push(user_msg("again"));
-    app.messages.push(assistant_msg(vec![]));
-    app.bind_active_turn_assistant(app.messages.len() - 1);
+    app.transcript.messages.push(user_msg("again"));
+    app.transcript.messages.push(assistant_msg(vec![]));
+    app.bind_active_turn_assistant(app.transcript.messages.len() - 1);
     handle_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
@@ -3604,7 +3688,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             has_chargeable_saved_payment_method: None,
         })),
     );
-    assert_eq!(app.turn_notice_refs.len(), 1);
+    assert_eq!(app.turn.notice_refs.len(), 1);
 
     handle_client_event(
         &mut app,
@@ -3617,16 +3701,16 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             history_updates: Vec::new(),
         },
     );
-    assert!(app.turn_notice_refs.is_empty());
+    assert!(app.turn.notice_refs.is_empty());
 }
 
 #[test]
 fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
     let mut app = make_test_app();
-    app.messages.push(user_msg("build app"));
+    app.transcript.messages.push(user_msg("build app"));
 
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
-    assert!(app.cancelled_turn_pending_hint);
+    assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(
         &mut app,
@@ -3637,10 +3721,10 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         },
     );
 
-    assert!(!app.cancelled_turn_pending_hint);
+    assert!(!app.turn.cancelled_pending_hint);
     assert!(matches!(app.status, AppStatus::Ready));
 
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("expected interruption hint message");
     };
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
@@ -3653,7 +3737,7 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
 #[test]
 fn turn_cancel_marks_active_tools_failed() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
@@ -3661,7 +3745,7 @@ fn turn_cancel_marks_active_tools_failed() {
 
     handle_client_event(&mut app, ClientEvent::TurnCancelled);
 
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
     };
     let statuses: Vec<model::ToolCallStatus> = last
@@ -3685,14 +3769,14 @@ fn turn_cancel_marks_active_tools_failed() {
 #[test]
 fn turn_complete_marks_lingering_tools_completed() {
     let mut app = make_test_app();
-    app.messages.push(assistant_msg(vec![
+    app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
     ]));
 
     handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    let Some(last) = app.messages.last() else {
+    let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
     };
     let statuses: Vec<model::ToolCallStatus> = last
@@ -3720,7 +3804,7 @@ fn ctrl_v_not_inserted_by_chat_key_handlers() {
 #[test]
 fn pending_paste_payload_blocks_overlapping_key_text_insertion() {
     let mut app = make_test_app();
-    app.pending_paste_text = "clipboard".to_owned();
+    app.paste.pending_text = "clipboard".to_owned();
 
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
 
@@ -3829,13 +3913,13 @@ fn permission_owner_handles_up_down_for_pending_interactions() {
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
 
-    assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-b", "perm-a"]);
 }
 
 #[test]
 fn permission_focus_allows_typing_for_non_permission_keys() {
     let mut app = make_test_app();
-    app.pending_interaction_ids.push("perm-1".into());
+    app.turn.pending_interaction_ids.push("perm-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
     handle_terminal_event(
@@ -3878,7 +3962,7 @@ fn permission_request_with_existing_draft_does_not_claim_focus() {
     );
 
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-    assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+    assert_eq!(app.turn.pending_interaction_ids, vec![tool_id]);
     assert_eq!(permission_focus_state(&app, tool_id), Some(false));
 }
 
@@ -3911,7 +3995,7 @@ fn question_request_with_existing_draft_does_not_claim_focus() {
     );
 
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-    assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+    assert_eq!(app.turn.pending_interaction_ids, vec![tool_id]);
     assert_eq!(question_focus_state(&app, tool_id), Some(false));
 }
 
@@ -3957,7 +4041,7 @@ fn enter_submits_draft_when_permission_arrives_mid_compose() {
     super::super::finalize_deferred_submit(&mut app);
 
     assert!(app.pending_submit.is_none());
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
     assert!(bridge_rx.try_recv().is_ok());
     assert!(response_rx.try_recv().is_err());
 }
@@ -4092,7 +4176,9 @@ fn space_toggles_focused_question_without_reclaiming_input() {
     assert_eq!(app.focus_owner(), FocusOwner::Permission);
     assert_eq!(app.input.text(), "");
     let (mi, bi) = app.lookup_tool_call("question-space").expect("question tool call");
-    let MessageBlock::ToolCall(tc) = app.messages.get(mi).unwrap().blocks.get(bi).unwrap() else {
+    let MessageBlock::ToolCall(tc) =
+        app.transcript.messages.get(mi).unwrap().blocks.get(bi).unwrap()
+    else {
         panic!("expected tool call block");
     };
     let question = tc.pending_question.as_ref().expect("pending question");
@@ -4111,13 +4197,13 @@ fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
         ],
         false,
     );
-    app.pending_interaction_ids.insert(0, "stale-id".into());
+    app.turn.pending_interaction_ids.insert(0, "stale-id".into());
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
 
     let response = response_rx.try_recv().expect("permission response");
     assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.turn.pending_interaction_ids.is_empty());
 }
 
 #[test]
@@ -4150,7 +4236,10 @@ fn update_notice_is_not_duplicated_within_same_session_epoch() {
     session::ensure_update_notice_message(&mut app);
     session::ensure_update_notice_message(&mut app);
 
-    assert_eq!(app.messages.iter().filter(|msg| is_update_notice_message(msg)).count(), 1);
+    assert_eq!(
+        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
+        1
+    );
     assert_eq!(
         app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
         Some(app.session_scope_epoch)
@@ -4170,7 +4259,10 @@ fn update_notice_is_re_emitted_after_epoch_change() {
     app.bump_session_scope_epoch();
     session::ensure_update_notice_message(&mut app);
 
-    assert_eq!(app.messages.iter().filter(|msg| is_update_notice_message(msg)).count(), 2);
+    assert_eq!(
+        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
+        2
+    );
     assert_eq!(
         app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
         Some(app.session_scope_epoch)
@@ -4190,9 +4282,16 @@ fn update_available_persists_across_connected_session_reset() {
     );
     handle_client_event(&mut app, connected_event("claude-updated"));
 
-    assert_eq!(app.messages.iter().filter(|msg| is_update_notice_message(msg)).count(), 1);
-    assert!(matches!(app.messages.first().map(|msg| &msg.role), Some(MessageRole::Welcome)));
+    assert_eq!(
+        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
+        1
+    );
+    assert!(matches!(
+        app.transcript.messages.first().map(|msg| &msg.role),
+        Some(MessageRole::Welcome)
+    ));
     let notice = app
+        .transcript
         .messages
         .iter()
         .find(|msg| is_update_notice_message(msg))
@@ -4233,9 +4332,16 @@ fn update_available_persists_across_session_replaced_reset() {
         },
     );
 
-    assert_eq!(app.messages.iter().filter(|msg| is_update_notice_message(msg)).count(), 1);
-    assert!(matches!(app.messages.first().map(|msg| &msg.role), Some(MessageRole::Welcome)));
+    assert_eq!(
+        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
+        1
+    );
+    assert!(matches!(
+        app.transcript.messages.first().map(|msg| &msg.role),
+        Some(MessageRole::Welcome)
+    ));
     let notice = app
+        .transcript
         .messages
         .iter()
         .find(|msg| is_update_notice_message(msg))
@@ -4268,10 +4374,10 @@ fn attach_pending_permission(
         selected_index: 0,
         focused,
     });
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
-    let msg_idx = app.messages.len().saturating_sub(1);
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+    let msg_idx = app.transcript.messages.len().saturating_sub(1);
     app.index_tool_call(tool_id.into(), msg_idx, 0);
-    app.pending_interaction_ids.push(tool_id.into());
+    app.turn.pending_interaction_ids.push(tool_id.into());
     app.claim_focus_target(FocusTarget::Permission);
     response_rx
 }
@@ -4296,10 +4402,10 @@ fn attach_pending_question(
         question_index: 0,
         total_questions: 1,
     });
-    app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
-    let msg_idx = app.messages.len().saturating_sub(1);
+    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+    let msg_idx = app.transcript.messages.len().saturating_sub(1);
     app.index_tool_call(tool_id.into(), msg_idx, 0);
-    app.pending_interaction_ids.push(tool_id.into());
+    app.turn.pending_interaction_ids.push(tool_id.into());
     if focused {
         app.claim_focus_target(FocusTarget::Permission);
     }
@@ -4308,7 +4414,7 @@ fn attach_pending_question(
 
 fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
-    let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
+    let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
         return None;
     };
     tc.pending_permission.as_ref().map(|permission| permission.focused)
@@ -4316,7 +4422,7 @@ fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
 
 fn question_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
-    let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
+    let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
         return None;
     };
     tc.pending_question.as_ref().map(|question| question.focused)
@@ -4344,7 +4450,7 @@ fn permission_ctrl_y_does_not_resolve_pending_permission() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -4378,7 +4484,7 @@ fn permission_ctrl_a_does_not_resolve_pending_permission() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -4419,7 +4525,7 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -4454,7 +4560,7 @@ fn plan_approval_raw_ctrl_y_does_not_resolve_permission() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
     assert_eq!(app.input.text(), "seed");
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -4479,12 +4585,12 @@ fn second_esc_after_permission_rejection_requests_turn_cancel() {
         panic!("expected selected permission response");
     };
     assert_eq!(selected.option_id.clone(), "deny");
-    assert!(app.pending_interaction_ids.is_empty());
-    assert_eq!(app.pending_cancel_origin, None);
+    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert_eq!(app.turn.pending_cancel_origin, None);
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
 
-    assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+    assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
     let envelope = rx.try_recv().expect("second Esc should send turn cancel");
     assert!(matches!(
         envelope.command,
@@ -4532,7 +4638,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     let mut app = make_test_app();
     app.input.set_text("draft");
     app.pending_submit = Some(app.input.snapshot());
-    app.pending_paste_text = "queued paste".to_owned();
+    app.paste.pending_text = "queued paste".to_owned();
     app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
         data: "image-data".to_owned(),
         mime_type: "image/png".to_owned(),
@@ -4546,7 +4652,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     assert!(!app.should_quit);
     assert!(app.input.is_empty());
     assert!(app.pending_submit.is_none());
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.pending_images.is_empty());
 
     handle_terminal_event(
@@ -4657,7 +4763,7 @@ fn error_state_blocks_paste_events() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.input.is_empty());
 }
 
@@ -4734,7 +4840,7 @@ fn settings_view_ignores_paste_events() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.input.is_empty());
 }
 
@@ -4782,8 +4888,8 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.input.text(), "seed");
-    assert!(app.pending_paste_text.is_empty());
-    assert!(app.startup_connection_requested);
+    assert!(app.paste.pending_text.is_empty());
+    assert!(app.startup.connection_requested());
 }
 
 #[test]
@@ -4793,7 +4899,7 @@ fn trusted_view_ignores_paste_events() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.input.is_empty());
 }
 
@@ -4804,7 +4910,7 @@ fn session_picker_ignores_paste_events() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.paste.pending_text.is_empty());
     assert!(app.input.is_empty());
 }
 
@@ -4814,15 +4920,15 @@ fn buffered_paste_char_does_not_request_redraw() {
     let now = Instant::now();
 
     assert_eq!(
-        app.paste_burst.on_char('a', now),
+        app.paste.burst.on_char('a', now),
         super::super::paste_burst::CharAction::Passthrough('a')
     );
     assert_eq!(
-        app.paste_burst.on_char('b', now + Duration::from_millis(1)),
+        app.paste.burst.on_char('b', now + Duration::from_millis(1)),
         super::super::paste_burst::CharAction::Consumed
     );
     assert_eq!(
-        app.paste_burst.on_char('c', now + Duration::from_millis(2)),
+        app.paste.burst.on_char('c', now + Duration::from_millis(2)),
         super::super::paste_burst::CharAction::RetroCapture(1)
     );
 
@@ -4860,9 +4966,9 @@ fn api_retry_updates_single_warning_notice() {
         }),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert_eq!(app.turn_notice_refs.len(), 1);
-    let MessageBlock::Notice(notice) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert_eq!(app.turn.notice_refs.len(), 1);
+    let MessageBlock::Notice(notice) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected API retry notice");
     };
     assert_eq!(notice.severity, SystemSeverity::Warning);
@@ -4880,8 +4986,8 @@ fn system_notice_update_uses_notice_lane() {
         }),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    let MessageBlock::Notice(notice) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    let MessageBlock::Notice(notice) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected system notice");
     };
     assert_eq!(notice.severity, SystemSeverity::Warning);
@@ -4960,9 +5066,12 @@ fn settings_parse_error_surfaces_system_error_message() {
         }),
     );
 
-    assert_eq!(app.messages.len(), 1);
-    assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Error))));
-    let MessageBlock::Text(text) = &app.messages[0].blocks[0] else {
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(matches!(
+        app.transcript.messages[0].role,
+        MessageRole::System(Some(SystemSeverity::Error))
+    ));
+    let MessageBlock::Text(text) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected settings parse error text");
     };
     assert_eq!(

@@ -328,7 +328,7 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    app.is_compacting = true;
+    app.turn.is_compacting = true;
     false
 }
 

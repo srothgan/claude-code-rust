@@ -6,7 +6,8 @@ use super::prelude::*;
 impl App {
     /// Ensure the synthetic welcome message exists at index 0.
     pub fn ensure_welcome_message(&mut self) {
-        if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
+        if self.transcript.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome))
+        {
             return;
         }
         self.insert_message_tracked(0, self.build_welcome_message());
@@ -52,7 +53,7 @@ impl App {
 
     #[must_use]
     pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
-        let first = self.messages.first()?;
+        let first = self.transcript.messages.first()?;
         let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
             return None;
         };
@@ -72,7 +73,7 @@ impl App {
         let subscription = self.welcome_subscription_display().to_owned();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.messages.first() else {
+        let Some(first) = self.transcript.messages.first() else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {
@@ -80,7 +81,7 @@ impl App {
         }
         let mut changed = false;
         {
-            let Some(first) = self.messages.first_mut() else {
+            let Some(first) = self.transcript.messages.first_mut() else {
                 return;
             };
             let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {

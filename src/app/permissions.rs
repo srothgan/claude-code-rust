@@ -187,11 +187,11 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         return;
     };
 
-    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -245,11 +245,11 @@ fn respond_permission_cancel(app: &mut App) {
         return;
     };
 
-    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -332,13 +332,13 @@ mod tests {
         options: Vec<model::PermissionOption>,
         focused: bool,
     ) -> oneshot::Receiver<model::RequestPermissionResponse> {
-        let msg_idx = app.messages.len();
-        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        let msg_idx = app.transcript.messages.len();
+        app.transcript.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.transcript.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_permission = Some(InlinePermission {
                 options,
@@ -349,13 +349,13 @@ mod tests {
                 focused,
             });
         }
-        app.pending_interaction_ids.push(tool_id.to_owned());
+        app.turn.pending_interaction_ids.push(tool_id.to_owned());
         rx
     }
 
     fn add_tool_without_permission(app: &mut App, tool_id: &str) {
-        let msg_idx = app.messages.len();
-        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        let msg_idx = app.transcript.messages.len();
+        app.transcript.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
     }
 
@@ -363,7 +363,8 @@ mod tests {
         let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
             return false;
         };
-        let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
         else {
             return false;
         };
@@ -377,7 +378,7 @@ mod tests {
         let mut rx1 = add_permission(&mut app, "perm-1", allow_options(), true);
         let mut rx2 = add_permission(&mut app, "perm-2", allow_options(), false);
 
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
+        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1", "perm-2"]);
         assert!(permission_focused(&app, "perm-1"));
         assert!(!permission_focused(&app, "perm-2"));
 
@@ -387,7 +388,7 @@ mod tests {
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
         );
         assert_eq!(consumed, KeyOutcome::Handled(true));
-        assert_eq!(app.pending_interaction_ids, vec!["perm-2", "perm-1"]);
+        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-2", "perm-1"]);
         assert!(permission_focused(&app, "perm-2"));
         assert!(!permission_focused(&app, "perm-1"));
 
@@ -404,7 +405,7 @@ mod tests {
         };
         assert_eq!(sel2.option_id.clone(), "allow-once");
         assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
@@ -446,7 +447,7 @@ mod tests {
             KeyOutcome::Ignored
         );
 
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -454,7 +455,7 @@ mod tests {
     fn keeps_non_tool_blocks_untouched() {
         let app = App::test_default();
         let _ = IncrementalMarkdown::default();
-        assert!(app.messages.is_empty());
+        assert!(app.transcript.messages.is_empty());
     }
 
     #[test]
@@ -500,6 +501,6 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id, "allow-once");
-        assert_eq!(app.pending_interaction_ids, Vec::<String>::new());
+        assert_eq!(app.turn.pending_interaction_ids, Vec::<String>::new());
     }
 }

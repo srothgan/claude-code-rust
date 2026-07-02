@@ -11,21 +11,13 @@ pub struct App {
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
-    pub messages: Vec<ChatMessage>,
-    /// Cached approximate retained bytes for each message, parallel to `messages`.
-    pub message_retained_bytes: Vec<usize>,
-    /// Rolling total of `message_retained_bytes`.
-    pub retained_history_bytes: usize,
+    pub transcript: Transcript,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
     pub resuming_session_id: Option<String>,
     /// Whether the synthetic session overview is eligible for chat transcript output.
     pub show_session_overview: bool,
-    /// Spinner label shown while a slash command is in flight (`CommandPending`).
-    pub pending_command_label: Option<String>,
-    /// Ack marker required to clear `CommandPending` for strict completion semantics.
-    pub pending_command_ack: Option<PendingCommandAck>,
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
@@ -43,40 +35,20 @@ pub struct App {
     pub config_options: BTreeMap<String, serde_json::Value>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
-    /// When true, the current/next turn completion should clear local conversation history.
-    /// Set by `/compact` once the command is accepted for bridge forwarding.
-    pub pending_compact_clear: bool,
-    /// Tool call IDs with pending inline interactions, ordered by arrival.
-    /// The first entry is the focused interaction that receives keyboard input.
-    /// Up / Down arrow keys cycle focus through the list.
-    pub pending_interaction_ids: Vec<String>,
-    /// Set when a cancel notification succeeds; consumed on `TurnComplete`
-    /// to render a red interruption hint in chat.
-    pub cancelled_turn_pending_hint: bool,
-    /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
-    /// Auto-submit the current input draft once cancellation transitions the app
-    /// back to `Ready`.
-    pub pending_auto_submit_after_cancel: bool,
+    /// State scoped to the currently active turn (command spinner, cancel
+    /// bookkeeping, inline interactions, turn-local notices).
+    pub turn: TurnState,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
-    /// Message index that owns the current main-assistant turn indicators.
-    pub active_turn_assistant_message_idx: Option<usize>,
-    /// IDs of root Task/Agent tool calls currently `InProgress`.
-    /// Use `insert_active_task()`, `remove_active_task()`.
-    pub active_task_ids: HashSet<String>,
     /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
     /// and explicitly owned subagent child tools.
     pub tool_call_scopes: HashMap<String, ToolCallScope>,
     /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::agent::events::TerminalMap,
-    /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
-    /// Use `lookup_tool_call()`, `index_tool_call()`.
-    pub tool_call_index: HashMap<String, (usize, usize)>,
     /// Current SDK task state from `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`.
     pub tasks: Vec<model::TaskItem>,
     /// Focus manager for directional/navigation key ownership.
@@ -117,20 +89,8 @@ pub struct App {
     /// If another editing-like event or a paste payload arrives in the same
     /// drain cycle, this is cleared and no submit occurs.
     pub pending_submit: Option<InputSnapshot>,
-    /// Timing-based paste burst detector. Detects rapid character streams
-    /// (paste delivered as individual key events) and buffers them into a
-    /// single paste payload. Fallback for terminals without bracketed paste.
-    pub paste_burst: paste_burst::PasteBurstDetector,
-    /// Buffered `Event::Paste` payload for this drain cycle.
-    /// Some terminals split one clipboard paste into multiple chunks; we merge
-    /// them and apply placeholder threshold to the merged content once per cycle.
-    pub pending_paste_text: String,
-    /// Pending paste session metadata for the currently queued `Event::Paste` payload.
-    pub pending_paste_session: Option<PasteSessionState>,
-    /// Most recent active placeholder paste session, used for safe chunk continuation.
-    pub active_paste_session: Option<PasteSessionState>,
-    /// Monotonic counter for paste session identifiers.
-    pub next_paste_session_id: u64,
+    /// Paste ingestion state: burst detection, queued chunks, session tracking.
+    pub paste: PasteState,
     /// Pending image attachments accumulated via Ctrl+V clipboard reads and
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
@@ -153,18 +113,9 @@ pub struct App {
     pub prompt_suggestion: Option<String>,
     /// Latest rate-limit telemetry from the SDK.
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
-    /// Turn-local inline/system notices that may upgrade in place during the active turn.
-    pub turn_notice_refs: Vec<TurnNoticeRef>,
-    /// True while the SDK reports active compaction.
-    pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,
 
-    /// Indexed terminal tool calls for per-frame terminal snapshot updates.
-    /// Avoids O(n*m) scan of all messages/blocks every frame.
-    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
-    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Central notification manager (bell + desktop toast when unfocused).
     pub notifications: notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
@@ -173,17 +124,6 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
-    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`
-    /// plus one synthetic per-message slot at the tail of each row.
-    pub(crate) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
-    /// Rolling total of cached render bytes across blocks and message-level caches.
-    pub(crate) render_cache_total_bytes: usize,
-    /// Rolling total of cached render bytes currently excluded from the budget.
-    pub(crate) render_cache_protected_bytes: usize,
-    /// Evictable cached blocks ordered by LRU and size tie-breaker.
-    pub(crate) render_cache_evictable: BTreeSet<render_budget::RenderCacheEvictionKey>,
-    /// Last message index currently protected as the streaming tail, if any.
-    pub(crate) render_cache_tail_msg_idx: Option<usize>,
     /// Byte budget for source conversation history retained in memory.
     pub history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
@@ -196,14 +136,8 @@ pub struct App {
     pub last_frame_at: Option<Instant>,
     /// Last emitted chat render trace snapshot to suppress identical per-frame summaries.
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
-    pub startup_connection_requested: bool,
-    pub connection_started: bool,
-    pub startup_bridge_script: Option<PathBuf>,
-    pub startup_resume_id: Option<String>,
-    pub startup_resume_requested: bool,
-    pub startup_session_picker_requested: bool,
-    pub startup_recent_sessions_loaded: bool,
-    pub startup_session_picker_resolved: bool,
+    /// Bootstrap sequencing state resolved from CLI flags at launch.
+    pub startup: StartupState,
 }
 
 impl App {
@@ -256,15 +190,12 @@ impl App {
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
-            messages: Vec::new(),
-            message_retained_bytes: Vec::new(),
-            retained_history_bytes: 0,
+            transcript: Transcript::default(),
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
             show_session_overview: true,
-            pending_command_label: None,
-            pending_command_ack: None,
+            turn: TurnState::default(),
             should_quit: false,
             exit_error: None,
             session_id: None,
@@ -280,22 +211,14 @@ impl App {
             mode: None,
             config_options: BTreeMap::new(),
             login_hint: None,
-            pending_compact_clear: false,
-            pending_interaction_ids: Vec::new(),
-            cancelled_turn_pending_hint: false,
-            pending_cancel_origin: None,
-            pending_auto_submit_after_cancel: false,
             event_tx: tx,
             event_rx: rx,
             file_index_event_tx: file_index_tx,
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            active_turn_assistant_message_idx: None,
-            active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
             terminals: std::rc::Rc::default(),
-            tool_call_index: HashMap::default(),
             tasks: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
@@ -314,11 +237,7 @@ impl App {
             slash: None,
             subagent: None,
             pending_submit: None,
-            paste_burst: paste_burst::PasteBurstDetector::new(),
-            pending_paste_text: String::new(),
-            pending_paste_session: None,
-            active_paste_session: None,
-            next_paste_session_id: 1,
+            paste: PasteState::default(),
             pending_images: Vec::new(),
             git_context: GitContextState::default(),
             update_notice: None,
@@ -329,33 +248,22 @@ impl App {
             runtime_session_state: None,
             prompt_suggestion: None,
             last_rate_limit_update: None,
-            turn_notice_refs: Vec::new(),
-            is_compacting: false,
             account_info: None,
-            terminal_tool_calls: Vec::new(),
-            terminal_tool_call_membership: HashSet::new(),
             notifications: notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
-            render_cache_slots: Vec::new(),
-            render_cache_total_bytes: 0,
-            render_cache_protected_bytes: 0,
-            render_cache_evictable: BTreeSet::new(),
-            render_cache_tail_msg_idx: None,
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
             last_chat_render_trace_state: None,
-            startup_connection_requested: false,
-            connection_started: false,
-            startup_bridge_script: None,
-            startup_resume_id: None,
-            startup_resume_requested: false,
-            startup_session_picker_requested: false,
-            startup_recent_sessions_loaded: false,
-            startup_session_picker_resolved: false,
+            startup: StartupState::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn test_request_startup_session_picker(&mut self) {
+        self.startup = StartupState::new(None, None, true);
     }
 }

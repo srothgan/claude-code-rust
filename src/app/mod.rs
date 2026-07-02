@@ -168,7 +168,7 @@ async fn run_tui_loop(
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
         if app.surface_mode == SurfaceMode::Chat
-            && let Some(action) = app.paste_burst.tick(now)
+            && let Some(action) = app.paste.burst.tick(now)
         {
             match action {
                 paste_burst::FlushAction::EmitChar(ch) => {
@@ -181,7 +181,7 @@ async fn run_tui_loop(
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.surface_mode == SurfaceMode::Chat && !app.pending_paste_text.is_empty() {
+        if app.surface_mode == SurfaceMode::Chat && app.paste.has_pending_text() {
             finalize_pending_paste_event(app);
         }
 
@@ -207,7 +207,7 @@ async fn run_tui_loop(
                 | AppStatus::CommandPending
                 | AppStatus::Thinking
                 | AppStatus::Running
-        ) || app.is_compacting;
+        ) || app.turn.is_compacting;
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -321,10 +321,10 @@ fn handle_runtime_client_event(
 
 fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::TerminalRuntime) {
     // Dismiss all pending inline permissions (reject via last option)
-    for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
-        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
+    for tool_id in std::mem::take(&mut app.turn.pending_interaction_ids) {
+        if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
-                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
             if let Some(pending) = tc.pending_permission.take()
@@ -394,20 +394,16 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
-    let pasted = std::mem::take(&mut app.pending_paste_text);
+    let pasted = app.paste.take_pending_text();
     if pasted.is_empty() {
         return;
     }
     let pasted_chars = pasted.chars().count();
 
-    let session = app.pending_paste_session.take().unwrap_or_else(|| {
-        let id = app.next_paste_session_id;
-        app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
-        state::PasteSessionState {
-            id,
-            start: SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() },
-            placeholder_index: None,
-        }
+    let session = app.paste.take_pending_session().unwrap_or_else(|| state::PasteSessionState {
+        id: app.paste.allocate_session_id(),
+        start: SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() },
+        placeholder_index: None,
     });
     let session_id = session.id;
 
@@ -427,7 +423,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         .is_some()
         && app.input.append_to_active_paste_block(&pasted);
     if appended {
-        app.active_paste_session = Some(session);
+        app.paste.set_active_session(session);
         app.request_chat_repaint();
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -446,8 +442,8 @@ fn finalize_pending_paste_event(app: &mut App) {
         let idx = app.input.lines().get(app.input.cursor_row()).and_then(|line| {
             input::parse_paste_placeholder_before_cursor(line, app.input.cursor_col())
         });
-        app.active_paste_session =
-            Some(state::PasteSessionState { placeholder_index: idx, ..session });
+        app.paste
+            .set_active_session(state::PasteSessionState { placeholder_index: idx, ..session });
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_placeholder_inserted",
@@ -460,7 +456,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         );
     } else {
         app.input.insert_str(&pasted);
-        app.active_paste_session = None;
+        app.paste.clear_active_session();
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_inline_inserted",

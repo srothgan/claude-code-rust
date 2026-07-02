@@ -40,8 +40,9 @@ fn claude_meta(
 
 #[allow(clippy::expect_used)]
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
-    let (message_index, block_index) = app.tool_call_index[id];
-    app.messages
+    let (message_index, block_index) = app.lookup_tool_call(id).expect("tool call indexed");
+    app.transcript
+        .messages
         .get(message_index)
         .and_then(|message| message.blocks.get(block_index))
         .and_then(|block| match block {
@@ -170,7 +171,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.active_task_ids.contains("task-pend"), "new Task should be tracked");
+    assert!(app.turn.active_task_ids.contains("task-pend"), "new Task should be tracked");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
     send_client_event(
@@ -179,7 +180,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             model::ToolCallUpdate::new("task-pend", fields),
         )),
     );
-    assert!(app.active_task_ids.contains("task-pend"), "Pending should stay active");
+    assert!(app.turn.active_task_ids.contains("task-pend"), "Pending should stay active");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
@@ -188,14 +189,14 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             model::ToolCallUpdate::new("task-pend", fields),
         )),
     );
-    assert!(!app.active_task_ids.contains("task-pend"), "completed Task should be removed");
+    assert!(!app.turn.active_task_ids.contains("task-pend"), "completed Task should be removed");
 
     let tc = model::ToolCall::new("task-fail", "Subtask")
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.active_task_ids.contains("task-fail"));
+    assert!(app.turn.active_task_ids.contains("task-fail"));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     send_client_event(
@@ -204,7 +205,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             model::ToolCallUpdate::new("task-fail", fields),
         )),
     );
-    assert!(!app.active_task_ids.contains("task-fail"), "failed Task should also be removed");
+    assert!(!app.turn.active_task_ids.contains("task-fail"), "failed Task should also be removed");
 }
 
 #[tokio::test]
@@ -303,10 +304,10 @@ async fn multiple_tool_calls_independently_indexed() {
         send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
     }
 
-    assert_eq!(app.tool_call_index.len(), 5);
+    assert_eq!(app.tool_call_index_len(), 5);
     for i in 0..5 {
         let key = format!("tc-{i}");
-        assert!(app.tool_call_index.contains_key(&key), "missing {key}");
+        assert!(app.has_tool_call(&key), "missing {key}");
     }
 }
 
@@ -329,8 +330,8 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
         ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-meta"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-meta").expect("tc-meta indexed");
+    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
         assert_eq!(tc.sdk_tool_name, "WebSearch");
     } else {
         panic!("expected ToolCall block");
@@ -373,8 +374,8 @@ async fn title_shortened_relative_to_cwd() {
         .status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    let (mi, bi) = app.tool_call_index["tc-shorten"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-shorten").expect("tc-shorten indexed");
+    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
         assert_eq!(tc.title, "Read src/main.rs", "absolute path shortened to relative");
     } else {
         panic!("expected ToolCall block");
@@ -405,8 +406,11 @@ async fn tool_call_update_locations_replace_metadata_and_invalidate_render_cache
         .content(vec![model::ToolCallContent::from("fn main() {}\n".to_owned())]);
     send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
 
-    let (message_index, block_index) = app.tool_call_index["tc-location-update"];
-    if let MessageBlock::ToolCall(tc) = &mut app.messages[message_index].blocks[block_index] {
+    let (message_index, block_index) =
+        app.lookup_tool_call("tc-location-update").expect("tc-location-update indexed");
+    if let MessageBlock::ToolCall(tc) =
+        &mut app.transcript.messages[message_index].blocks[block_index]
+    {
         tc.cache.store(vec![Line::from("cached body")]);
         assert!(tc.cache.get().is_some());
     } else {

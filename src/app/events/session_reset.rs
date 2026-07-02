@@ -56,9 +56,7 @@ fn reset_session_identity_state(
     app.last_rate_limit_update = None;
     app.should_quit = false;
     app.files_accessed = 0;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
+    app.turn.clear_cancel_state();
     app.account_info = None;
 }
 
@@ -78,16 +76,14 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 fn reset_input_state_for_new_session(app: &mut App) {
     app.input.clear();
     app.pending_submit = None;
-    app.pending_paste_text.clear();
-    app.pending_paste_session = None;
-    app.active_paste_session = None;
+    app.paste.clear_all_sessions();
     app.pending_images.clear();
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
-    app.pending_interaction_ids.clear();
+    app.turn.reset_for_new_session();
     app.clear_tool_scope_tracking();
-    app.tool_call_index.clear();
+    app.clear_tool_call_index();
     app.tasks.clear();
     app.focus = super::super::FocusManager::default();
     app.available_commands.clear();
@@ -123,7 +119,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         return;
     }
 
-    if let Some(last) = app.messages.last_mut()
+    if let Some(last) = app.transcript.messages.last_mut()
         && matches!(last.role, MessageRole::User)
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
@@ -137,7 +133,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
                     .with_source_message_uuid(chunk.source_message_uuid.as_deref()),
             ));
         }
-        let last_idx = app.messages.len().saturating_sub(1);
+        let last_idx = app.transcript.messages.len().saturating_sub(1);
         app.sync_after_message_blocks_changed(last_idx);
         return;
     }
@@ -176,9 +172,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     app.clear_active_turn_assistant();
     super::clear_compaction_state(app, false);
     app.status = super::super::AppStatus::Ready;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
-    app.pending_auto_submit_after_cancel = false;
+    app.turn.clear_cancel_state();
     app.enforce_history_retention_tracked();
 }
 
@@ -196,7 +190,12 @@ mod tests {
         app.chat_render.composer.total_rows = 6;
         app.chat_render.live_region.anchor_valid = true;
         app.chat_render.live_region.last_rendered_rows = 9;
-        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-1",
+        ));
 
         reset_for_new_session(
             &mut app,
@@ -217,7 +216,7 @@ mod tests {
     #[test]
     fn startup_session_reset_preserves_inline_viewport_for_diffed_repaint() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
         app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
         app.surface_dirty.chat.repaint = false;
 
@@ -237,7 +236,12 @@ mod tests {
     #[test]
     fn replacement_session_reset_defers_transcript_render() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-1"));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-1",
+        ));
         app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
         app.surface_dirty.chat.repaint = false;
 

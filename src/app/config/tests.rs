@@ -184,7 +184,7 @@ fn open_does_not_force_stop_active_turn() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
     assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.pending_cancel_origin.is_none());
+    assert!(app.turn.pending_cancel_origin.is_none());
 }
 
 #[test]
