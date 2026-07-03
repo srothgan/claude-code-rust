@@ -74,7 +74,7 @@ RUST_LOG=debug cargo run
 
 ### Running CI Checks Locally
 
-These match the checks in `.github/workflows/ci.yml`:
+These match the core checks in `.github/workflows/pr.yml`:
 
 ```bash
 # Formatting
@@ -89,9 +89,16 @@ cargo test --all-features
 # Lockfile integrity
 cargo fetch --locked
 
+# Cargo dependency policy
+cargo deny check bans licenses sources advisories
+
 # MSRV (requires the 1.88.0 toolchain)
 cargo +1.88.0 check --all-features
 ```
+
+Additional GitHub-only checks include the separate PR title lint workflow,
+CodeQL analysis, path-aware package layout validation, scheduled cross-platform
+smoke tests, and release packaging validation.
 
 ### Release And Packaging Changes
 
@@ -135,7 +142,7 @@ agent-sdk/
 
 1. `main.rs` boots a `tokio::task::LocalSet` (required because the bridge child
    process handles are `!Send`) and hands control to `app::run_tui`.
-2. `agent::client::BridgeClient` spawns `agent-sdk/dist/bridge.mjs` as a child
+2. `agent::client::BridgeClient` spawns `agent-sdk/dist/bridge.js` as a child
    process and communicates over **NDJSON on stdin/stdout**.
 3. The Rust side sends `CommandEnvelope`s (start session, submit prompt,
    permission responses, …) and receives `EventEnvelope`s (assistant messages,
