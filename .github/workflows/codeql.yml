@@ -1,12 +1,9 @@
 name: "CodeQL"
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     - cron: "27 4 * * 1"  # weekly, catches new queries on unchanged code
+  workflow_dispatch:
 
 jobs:
   analyze:
@@ -28,10 +25,10 @@ jobs:
           - language: javascript-typescript
             build-mode: none
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@fb84f6228fd846d3c392887f22b18ce2d9139495 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -39,6 +36,6 @@ jobs:
           # queries: security-extended
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@fb84f6228fd846d3c392887f22b18ce2d9139495 # v4
         with:
           category: "/language:${{ matrix.language }}"

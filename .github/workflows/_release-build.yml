@@ -1,0 +1,83 @@
+name: Release Build
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      package_dir:
+        required: true
+        type: string
+      exe:
+        required: true
+        type: string
+      asset:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      artifact_prefix:
+        required: false
+        type: string
+        default: release-binary
+      attest:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.target }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: ${{ inputs.target }}
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ inputs.target }} --bin claude-rs
+
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ inputs.target }}/release/${{ inputs.exe }}"
+          mkdir -p "dist-assets" "dist-platform/${{ inputs.package_dir }}/bin"
+          cp "$binary" "dist-assets/${{ inputs.asset }}"
+          cp "$binary" "dist-platform/${{ inputs.package_dir }}/bin/${{ inputs.exe }}"
+          chmod +x "dist-assets/${{ inputs.asset }}" "dist-platform/${{ inputs.package_dir }}/bin/${{ inputs.exe }}" 2>/dev/null || true
+          {
+            echo "git_sha=${{ github.sha }}"
+            echo "version=${{ inputs.version }}"
+            echo "rust_target=${{ inputs.target }}"
+            echo "runner_os=${{ runner.os }}"
+            echo "asset=${{ inputs.asset }}"
+            echo "package_dir=${{ inputs.package_dir }}"
+            echo "rustc_version<<EOF"
+            rustc -Vv
+            echo "EOF"
+          } > "dist-assets/${{ inputs.asset }}.build-metadata.txt"
+
+      - name: Generate binary attestation
+        if: inputs.attest
+        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
+        with:
+          subject-path: dist-assets/${{ inputs.asset }}
+
+      - name: Upload staged artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.artifact_prefix }}-${{ inputs.package_dir }}
+          path: |
+            dist-assets/*
+            dist-platform/${{ inputs.package_dir }}/bin/*
+          if-no-files-found: error

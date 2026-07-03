@@ -1,0 +1,261 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.filter.outputs.package }}
+      agent_sdk: ${{ steps.filter.outputs.agent_sdk }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
+            git diff --name-only "origin/${{ github.base_ref }}"...HEAD > changed-files.txt
+          elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
+            git ls-tree -r --name-only HEAD > changed-files.txt
+          else
+            git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > changed-files.txt
+          fi
+
+          package=false
+          agent_sdk=false
+          while IFS= read -r path; do
+            case "$path" in
+              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/generate-npm-packages.mjs|scripts/npm-package-config.mjs|scripts/smoke-npm-package-install.mjs|scripts/verify-npm-packages.mjs|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
+                package=true
+                ;;
+            esac
+            case "$path" in
+              agent-sdk/*|.github/workflows/_agent-sdk.yml)
+                agent_sdk=true
+                ;;
+            esac
+          done < changed-files.txt
+
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+          echo "agent_sdk=$agent_sdk" >> "$GITHUB_OUTPUT"
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test-ubuntu:
+    name: Test Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Run tests
+        run: cargo test --all-features
+
+  lockfile:
+    name: Lockfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Check lockfile
+        run: cargo fetch --locked
+
+  cargo-deny-policy:
+    name: Cargo Deny Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
+        with:
+          rust-version: "1.88.0"
+          command: check bans licenses sources
+          arguments: --all-features
+
+  agent-sdk-check:
+    name: Agent SDK
+    needs: [changes]
+    if: needs.changes.outputs.agent_sdk == 'true'
+    uses: ./.github/workflows/_agent-sdk.yml
+    permissions:
+      contents: read
+
+  npm-package-layout:
+    name: npm Package Layout
+    needs: [changes]
+    if: needs.changes.outputs.package == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-sdk/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install agent-sdk dependencies
+        run: npm ci --prefix agent-sdk
+
+      - name: Build agent-sdk bridge
+        run: npm --prefix agent-sdk run build
+
+      - name: Generate mock npm packages
+        run: node scripts/generate-npm-packages.mjs --mock-binaries
+
+      - name: Verify npm package layout
+        run: node scripts/verify-npm-packages.mjs
+
+      - name: Smoke-test packed npm install
+        run: node scripts/smoke-npm-package-install.mjs
+
+      - name: Upload package layout artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: npm-package-layout
+          path: |
+            dist-npm/manifests/*.json
+            dist-pack/*.tgz
+          if-no-files-found: warn
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: rust
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@fb84f6228fd846d3c392887f22b18ce2d9139495 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@fb84f6228fd846d3c392887f22b18ce2d9139495 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  pr-gate:
+    name: pr-gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - changes
+      - rustfmt
+      - clippy
+      - test-ubuntu
+      - lockfile
+      - cargo-deny-policy
+      - agent-sdk-check
+      - npm-package-layout
+      - codeql
+    steps:
+      - name: Verify required jobs
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUSTFMT: ${{ needs.rustfmt.result }}
+          CLIPPY: ${{ needs.clippy.result }}
+          TEST_UBUNTU: ${{ needs.test-ubuntu.result }}
+          LOCKFILE: ${{ needs.lockfile.result }}
+          CARGO_DENY_POLICY: ${{ needs.cargo-deny-policy.result }}
+          AGENT_SDK: ${{ needs.agent-sdk-check.result }}
+          NPM_PACKAGE_LAYOUT: ${{ needs.npm-package-layout.result }}
+          CODEQL: ${{ needs.codeql.result }}
+        run: |
+          set -euo pipefail
+
+          require_success() {
+            local name="$1"
+            local result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::${name} finished with result: ${result}"
+              exit 1
+            fi
+          }
+
+          allow_success_or_skipped() {
+            local name="$1"
+            local result="$2"
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "::error::${name} finished with result: ${result}"
+              exit 1
+            fi
+          }
+
+          require_success "changes" "$CHANGES"
+          require_success "rustfmt" "$RUSTFMT"
+          require_success "clippy" "$CLIPPY"
+          require_success "test-ubuntu" "$TEST_UBUNTU"
+          require_success "lockfile" "$LOCKFILE"
+          require_success "cargo-deny-policy" "$CARGO_DENY_POLICY"
+          require_success "codeql" "$CODEQL"
+
+          allow_success_or_skipped "agent-sdk-check" "$AGENT_SDK"
+          allow_success_or_skipped "npm-package-layout" "$NPM_PACKAGE_LAYOUT"

@@ -1,4 +1,4 @@
-name: Agent SDK Update Monitor
+name: Dependency Monitor
 
 on:
   schedule:
@@ -7,16 +7,30 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
-  check:
+  cargo-deny-advisories:
+    name: Cargo Deny Advisories
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
+        with:
+          rust-version: "1.88.0"
+          command: check advisories
+          arguments: --all-features
+
+  agent-sdk-update-monitor:
     name: Check latest Agent SDK
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
 
