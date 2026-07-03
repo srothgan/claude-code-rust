@@ -9,12 +9,24 @@ use tracing::info_span;
 
 #[allow(clippy::exit)]
 fn main() {
+    claude_code_rust::failure::install_panic_hook();
     match run() {
         Ok(0) => {}
         Ok(code) => std::process::exit(code),
         Err(err) => {
             if let Some(app_error) = extract_app_error(&err) {
-                eprintln!("{}", app_error.user_message());
+                let mut stderr = std::io::stderr().lock();
+                let detail = format!("{err:#}");
+                if let Err(report_error) =
+                    claude_code_rust::failure::write_app_error_report_with_detail(
+                        &mut stderr,
+                        &app_error,
+                        Some(&detail),
+                    )
+                {
+                    eprintln!("{}", app_error.user_message());
+                    eprintln!("failed to write failure report: {report_error}");
+                }
                 std::process::exit(app_error.exit_code());
             }
             eprintln!("{err:#}");

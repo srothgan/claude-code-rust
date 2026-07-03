@@ -62,7 +62,7 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
         }
         crate::agent::wire::BridgeEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
+            emit_connection_failed(event_tx, message, AppError::BridgeSdkFailure);
         }
         crate::agent::wire::BridgeEvent::SessionUpdate { update, .. } => {
             if let Some(update) = map_session_update(update) {

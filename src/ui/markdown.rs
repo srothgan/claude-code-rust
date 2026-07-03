@@ -1,9 +1,9 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::failure;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use std::panic::{self, AssertUnwindSafe};
 
 pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
     render_markdown_safe_with(text, bg, render_with_tui_markdown)
@@ -13,7 +13,7 @@ fn render_markdown_safe_with<F>(text: &str, bg: Option<Color>, renderer: F) -> V
 where
     F: FnOnce(&str, Option<Color>) -> Vec<Line<'static>>,
 {
-    if let Ok(lines) = panic::catch_unwind(AssertUnwindSafe(|| renderer(text, bg))) {
+    if let Ok(lines) = failure::catch_expected_panic(|| renderer(text, bg)) {
         lines
     } else {
         tracing::warn!(

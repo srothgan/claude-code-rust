@@ -114,9 +114,16 @@ The bundle includes:
 - selected recent runtime logs
 - the legacy log if present
 - bridge diagnostics extracted from structured log records
+- `last-crash.json` when the previous run crashed
 - diagnostics paths
 
 The bundle excludes full config files, Claude credentials, environment dumps, and arbitrary project files. Redaction removes obvious credentials, but logs can still contain private conversation text, local file paths, command output, or project-specific context. Review a bundle before sharing it publicly.
+
+## Failure Reports
+
+Top-level failures print a short issue-friendly report to stderr with a category, exit code, version, platform, latest discovered log path, and one next-step command. Bridge failures are categorized as spawn, initialization, stdout close, SDK/protocol failure, or timeout so support output points at the likely failing boundary.
+
+Unexpected Rust panics install a local panic hook. The hook writes a redacted `last-crash.json` file in the diagnostics root and prints the same safe-to-paste metadata to stderr. No crash report is uploaded automatically.
 
 ## Bridge Diagnostics
 

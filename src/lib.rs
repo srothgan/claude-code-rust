@@ -5,6 +5,7 @@ pub mod agent;
 pub mod app;
 pub mod cli;
 pub mod error;
+pub mod failure;
 pub mod logging;
 pub mod perf;
 pub mod ui;

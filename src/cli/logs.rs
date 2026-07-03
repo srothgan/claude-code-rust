@@ -268,6 +268,9 @@ fn confirm_bundle(stderr: &mut impl Write, plan: &BundlePlan) -> anyhow::Result<
     writeln!(stderr, "  manifest.json")?;
     writeln!(stderr, "  doctor.json")?;
     writeln!(stderr, "  paths.json")?;
+    if crate::failure::read_last_crash_metadata_from_path(&plan.last_crash_metadata).is_some() {
+        writeln!(stderr, "  {}", crate::failure::LAST_CRASH_FILE_NAME)?;
+    }
     for path in &plan.runtime_logs {
         writeln!(stderr, "  {}", path.display())?;
     }
@@ -288,6 +291,7 @@ struct BundlePlan {
     output_path: PathBuf,
     runtime_logs: Vec<PathBuf>,
     legacy_log: Option<PathBuf>,
+    last_crash_metadata: PathBuf,
 }
 
 impl BundlePlan {
@@ -301,6 +305,7 @@ impl BundlePlan {
             output_path: output_path.unwrap_or_else(|| default_bundle_path(&paths.root_dir)),
             runtime_logs,
             legacy_log,
+            last_crash_metadata: crate::failure::last_crash_metadata_path(paths),
         })
     }
 }
@@ -399,6 +404,12 @@ fn write_bundle_zip(
     if let Some((name, _)) = &legacy_log_entry {
         included_files.push(name.clone());
     }
+    let last_crash_entry =
+        crate::failure::read_last_crash_metadata_from_path(&plan.last_crash_metadata)
+            .map(|text| (crate::failure::LAST_CRASH_FILE_NAME.to_owned(), text));
+    if let Some((name, _)) = &last_crash_entry {
+        included_files.push(name.clone());
+    }
     included_files.push("logs/bridge-diagnostics.jsonl".to_owned());
 
     let manifest = BundleManifest {
@@ -419,7 +430,7 @@ fn write_bundle_zip(
             "arbitrary project files",
         ],
         redaction: "credential-like keys and bearer/API token values are replaced with [redacted]",
-        last_crash_metadata: "not_available",
+        last_crash_metadata: if last_crash_entry.is_some() { "included" } else { "not_available" },
     };
 
     add_json_file(&mut zip, "manifest.json", &manifest)?;
@@ -444,6 +455,9 @@ fn write_bundle_zip(
         add_text_file(&mut zip, entry_name, text)?;
     }
     if let Some((entry_name, text)) = &legacy_log_entry {
+        add_text_file(&mut zip, entry_name, text)?;
+    }
+    if let Some((entry_name, text)) = &last_crash_entry {
         add_text_file(&mut zip, entry_name, text)?;
     }
 
@@ -738,6 +752,7 @@ mod tests {
             output_path: output_path.clone(),
             runtime_logs: vec![runtime_log],
             legacy_log: Some(paths.legacy_log_path.clone()),
+            last_crash_metadata: paths.root_dir.join(crate::failure::LAST_CRASH_FILE_NAME),
         };
 
         create_bundle(&test_cli(), &paths, &plan).expect("bundle");
@@ -760,6 +775,48 @@ mod tests {
             .expect("read bridge");
         assert!(!bridge.contains("secret"));
         assert!(bridge.contains("[redacted]"));
+    }
+
+    #[test]
+    fn bundle_includes_redacted_last_crash_metadata_when_available() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("logs");
+        let runtime_dir = root.join("runtime");
+        let perf_dir = root.join("perf");
+        fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        fs::create_dir_all(&root).expect("root dir");
+        let crash_path = root.join(crate::failure::LAST_CRASH_FILE_NAME);
+        fs::write(
+            &crash_path,
+            r#"{"schema":"claude-rs-crash/v1","message":"ANTHROPIC_API_KEY=sk-ant-secret"}"#,
+        )
+        .expect("write crash metadata");
+        let output_path = dir.path().join("bundle.zip");
+        let paths = crate::logging::DiagnosticsPaths {
+            root_dir: root,
+            runtime_dir,
+            legacy_log_path: dir.path().join("claude-rs.log"),
+            perf_dir,
+        };
+        let plan = BundlePlan {
+            output_path: output_path.clone(),
+            runtime_logs: Vec::new(),
+            legacy_log: None,
+            last_crash_metadata: crash_path,
+        };
+
+        create_bundle(&test_cli(), &paths, &plan).expect("bundle");
+
+        let file = fs::File::open(output_path).expect("open bundle");
+        let mut archive = ZipArchive::new(file).expect("zip archive");
+        let mut crash = String::new();
+        archive
+            .by_name(crate::failure::LAST_CRASH_FILE_NAME)
+            .expect("crash metadata entry")
+            .read_to_string(&mut crash)
+            .expect("read crash metadata");
+        assert!(crash.contains("[redacted]"));
+        assert!(!crash.contains("sk-ant-secret"));
     }
 
     fn test_cli() -> Cli {

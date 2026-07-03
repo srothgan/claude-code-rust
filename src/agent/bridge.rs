@@ -257,20 +257,24 @@ fn resolve_bridge_runtime_path_with(
 
 fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
-        return Err(anyhow::anyhow!("bridge script does not exist: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
+            .context(format!("bridge script does not exist: {}", path.display())));
     }
     if !path.is_file() {
-        return Err(anyhow::anyhow!("bridge script is not a file: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
+            .context(format!("bridge script is not a file: {}", path.display())));
     }
     Ok(path.to_path_buf())
 }
 
 fn validate_runtime_path(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
-        return Err(anyhow::anyhow!("bridge runtime does not exist: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::NodeNotFound)
+            .context(format!("bridge runtime does not exist: {}", path.display())));
     }
     if !path.is_file() {
-        return Err(anyhow::anyhow!("bridge runtime is not a file: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::NodeNotFound)
+            .context(format!("bridge runtime is not a file: {}", path.display())));
     }
     Ok(path.to_path_buf())
 }

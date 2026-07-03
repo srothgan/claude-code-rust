@@ -37,7 +37,7 @@ impl BridgeClient {
         let mut child = launcher
             .command(bridge_diagnostics_enabled)
             .spawn()
-            .map_err(|_| anyhow::Error::new(AppError::AdapterCrashed))
+            .map_err(|_| anyhow::Error::new(AppError::BridgeSpawnFailed))
             .with_context(|| format!("failed to spawn bridge process: {}", launcher.describe()))?;
 
         tracing::info!(

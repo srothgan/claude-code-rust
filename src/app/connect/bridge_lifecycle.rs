@@ -94,10 +94,14 @@ fn resolve_launcher(params: &StartConnectionParams) -> Option<BridgeLauncher> {
                 outcome = "failure",
                 error = %err,
             );
-            let app_error = extract_app_error(&err).unwrap_or(AppError::ConnectionFailed);
+            let app_error = extract_app_error(&err).unwrap_or(AppError::BridgeSpawnFailed);
             emit_connection_failed(
                 &params.event_tx,
-                format!("Failed to resolve bridge launcher: {err}"),
+                format!(
+                    "{} Detail: {}",
+                    app_error.user_message(),
+                    crate::cli::redaction::redact_line(&err.to_string())
+                ),
                 app_error,
             );
             None
@@ -119,8 +123,16 @@ fn spawn_bridge_client(
                 outcome = "failure",
                 error = %err,
             );
-            let app_error = extract_app_error(&err).unwrap_or(AppError::AdapterCrashed);
-            emit_connection_failed(event_tx, format!("Failed to spawn bridge: {err}"), app_error);
+            let app_error = extract_app_error(&err).unwrap_or(AppError::BridgeSpawnFailed);
+            emit_connection_failed(
+                event_tx,
+                format!(
+                    "{} Detail: {}",
+                    app_error.user_message(),
+                    crate::cli::redaction::redact_line(&err.to_string())
+                ),
+                app_error,
+            );
             None
         }
     }
@@ -148,8 +160,12 @@ async fn send_initialize_command(
     if let Err(err) = bridge.send(init_cmd).await {
         emit_connection_failed(
             &params.event_tx,
-            format!("Failed to initialize bridge: {err}"),
-            AppError::ConnectionFailed,
+            format!(
+                "{} Detail: {}",
+                AppError::BridgeInitializationFailed.user_message(),
+                crate::cli::redaction::redact_line(&err.to_string())
+            ),
+            AppError::BridgeInitializationFailed,
         );
         return false;
     }
@@ -218,8 +234,12 @@ async fn send_session_command(params: &StartConnectionParams, bridge: &mut Bridg
     if let Err(err) = bridge.send(command.clone()).await {
         emit_connection_failed(
             &params.event_tx,
-            format!("Failed to create bridge session: {err}"),
-            AppError::ConnectionFailed,
+            format!(
+                "{} Detail: {}",
+                AppError::BridgeSdkFailure.user_message(),
+                crate::cli::redaction::redact_line(&err.to_string())
+            ),
+            AppError::BridgeSdkFailure,
         );
         return false;
     }
@@ -240,8 +260,12 @@ async fn bridge_event_loop(
                 if let Err(err) = bridge.send(cmd).await {
                     emit_connection_failed(
                         &params.event_tx,
-                        format!("Failed to send bridge command: {err}"),
-                        AppError::ConnectionFailed,
+                        format!(
+                            "{} Detail: {}",
+                            AppError::BridgeSdkFailure.user_message(),
+                            crate::cli::redaction::redact_line(&err.to_string())
+                        ),
+                        AppError::BridgeSdkFailure,
                     );
                     break;
                 }
@@ -266,16 +290,20 @@ async fn bridge_event_loop(
                         );
                         emit_connection_failed(
                             &params.event_tx,
-                            "Bridge process exited unexpectedly".to_owned(),
-                            AppError::ConnectionFailed,
+                            AppError::BridgeStdoutClosed.user_message().to_owned(),
+                            AppError::BridgeStdoutClosed,
                         );
                         break;
                     }
                     Err(err) => {
                         emit_connection_failed(
                             &params.event_tx,
-                            format!("Bridge communication failure: {err}"),
-                            AppError::ConnectionFailed,
+                            format!(
+                                "{} Detail: {}",
+                                AppError::BridgeSdkFailure.user_message(),
+                                crate::cli::redaction::redact_line(&err.to_string())
+                            ),
+                            AppError::BridgeSdkFailure,
                         );
                         break;
                     }
@@ -290,6 +318,15 @@ pub(super) fn emit_connection_failed(
     message: String,
     app_error: AppError,
 ) {
+    tracing::error!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        event_name = "bridge_failure_reported",
+        message = "bridge failure reported to app",
+        outcome = "failure",
+        error_category = app_error.category_tag(),
+        exit_code = app_error.exit_code(),
+        user_message = %message,
+    );
     let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
     let _ = event_tx.send(ClientEvent::FatalError(app_error));
 }
@@ -341,7 +378,7 @@ async fn wait_for_bridge_initialized_with_timeout(
                     outcome = "timeout",
                     timeout_ms,
                 );
-                return Err(AppError::ConnectionFailed);
+                return Err(AppError::BridgeTimeout);
             }
 
             let event = tokio::time::timeout(remaining, bridge.recv()).await;
@@ -358,7 +395,7 @@ async fn wait_for_bridge_initialized_with_timeout(
                             resume_requested,
                             envelope,
                         );
-                        return Err(AppError::ConnectionFailed);
+                        return Err(AppError::BridgeInitializationFailed);
                     }
                     handle_bridge_event(
                         event_tx,
@@ -368,7 +405,9 @@ async fn wait_for_bridge_initialized_with_timeout(
                         envelope,
                     );
                 }
-                Ok(Ok(None) | Err(_)) | Err(_) => return Err(AppError::ConnectionFailed),
+                Ok(Ok(None)) => return Err(AppError::BridgeStdoutClosed),
+                Ok(Err(_)) => return Err(AppError::BridgeSdkFailure),
+                Err(_) => return Err(AppError::BridgeTimeout),
             }
         }
     }
@@ -450,7 +489,7 @@ mod tests {
         .await
         .expect_err("closed stdout should fail initialization");
 
-        assert_eq!(err, AppError::ConnectionFailed);
+        assert_eq!(err, AppError::BridgeStdoutClosed);
         let status = bridge.wait().await.expect("wait for bridge");
         assert!(!status.success());
     }
@@ -474,7 +513,7 @@ mod tests {
         .await
         .expect_err("missing initialized event should time out");
 
-        assert_eq!(err, AppError::ConnectionFailed);
+        assert_eq!(err, AppError::BridgeTimeout);
         let _ = bridge.wait().await;
     }
 
