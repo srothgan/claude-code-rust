@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Supportability commands** (#235, @srothgan): Add `claude-rs doctor`, `logs`, redacted debug bundles, crash and bridge failure reports, and read-only redacted config inspection/export commands for installation and runtime diagnostics.
+
 ## [0.13.1] - 2026-07-02 [Changes][v0.13.1]
 
 ### Release and Packaging

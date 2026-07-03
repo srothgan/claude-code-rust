@@ -6,8 +6,9 @@ use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-const BRIDGE_SCRIPT_RELATIVE_PATH: &str = "agent-sdk/dist/bridge.js";
-const BRIDGE_RUNTIME_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE_NODE";
+pub const BRIDGE_SCRIPT_RELATIVE_PATH: &str = "agent-sdk/dist/bridge.js";
+pub const BRIDGE_SCRIPT_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE";
+pub const BRIDGE_RUNTIME_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE_NODE";
 const MAX_BRIDGE_EXE_ANCESTORS: usize = 8;
 #[cfg(windows)]
 const RENAMED_BRIDGE_RUNTIME_FILE_NAME: &str = "claude-rs-bridge-node.exe";
@@ -18,6 +19,31 @@ const RENAMED_BRIDGE_RUNTIME_FILE_NAME: &str = "claude-rs-bridge-node";
 pub struct BridgeLauncher {
     pub runtime_path: PathBuf,
     pub script_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeCandidateInspection {
+    pub source: String,
+    pub path: PathBuf,
+    pub is_file: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeScriptInspection {
+    pub explicit_path: Option<PathBuf>,
+    pub env_path: Option<PathBuf>,
+    pub candidates: Vec<BridgeCandidateInspection>,
+    pub resolved_path: Option<PathBuf>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeRuntimeInspection {
+    pub env_path: Option<PathBuf>,
+    pub packaged_candidates: Vec<BridgeCandidateInspection>,
+    pub path_node: Option<PathBuf>,
+    pub resolved_path: Option<PathBuf>,
+    pub error: Option<String>,
 }
 
 impl BridgeLauncher {
@@ -46,6 +72,141 @@ pub fn resolve_bridge_launcher(explicit_script: Option<&Path>) -> anyhow::Result
     let script = resolve_bridge_script_path(explicit_script)?;
     let runtime = resolve_bridge_runtime_path()?;
     Ok(BridgeLauncher { runtime_path: runtime, script_path: script })
+}
+
+pub fn inspect_bridge_script(explicit_script: Option<&Path>) -> BridgeScriptInspection {
+    let resolver = BridgeScriptResolver::from_process(explicit_script);
+    let explicit_path = resolver.explicit_script.map(Path::to_path_buf);
+
+    if let Some(path) = resolver.explicit_script {
+        let is_file = path.is_file();
+        return BridgeScriptInspection {
+            explicit_path,
+            env_path: resolver.env_script.clone(),
+            candidates: Vec::new(),
+            resolved_path: is_file.then(|| path.to_path_buf()),
+            error: (!is_file).then(|| {
+                if path.exists() {
+                    format!("bridge script is not a file: {}", path.display())
+                } else {
+                    format!("bridge script does not exist: {}", path.display())
+                }
+            }),
+        };
+    }
+
+    if let Some(path) = resolver.env_script.as_deref() {
+        let is_file = path.is_file();
+        return BridgeScriptInspection {
+            explicit_path,
+            env_path: resolver.env_script.clone(),
+            candidates: Vec::new(),
+            resolved_path: is_file.then(|| path.to_path_buf()),
+            error: (!is_file).then(|| {
+                if path.exists() {
+                    format!(
+                        "bridge script from {BRIDGE_SCRIPT_ENV_VAR} is not a file: {}",
+                        path.display()
+                    )
+                } else {
+                    format!(
+                        "bridge script from {BRIDGE_SCRIPT_ENV_VAR} does not exist: {}",
+                        path.display()
+                    )
+                }
+            }),
+        };
+    }
+
+    let candidates = resolver
+        .automatic_candidates()
+        .into_iter()
+        .map(|candidate| BridgeCandidateInspection {
+            source: candidate.source.label().to_owned(),
+            is_file: candidate.path.is_file(),
+            path: candidate.path,
+        })
+        .collect::<Vec<_>>();
+    let resolved_path = candidates
+        .iter()
+        .find(|candidate| candidate.is_file)
+        .map(|candidate| candidate.path.clone());
+
+    BridgeScriptInspection {
+        explicit_path,
+        env_path: resolver.env_script.clone(),
+        error: resolved_path
+            .is_none()
+            .then(|| "bridge script not found near the installed executable".to_owned()),
+        candidates,
+        resolved_path,
+    }
+}
+
+pub fn inspect_bridge_runtime() -> BridgeRuntimeInspection {
+    let env_path = std::env::var_os(BRIDGE_RUNTIME_ENV_VAR).map(PathBuf::from);
+    let current_exe = std::env::current_exe().ok();
+    inspect_bridge_runtime_with(
+        env_path.as_deref(),
+        current_exe.as_deref(),
+        cfg!(debug_assertions),
+        || which::which("node"),
+    )
+}
+
+fn inspect_bridge_runtime_with(
+    env_path: Option<&Path>,
+    current_exe: Option<&Path>,
+    allow_dev_fallbacks: bool,
+    node_lookup: impl FnOnce() -> Result<PathBuf, which::Error>,
+) -> BridgeRuntimeInspection {
+    let path_node = node_lookup().ok();
+    if let Some(path) = env_path {
+        let is_file = path.is_file();
+        let resolved_path = is_file.then(|| path.to_path_buf());
+        let error = (!is_file).then(|| {
+            if path.exists() {
+                format!(
+                    "bridge runtime from {BRIDGE_RUNTIME_ENV_VAR} is not a file: {}",
+                    path.display()
+                )
+            } else {
+                format!(
+                    "bridge runtime from {BRIDGE_RUNTIME_ENV_VAR} does not exist: {}",
+                    path.display()
+                )
+            }
+        });
+        return BridgeRuntimeInspection {
+            env_path: env_path.map(Path::to_path_buf),
+            packaged_candidates: Vec::new(),
+            path_node,
+            resolved_path,
+            error,
+        };
+    }
+
+    let packaged_candidates = renamed_bridge_runtime_candidates(current_exe, allow_dev_fallbacks)
+        .into_iter()
+        .map(|path| BridgeCandidateInspection {
+            source: "packaged-runtime".to_owned(),
+            is_file: path.is_file(),
+            path,
+        })
+        .collect::<Vec<_>>();
+    let packaged_runtime = packaged_candidates
+        .iter()
+        .find(|candidate| candidate.is_file)
+        .map(|candidate| candidate.path.clone());
+    let resolved_path = packaged_runtime.clone().or_else(|| path_node.clone());
+
+    BridgeRuntimeInspection {
+        env_path: None,
+        packaged_candidates,
+        path_node,
+        error: resolved_path.is_none().then(|| "Node.js runtime not found".to_owned()),
+        resolved_path,
+    }
 }
 
 #[cfg(test)]
@@ -96,20 +257,24 @@ fn resolve_bridge_runtime_path_with(
 
 fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
-        return Err(anyhow::anyhow!("bridge script does not exist: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
+            .context(format!("bridge script does not exist: {}", path.display())));
     }
     if !path.is_file() {
-        return Err(anyhow::anyhow!("bridge script is not a file: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
+            .context(format!("bridge script is not a file: {}", path.display())));
     }
     Ok(path.to_path_buf())
 }
 
 fn validate_runtime_path(path: &Path) -> anyhow::Result<PathBuf> {
     if !path.exists() {
-        return Err(anyhow::anyhow!("bridge runtime does not exist: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::NodeNotFound)
+            .context(format!("bridge runtime does not exist: {}", path.display())));
     }
     if !path.is_file() {
-        return Err(anyhow::anyhow!("bridge runtime is not a file: {}", path.display()));
+        return Err(anyhow::Error::new(AppError::NodeNotFound)
+            .context(format!("bridge runtime is not a file: {}", path.display())));
     }
     Ok(path.to_path_buf())
 }
@@ -164,7 +329,7 @@ impl<'a> BridgeScriptResolver<'a> {
     fn from_process(explicit_script: Option<&'a Path>) -> Self {
         Self {
             explicit_script,
-            env_script: std::env::var_os("CLAUDE_RS_AGENT_BRIDGE").map(PathBuf::from),
+            env_script: std::env::var_os(BRIDGE_SCRIPT_ENV_VAR).map(PathBuf::from),
             current_exe: std::env::current_exe().ok(),
             allow_dev_fallbacks: cfg!(debug_assertions),
             cwd_script: PathBuf::from(BRIDGE_SCRIPT_RELATIVE_PATH),
@@ -349,7 +514,7 @@ mod tests {
     use super::{
         AutomaticCandidateSource, BRIDGE_SCRIPT_RELATIVE_PATH, BridgeLauncher,
         BridgeScriptResolver, RENAMED_BRIDGE_RUNTIME_FILE_NAME, exe_relative_bridge_candidates,
-        resolve_bridge_launcher, resolve_bridge_launcher_with_runtime,
+        inspect_bridge_runtime_with, resolve_bridge_launcher, resolve_bridge_launcher_with_runtime,
         resolve_bridge_runtime_path_with,
     };
     use std::fs;
@@ -679,6 +844,22 @@ mod tests {
         .expect("env bridge runtime should resolve");
 
         assert_eq!(resolved, fixture.env_runtime);
+    }
+
+    #[test]
+    fn bridge_runtime_inspection_reports_path_node_when_env_override_is_set() {
+        let fixture = resolver_fixture();
+
+        let inspection = inspect_bridge_runtime_with(
+            Some(&fixture.env_runtime),
+            Some(&fixture.installed_exe),
+            false,
+            || Ok(fixture.node_runtime.clone()),
+        );
+
+        assert_eq!(inspection.resolved_path, Some(fixture.env_runtime));
+        assert_eq!(inspection.path_node, Some(fixture.node_runtime));
+        assert!(inspection.error.is_none());
     }
 
     #[test]

@@ -26,6 +26,23 @@ claude-rs resume <session_id>
 
 The app prints a resume hint on clean exit when the active session has an id.
 
+## Support And Diagnostics
+
+Use support commands when you need a repeatable snapshot of the local environment or diagnostic logs.
+
+| Command | Purpose |
+| --- | --- |
+| `claude-rs doctor` | Run installation, runtime, config path, log path, npm metadata, and credential checks. |
+| `claude-rs doctor --json` | Emit the diagnostics report as JSON. |
+| `claude-rs logs` | Show diagnostics log locations and useful follow-up commands. |
+| `claude-rs logs --tail <LINES>` | Print redacted lines from the latest discovered log. |
+| `claude-rs logs --bundle --yes` | Write a redacted ZIP debug bundle. |
+| `claude-rs config` | Show resolved config paths and file states. |
+| `claude-rs config show` | Show a concise redacted config summary. |
+| `claude-rs config export --output <PATH>` | Write a redacted config export without overwriting existing files. |
+
+See [Diagnostics](diagnostics.md) for full options, logging presets, bundle contents, and sharing guidance.
+
 ## CLI Options
 
 The installed `claude-rs --help` command exposes these options:
