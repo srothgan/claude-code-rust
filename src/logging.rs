@@ -275,7 +275,7 @@ fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
         || std::env::var_os("RUST_LOG").is_some()
 }
 
-fn default_legacy_log_path() -> anyhow::Result<PathBuf> {
+pub fn default_legacy_log_path() -> anyhow::Result<PathBuf> {
     let base_dir = default_diagnostics_dir()?;
     Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
 }
@@ -294,11 +294,11 @@ pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
     )))
 }
 
-fn default_runtime_log_dir() -> anyhow::Result<PathBuf> {
+pub fn default_runtime_log_dir() -> anyhow::Result<PathBuf> {
     Ok(default_diagnostics_dir()?.join(DEFAULT_RUNTIME_LOG_SUBDIR))
 }
 
-fn default_perf_log_dir() -> anyhow::Result<PathBuf> {
+pub fn default_perf_log_dir() -> anyhow::Result<PathBuf> {
     Ok(default_diagnostics_dir()?.join(DEFAULT_PERF_LOG_SUBDIR))
 }
 

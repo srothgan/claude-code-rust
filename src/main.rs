@@ -9,18 +9,30 @@ use tracing::info_span;
 
 #[allow(clippy::exit)]
 fn main() {
-    if let Err(err) = run() {
-        if let Some(app_error) = extract_app_error(&err) {
-            eprintln!("{}", app_error.user_message());
-            std::process::exit(app_error.exit_code());
+    match run() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(err) => {
+            if let Some(app_error) = extract_app_error(&err) {
+                eprintln!("{}", app_error.user_message());
+                std::process::exit(app_error.exit_code());
+            }
+            eprintln!("{err:#}");
+            std::process::exit(1);
         }
-        eprintln!("{err:#}");
-        std::process::exit(1);
     }
 }
 
-fn run() -> anyhow::Result<()> {
+fn run() -> anyhow::Result<i32> {
     let cli = Cli::parse();
+    if let Some(exit_code) = claude_code_rust::cli::run_support_command(
+        &cli,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )? {
+        return Ok(exit_code);
+    }
+
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
     let perf_path = claude_code_rust::logging::resolve_perf_path(&cli)?;
 
@@ -77,7 +89,9 @@ fn run() -> anyhow::Result<()> {
         }
 
         result
-    }))
+    }))?;
+
+    Ok(0)
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

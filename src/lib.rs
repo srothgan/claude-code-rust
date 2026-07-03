@@ -3,12 +3,13 @@
 
 pub mod agent;
 pub mod app;
+pub mod cli;
 pub mod error;
 pub mod logging;
 pub mod perf;
 pub mod ui;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
@@ -117,11 +118,24 @@ pub enum Command {
         /// Session ID to resume directly. Omit to show a session picker.
         session_id: Option<String>,
     },
+    /// Run deterministic installation and runtime diagnostics
+    Doctor(DoctorArgs),
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct DoctorArgs {
+    /// Emit a machine-readable JSON report.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Exit non-zero when hard runtime prerequisites fail.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command};
+    use super::{Cli, Command, DoctorArgs};
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -145,6 +159,19 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_resume_flag() {
         assert!(Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).is_err());
+    }
+
+    #[test]
+    fn cli_doctor_defaults_to_human_output() {
+        let cli = Cli::try_parse_from(["claude-rs", "doctor"]).expect("parse");
+        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: false, strict: false })));
+    }
+
+    #[test]
+    fn cli_doctor_accepts_json_and_strict() {
+        let cli =
+            Cli::try_parse_from(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
+        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
     }
 
     #[test]

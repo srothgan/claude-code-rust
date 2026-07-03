@@ -370,7 +370,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
     );
 }
 
-fn resolve_paths(
+pub fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
 ) -> Result<SettingsPaths, String> {
