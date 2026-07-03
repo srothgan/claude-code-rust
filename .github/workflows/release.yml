@@ -429,4 +429,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false
+          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false --repo srothgan/claude-code-rust
