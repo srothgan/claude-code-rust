@@ -240,9 +240,9 @@ jobs:
       - name: Smoke-test installed npm tarballs
         run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
 
-  create-github-release:
+  create-draft-github-release:
     needs: [verify, smoke-test-packages]
-    name: Create GitHub Release
+    name: Create draft GitHub Release
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -280,7 +280,7 @@ jobs:
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
-      - name: Create GitHub Release
+      - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -289,12 +289,13 @@ jobs:
           mapfile -t release_assets < <(find dist-assets dist-pack dist-npm/manifests -type f | sort)
           release_assets+=(SHA256SUMS)
           gh release create "$TAG" "${release_assets[@]}" \
+            --draft \
             --verify-tag \
             --title "$TAG" \
             --notes-file release-notes.md
 
   verify-release-attestations:
-    needs: [verify, create-github-release]
+    needs: [verify, create-draft-github-release]
     name: Verify binary attestations
     runs-on: ubuntu-latest
     permissions:
@@ -414,3 +415,18 @@ jobs:
             exit 1
           fi
           npm publish "$tarball" --access public
+
+  publish-github-release:
+    needs: [verify, publish-root-package]
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false
