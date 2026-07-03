@@ -53,6 +53,21 @@ const LOG_RETENTION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const LOG_RETENTION_MIN_FILES: usize = 10;
 static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticsPaths {
+    pub root_dir: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub legacy_log_path: PathBuf,
+    pub perf_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedLogFile {
+    pub path: PathBuf,
+    pub modified: SystemTime,
+    pub size: u64,
+}
+
 pub struct LoggingRuntime {
     _guard: Option<WorkerGuard>,
 }
@@ -302,6 +317,70 @@ pub fn default_perf_log_dir() -> anyhow::Result<PathBuf> {
     Ok(default_diagnostics_dir()?.join(DEFAULT_PERF_LOG_SUBDIR))
 }
 
+pub fn default_diagnostics_paths() -> anyhow::Result<DiagnosticsPaths> {
+    let root_dir = default_diagnostics_dir()?;
+    Ok(DiagnosticsPaths {
+        runtime_dir: root_dir.join(DEFAULT_RUNTIME_LOG_SUBDIR),
+        legacy_log_path: root_dir.join(DEFAULT_LOG_FILE_NAME),
+        perf_dir: root_dir.join(DEFAULT_PERF_LOG_SUBDIR),
+        root_dir,
+    })
+}
+
+pub fn list_managed_runtime_logs() -> anyhow::Result<Vec<ManagedLogFile>> {
+    list_managed_runtime_logs_in(&default_runtime_log_dir()?)
+}
+
+pub fn list_managed_runtime_logs_in(directory: &Path) -> anyhow::Result<Vec<ManagedLogFile>> {
+    let mut logs = Vec::new();
+    let Ok(entries) = read_dir(directory) else {
+        return Ok(logs);
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_managed_runtime_log_file(name) {
+            continue;
+        }
+        let metadata = metadata(&path)?;
+        if !metadata.is_file() {
+            continue;
+        }
+        logs.push(ManagedLogFile {
+            path,
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            size: metadata.len(),
+        });
+    }
+
+    logs.sort_by(|left, right| {
+        right.modified.cmp(&left.modified).then_with(|| right.path.cmp(&left.path))
+    });
+    Ok(logs)
+}
+
+pub fn latest_default_log_path() -> anyhow::Result<Option<PathBuf>> {
+    let paths = default_diagnostics_paths()?;
+    latest_log_path_in(&paths.runtime_dir, &paths.legacy_log_path)
+}
+
+pub fn latest_log_path_in(
+    runtime_dir: &Path,
+    legacy_log_path: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(log) = list_managed_runtime_logs_in(runtime_dir)?.into_iter().next() {
+        return Ok(Some(log.path));
+    }
+    if legacy_log_path.is_file() {
+        return Ok(Some(legacy_log_path.to_path_buf()));
+    }
+    Ok(None)
+}
+
 fn generated_log_path(directory: &Path, prefix: &str, extension: &str) -> PathBuf {
     directory.join(generated_log_file_name(
         prefix,
@@ -333,7 +412,7 @@ fn perf_enabled_without_explicit_path(cli: &Cli) -> bool {
     cli.enable_perf || cli.perf_append
 }
 
-fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
+pub fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     if let Some(dir) = dirs::data_local_dir() {
         return Ok(dir.join(DEFAULT_LOG_DIR).join("logs"));
     }
@@ -617,6 +696,10 @@ fn is_managed_log_file(name: &str, prefix: &str, extension: &str) -> bool {
     rest.rsplit_once('.').is_some_and(|(base, suffix)| {
         base.ends_with(&extension_suffix) && suffix.chars().all(|ch| ch.is_ascii_digit())
     })
+}
+
+pub fn is_managed_runtime_log_file(name: &str) -> bool {
+    is_managed_log_file(name, DEFAULT_RUNTIME_LOG_PREFIX, RUNTIME_LOG_EXTENSION)
 }
 
 pub fn emit_bridge_stderr_line(line: &str) {

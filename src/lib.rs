@@ -120,6 +120,8 @@ pub enum Command {
     },
     /// Run deterministic installation and runtime diagnostics
     Doctor(DoctorArgs),
+    /// Find runtime logs or create a redacted debug bundle
+    Logs(LogsArgs),
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
@@ -133,9 +135,37 @@ pub struct DoctorArgs {
     pub strict: bool,
 }
 
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct LogsArgs {
+    /// Print only the runtime log directory path.
+    #[arg(long, conflicts_with_all = ["latest", "tail", "bundle"])]
+    pub path: bool,
+
+    /// Print only the latest discovered log path.
+    #[arg(long, conflicts_with_all = ["path", "tail", "bundle"])]
+    pub latest: bool,
+
+    /// Print the last N redacted lines from the latest discovered log.
+    #[arg(long, value_name = "LINES", conflicts_with_all = ["path", "latest", "bundle"])]
+    pub tail: Option<usize>,
+
+    /// Create a redacted ZIP bundle for support.
+    #[arg(long, conflicts_with_all = ["path", "latest", "tail"])]
+    pub bundle: bool,
+
+    /// Write the bundle ZIP to this path.
+    #[arg(long, value_name = "PATH", requires = "bundle")]
+    pub output: Option<std::path::PathBuf>,
+
+    /// Skip interactive confirmation for bundle creation.
+    #[arg(long)]
+    pub yes: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, DoctorArgs};
+    use super::{Cli, Command, DoctorArgs, LogsArgs};
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -172,6 +202,59 @@ mod tests {
         let cli =
             Cli::try_parse_from(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
+    }
+
+    #[test]
+    fn cli_logs_defaults_to_summary() {
+        let cli = Cli::try_parse_from(["claude-rs", "logs"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Logs(LogsArgs {
+                path: false,
+                latest: false,
+                tail: None,
+                bundle: false,
+                output: None,
+                yes: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn cli_logs_accepts_modes() {
+        let cli = Cli::try_parse_from(["claude-rs", "logs", "--tail", "200"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Logs(LogsArgs {
+                path: false,
+                latest: false,
+                tail: Some(200),
+                bundle: false,
+                output: None,
+                yes: false,
+            }))
+        );
+
+        let cli =
+            Cli::try_parse_from(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
+                .expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Logs(LogsArgs {
+                path: false,
+                latest: false,
+                tail: None,
+                bundle: true,
+                output: Some(std::path::PathBuf::from("out.zip")),
+                yes: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn cli_logs_rejects_conflicting_modes() {
+        assert!(Cli::try_parse_from(["claude-rs", "logs", "--path", "--latest"]).is_err());
+        assert!(Cli::try_parse_from(["claude-rs", "logs", "--output", "out.zip"]).is_err());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod doctor;
+mod logs;
 pub mod redaction;
 
 use crate::{Cli, Command};
@@ -10,10 +11,11 @@ use std::io::Write;
 pub fn run_support_command(
     cli: &Cli,
     stdout: &mut impl Write,
-    _stderr: &mut impl Write,
+    stderr: &mut impl Write,
 ) -> anyhow::Result<Option<i32>> {
     match &cli.command {
         Some(Command::Doctor(args)) => doctor::run(cli, args, stdout).map(Some),
+        Some(Command::Logs(args)) => logs::run(cli, args, stdout, stderr).map(Some),
         Some(Command::Resume { .. }) | None => Ok(None),
     }
 }
@@ -21,7 +23,7 @@ pub fn run_support_command(
 #[cfg(test)]
 mod tests {
     use super::run_support_command;
-    use crate::{Cli, Command, DoctorArgs};
+    use crate::{Cli, Command, DoctorArgs, LogsArgs};
     use std::path::PathBuf;
 
     #[test]
@@ -53,6 +55,26 @@ mod tests {
     #[test]
     fn doctor_is_a_support_command() {
         let cli = test_cli(Some(Command::Doctor(DoctorArgs { json: true, strict: false })));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
+
+        assert_eq!(result, Some(0));
+        assert!(!stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn logs_is_a_support_command() {
+        let cli = test_cli(Some(Command::Logs(LogsArgs {
+            path: true,
+            latest: false,
+            tail: None,
+            bundle: false,
+            output: None,
+            yes: false,
+        })));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 

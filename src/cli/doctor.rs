@@ -62,7 +62,7 @@ pub fn run(cli: &Cli, args: &DoctorArgs, writer: &mut impl Write) -> anyhow::Res
     Ok(i32::from(args.strict && report.has_hard_failures()))
 }
 
-fn build_report(cli: &Cli) -> DoctorReport {
+pub(crate) fn build_report(cli: &Cli) -> DoctorReport {
     let runtime = inspect_bridge_runtime();
     let script = inspect_bridge_script(cli.bridge_script.as_deref());
     let mut checks = vec![
