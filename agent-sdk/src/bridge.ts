@@ -452,6 +452,19 @@ function emitRewindResult(
   );
 }
 
+function requestIdFromCommandLine(line: string): string | undefined {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const requestId = (parsed as Record<string, unknown>).request_id;
+    return typeof requestId === "string" ? requestId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function replaceConversationForRewind(
   command: Extract<BridgeCommand, { command: "rewind" }>,
   session: SessionState,
@@ -1418,11 +1431,13 @@ function main(): void {
         parsed = parseCommandEnvelope(line);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const requestId = requestIdFromCommandLine(line);
         bridgeLogger.error({
           target: LOG_TARGETS.BRIDGE_PROTOCOL,
           eventName: "bridge_command_decode_failed",
           message: "failed to decode bridge command envelope",
           outcome: "failure",
+          ...(requestId ? { requestId } : {}),
           sizeBytes: Buffer.byteLength(line),
           fields: {
             preview: line.slice(0, 240),
@@ -1430,7 +1445,7 @@ function main(): void {
             error_message: message,
           },
         });
-        failConnection(`invalid command envelope: ${message}`);
+        failConnection(`invalid command envelope: ${message}`, requestId);
         return;
       }
 

@@ -29,8 +29,25 @@ jobs:
           set -euo pipefail
 
           package='@anthropic-ai/claude-agent-sdk'
-          root_version="$(node -p "require('./package.json').dependencies['${package}']")"
-          bridge_version="$(node -p "require('./agent-sdk/package.json').dependencies['${package}']")"
+          bridge_stack=(
+            '@anthropic-ai/claude-agent-sdk'
+            '@anthropic-ai/sdk'
+            '@modelcontextprotocol/sdk'
+            'zod'
+          )
+
+          package_version() {
+            local package_name="$1"
+            local package_json="$2"
+            PACKAGE_NAME="${package_name}" PACKAGE_JSON="${package_json}" node -e '
+              const pkg = require(process.env.PACKAGE_JSON);
+              const version = pkg.dependencies?.[process.env.PACKAGE_NAME];
+              process.stdout.write(version ?? "<missing>");
+            '
+          }
+
+          root_version="$(package_version "${package}" "./package.json")"
+          bridge_version="$(package_version "${package}" "./agent-sdk/package.json")"
           latest_version="$(npm view "${package}" version)"
 
           echo "Root package version: ${root_version}"
@@ -47,17 +64,33 @@ jobs:
           cat > "${issue_file}" <<EOF
           A newer \`${package}\` version is available.
 
-          | Surface | Version |
-          | --- | --- |
-          | Root package | \`${root_version}\` |
-          | Bridge package | \`${bridge_version}\` |
-          | Latest npm | \`${latest_version}\` |
+          | Package | Root package | Bridge package | Latest npm |
+          | --- | --- | --- | --- |
+          EOF
+
+          for stack_package in "${bridge_stack[@]}"; do
+            stack_root_version="$(package_version "${stack_package}" "./package.json")"
+            stack_bridge_version="$(package_version "${stack_package}" "./agent-sdk/package.json")"
+            stack_latest_version="$(npm view "${stack_package}" version)"
+            {
+              printf '| `%s` | `%s` | `%s` | `%s` |\n' \
+                "${stack_package}" \
+                "${stack_root_version}" \
+                "${stack_bridge_version}" \
+                "${stack_latest_version}"
+            } >> "${issue_file}"
+          done
+
+          cat >> "${issue_file}" <<EOF
 
           Suggested next steps:
 
           - Review the upstream release notes between \`${root_version}\`/\`${bridge_version}\` and \`${latest_version}\`.
-          - Compare release notes and tarball diffs before changing package pins.
-          - Update the pins in \`package.json\` and \`agent-sdk/package.json\`, then rebuild the bridge.
+          - Review the bridge dependency stack together before changing package pins.
+          - Compare release notes and tarball diffs before accepting the migration.
+          - Update accepted dependency pins in both \`package.json\` and \`agent-sdk/package.json\`, then rebuild the bridge.
+          - Run the bridge build, test, lint, knip, audit, and Rust compatibility checks before merging.
+          - Do not auto-publish from SDK migration work.
 
           This issue was opened or refreshed by \`${GITHUB_WORKFLOW}\`.
           EOF

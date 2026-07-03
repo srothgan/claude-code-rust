@@ -301,7 +301,25 @@ pub(super) async fn wait_for_bridge_initialized(
     connected_once: &mut bool,
     resume_requested: bool,
 ) -> Result<(), AppError> {
-    let timeout = Duration::from_secs(10);
+    wait_for_bridge_initialized_with_timeout(
+        bridge,
+        event_tx,
+        cmd_tx,
+        connected_once,
+        resume_requested,
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+async fn wait_for_bridge_initialized_with_timeout(
+    bridge: &mut BridgeClient,
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    connected_once: &mut bool,
+    resume_requested: bool,
+    timeout: Duration,
+) -> Result<(), AppError> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let initialize_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -356,4 +374,247 @@ pub(super) async fn wait_for_bridge_initialized(
     }
     .instrument(initialize_span)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_for_bridge_initialized_with_timeout;
+    use crate::agent::bridge::BridgeLauncher;
+    use crate::agent::client::BridgeClient;
+    use crate::agent::events::ClientEvent;
+    use crate::agent::wire::{BridgeEvent, CommandEnvelope};
+    use crate::error::AppError;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn bridge_client_recv_returns_none_when_stdout_closes() {
+        let fixture = RuntimeFixture::new(exit_success_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+
+        let event = bridge.recv().await.expect("recv should not fail");
+
+        assert_eq!(event, None);
+        let status = bridge.wait().await.expect("wait for bridge");
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn bridge_client_recv_reports_malformed_event_json() {
+        let fixture = RuntimeFixture::new(malformed_stdout_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+
+        let err = bridge.recv().await.expect_err("malformed event should fail");
+
+        assert!(
+            err.to_string().contains("failed to decode bridge event json"),
+            "unexpected error: {err:#}"
+        );
+        let _ = bridge.wait().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_client_reads_protocol_after_child_stderr_output() {
+        let fixture =
+            RuntimeFixture::new(stderr_then_initialized_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+
+        let event = bridge.recv().await.expect("recv should parse initialized event");
+
+        assert!(matches!(
+            event.map(|envelope| envelope.event),
+            Some(BridgeEvent::Initialized { .. })
+        ));
+        let status = bridge.wait().await.expect("wait for bridge");
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn bridge_initialization_fails_when_process_exits_before_protocol_ready() {
+        let fixture = RuntimeFixture::new(exit_failure_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<ClientEvent>();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
+        let mut connected_once = false;
+
+        let err = wait_for_bridge_initialized_with_timeout(
+            &mut bridge,
+            &event_tx,
+            &cmd_tx,
+            &mut connected_once,
+            false,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("closed stdout should fail initialization");
+
+        assert_eq!(err, AppError::ConnectionFailed);
+        let status = bridge.wait().await.expect("wait for bridge");
+        assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn bridge_initialization_timeout_is_deterministic() {
+        let fixture = RuntimeFixture::new(delayed_no_output_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<ClientEvent>();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
+        let mut connected_once = false;
+
+        let err = wait_for_bridge_initialized_with_timeout(
+            &mut bridge,
+            &event_tx,
+            &cmd_tx,
+            &mut connected_once,
+            false,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("missing initialized event should time out");
+
+        assert_eq!(err, AppError::ConnectionFailed);
+        let _ = bridge.wait().await;
+    }
+
+    #[tokio::test]
+    async fn bridge_initialization_succeeds_after_initialized_event() {
+        let fixture = RuntimeFixture::new(initialized_stdout_script()).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<ClientEvent>();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
+        let mut connected_once = false;
+
+        wait_for_bridge_initialized_with_timeout(
+            &mut bridge,
+            &event_tx,
+            &cmd_tx,
+            &mut connected_once,
+            false,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("initialized event should complete handshake");
+
+        let status = bridge.wait().await.expect("wait for bridge");
+        assert!(status.success());
+    }
+
+    struct RuntimeFixture {
+        _dir: TempDir,
+        runtime_path: PathBuf,
+        script_path: PathBuf,
+    }
+
+    impl RuntimeFixture {
+        fn new(runtime_contents: impl AsRef<str>) -> std::io::Result<Self> {
+            let dir = tempfile::tempdir()?;
+            let runtime_path = dir.path().join(runtime_name());
+            let script_path = dir.path().join("bridge.js");
+            fs::write(&runtime_path, runtime_contents.as_ref())?;
+            fs::write(&script_path, "// fake bridge script\n")?;
+            make_executable(&runtime_path)?;
+            Ok(Self { _dir: dir, runtime_path, script_path })
+        }
+
+        fn launcher(&self) -> BridgeLauncher {
+            BridgeLauncher {
+                runtime_path: self.runtime_path.clone(),
+                script_path: self.script_path.clone(),
+            }
+        }
+    }
+
+    fn initialized_event_json() -> &'static str {
+        r#"{"event":"initialized","result":{"agent_name":"test","agent_version":"0","auth_methods":[],"capabilities":{"prompt_image":false,"prompt_embedded_context":false,"supports_session_listing":false,"supports_resume_session":false}}}"#
+    }
+
+    #[cfg(windows)]
+    fn runtime_name() -> &'static str {
+        "fake_bridge.cmd"
+    }
+
+    #[cfg(not(windows))]
+    fn runtime_name() -> &'static str {
+        "fake_bridge.sh"
+    }
+
+    #[cfg(windows)]
+    fn exit_success_script() -> &'static str {
+        "@echo off\r\nexit /b 0\r\n"
+    }
+
+    #[cfg(not(windows))]
+    fn exit_success_script() -> &'static str {
+        "#!/bin/sh\nexit 0\n"
+    }
+
+    #[cfg(windows)]
+    fn exit_failure_script() -> &'static str {
+        "@echo off\r\nexit /b 7\r\n"
+    }
+
+    #[cfg(not(windows))]
+    fn exit_failure_script() -> &'static str {
+        "#!/bin/sh\nexit 7\n"
+    }
+
+    #[cfg(windows)]
+    fn malformed_stdout_script() -> String {
+        "@echo off\r\necho not-json\r\n".to_owned()
+    }
+
+    #[cfg(not(windows))]
+    fn malformed_stdout_script() -> String {
+        "#!/bin/sh\nprintf 'not-json\\n'\n".to_owned()
+    }
+
+    #[cfg(windows)]
+    fn initialized_stdout_script() -> String {
+        format!("@echo off\r\necho {}\r\n", initialized_event_json())
+    }
+
+    #[cfg(not(windows))]
+    fn initialized_stdout_script() -> String {
+        format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", initialized_event_json())
+    }
+
+    #[cfg(windows)]
+    fn stderr_then_initialized_script() -> String {
+        format!("@echo off\r\necho bridge diagnostic 1>&2\r\necho {}\r\n", initialized_event_json())
+    }
+
+    #[cfg(not(windows))]
+    fn stderr_then_initialized_script() -> String {
+        format!(
+            "#!/bin/sh\nprintf 'bridge diagnostic\\n' >&2\nprintf '%s\\n' '{}'\n",
+            initialized_event_json()
+        )
+    }
+
+    #[cfg(windows)]
+    fn delayed_no_output_script() -> &'static str {
+        "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Milliseconds 500\"\r\n"
+    }
+
+    #[cfg(not(windows))]
+    fn delayed_no_output_script() -> &'static str {
+        "#!/bin/sh\nsleep 0.5\n"
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)
+    }
+
+    #[cfg(not(unix))]
+    #[allow(clippy::unnecessary_wraps)]
+    fn make_executable(_path: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
 }

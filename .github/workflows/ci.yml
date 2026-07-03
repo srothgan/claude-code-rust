@@ -91,6 +91,32 @@ jobs:
       - name: Check lockfile
         run: cargo fetch --locked
 
+  direct-binary-smoke:
+    name: Direct Binary Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release --locked --bin claude-rs
+      - name: Smoke-test version startup (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/release/claude-rs --version
+      - name: Smoke-test help startup (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/release/claude-rs --help
+      - name: Smoke-test version startup (Windows)
+        if: runner.os == 'Windows'
+        run: .\target\release\claude-rs.exe --version
+      - name: Smoke-test help startup (Windows)
+        if: runner.os == 'Windows'
+        run: .\target\release\claude-rs.exe --help
+
   npm-package-layout:
     name: npm Package Layout
     runs-on: ubuntu-latest
