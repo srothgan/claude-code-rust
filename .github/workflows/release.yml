@@ -241,7 +241,7 @@ jobs:
         run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
 
   create-draft-github-release:
-    needs: [verify, smoke-test-packages]
+    needs: [verify, verify-release-attestations]
     name: Create draft GitHub Release
     runs-on: ubuntu-latest
     environment: npm-release
@@ -295,7 +295,7 @@ jobs:
             --notes-file release-notes.md
 
   verify-release-attestations:
-    needs: [verify, create-draft-github-release]
+    needs: [verify, smoke-test-packages]
     name: Verify binary attestations
     runs-on: ubuntu-latest
     permissions:
@@ -312,7 +312,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signer_workflow="srothgan/claude-code-rust/.github/workflows/release.yml@refs/heads/main"
+          signer_workflow="srothgan/claude-code-rust/.github/workflows/_release-build.yml@refs/heads/main"
           gh attestation verify dist-assets/claude-code-rust-x86_64-unknown-linux-gnu \
             --repo srothgan/claude-code-rust \
             --signer-workflow "$signer_workflow" \
@@ -335,7 +335,7 @@ jobs:
             --deny-self-hosted-runners
 
   publish-platform-packages:
-    needs: [verify, verify-release-attestations]
+    needs: [verify, create-draft-github-release]
     name: Publish platform npm packages
     runs-on: ubuntu-latest
     environment: npm-release
