@@ -91,6 +91,29 @@ jobs:
       - name: Check lockfile
         run: cargo fetch --locked
 
+  cargo-deny-policy:
+    name: Cargo Deny Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.88.0"
+          command: check bans licenses sources
+          arguments: --all-features
+
+  cargo-deny-advisories:
+    name: Cargo Deny Advisories
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.88.0"
+          command: check advisories
+          arguments: --all-features
+
   direct-binary-smoke:
     name: Direct Binary Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

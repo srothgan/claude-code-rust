@@ -1,0 +1,56 @@
+# Cargo dependency policy for licenses, advisories, duplicate crates, and sources.
+# Keep this file focused on actionable checks; avoid copying the full generated template.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml remains transitive via syntect/plist; semver-compatible updates do not reach the fixed >=0.41.0 line yet." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml remains transitive via syntect/plist; semver-compatible updates do not reach the fixed >=0.41.0 line yet." },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+deny = []
+skip = [
+    { name = "getrandom", version = "0.3.4", reason = "build-time dependencies still use getrandom 0.3 while runtime/dev dependencies have moved to 0.4." },
+    { name = "hashbrown", version = "0.16.1", reason = "ratatui-core still uses hashbrown 0.16 while other transitive dependencies use 0.17." },
+    { name = "itertools", version = "0.14.0", reason = "ratatui-core still uses itertools 0.14 while tui-markdown uses 0.15." },
+    { name = "windows-link", version = "0.1.3", reason = "Windows notification dependencies still use windows-link 0.1 while newer Windows dependencies use 0.2." },
+    { name = "windows-sys", version = "0.60.2", reason = "arboard and notify still use windows-sys 0.60 while newer Windows dependencies use 0.61." },
+    { name = "winnow", version = "0.7.15", reason = "zbus still uses winnow 0.7 while proc-macro tooling uses 1.0." },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
