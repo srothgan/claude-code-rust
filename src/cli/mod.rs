@@ -1,6 +1,7 @@
 // Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
 
+mod config;
 mod doctor;
 mod logs;
 pub mod redaction;
@@ -16,6 +17,7 @@ pub fn run_support_command(
     match &cli.command {
         Some(Command::Doctor(args)) => doctor::run(cli, args, stdout).map(Some),
         Some(Command::Logs(args)) => logs::run(cli, args, stdout, stderr).map(Some),
+        Some(Command::Config(args)) => config::run(cli, args, stdout, stderr).map(Some),
         Some(Command::Resume { .. }) | None => Ok(None),
     }
 }
@@ -23,8 +25,7 @@ pub fn run_support_command(
 #[cfg(test)]
 mod tests {
     use super::run_support_command;
-    use crate::{Cli, Command, DoctorArgs, LogsArgs};
-    use std::path::PathBuf;
+    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs, DoctorArgs, LogsArgs};
 
     #[test]
     fn no_subcommand_uses_interactive_path() {
@@ -85,6 +86,21 @@ mod tests {
         assert!(stderr.is_empty());
     }
 
+    #[test]
+    fn config_is_a_support_command() {
+        let cli = test_cli(Some(Command::Config(ConfigArgs {
+            command: Some(ConfigCommand::Path(ConfigPathArgs { json: false, which: None })),
+        })));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
+
+        assert_eq!(result, Some(0));
+        assert!(!stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
     fn test_cli(command: Option<Command>) -> Cli {
         Cli {
             command,
@@ -100,10 +116,5 @@ mod tests {
             perf_log: None,
             perf_append: false,
         }
-    }
-
-    #[allow(dead_code)]
-    fn path(path: &str) -> PathBuf {
-        PathBuf::from(path)
     }
 }

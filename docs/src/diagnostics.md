@@ -28,6 +28,40 @@ Use `-C, --dir` with `doctor` to inspect project-local settings for a specific f
 claude-rs -C path/to/project doctor
 ```
 
+## Config Inspection
+
+Inspect resolved config paths without starting the TUI:
+
+```bash
+claude-rs config
+claude-rs config path
+```
+
+`claude-rs config` prints the same path summary as `config path`, including user settings, project-local settings, user preferences, and whether each file is present and valid. Use `-C, --dir` to inspect project-local config for a specific folder.
+
+For script-friendly path output:
+
+```bash
+claude-rs config path --which settings
+claude-rs config path --which local-settings
+claude-rs config path --which preferences
+```
+
+Show a concise redacted config summary:
+
+```bash
+claude-rs config show
+claude-rs config show --json
+```
+
+Export a support-safe config snapshot:
+
+```bash
+claude-rs config export --output claude-rs-config.json
+```
+
+Config output redacts obvious credentials by default. Export refuses to overwrite existing files, and inspection does not repair, back up, normalize, or rewrite config files. Malformed existing config files are reported as invalid and cause `show` or `export` to return a non-zero exit code.
+
 ## Logging
 
 Enable runtime diagnostics with a named preset:

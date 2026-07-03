@@ -53,6 +53,16 @@ Settings are loaded from Claude-compatible JSON files. The app can edit supporte
 
 Malformed JSON files are backed up with a timestamped `.bak` extension and replaced in memory with an empty object so the app can keep running.
 
+For read-only support workflows, use:
+
+```bash
+claude-rs config
+claude-rs config show
+claude-rs config export --output claude-rs-config.json
+```
+
+These commands inspect and export redacted config data without starting the TUI and without rewriting or backing up malformed files.
+
 ## Supported Settings
 
 | Setting | File | JSON path | Notes |

@@ -123,6 +123,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Find runtime logs or create a redacted debug bundle
     Logs(LogsArgs),
+    /// Inspect and export redacted configuration
+    Config(ConfigArgs),
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
@@ -164,9 +166,60 @@ pub struct LogsArgs {
     pub yes: bool,
 }
 
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: Option<ConfigCommand>,
+}
+
+#[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
+pub enum ConfigCommand {
+    /// Print resolved config file paths
+    Path(ConfigPathArgs),
+    /// Show a concise redacted config summary
+    Show(ConfigShowArgs),
+    /// Export a redacted support-safe config snapshot
+    Export(ConfigExportArgs),
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ConfigPathArgs {
+    /// Emit machine-readable JSON path metadata.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Print only one config file path for scripting.
+    #[arg(long, value_enum)]
+    pub which: Option<ConfigFileSelector>,
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ConfigShowArgs {
+    /// Emit machine-readable redacted JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct ConfigExportArgs {
+    /// Write the redacted export JSON to this new file.
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum ConfigFileSelector {
+    Settings,
+    LocalSettings,
+    Preferences,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, DoctorArgs, LogsArgs};
+    use super::{
+        Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
+        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
+    };
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -256,6 +309,64 @@ mod tests {
     fn cli_logs_rejects_conflicting_modes() {
         assert!(Cli::try_parse_from(["claude-rs", "logs", "--path", "--latest"]).is_err());
         assert!(Cli::try_parse_from(["claude-rs", "logs", "--output", "out.zip"]).is_err());
+    }
+
+    #[test]
+    fn cli_config_accepts_path_modes() {
+        let cli = Cli::try_parse_from(["claude-rs", "config", "path"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Config(ConfigArgs {
+                command: Some(ConfigCommand::Path(ConfigPathArgs { json: false, which: None })),
+            }))
+        );
+
+        let cli = Cli::try_parse_from([
+            "claude-rs",
+            "config",
+            "path",
+            "--json",
+            "--which",
+            "local-settings",
+        ])
+        .expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Config(ConfigArgs {
+                command: Some(ConfigCommand::Path(ConfigPathArgs {
+                    json: true,
+                    which: Some(ConfigFileSelector::LocalSettings),
+                })),
+            }))
+        );
+    }
+
+    #[test]
+    fn cli_config_defaults_to_summary() {
+        let cli = Cli::try_parse_from(["claude-rs", "config"]).expect("parse");
+        assert_eq!(cli.command, Some(Command::Config(ConfigArgs { command: None })));
+    }
+
+    #[test]
+    fn cli_config_accepts_show_and_export() {
+        let cli = Cli::try_parse_from(["claude-rs", "config", "show", "--json"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Config(ConfigArgs {
+                command: Some(ConfigCommand::Show(ConfigShowArgs { json: true })),
+            }))
+        );
+
+        let cli = Cli::try_parse_from(["claude-rs", "config", "export", "--output", "config.json"])
+            .expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Config(ConfigArgs {
+                command: Some(ConfigCommand::Export(ConfigExportArgs {
+                    output: Some(std::path::PathBuf::from("config.json")),
+                })),
+            }))
+        );
     }
 
     #[test]
