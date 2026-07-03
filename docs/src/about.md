@@ -21,7 +21,7 @@ For official Claude documentation, use the Claude documentation:
 
 ## Billing Note
 
-Because Claude Code Rust uses the Agent SDK, usage should be treated as Agent SDK usage. Anthropic's support article says that starting June 15, 2026, Agent SDK and `claude -p` usage on eligible Claude plans move to a separate monthly Agent SDK credit instead of normal interactive Claude plan usage limits.
+Because Claude Code Rust uses the Agent SDK, usage should be treated as Agent SDK usage. Anthropic has paused the previously announced Agent SDK credit change. For now, Agent SDK usage, including `claude -p` and third-party apps like this one, still draws from normal Claude subscription limits.
 
 Check Anthropic's current support article before relying on billing assumptions:
 

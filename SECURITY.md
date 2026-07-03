@@ -35,6 +35,12 @@ reported to their respective maintainers.
 
 ## Security Measures
 
-- Dependencies are audited weekly via `cargo audit` (scheduled GitHub Actions workflow, every Monday)
-- Dependency updates are managed via Dependabot
-- All PRs require CI checks (test, clippy, fmt, MSRV, lockfile)
+- Rust dependency policy is enforced with Cargo Deny for advisories, licenses,
+  duplicate-crate policy, and allowed sources.
+- Cargo Deny advisories run on a scheduled dependency monitor workflow and are
+  kept non-blocking so newly published advisories can be triaged deliberately.
+- Dependency updates are managed via Dependabot, with Agent SDK migration
+  tracked separately through an issue-based monitor.
+- GitHub dependency graph, Dependabot alerts, secret scanning, and push
+  protection are enabled for repository-level coverage.
+- PRs require the `pr-gate` status check and separate semantic PR title lint.

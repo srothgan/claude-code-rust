@@ -1,0 +1,241 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-platforms:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Run tests
+        run: cargo test --all-features
+
+  direct-binary-smoke:
+    name: Direct Binary Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Build release binary
+        run: cargo build --release --locked --bin claude-rs
+      - name: Smoke-test version startup (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/release/claude-rs --version
+      - name: Smoke-test help startup (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/release/claude-rs --help
+      - name: Smoke-test version startup (Windows)
+        if: runner.os == 'Windows'
+        run: .\target\release\claude-rs.exe --version
+      - name: Smoke-test help startup (Windows)
+        if: runner.os == 'Windows'
+        run: .\target\release\claude-rs.exe --help
+
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Check MSRV
+        run: cargo check --all-features
+
+  unsafe-code:
+    name: Unsafe Code Warning
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Warn on unsafe in library target
+        continue-on-error: true
+        run: cargo rustc --lib --all-features -- -W unsafe-code
+      - name: Warn on unsafe in binary target
+        continue-on-error: true
+        run: cargo rustc --bin claude-rs --all-features -- -W unsafe-code
+
+  duplicate-code:
+    name: jscpd warning scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JSCPD_WARNING_THRESHOLD: "3.0"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run duplicate code scan
+        run: npm run quality:duplicates
+
+      - name: Publish duplicate code warning summary
+        if: always()
+        run: npm run quality:duplicates:summary
+
+      - name: Upload duplicate code report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: jscpd-report
+          path: jscpd-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  verify-release-candidate:
+    name: Verify release candidate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Get crate version
+        id: get_version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release candidate version: $VERSION"
+
+  agent-sdk-preflight:
+    needs: [verify-release-candidate]
+    uses: ./.github/workflows/_agent-sdk.yml
+    permissions:
+      contents: read
+
+  build-release-candidate:
+    needs: [verify-release-candidate, agent-sdk-preflight]
+    name: Build ${{ matrix.target }}
+    uses: ./.github/workflows/_release-build.yml
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package_dir: linux-x64-gnu
+            exe: claude-rs
+            asset: claude-code-rust-x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            package_dir: win32-x64-msvc
+            exe: claude-rs.exe
+            asset: claude-code-rust-x86_64-pc-windows-msvc.exe
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            package_dir: darwin-x64
+            exe: claude-rs
+            asset: claude-code-rust-x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            package_dir: darwin-arm64
+            exe: claude-rs
+            asset: claude-code-rust-aarch64-apple-darwin
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      package_dir: ${{ matrix.package_dir }}
+      exe: ${{ matrix.exe }}
+      asset: ${{ matrix.asset }}
+      version: ${{ needs.verify-release-candidate.outputs.version }}
+      artifact_prefix: release-candidate
+      attest: false
+
+  assemble-release-candidate:
+    needs: [verify-release-candidate, agent-sdk-preflight, build-release-candidate]
+    name: Assemble, verify, and smoke-test npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            agent-sdk/package-lock.json
+
+      - name: Download staged binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-candidate-*
+          merge-multiple: true
+          path: .
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install agent-sdk dependencies
+        run: npm ci --prefix agent-sdk
+
+      - name: Build agent-sdk bridge
+        run: npm --prefix agent-sdk run build
+
+      - name: Assemble npm packages
+        run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
+      - name: Verify npm package layout
+        run: node scripts/verify-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
+      - name: Pack and smoke-test npm install
+        run: node scripts/smoke-npm-package-install.mjs --real-binary
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist-assets dist-pack -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release candidate artifact set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-candidate-${{ needs.verify-release-candidate.outputs.version }}
+          path: |
+            dist-assets/*
+            dist-npm/manifests/*.json
+            dist-pack/*.tgz
+            SHA256SUMS
+          if-no-files-found: error

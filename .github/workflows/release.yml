@@ -95,14 +95,14 @@ jobs:
 
   agent-sdk-preflight:
     needs: [verify]
-    uses: ./.github/workflows/agent-sdk.yml
+    uses: ./.github/workflows/_agent-sdk.yml
     permissions:
       contents: read
 
   build-binaries:
     needs: [verify, agent-sdk-preflight]
     name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.runner }}
+    uses: ./.github/workflows/_release-build.yml
     permissions:
       contents: read
       id-token: write
@@ -131,52 +131,15 @@ jobs:
             package_dir: darwin-arm64
             exe: claude-rs
             asset: claude-code-rust-aarch64-apple-darwin
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin claude-rs
-
-      - name: Stage release artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          binary="target/${{ matrix.target }}/release/${{ matrix.exe }}"
-          mkdir -p "dist-assets" "dist-platform/${{ matrix.package_dir }}/bin"
-          cp "$binary" "dist-assets/${{ matrix.asset }}"
-          cp "$binary" "dist-platform/${{ matrix.package_dir }}/bin/${{ matrix.exe }}"
-          chmod +x "dist-assets/${{ matrix.asset }}" "dist-platform/${{ matrix.package_dir }}/bin/${{ matrix.exe }}" 2>/dev/null || true
-          {
-            echo "git_sha=${{ github.sha }}"
-            echo "version=${{ needs.verify.outputs.version }}"
-            echo "rust_target=${{ matrix.target }}"
-            echo "runner_os=${{ runner.os }}"
-            echo "asset=${{ matrix.asset }}"
-            echo "package_dir=${{ matrix.package_dir }}"
-            echo "rustc_version<<EOF"
-            rustc -Vv
-            echo "EOF"
-          } > "dist-assets/${{ matrix.asset }}.build-metadata.txt"
-
-      - name: Generate binary attestation
-        uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
-        with:
-          subject-path: dist-assets/${{ matrix.asset }}
-
-      - name: Upload staged artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-binary-${{ matrix.package_dir }}
-          path: |
-            dist-assets/*
-            dist-platform/${{ matrix.package_dir }}/bin/*
-          if-no-files-found: error
+    with:
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      package_dir: ${{ matrix.package_dir }}
+      exe: ${{ matrix.exe }}
+      asset: ${{ matrix.asset }}
+      version: ${{ needs.verify.outputs.version }}
+      artifact_prefix: release-binary
+      attest: true
 
   assemble-npm-packages:
     needs: [verify, agent-sdk-preflight, build-binaries]
@@ -277,9 +240,9 @@ jobs:
       - name: Smoke-test installed npm tarballs
         run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
 
-  create-github-release:
+  create-draft-github-release:
     needs: [verify, smoke-test-packages]
-    name: Create GitHub Release
+    name: Create draft GitHub Release
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -317,7 +280,7 @@ jobs:
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
-      - name: Create GitHub Release
+      - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -326,12 +289,13 @@ jobs:
           mapfile -t release_assets < <(find dist-assets dist-pack dist-npm/manifests -type f | sort)
           release_assets+=(SHA256SUMS)
           gh release create "$TAG" "${release_assets[@]}" \
+            --draft \
             --verify-tag \
             --title "$TAG" \
             --notes-file release-notes.md
 
   verify-release-attestations:
-    needs: [verify, create-github-release]
+    needs: [verify, create-draft-github-release]
     name: Verify binary attestations
     runs-on: ubuntu-latest
     permissions:
@@ -348,7 +312,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signer_workflow="srothgan/claude-code-rust/.github/workflows/release-npm.yml@refs/heads/main"
+          signer_workflow="srothgan/claude-code-rust/.github/workflows/release.yml@refs/heads/main"
           gh attestation verify dist-assets/claude-code-rust-x86_64-unknown-linux-gnu \
             --repo srothgan/claude-code-rust \
             --signer-workflow "$signer_workflow" \
@@ -451,3 +415,18 @@ jobs:
             exit 1
           fi
           npm publish "$tarball" --access public
+
+  publish-github-release:
+    needs: [verify, publish-root-package]
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false
