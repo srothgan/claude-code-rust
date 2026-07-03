@@ -1,6 +1,6 @@
 {
   "name": "claude-code-rust",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Claude Code Rust - native Rust terminal interface for Claude Code",
   "keywords": [
     "cli",

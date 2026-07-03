@@ -2,23 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.13.2] - 2026-07-03 [Changes][v0.13.2]
 
 ### Features
 
 - **Supportability commands** (#235, @srothgan): Add `claude-rs doctor`, `logs`, redacted debug bundles, crash and bridge failure reports, and read-only redacted config inspection/export commands for installation and runtime diagnostics.
-
-## [0.13.1] - 2026-07-02 [Changes][v0.13.1]
 
 ### Release and Packaging
 
 - **Platform npm packages** (#232, @srothgan): Replace the install-time GitHub Release downloader with a root launcher plus platform-specific optional npm packages for macOS arm64/x64, Linux x64 glibc, and Windows x64 MSVC.
 - **Trusted Publishing release flow** (#232, @srothgan): Publish platform packages before the root package from a protected `npm-release` environment, with package-content manifests, checksums, provenance, and binary attestations.
 - **Package validation** (#232, @srothgan): Add generated package assembly, package layout verification, and tarball smoke tests so release candidates and npm releases validate the installed launcher and platform binary layout before publishing.
+- **Release publication guardrail** (#233, #236, @srothgan): Create the GitHub Release as a draft, publish npm platform and root packages from explicit local tarball paths, then publish the GitHub Release only after npm publication succeeds.
+
+### Testing
+
+- **Bridge contract coverage** (#234, @srothgan): Add Node-side NDJSON bridge contract tests and Rust-side bridge lifecycle failure coverage without requiring Claude credentials.
+- **Direct binary smoke checks** (#234, #236, @srothgan): Validate release binary startup with `--version` and `--help` across supported platforms outside the npm package smoke path.
+
+### CI and Supply Chain
+
+- **Cargo Deny policy** (#236, @srothgan): Add `deny.toml` and enforce Cargo dependency policy for advisories, licenses, duplicate-crate policy, and allowed sources.
+- **Workflow consolidation** (#236, @srothgan): Replace the broad PR workflow set with `pr-gate`, separate PR title lint, reusable Agent SDK and release build workflows, scheduled deep checks, and dependency monitoring.
+- **Workflow action pinning** (#236, @srothgan): Pin external GitHub Actions to full commit SHAs and align repository rules with the new required status checks.
+
+### Maintenance
+
+- **Focused app state modules** (#231, @srothgan): Split app state, runtime session, startup, turn, transcript, and SDK inventory bookkeeping into focused modules while preserving public behavior.
 
 ### Documentation
 
 - **Install architecture** (#232, @srothgan): Document the optional-dependency install model, platform package troubleshooting, source-build bridge behavior, and release invariants for contributors.
+- **Diagnostics and security docs** (#235, #236, @srothgan): Document supportability commands, redacted config exports, current repository security controls, and the paused Agent SDK billing change.
+
+### Notes
+
+- `0.13.1` was skipped before npm publication after a failed release workflow. No `0.13.1` npm packages were published.
 
 ## [0.13.0] - 2026-07-02 [Changes][v0.13.0]
 
@@ -679,7 +698,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
-[v0.13.1]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.1
+[v0.13.2]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.2
 [v0.13.0]: https://github.com/srothgan/claude-code-rust/compare/v0.12.4...v0.13.0
 [v0.12.4]: https://github.com/srothgan/claude-code-rust/compare/v0.12.3...v0.12.4
 [v0.12.3]: https://github.com/srothgan/claude-code-rust/compare/v0.12.2...v0.12.3
