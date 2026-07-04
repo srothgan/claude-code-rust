@@ -155,11 +155,21 @@ jobs:
             package_dir: linux-x64-gnu
             exe: claude-rs
             asset: claude-code-rust-x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            package_dir: linux-arm64-gnu
+            exe: claude-rs
+            asset: claude-code-rust-aarch64-unknown-linux-gnu
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             package_dir: win32-x64-msvc
             exe: claude-rs.exe
             asset: claude-code-rust-x86_64-pc-windows-msvc.exe
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            package_dir: win32-arm64-msvc
+            exe: claude-rs.exe
+            asset: claude-code-rust-aarch64-pc-windows-msvc.exe
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             package_dir: darwin-x64
@@ -182,7 +192,7 @@ jobs:
 
   assemble-release-candidate:
     needs: [verify-release-candidate, agent-sdk-preflight, build-release-candidate]
-    name: Assemble, verify, and smoke-test npm packages
+    name: Assemble and verify npm packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -217,8 +227,17 @@ jobs:
       - name: Verify npm package layout
         run: node scripts/verify-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
 
-      - name: Pack and smoke-test npm install
-        run: node scripts/smoke-npm-package-install.mjs --real-binary
+      - name: Pack npm tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p dist-pack
+          npm pack ./dist-npm/darwin-arm64 --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/darwin-x64 --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/linux-arm64-gnu --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/linux-x64-gnu --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/win32-arm64-msvc --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/win32-x64-msvc --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/root --pack-destination ./dist-pack --json
 
       - name: Generate SHA256SUMS
         shell: bash
@@ -239,3 +258,39 @@ jobs:
             dist-pack/*.tgz
             SHA256SUMS
           if-no-files-found: error
+
+  smoke-release-candidate-packages:
+    needs: [verify-release-candidate, assemble-release-candidate]
+    name: Smoke ${{ matrix.package_dir }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            package_dir: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            package_dir: linux-arm64-gnu
+          - runner: windows-latest
+            package_dir: win32-x64-msvc
+          - runner: windows-11-arm
+            package_dir: win32-arm64-msvc
+          - runner: macos-15-intel
+            package_dir: darwin-x64
+          - runner: macos-15
+            package_dir: darwin-arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Download release candidate artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate-${{ needs.verify-release-candidate.outputs.version }}
+          path: .
+
+      - name: Smoke-test installed npm tarballs
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary

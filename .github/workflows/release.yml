@@ -90,7 +90,9 @@ jobs:
           check_absent "claude-code-rust"
           check_absent "@srothgan/claude-code-rust-darwin-arm64"
           check_absent "@srothgan/claude-code-rust-darwin-x64"
+          check_absent "@srothgan/claude-code-rust-linux-arm64-gnu"
           check_absent "@srothgan/claude-code-rust-linux-x64-gnu"
+          check_absent "@srothgan/claude-code-rust-win32-arm64-msvc"
           check_absent "@srothgan/claude-code-rust-win32-x64-msvc"
 
   agent-sdk-preflight:
@@ -116,11 +118,21 @@ jobs:
             package_dir: linux-x64-gnu
             exe: claude-rs
             asset: claude-code-rust-x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            package_dir: linux-arm64-gnu
+            exe: claude-rs
+            asset: claude-code-rust-aarch64-unknown-linux-gnu
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             package_dir: win32-x64-msvc
             exe: claude-rs.exe
             asset: claude-code-rust-x86_64-pc-windows-msvc.exe
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            package_dir: win32-arm64-msvc
+            exe: claude-rs.exe
+            asset: claude-code-rust-aarch64-pc-windows-msvc.exe
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             package_dir: darwin-x64
@@ -185,7 +197,9 @@ jobs:
           mkdir -p dist-pack
           npm pack ./dist-npm/darwin-arm64 --pack-destination ./dist-pack --json
           npm pack ./dist-npm/darwin-x64 --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/linux-arm64-gnu --pack-destination ./dist-pack --json
           npm pack ./dist-npm/linux-x64-gnu --pack-destination ./dist-pack --json
+          npm pack ./dist-npm/win32-arm64-msvc --pack-destination ./dist-pack --json
           npm pack ./dist-npm/win32-x64-msvc --pack-destination ./dist-pack --json
           npm pack ./dist-npm/root --pack-destination ./dist-pack --json
 
@@ -218,8 +232,12 @@ jobs:
         include:
           - runner: ubuntu-latest
             package_dir: linux-x64-gnu
+          - runner: ubuntu-24.04-arm
+            package_dir: linux-arm64-gnu
           - runner: windows-latest
             package_dir: win32-x64-msvc
+          - runner: windows-11-arm
+            package_dir: win32-arm64-msvc
           - runner: macos-15-intel
             package_dir: darwin-x64
           - runner: macos-15
@@ -318,7 +336,17 @@ jobs:
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
+          gh attestation verify dist-assets/claude-code-rust-aarch64-unknown-linux-gnu \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-x86_64-pc-windows-msvc.exe \
+            --repo srothgan/claude-code-rust \
+            --signer-workflow "$signer_workflow" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+          gh attestation verify dist-assets/claude-code-rust-aarch64-pc-windows-msvc.exe \
             --repo srothgan/claude-code-rust \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
@@ -360,6 +388,28 @@ jobs:
           npm install -g npm@11
           npm --version
 
+      - name: Dry-run platform tarball publish
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          publish_package() {
+            local package_name="$1"
+            local filename="${package_name#@}"
+            filename="${filename/\//-}-${VERSION}.tgz"
+            local tarball="./dist-pack/$filename"
+            if [ ! -f "$tarball" ]; then
+              echo "::error::Missing npm package tarball: $tarball"
+              exit 1
+            fi
+            npm publish "$tarball" --access public --dry-run
+          }
+          publish_package "@srothgan/claude-code-rust-darwin-arm64"
+          publish_package "@srothgan/claude-code-rust-darwin-x64"
+          publish_package "@srothgan/claude-code-rust-linux-arm64-gnu"
+          publish_package "@srothgan/claude-code-rust-linux-x64-gnu"
+          publish_package "@srothgan/claude-code-rust-win32-arm64-msvc"
+          publish_package "@srothgan/claude-code-rust-win32-x64-msvc"
+
       - name: Publish platform tarballs
         run: |
           set -euo pipefail
@@ -377,7 +427,9 @@ jobs:
           }
           publish_package "@srothgan/claude-code-rust-darwin-arm64"
           publish_package "@srothgan/claude-code-rust-darwin-x64"
+          publish_package "@srothgan/claude-code-rust-linux-arm64-gnu"
           publish_package "@srothgan/claude-code-rust-linux-x64-gnu"
+          publish_package "@srothgan/claude-code-rust-win32-arm64-msvc"
           publish_package "@srothgan/claude-code-rust-win32-x64-msvc"
 
   publish-root-package:
@@ -405,6 +457,16 @@ jobs:
         run: |
           npm install -g npm@11
           npm --version
+
+      - name: Dry-run root tarball publish
+        run: |
+          set -euo pipefail
+          tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
+          if [ ! -f "$tarball" ]; then
+            echo "::error::Missing npm package tarball: $tarball"
+            exit 1
+          fi
+          npm publish "$tarball" --access public --dry-run
 
       - name: Publish root tarball
         run: |

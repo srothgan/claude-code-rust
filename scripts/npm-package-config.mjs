@@ -31,12 +31,29 @@ export const PLATFORM_PACKAGES = [
     rustTarget: "x86_64-unknown-linux-gnu"
   },
   {
+    dir: "linux-arm64-gnu",
+    packageName: "@srothgan/claude-code-rust-linux-arm64-gnu",
+    os: ["linux"],
+    cpu: ["arm64"],
+    libc: ["glibc"],
+    binaryName: "claude-rs",
+    rustTarget: "aarch64-unknown-linux-gnu"
+  },
+  {
     dir: "win32-x64-msvc",
     packageName: "@srothgan/claude-code-rust-win32-x64-msvc",
     os: ["win32"],
     cpu: ["x64"],
     binaryName: "claude-rs.exe",
     rustTarget: "x86_64-pc-windows-msvc"
+  },
+  {
+    dir: "win32-arm64-msvc",
+    packageName: "@srothgan/claude-code-rust-win32-arm64-msvc",
+    os: ["win32"],
+    cpu: ["arm64"],
+    binaryName: "claude-rs.exe",
+    rustTarget: "aarch64-pc-windows-msvc"
   }
 ];
 

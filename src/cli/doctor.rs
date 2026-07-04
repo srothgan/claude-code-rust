@@ -744,7 +744,9 @@ fn platform_package_name() -> Option<&'static str> {
         ("macos", "aarch64") => Some("@srothgan/claude-code-rust-darwin-arm64"),
         ("macos", "x86_64") => Some("@srothgan/claude-code-rust-darwin-x64"),
         ("linux", "x86_64") => Some("@srothgan/claude-code-rust-linux-x64-gnu"),
+        ("linux", "aarch64") => Some("@srothgan/claude-code-rust-linux-arm64-gnu"),
         ("windows", "x86_64") => Some("@srothgan/claude-code-rust-win32-x64-msvc"),
+        ("windows", "aarch64") => Some("@srothgan/claude-code-rust-win32-arm64-msvc"),
         _ => None,
     }
 }
