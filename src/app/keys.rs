@@ -1121,9 +1121,9 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@docs/manual path ");
+        assert_eq!(app.input.text(), "@'docs/manual path' ");
         assert_eq!(app.committed_mentions.len(), 1);
-        assert_eq!(app.committed_mentions[0].text, "@docs/manual path");
+        assert_eq!(app.committed_mentions[0].text, "@'docs/manual path'");
     }
 
     #[test]
@@ -1152,7 +1152,7 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@src/lib.rs ");
+        assert_eq!(app.input.text(), "@'src/lib.rs' ");
         assert!(app.committed_mentions.is_empty());
     }
 
