@@ -132,6 +132,7 @@ function verifyPlatformPackage(platformPackage) {
     `${context} local file list`
   );
   expectNoForbiddenFiles(files, context);
+  expectPlatformReadme(packageDir, platformPackage, context);
   expectUnixBinaryExecutable(packageDir, platformPackage, expectedBinaryPath, context);
 
   const packManifest = packAndVerify(packageDir, context, (filePath) =>
@@ -325,6 +326,25 @@ function expectNoForbiddenFiles(files, context) {
   }
 }
 
+function expectPlatformReadme(packageDir, platformPackage, context) {
+  const readme = fs.readFileSync(path.join(packageDir, "README.md"), "utf8");
+  expectIncludes(readme, `# \`${platformPackage.packageName}\``, `${context} README title`);
+  expectIncludes(readme, platformPackage.rustTarget, `${context} README Rust target`);
+  expectIncludes(readme, `version \`${expectedVersion}\``, `${context} README version`);
+  expectIncludes(readme, "npm install -g claude-code-rust", `${context} README install command`);
+  expectIncludes(
+    readme,
+    `https://www.npmjs.com/package/${platformPackage.packageName}`,
+    `${context} README npm package link`
+  );
+
+  if (platformPackage.libc) {
+    expectIncludes(readme, `- libc: \`${platformPackage.libc.join(", ")}\``, `${context} README libc`);
+  } else if (readme.includes("- libc:")) {
+    fail(`${context} README must not include libc details`);
+  }
+}
+
 function expectLauncherUsesPlatformPackages(packageDir, context) {
   const launcher = fs.readFileSync(path.join(packageDir, "bin", "claude-rs.js"), "utf8");
   if (launcher.includes('"vendor"') || launcher.includes("'vendor'")) {
@@ -383,6 +403,12 @@ function expectEqual(actual, expected, label) {
 function expectDeepEqual(actual, expected, label) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     fail(`${label}: expected ${formatValue(expected)}, got ${formatValue(actual)}`);
+  }
+}
+
+function expectIncludes(haystack, needle, label) {
+  if (!haystack.includes(needle)) {
+    fail(`${label}: expected to include ${formatValue(needle)}`);
   }
 }
 
