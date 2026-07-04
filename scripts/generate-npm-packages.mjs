@@ -64,7 +64,7 @@ function generatePlatformPackage(platformPackage) {
     path.join(packageDir, "package.json"),
     buildPlatformPackageJson({ platformPackage, version, rootPackageJson })
   );
-  copyFileFromRepo("README.md", path.join(packageDir, "README.md"));
+  writePlatformReadme(platformPackage, path.join(packageDir, "README.md"));
   copyFileFromRepo("LICENSE", path.join(packageDir, "LICENSE"));
 
   const destination = path.join(packageDir, "bin", platformPackage.binaryName);
@@ -132,6 +132,40 @@ function copyFileFromRepo(relativeSource, destination) {
   const source = path.join(repoRoot, relativeSource);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination);
+}
+
+function writePlatformReadme(platformPackage, destination) {
+  const projectName = "claude-code-rust";
+  const projectUrl = typeof rootPackageJson.homepage === "string" ? rootPackageJson.homepage : undefined;
+  const projectReference = projectUrl ? `[${projectName}](${projectUrl})` : `\`${projectName}\``;
+  const npmPackageUrl = `https://www.npmjs.com/package/${platformPackage.packageName}`;
+  const targetDetails = [
+    `- Rust target: \`${platformPackage.rustTarget}\``,
+    `- npm package: [\`${platformPackage.packageName}\`](${npmPackageUrl})`,
+    `- npm platform directory: \`${platformPackage.dir}\``,
+    `- OS: \`${platformPackage.os.join(", ")}\``,
+    `- CPU: \`${platformPackage.cpu.join(", ")}\``
+  ];
+
+  if (platformPackage.libc) {
+    targetDetails.push(`- libc: \`${platformPackage.libc.join(", ")}\``);
+  }
+
+  const content = `# \`${platformPackage.packageName}\`
+
+This is the **${platformPackage.rustTarget}** native binary package for ${projectReference} version \`${version}\`.
+
+Install \`${projectName}\` instead; this package is selected automatically as an optional dependency on matching platforms.
+
+\`\`\`bash
+npm install -g ${projectName}
+\`\`\`
+
+${targetDetails.join("\n")}
+`;
+
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, content, "utf8");
 }
 
 function writeMockBinary(platformPackage, destination) {
