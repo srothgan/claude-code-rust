@@ -1,5 +1,4 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
 import type {
   BridgeCommand,
   SystemNoticeSeverity,
@@ -84,6 +83,17 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
 ]);
 
 type SupportedImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+type PromptContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      source: {
+        type: "base64";
+        media_type: SupportedImageMimeType;
+        data: string;
+      };
+    };
 
 function sdkCorrelationMetadata(msg: Record<string, unknown>): ToolCorrelationMetadata {
   return {
@@ -351,9 +361,9 @@ function isValidBase64(data: string): boolean {
  */
 export function contentFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
-): ContentBlockParam[] {
+): PromptContentBlock[] {
   const chunks = command.chunks ?? [];
-  const content: ContentBlockParam[] = [];
+  const content: PromptContentBlock[] = [];
 
   for (const chunk of chunks) {
     if (chunk.kind === "text") {
