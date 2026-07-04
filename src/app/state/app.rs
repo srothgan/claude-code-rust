@@ -54,6 +54,8 @@ pub struct App {
     pub chat_render: ChatRenderState,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
+    /// Visual-only literal `@` mentions committed by the user.
+    pub committed_mentions: Vec<mention::CommittedMentionSpan>,
     /// App-owned file index backing `@` file mention autocomplete.
     pub file_index: file_index::FileIndexState,
     /// Active slash-command autocomplete state.
@@ -184,6 +186,7 @@ impl App {
             session_picker: SessionPickerState::default(),
             chat_render: ChatRenderState::default(),
             mention: None,
+            committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),
             slash: None,
             subagent: None,

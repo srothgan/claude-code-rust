@@ -29,6 +29,14 @@ pub struct MentionState {
     line_char_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedMentionSpan {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MentionSearchStatus {
     Hint,
@@ -513,6 +521,68 @@ pub fn confirm_selection(app: &mut App) {
     app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
 }
 
+pub fn commit_literal_if_active(app: &mut App) -> bool {
+    let Some(mention) = app.mention.take() else {
+        return false;
+    };
+    if mention.has_selectable_candidates() {
+        app.mention = Some(mention);
+        return false;
+    }
+
+    if app.slash.is_none() && app.subagent.is_none() {
+        app.release_focus_target(FocusTarget::Mention);
+    }
+
+    if query_is_hint(&mention.query) {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let mut lines = app.input.lines().to_vec();
+    let Some(line) = lines.get(mention.trigger_row) else {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    if chars.get(mention.trigger_col) != Some(&'@') {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let start_col = mention.trigger_col;
+    let raw_end_col = mention.replace_end_col.min(chars.len());
+    let end_col = trim_trailing_whitespace(chars.as_slice(), start_col + 1, raw_end_col);
+    if end_col <= start_col + 1 {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let committed_text: String = chars[start_col..end_col].iter().collect();
+    if raw_end_col == chars.len() && end_col == raw_end_col {
+        let before: String = chars[..end_col].iter().collect();
+        lines[mention.trigger_row] = format!("{before} ");
+        app.input.replace_lines_and_cursor(lines, mention.trigger_row, end_col + 1);
+    } else {
+        app.input.highlight_version = u64::MAX;
+    }
+
+    app.committed_mentions.push(CommittedMentionSpan {
+        row: mention.trigger_row,
+        start_col,
+        end_col,
+        text: committed_text,
+    });
+    true
+}
+
+fn trim_trailing_whitespace(chars: &[char], min_col: usize, mut end_col: usize) -> usize {
+    while end_col > min_col && chars[end_col - 1].is_whitespace() {
+        end_col -= 1;
+    }
+    end_col
+}
+
 fn resolve_confirm_end_col(
     mention: &MentionState,
     chars: &[char],
@@ -591,6 +661,25 @@ pub fn find_mention_spans(
     }
 
     spans
+}
+
+pub fn retain_valid_committed_mentions(
+    lines: &[String],
+    committed_mentions: &mut Vec<CommittedMentionSpan>,
+) {
+    committed_mentions.retain(|span| committed_mention_matches(lines, span));
+}
+
+pub fn committed_mention_matches(lines: &[String], span: &CommittedMentionSpan) -> bool {
+    let Some(line) = lines.get(span.row) else {
+        return false;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    if span.start_col >= span.end_col || span.end_col > chars.len() {
+        return false;
+    }
+    let text: String = chars[span.start_col..span.end_col].iter().collect();
+    text == span.text
 }
 
 fn resolve_mention_span(
@@ -939,6 +1028,100 @@ mod tests {
         assert_eq!(mention.query, " ");
         assert!(mention.candidates.is_empty());
         assert!(matches!(mention.search_status, MentionSearchStatus::Hint));
+    }
+
+    #[test]
+    fn commit_literal_adds_trailing_space_at_line_end() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        activate(&mut app);
+        app.input.set_text("@docs/manual path");
+        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
+        update_query(&mut app);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert!(app.mention.is_none());
+        assert_eq!(app.input.lines()[0], "@docs/manual path ");
+        assert_eq!(app.input.cursor_col(), "@docs/manual path ".chars().count());
+        assert_eq!(
+            app.committed_mentions,
+            vec![CommittedMentionSpan {
+                row: 0,
+                start_col: 0,
+                end_col: "@docs/manual path".chars().count(),
+                text: "@docs/manual path".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn commit_literal_before_existing_space_does_not_add_double_space() {
+        let mut app = App::test_default();
+        app.input.set_text("@manual path now");
+        let end_col = "@manual path".chars().count();
+        let _ = app.input.set_cursor(0, end_col);
+        let mut mention = MentionState::new(0, 0, "manual path".to_owned(), Vec::new());
+        mention.replace_end_col = end_col;
+        app.mention = Some(mention);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert_eq!(app.input.lines()[0], "@manual path now");
+        assert_eq!(app.committed_mentions.len(), 1);
+        assert_eq!(app.committed_mentions[0].text, "@manual path");
+        assert_eq!(app.committed_mentions[0].end_col, end_col);
+    }
+
+    #[test]
+    fn commit_literal_with_trailing_separator_space_does_not_add_another_space() {
+        let mut app = App::test_default();
+        app.input.set_text("@manual path ");
+        let end_col = "@manual path".chars().count();
+        let line_end_col = "@manual path ".chars().count();
+        let _ = app.input.set_cursor(0, line_end_col);
+        let mut mention = MentionState::new(0, 0, "manual path ".to_owned(), Vec::new());
+        mention.replace_end_col = line_end_col;
+        app.mention = Some(mention);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert_eq!(app.input.lines()[0], "@manual path ");
+        assert_eq!(app.committed_mentions.len(), 1);
+        assert_eq!(app.committed_mentions[0].text, "@manual path");
+        assert_eq!(app.committed_mentions[0].end_col, end_col);
+    }
+
+    #[test]
+    fn commit_literal_empty_query_only_deactivates() {
+        let mut app = App::test_default();
+        app.input.set_text("@ ");
+        let _ = app.input.set_cursor(0, 2);
+        app.mention = Some(MentionState::new(0, 0, " ".to_owned(), Vec::new()));
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert!(app.mention.is_none());
+        assert!(app.committed_mentions.is_empty());
+        assert_eq!(app.input.lines()[0], "@ ");
+    }
+
+    #[test]
+    fn committed_mentions_are_exact_text_validated() {
+        let mut spans = vec![CommittedMentionSpan {
+            row: 0,
+            start_col: 0,
+            end_col: "@docs/manual path".chars().count(),
+            text: "@docs/manual path".to_owned(),
+        }];
+        let lines = vec!["@docs/manual path ".to_owned()];
+        retain_valid_committed_mentions(&lines, &mut spans);
+        assert_eq!(spans.len(), 1);
+
+        let lines = vec!["@docs/changed path ".to_owned()];
+        retain_valid_committed_mentions(&lines, &mut spans);
+        assert!(spans.is_empty());
     }
 
     #[test]
