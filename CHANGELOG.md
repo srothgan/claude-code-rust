@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.3] - 2026-07-04 [Changes][v0.13.3]
+
+### Features
+
+- **ARM64 npm binaries** (#243, @srothgan): Add Linux arm64 glibc and Windows arm64 MSVC platform packages to the npm release flow.
+
+### Fixes
+
+- **File mention completion** (#242, @srothgan): Let `Tab` commit selected or literal `@` file mentions with quoted paths and cleaner autocomplete boundaries.
+- **Release publication targeting** (#238, #239, @srothgan): Verify reusable-workflow attestations and pin GitHub Release publishing to the target repository.
+
+### Release and Packaging
+
+- **Platform package READMEs** (@srothgan): Generate concise platform-specific npm READMEs with version, install, target, and platform details.
+- **Dependency declarations** (#240, @srothgan): Remove redundant direct npm dependencies while keeping runtime installs unchanged.
+
 ## [0.13.2] - 2026-07-03 [Changes][v0.13.2]
 
 ### Features
@@ -698,6 +714,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.13.3]: https://github.com/srothgan/claude-code-rust/compare/v0.13.2...v0.13.3
 [v0.13.2]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.2
 [v0.13.0]: https://github.com/srothgan/claude-code-rust/compare/v0.12.4...v0.13.0
 [v0.12.4]: https://github.com/srothgan/claude-code-rust/compare/v0.12.3...v0.12.4

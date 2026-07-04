@@ -52,7 +52,8 @@ By participating, you agree to uphold this code.
 ### Prerequisites
 
 - Rust 1.88.0+ (install via https://rustup.rs)
-- Node.js 18+ (for the in-repo agent bridge)
+- Node.js 18+ for the in-repo agent bridge runtime. This follows `@anthropic-ai/claude-agent-sdk`, which currently declares Node `>=18.0.0`.
+- Node.js 24 is recommended for contributor JavaScript tooling and matches CI. Some `agent-sdk` dev dependencies require Node `20.19.x` or `>=22.12.0`, so Node 18 is not sufficient for every local `npm ci` or tooling run.
 - npx (included with Node.js)
 
 ### Clone and Build
