@@ -18,8 +18,16 @@ const TARGETS = {
     packageName: "@srothgan/claude-code-rust-linux-x64-gnu",
     exe: "claude-rs"
   },
+  "linux:arm64": {
+    packageName: "@srothgan/claude-code-rust-linux-arm64-gnu",
+    exe: "claude-rs"
+  },
   "win32:x64": {
     packageName: "@srothgan/claude-code-rust-win32-x64-msvc",
+    exe: "claude-rs.exe"
+  },
+  "win32:arm64": {
+    packageName: "@srothgan/claude-code-rust-win32-arm64-msvc",
     exe: "claude-rs.exe"
   }
 };
