@@ -29,6 +29,14 @@ pub struct MentionState {
     line_char_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommittedMentionSpan {
+    pub row: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MentionSearchStatus {
     Hint,
@@ -40,6 +48,8 @@ enum MentionSearchStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MentionSpanSource {
     Active,
+    QuotedPathClosed,
+    QuotedPathOpen,
     IndexedPath,
     BareToken,
 }
@@ -148,7 +158,18 @@ fn detect_mention_span_at_cursor(
         .filter_map(|trigger_col| {
             resolve_mention_span(cursor_row, &chars, trigger_col, cursor_col, file_index, active)
         })
-        .find(|span| cursor_col > span.trigger_col && cursor_col <= span.end_col)
+        .find(|span| span_contains_activation_cursor(span, cursor_col))
+}
+
+fn span_contains_activation_cursor(span: &MentionSpan, cursor_col: usize) -> bool {
+    cursor_col > span.trigger_col
+        && match span.source {
+            MentionSpanSource::QuotedPathClosed => cursor_col < span.end_col,
+            MentionSpanSource::Active
+            | MentionSpanSource::QuotedPathOpen
+            | MentionSpanSource::IndexedPath
+            | MentionSpanSource::BareToken => cursor_col <= span.end_col,
+        }
 }
 
 fn valid_trigger_cols_before_cursor(chars: &[char], cursor_col: usize) -> Vec<usize> {
@@ -472,7 +493,7 @@ pub fn sync_with_cursor(app: &mut App) {
     }
 }
 
-/// Confirm the selected candidate: replace `@query` in input with `@rel_path`.
+/// Confirm the selected candidate: replace `@query` in input with a quoted `@'rel_path'`.
 pub fn confirm_selection(app: &mut App) {
     let Some(mention) = app.mention.take() else {
         return;
@@ -503,14 +524,103 @@ pub fn confirm_selection(app: &mut App) {
 
     let before: String = chars[..trigger_col].iter().collect();
     let after: String = chars[mention_end..].iter().collect();
-    let replacement =
-        if after.is_empty() { format!("@{rel_path} ") } else { format!("@{rel_path}") };
+    let quoted_path = quote_mention_path(&rel_path);
+    let replacement = if after.is_empty() { format!("{quoted_path} ") } else { quoted_path };
 
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = trigger_col + replacement.chars().count();
 
     lines[trigger_row] = new_line;
     app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
+}
+
+pub fn commit_literal_if_active(app: &mut App) -> bool {
+    let Some(mention) = app.mention.take() else {
+        return false;
+    };
+    if mention.has_selectable_candidates() {
+        app.mention = Some(mention);
+        return false;
+    }
+
+    if app.slash.is_none() && app.subagent.is_none() {
+        app.release_focus_target(FocusTarget::Mention);
+    }
+
+    if query_is_hint(&mention.query) {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let mut lines = app.input.lines().to_vec();
+    let Some(line) = lines.get(mention.trigger_row) else {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    if chars.get(mention.trigger_col) != Some(&'@') {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let start_col = mention.trigger_col;
+    let raw_end_col = mention.replace_end_col.min(chars.len());
+    let end_col = trim_trailing_whitespace(chars.as_slice(), start_col + 1, raw_end_col);
+    if end_col <= start_col + 1 {
+        app.input.highlight_version = u64::MAX;
+        return true;
+    }
+
+    let literal_path = literal_path_from_mention_text(&chars[start_col..end_col]);
+    let committed_text = quote_mention_path(&literal_path);
+    let before: String = chars[..start_col].iter().collect();
+    let after: String = chars[end_col..].iter().collect();
+    let replacement =
+        if after.is_empty() { format!("{committed_text} ") } else { committed_text.clone() };
+    let new_cursor_col = start_col + replacement.chars().count();
+    lines[mention.trigger_row] = format!("{before}{replacement}{after}");
+    app.input.replace_lines_and_cursor(lines, mention.trigger_row, new_cursor_col);
+
+    app.committed_mentions.push(CommittedMentionSpan {
+        row: mention.trigger_row,
+        start_col,
+        end_col: start_col + committed_text.chars().count(),
+        text: committed_text,
+    });
+    true
+}
+
+fn quote_mention_path(path: &str) -> String {
+    format!("@'{}'", escape_quoted_path(path))
+}
+
+fn escape_quoted_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if matches!(ch, '\\' | '\'') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+fn literal_path_from_mention_text(chars: &[char]) -> String {
+    if chars.first() != Some(&'@') {
+        return chars.iter().collect();
+    }
+    if chars.get(1) == Some(&'\'') {
+        let parsed = parse_quoted_path(chars, 2);
+        return parse_quoted_path_content(chars, 2, parsed.content_end);
+    }
+    chars[1..].iter().collect()
+}
+
+fn trim_trailing_whitespace(chars: &[char], min_col: usize, mut end_col: usize) -> usize {
+    while end_col > min_col && chars[end_col - 1].is_whitespace() {
+        end_col -= 1;
+    }
+    end_col
 }
 
 fn resolve_confirm_end_col(
@@ -593,6 +703,25 @@ pub fn find_mention_spans(
     spans
 }
 
+pub fn retain_valid_committed_mentions(
+    lines: &[String],
+    committed_mentions: &mut Vec<CommittedMentionSpan>,
+) {
+    committed_mentions.retain(|span| committed_mention_matches(lines, span));
+}
+
+pub fn committed_mention_matches(lines: &[String], span: &CommittedMentionSpan) -> bool {
+    let Some(line) = lines.get(span.row) else {
+        return false;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    if span.start_col >= span.end_col || span.end_col > chars.len() {
+        return false;
+    }
+    let text: String = chars[span.start_col..span.end_col].iter().collect();
+    text == span.text
+}
+
 fn resolve_mention_span(
     row: usize,
     chars: &[char],
@@ -605,6 +734,10 @@ fn resolve_mention_span(
         || (trigger_col > 0 && !chars[trigger_col - 1].is_whitespace())
     {
         return None;
+    }
+
+    if chars.get(trigger_col + 1) == Some(&'\'') {
+        return Some(resolve_quoted_mention_span(row, chars, trigger_col, cursor_col, active));
     }
 
     if let Some(active) = active
@@ -658,6 +791,98 @@ fn resolve_mention_span(
     Some(MentionSpan { row, trigger_col, end_col, query, source: MentionSpanSource::BareToken })
 }
 
+fn resolve_quoted_mention_span(
+    row: usize,
+    chars: &[char],
+    trigger_col: usize,
+    cursor_col: usize,
+    active: Option<ActiveMentionBounds>,
+) -> MentionSpan {
+    let content_start = trigger_col + 2;
+    let parsed = parse_quoted_path(chars, content_start);
+    let mut end_col = parsed.span_end;
+    if parsed.close.is_none()
+        && let Some(active) = active
+        && active.row == row
+        && active.trigger_col == trigger_col
+        && cursor_col > trigger_col
+        && (cursor_col <= active.replace_end_col || chars.len() > active.line_char_count)
+    {
+        end_col = active.replace_end_col.max(cursor_col).min(chars.len());
+    }
+
+    let query = quoted_span_query(chars, content_start, cursor_col, parsed.content_end);
+    MentionSpan {
+        row,
+        trigger_col,
+        end_col,
+        query,
+        source: if parsed.close.is_some() {
+            MentionSpanSource::QuotedPathClosed
+        } else {
+            MentionSpanSource::QuotedPathOpen
+        },
+    }
+}
+
+struct ParsedQuotedPath {
+    content_end: usize,
+    close: Option<usize>,
+    span_end: usize,
+}
+
+fn parse_quoted_path(chars: &[char], content_start: usize) -> ParsedQuotedPath {
+    let mut escaped = false;
+    for (col, ch) in chars.iter().enumerate().skip(content_start) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' => {
+                return ParsedQuotedPath { content_end: col, close: Some(col), span_end: col + 1 };
+            }
+            _ => {}
+        }
+    }
+
+    ParsedQuotedPath { content_end: chars.len(), close: None, span_end: chars.len() }
+}
+
+fn quoted_span_query(
+    chars: &[char],
+    content_start: usize,
+    cursor_col: usize,
+    content_end: usize,
+) -> String {
+    let query_end = if cursor_col > content_start && cursor_col <= content_end {
+        cursor_col
+    } else {
+        content_end
+    };
+    parse_quoted_path_content(chars, content_start, query_end)
+}
+
+fn parse_quoted_path_content(chars: &[char], start_col: usize, end_col: usize) -> String {
+    let mut content = String::new();
+    let mut escaped = false;
+    for ch in chars[start_col.min(chars.len())..end_col.min(chars.len())].iter().copied() {
+        if escaped {
+            content.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            content.push(ch);
+        }
+    }
+    if escaped {
+        content.push('\\');
+    }
+    content
+}
+
 fn span_query(
     chars: &[char],
     trigger_col: usize,
@@ -691,10 +916,14 @@ fn longest_indexed_path_span(
 
 fn bare_token_end_col(chars: &[char], trigger_col: usize) -> usize {
     let mut end_col = trigger_col + 1;
-    while end_col < chars.len() && !chars[end_col].is_whitespace() {
+    while end_col < chars.len() && !is_bare_mention_delimiter(chars[end_col]) {
         end_col += 1;
     }
     end_col
+}
+
+fn is_bare_mention_delimiter(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '\'' | ',' | ';' | ')' | ']' | '}')
 }
 
 #[cfg(test)]
@@ -815,6 +1044,84 @@ mod tests {
     }
 
     #[test]
+    fn detects_and_highlights_quoted_indexed_path() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["docs/my file.md"]);
+
+        let spans = find_mention_spans(0, "open @'docs/my file.md' now", &app.file_index, None);
+
+        assert_eq!(spans, vec![(5, 23, "docs/my file.md".to_owned())]);
+    }
+
+    #[test]
+    fn comma_after_quoted_path_does_not_reenter_autocomplete() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["src/app/mention.rs"]);
+        app.input.set_text("@'src/app/mention.rs'");
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+
+        sync_with_cursor(&mut app);
+        assert!(app.mention.is_none());
+
+        let _ = app.input.textarea_insert_char(',');
+        sync_with_cursor(&mut app);
+
+        assert_eq!(app.input.lines()[0], "@'src/app/mention.rs',");
+        assert!(app.mention.is_none());
+    }
+
+    #[test]
+    fn cursor_inside_quoted_path_reenters_autocomplete() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["src/app/mention.rs"]);
+        app.input.set_text("@'src/app/mention.rs'");
+        let _ = app.input.set_cursor(0, "@'src/app/mention".chars().count());
+
+        sync_with_cursor(&mut app);
+        run_search(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should re-enter inside quotes");
+        assert_eq!(mention.query, "src/app/mention");
+        assert_eq!(mention.replace_end_col, "@'src/app/mention.rs'".chars().count());
+        assert!(!mention.candidates.is_empty());
+    }
+
+    #[test]
+    fn missing_right_quote_stays_active_and_confirm_repairs_delimiter() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["src/app/mention.rs"]);
+        app.input.set_text("@'src/app/ment");
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+
+        sync_with_cursor(&mut app);
+        run_search(&mut app);
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines()[0], "@'src/app/mention.rs' ");
+        assert!(app.mention.is_none());
+    }
+
+    #[test]
+    fn deleting_left_quote_falls_back_to_bare_path_highlighting() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["src/app/mention.rs"]);
+
+        let spans = find_mention_spans(0, "@src/app/mention.rs'", &app.file_index, None);
+
+        assert_eq!(spans, vec![(0, 19, "src/app/mention.rs".to_owned())]);
+    }
+
+    #[test]
+    fn deleting_right_quote_keeps_literal_highlighting_to_line_end() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["src/app/mention.rs"]);
+
+        let spans = find_mention_spans(0, "@'src/app/mention.rs", &app.file_index, None);
+
+        assert_eq!(spans, vec![(0, 20, "src/app/mention.rs".to_owned())]);
+    }
+
+    #[test]
     fn reentering_autocomplete_inside_spaced_path_uses_cursor_query_and_full_span() {
         let mut app = App::test_default();
         index_paths(&mut app, &["docs/my folder/read me.md"]);
@@ -845,7 +1152,7 @@ mod tests {
         }
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "open @docs/my folder/read me.md now");
+        assert_eq!(app.input.lines()[0], "open @'docs/my folder/read me.md' now");
     }
 
     #[test]
@@ -858,7 +1165,7 @@ mod tests {
         run_search(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "open @src/lib.rs now");
+        assert_eq!(app.input.lines()[0], "open @'src/lib.rs' now");
         assert!(app.mention.is_none());
     }
 
@@ -872,7 +1179,7 @@ mod tests {
         run_search(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "@src/main.rs ");
+        assert_eq!(app.input.lines()[0], "@'src/main.rs' ");
     }
 
     #[test]
@@ -885,7 +1192,7 @@ mod tests {
         run_search(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "@path with spaces.md ");
+        assert_eq!(app.input.lines()[0], "@'path with spaces.md' ");
     }
 
     #[test]
@@ -905,7 +1212,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "open @path with spaces.md later");
+        assert_eq!(app.input.lines()[0], "open @'path with spaces.md' later");
     }
 
     #[test]
@@ -939,6 +1246,99 @@ mod tests {
         assert_eq!(mention.query, " ");
         assert!(mention.candidates.is_empty());
         assert!(matches!(mention.search_status, MentionSearchStatus::Hint));
+    }
+
+    #[test]
+    fn commit_literal_adds_trailing_space_at_line_end() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        activate(&mut app);
+        app.input.set_text("@docs/manual path");
+        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
+        update_query(&mut app);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert!(app.mention.is_none());
+        assert_eq!(app.input.lines()[0], "@'docs/manual path' ");
+        assert_eq!(app.input.cursor_col(), "@'docs/manual path' ".chars().count());
+        assert_eq!(
+            app.committed_mentions,
+            vec![CommittedMentionSpan {
+                row: 0,
+                start_col: 0,
+                end_col: "@'docs/manual path'".chars().count(),
+                text: "@'docs/manual path'".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn commit_literal_before_existing_space_does_not_add_double_space() {
+        let mut app = App::test_default();
+        app.input.set_text("@manual path now");
+        let end_col = "@manual path".chars().count();
+        let _ = app.input.set_cursor(0, end_col);
+        let mut mention = MentionState::new(0, 0, "manual path".to_owned(), Vec::new());
+        mention.replace_end_col = end_col;
+        app.mention = Some(mention);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert_eq!(app.input.lines()[0], "@'manual path' now");
+        assert_eq!(app.committed_mentions.len(), 1);
+        assert_eq!(app.committed_mentions[0].text, "@'manual path'");
+        assert_eq!(app.committed_mentions[0].end_col, "@'manual path'".chars().count());
+    }
+
+    #[test]
+    fn commit_literal_with_trailing_separator_space_does_not_add_another_space() {
+        let mut app = App::test_default();
+        app.input.set_text("@manual path ");
+        let line_end_col = "@manual path ".chars().count();
+        let _ = app.input.set_cursor(0, line_end_col);
+        let mut mention = MentionState::new(0, 0, "manual path ".to_owned(), Vec::new());
+        mention.replace_end_col = line_end_col;
+        app.mention = Some(mention);
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert_eq!(app.input.lines()[0], "@'manual path' ");
+        assert_eq!(app.committed_mentions.len(), 1);
+        assert_eq!(app.committed_mentions[0].text, "@'manual path'");
+        assert_eq!(app.committed_mentions[0].end_col, "@'manual path'".chars().count());
+    }
+
+    #[test]
+    fn commit_literal_empty_query_only_deactivates() {
+        let mut app = App::test_default();
+        app.input.set_text("@ ");
+        let _ = app.input.set_cursor(0, 2);
+        app.mention = Some(MentionState::new(0, 0, " ".to_owned(), Vec::new()));
+
+        assert!(commit_literal_if_active(&mut app));
+
+        assert!(app.mention.is_none());
+        assert!(app.committed_mentions.is_empty());
+        assert_eq!(app.input.lines()[0], "@ ");
+    }
+
+    #[test]
+    fn committed_mentions_are_exact_text_validated() {
+        let mut spans = vec![CommittedMentionSpan {
+            row: 0,
+            start_col: 0,
+            end_col: "@'docs/manual path'".chars().count(),
+            text: "@'docs/manual path'".to_owned(),
+        }];
+        let lines = vec!["@'docs/manual path' ".to_owned()];
+        retain_valid_committed_mentions(&lines, &mut spans);
+        assert_eq!(spans.len(), 1);
+
+        let lines = vec!["@'docs/changed path' ".to_owned()];
+        retain_valid_committed_mentions(&lines, &mut spans);
+        assert!(spans.is_empty());
     }
 
     #[test]

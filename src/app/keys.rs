@@ -258,9 +258,10 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
         }
         AppAction::CancelTurn => handle_turn_control(app).into(),
         AppAction::SubmitInput => handle_submit(app).into(),
-        AppAction::FocusPromptOrAcceptSuggestion => {
-            (handle_focus_toggle(app) || handle_prompt_suggestion(app)).into()
-        }
+        AppAction::FocusPromptOrAcceptSuggestion => (mention::commit_literal_if_active(app)
+            || handle_focus_toggle(app)
+            || handle_prompt_suggestion(app))
+        .into(),
         AppAction::CycleMode => handle_mode_cycle(app).into(),
     }
 }
@@ -884,7 +885,7 @@ mod tests {
     use crate::app::FocusTarget;
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     #[test]
     fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
@@ -1103,6 +1104,56 @@ mod tests {
         assert!(outcome.changed());
         let mention = app.mention.as_ref().expect("mention should stay active");
         assert_eq!(mention.query, " ");
+    }
+
+    #[test]
+    fn chat_input_tab_commits_literal_mention_without_candidates() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        let _ = app.input.set_cursor(0, 1);
+        mention::activate(&mut app);
+        app.input.set_text("@docs/manual path");
+        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
+        mention::update_query(&mut app);
+
+        let outcome =
+            handle_chat_input_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert!(app.mention.is_none());
+        assert_eq!(app.input.text(), "@'docs/manual path' ");
+        assert_eq!(app.committed_mentions.len(), 1);
+        assert_eq!(app.committed_mentions[0].text, "@'docs/manual path'");
+    }
+
+    #[test]
+    fn autocomplete_tab_still_confirms_mention_candidate() {
+        let mut app = App::test_default();
+        app.input.set_text("@src");
+        let mut mention = mention::MentionState::new(
+            0,
+            0,
+            "src".to_owned(),
+            vec![crate::app::file_index::FileCandidate {
+                rel_path: "src/lib.rs".to_owned(),
+                rel_path_lower: "src/lib.rs".to_owned(),
+                basename_lower: "lib.rs".to_owned(),
+                depth: 1,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }],
+        );
+        mention.replace_end_col = "@src".chars().count();
+        app.mention = Some(mention);
+        app.claim_focus_target(FocusTarget::Mention);
+
+        let outcome =
+            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert!(app.mention.is_none());
+        assert_eq!(app.input.text(), "@'src/lib.rs' ");
+        assert!(app.committed_mentions.is_empty());
     }
 
     #[test]

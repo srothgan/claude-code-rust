@@ -108,11 +108,19 @@ pub(crate) fn configure_input_textarea(app: &mut App) {
 
     if needs_highlight_update || app.mention.is_some() {
         let lines = app.input.lines().to_vec();
+        mention::retain_valid_committed_mentions(&lines, &mut app.committed_mentions);
+        let committed_mentions = app.committed_mentions.clone();
         let active_mention = app.mention.as_ref();
         let file_index = &app.file_index;
         let textarea = app.input.editor_mut();
         textarea.clear_custom_highlight();
-        apply_textarea_highlights(textarea, &lines, file_index, active_mention);
+        apply_textarea_highlights(
+            textarea,
+            &lines,
+            file_index,
+            active_mention,
+            &committed_mentions,
+        );
         app.input.highlight_version = app.input.content_version;
     }
 }
@@ -122,6 +130,7 @@ fn apply_textarea_highlights(
     lines: &[String],
     file_index: &crate::app::file_index::FileIndexState,
     active_mention: Option<&mention::MentionState>,
+    committed_mentions: &[mention::CommittedMentionSpan],
 ) {
     let slash_style = Style::default().fg(theme::SLASH_COMMAND);
     let mention_style = Style::default().fg(Color::Cyan);
@@ -141,6 +150,14 @@ fn apply_textarea_highlights(
         for (start, end, _) in mention::find_mention_spans(row, line, file_index, active_mention) {
             textarea.custom_highlight(
                 ((row, start), (row, end)),
+                mention_style,
+                HIGHLIGHT_MENTION_PRIORITY,
+            );
+        }
+
+        for span in committed_mentions.iter().filter(|span| span.row == row) {
+            textarea.custom_highlight(
+                ((row, span.start_col), (row, span.end_col)),
                 mention_style,
                 HIGHLIGHT_MENTION_PRIORITY,
             );
@@ -201,11 +218,12 @@ mod tests {
         CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
         configure_input_textarea, slash_command_range, visual_line_count,
     };
+    use crate::app::mention::CommittedMentionSpan;
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, CancelOrigin, FocusTarget, LoginHint};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Color, Modifier};
     use ratatui::widgets::Widget;
 
     #[test]
@@ -307,5 +325,43 @@ mod tests {
         let cursor_cell = buffer.cell((5, 0)).expect("cursor cell");
         assert_eq!(cursor_cell.symbol(), " ");
         assert!(cursor_cell.style().add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn committed_literal_mention_renders_with_mention_style() {
+        let mut app = App::test_default();
+        app.input.set_text("@docs/manual path ");
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+        app.committed_mentions.push(CommittedMentionSpan {
+            row: 0,
+            start_col: 0,
+            end_col: "@docs/manual path".chars().count(),
+            text: "@docs/manual path".to_owned(),
+        });
+
+        configure_input_textarea(&mut app);
+        let area = Rect::new(0, 0, 24, 1);
+        let mut buffer = Buffer::empty(area);
+        app.input.editor().render(area, &mut buffer);
+
+        let cell = buffer.cell((1, 0)).expect("mention cell");
+        assert_eq!(cell.symbol(), "d");
+        assert_eq!(cell.style().fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn stale_committed_literal_mention_is_pruned_before_highlighting() {
+        let mut app = App::test_default();
+        app.input.set_text("@docs/changed path ");
+        app.committed_mentions.push(CommittedMentionSpan {
+            row: 0,
+            start_col: 0,
+            end_col: "@docs/manual path".chars().count(),
+            text: "@docs/manual path".to_owned(),
+        });
+
+        configure_input_textarea(&mut app);
+
+        assert!(app.committed_mentions.is_empty());
     }
 }
