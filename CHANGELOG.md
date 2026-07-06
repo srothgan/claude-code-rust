@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Release and Packaging
 
 - **Install scripts** (#259, @srothgan): Add optional macOS/Linux and Windows install scripts that install from GitHub Releases without requiring npm, Node.js, or Bun on the user's machine.
+- **Release script phases** (#260, @srothgan): Reorganize release tooling scripts into phase directories, add shared repository-root resolution, and expand PR validation for install archives and public installers.
 
 ## [0.13.4] - 2026-07-06 [Changes][v0.13.4]
 
