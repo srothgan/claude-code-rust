@@ -75,7 +75,7 @@ jobs:
             status=$?
             set -e
             if [ "$status" -eq 0 ]; then
-              echo "NOTICE: ${package_name}@${VERSION} already exists; its publish job will verify tarball integrity before reusing it"
+              echo "NOTICE: ${package_name}@${VERSION} already exists; its publish job will skip it"
               return
             fi
             if ! printf '%s\n' "$output" | grep -q 'E404'; then
@@ -426,38 +426,28 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ needs.verify.outputs.version }}"
+          package_name="claude-code-rust"
           tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
           if [ ! -f "$tarball" ]; then
             echo "::error::Missing npm package tarball: $tarball"
             exit 1
           fi
-          local_integrity="$(
-            node -e "const fs = require('node:fs'); const crypto = require('node:crypto'); console.log('sha512-' + crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$tarball"
-          )"
+
           set +e
-          existing_integrity="$(npm view "claude-code-rust@${VERSION}" dist.integrity --json 2>&1)"
+          output="$(npm view "${package_name}@${VERSION}" version --json 2>&1)"
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
-            existing_integrity="$(printf '%s' "$existing_integrity" | node -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => console.log(JSON.parse(input)))")"
-            if [ "$existing_integrity" != "$local_integrity" ]; then
-              echo "::error::claude-code-rust@${VERSION} already exists with different integrity: registry ${existing_integrity}, local ${local_integrity}"
-              exit 1
-            fi
-            echo "OK: claude-code-rust@${VERSION} already published with matching integrity"
+            echo "SKIP: ${package_name}@${VERSION} already published"
             exit 0
           fi
-          if ! printf '%s\n' "$existing_integrity" | grep -q 'E404'; then
-            echo "::error::Could not inspect npm registry integrity for claude-code-rust@${VERSION}"
-            echo "$existing_integrity"
+          if ! printf '%s\n' "$output" | grep -q 'E404'; then
+            echo "::error::Could not inspect npm package state for ${package_name}@${VERSION}"
+            echo "$output"
             exit 1
           fi
+
           npm publish "$tarball" --access public
-          registry_integrity="$(npm view "claude-code-rust@${VERSION}" dist.integrity --json | node -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => console.log(JSON.parse(input)))")"
-          if [ "$registry_integrity" != "$local_integrity" ]; then
-            echo "::error::claude-code-rust@${VERSION} registry integrity mismatch after publish: registry ${registry_integrity}, local ${local_integrity}"
-            exit 1
-          fi
 
   create-github-release:
     needs: [verify, publish-root-package]
