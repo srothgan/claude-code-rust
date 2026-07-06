@@ -156,8 +156,11 @@ jobs:
           node scripts/verify-third-party-notices.mjs
           node --test scripts/npm-resolver.test.cjs scripts/smoke-npm-package-install.test.mjs scripts/verify-staged-bun-runtimes.test.mjs scripts/dry-run-npm-publish.test.mjs scripts/publish-npm-platform-packages.test.mjs
 
-      - name: Generate mock npm packages
-        run: node scripts/generate-npm-packages.mjs --mock-binaries
+      - name: Stage bundled Bun runtimes
+        run: node scripts/stage-bun-runtime.mjs --download
+
+      - name: Generate npm packages with mock native binaries
+        run: node scripts/generate-npm-packages.mjs --mock-native-binary
 
       - name: Verify npm package layout
         run: node scripts/verify-npm-packages.mjs

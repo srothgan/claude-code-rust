@@ -799,7 +799,7 @@ fn platform_package_selection() -> PlatformPackageSelection {
     platform_package_selection_for(
         std::env::consts::OS,
         std::env::consts::ARCH,
-        current_linux_libc_kind(),
+        CURRENT_LINUX_LIBC_KIND,
     )
 }
 
@@ -835,32 +835,17 @@ fn platform_package_selection_for(
     }
 }
 
-fn current_linux_libc_kind() -> Option<&'static str> {
-    if std::env::consts::OS != "linux" {
-        return None;
-    }
-    current_linux_libc_kind_for_target()
-}
-
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn current_linux_libc_kind_for_target() -> Option<&'static str> {
-    Some("glibc")
-}
+const CURRENT_LINUX_LIBC_KIND: Option<&'static str> = Some("glibc");
 
 #[cfg(all(target_os = "linux", target_env = "musl"))]
-fn current_linux_libc_kind_for_target() -> Option<&'static str> {
-    Some("musl")
-}
+const CURRENT_LINUX_LIBC_KIND: Option<&'static str> = Some("musl");
 
 #[cfg(not(target_os = "linux"))]
-fn current_linux_libc_kind_for_target() -> Option<&'static str> {
-    None
-}
+const CURRENT_LINUX_LIBC_KIND: Option<&'static str> = None;
 
 #[cfg(all(target_os = "linux", not(any(target_env = "gnu", target_env = "musl"))))]
-fn current_linux_libc_kind_for_target() -> Option<&'static str> {
-    None
-}
+const CURRENT_LINUX_LIBC_KIND: Option<&'static str> = None;
 
 fn credentials_check() -> DoctorCheck {
     let mut details = BTreeMap::new();

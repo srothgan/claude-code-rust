@@ -81,12 +81,16 @@ function generatePlatformPackage(platformPackage) {
     return;
   }
 
-  copyStagedBinary(
-    platformPackage,
-    path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.binaryName),
-    binaryDestination,
-    "native binary"
-  );
+  if (options.mockNativeBinary) {
+    writeMockBinary(platformPackage, binaryDestination, "claude-rs 0.0.0-mock");
+  } else {
+    copyStagedBinary(
+      platformPackage,
+      path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.binaryName),
+      binaryDestination,
+      "native binary"
+    );
+  }
   copyStagedBinary(
     platformPackage,
     path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.bundledRuntimeName),
@@ -224,6 +228,7 @@ function parseArgs(args) {
   const parsed = {
     help: false,
     mockBinaries: false,
+    mockNativeBinary: false,
     version: undefined,
     binaryRoot: undefined,
     outDir: undefined
@@ -238,6 +243,9 @@ function parseArgs(args) {
         break;
       case "--mock-binaries":
         parsed.mockBinaries = true;
+        break;
+      case "--mock-native-binary":
+        parsed.mockNativeBinary = true;
         break;
       case "--version":
         parsed.version = readArgValue(args, ++index, arg);
@@ -272,7 +280,8 @@ Options:
   --binary-root <dir>       Directory containing staged platform binaries.
                             Defaults to dist-platform.
   --out-dir <dir>           Output directory. Defaults to dist-npm.
-  --mock-binaries           Generate placeholder platform binaries for layout tests.
+  --mock-binaries           Generate placeholder native and runtime binaries for layout tests.
+  --mock-native-binary      Generate placeholder native binaries while copying staged runtimes.
   -h, --help                Show this help.
 `);
 }
