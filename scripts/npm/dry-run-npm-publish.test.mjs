@@ -3,7 +3,7 @@ import os from "node:os";
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { PLATFORM_PACKAGES, ROOT_PACKAGE_NAME } from "./npm-package-config.mjs";
+import { PLATFORM_PACKAGES, ROOT_PACKAGE_NAME } from "../shared/npm-package-config.mjs";
 import {
   dryRunNpmPublish,
   expectedPublishTarballs,

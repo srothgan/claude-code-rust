@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   PLATFORM_PACKAGES,
   readCargoPackageMetadata,
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 import { execNpmSync, npmTarballName } from "./dry-run-npm-publish.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 export function platformPublishPlan(packDir, version) {
   return PLATFORM_PACKAGES.map((platformPackage) => ({
@@ -155,7 +154,7 @@ function relativePath(filePath) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/publish-npm-platform-packages.mjs [options]
+  console.log(`Usage: node scripts/npm/publish-npm-platform-packages.mjs [options]
 
 Options:
   --pack-dir <dir>      Directory containing platform npm tarballs. Defaults to dist-pack.

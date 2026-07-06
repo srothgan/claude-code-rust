@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PLATFORM_PACKAGES } from "./npm-package-config.mjs";
+import { PLATFORM_PACKAGES } from "../shared/npm-package-config.mjs";
 import {
   npmPackageVersionExists,
   platformPublishPlan,

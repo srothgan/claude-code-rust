@@ -2,15 +2,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   PLATFORM_PACKAGES,
   readBunRuntimeManifest,
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 export function verifyStagedBunRuntimes({
   distPlatformDir,
@@ -118,7 +117,7 @@ function readArgValue(args, index, flag) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/verify-staged-bun-runtimes.mjs [options]
+  console.log(`Usage: node scripts/runtime/verify-staged-bun-runtimes.mjs [options]
 
 Options:
   --dist-platform <dir>      Staging root. Defaults to dist-platform.

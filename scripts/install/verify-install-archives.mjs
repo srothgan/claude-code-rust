@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   BUNDLED_BUN_RUNTIME_VERSION,
   PLATFORM_PACKAGES,
@@ -12,7 +12,7 @@ import {
   installArchiveName,
   readBunRuntimeManifest,
   readCargoPackageMetadata
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 import {
   assertNoSymlinks,
   extractArchive,
@@ -22,11 +22,9 @@ import {
   normalizePath,
   readArgValue,
   readJson
-} from "./install-archive-common.mjs";
+} from "../shared/install-archive-common.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 const AGENT_SDK_NATIVE_PACKAGES = [
   "@anthropic-ai/claude-agent-sdk-darwin-arm64",
@@ -305,7 +303,7 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/verify-install-archives.mjs [options]
+  console.log(`Usage: node scripts/install/verify-install-archives.mjs [options]
 
 Options:
   --archive-root <dir>    Directory containing install archives. Defaults to dist-install.

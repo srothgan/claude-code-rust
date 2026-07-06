@@ -1,10 +1,8 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "./repo-root.mjs";
 import { PLATFORM_PACKAGES, readBunRuntimeManifest } from "./npm-package-config.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 export const BUN_LINKED_LIBRARIES = [
   ["BoringSSL", "several licenses"],

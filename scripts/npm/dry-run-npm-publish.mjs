@@ -2,16 +2,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   PLATFORM_PACKAGES,
   ROOT_PACKAGE_NAME,
   readCargoPackageMetadata,
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 export function npmTarballName(packageName, version) {
   const filenamePrefix = packageName.replace(/^@/, "").replace("/", "-");
@@ -189,7 +188,7 @@ function relativePath(filePath) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/dry-run-npm-publish.mjs [options]
+  console.log(`Usage: node scripts/npm/dry-run-npm-publish.mjs [options]
 
 Options:
   --pack-dir <dir>           Directory containing npm tarballs. Defaults to dist-pack.

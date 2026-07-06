@@ -3,24 +3,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   PLATFORM_PACKAGES,
   installArchiveBaseName,
   installArchiveName,
   readCargoPackageMetadata
-} from "./npm-package-config.mjs";
-import { envWithoutSystemRuntimePath } from "./smoke-npm-package-install.mjs";
+} from "../shared/npm-package-config.mjs";
+import { envWithoutSystemRuntimePath } from "../npm/smoke-npm-package-install.mjs";
 import {
   extractArchive,
   findSingleTopLevelDirectory,
   normalizePath,
   readArgValue
-} from "./install-archive-common.mjs";
+} from "../shared/install-archive-common.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -324,7 +322,7 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/smoke-install-archive.mjs [options]
+  console.log(`Usage: node scripts/install/smoke-install-archive.mjs [options]
 
 Options:
   --platform <dir>        Platform archive to smoke. Defaults to linux-x64-gnu.
