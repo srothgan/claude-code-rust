@@ -1,8 +1,13 @@
 import fs from "node:fs";
+import path from "node:path";
 
 export const ROOT_PACKAGE_NAME = "claude-code-rust";
 
 export const DIST_NPM_DIR = "dist-npm";
+
+export const BUNDLED_BUN_RUNTIME_VERSION = "1.3.14";
+
+export const BUN_RUNTIME_MANIFEST_RELATIVE_PATH = "scripts/bun-runtime-manifest.json";
 
 export const PLATFORM_PACKAGES = [
   {
@@ -11,6 +16,9 @@ export const PLATFORM_PACKAGES = [
     os: ["darwin"],
     cpu: ["arm64"],
     binaryName: "claude-rs",
+    bundledRuntimeName: "claude-rs-bridge-bun",
+    bunAssetName: "bun-darwin-aarch64.zip",
+    bunArchiveBinaryPath: "bun-darwin-aarch64/bun",
     rustTarget: "aarch64-apple-darwin"
   },
   {
@@ -19,6 +27,9 @@ export const PLATFORM_PACKAGES = [
     os: ["darwin"],
     cpu: ["x64"],
     binaryName: "claude-rs",
+    bundledRuntimeName: "claude-rs-bridge-bun",
+    bunAssetName: "bun-darwin-x64-baseline.zip",
+    bunArchiveBinaryPath: "bun-darwin-x64-baseline/bun",
     rustTarget: "x86_64-apple-darwin"
   },
   {
@@ -28,6 +39,9 @@ export const PLATFORM_PACKAGES = [
     cpu: ["x64"],
     libc: ["glibc"],
     binaryName: "claude-rs",
+    bundledRuntimeName: "claude-rs-bridge-bun",
+    bunAssetName: "bun-linux-x64-baseline.zip",
+    bunArchiveBinaryPath: "bun-linux-x64-baseline/bun",
     rustTarget: "x86_64-unknown-linux-gnu"
   },
   {
@@ -37,6 +51,9 @@ export const PLATFORM_PACKAGES = [
     cpu: ["arm64"],
     libc: ["glibc"],
     binaryName: "claude-rs",
+    bundledRuntimeName: "claude-rs-bridge-bun",
+    bunAssetName: "bun-linux-aarch64.zip",
+    bunArchiveBinaryPath: "bun-linux-aarch64/bun",
     rustTarget: "aarch64-unknown-linux-gnu"
   },
   {
@@ -45,6 +62,9 @@ export const PLATFORM_PACKAGES = [
     os: ["win32"],
     cpu: ["x64"],
     binaryName: "claude-rs.exe",
+    bundledRuntimeName: "claude-rs-bridge-bun.exe",
+    bunAssetName: "bun-windows-x64-baseline.zip",
+    bunArchiveBinaryPath: "bun-windows-x64-baseline/bun.exe",
     rustTarget: "x86_64-pc-windows-msvc"
   },
   {
@@ -53,9 +73,20 @@ export const PLATFORM_PACKAGES = [
     os: ["win32"],
     cpu: ["arm64"],
     binaryName: "claude-rs.exe",
+    bundledRuntimeName: "claude-rs-bridge-bun.exe",
+    bunAssetName: "bun-windows-aarch64.zip",
+    bunArchiveBinaryPath: "bun-windows-aarch64/bun.exe",
     rustTarget: "aarch64-pc-windows-msvc"
   }
 ];
+
+export function readBunRuntimeManifest(repoRoot) {
+  return readJson(path.join(repoRoot, BUN_RUNTIME_MANIFEST_RELATIVE_PATH));
+}
+
+export function bunRuntimeAssetUrl(version, assetName) {
+  return `https://github.com/oven-sh/bun/releases/download/bun-v${version}/${assetName}`;
+}
 
 export function readJson(path) {
   return JSON.parse(fs.readFileSync(path, "utf8"));
@@ -138,13 +169,13 @@ export function buildPlatformPackageJson({ platformPackage, version, rootPackage
   return removeUndefined({
     name: platformPackage.packageName,
     version,
-    description: `${rootPackageJson.description} native binary for ${platformPackage.dir}`,
+    description: `Claude Code Rust native binary and private Bun bridge runtime for ${platformPackage.dir}`,
     keywords: rootPackageJson.keywords,
     license: rootPackageJson.license,
     repository: rootPackageJson.repository,
     bugs: rootPackageJson.bugs,
     homepage: rootPackageJson.homepage,
-    files: ["bin", "README.md", "LICENSE"],
+    files: ["bin", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
     os: platformPackage.os,
     cpu: platformPackage.cpu,
     libc: platformPackage.libc,

@@ -127,12 +127,20 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Get crate version
         id: get_version
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release candidate version: $VERSION"
+
+      - name: Validate Bun runtime manifest
+        run: node scripts/stage-bun-runtime.mjs --check --verify-upstream
 
   agent-sdk-preflight:
     needs: [verify-release-candidate]
@@ -190,8 +198,30 @@ jobs:
       artifact_prefix: release-candidate
       attest: false
 
+  stage-release-candidate-runtimes:
+    needs: [verify-release-candidate]
+    name: Stage bundled Bun runtimes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Download, verify, and stage Bun runtimes
+        run: node scripts/stage-bun-runtime.mjs --download
+
+      - name: Upload staged Bun runtimes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bundled-bun-runtimes-candidate
+          path: dist-platform/*/bin/claude-rs-bridge-bun*
+          if-no-files-found: error
+
   assemble-release-candidate:
-    needs: [verify-release-candidate, agent-sdk-preflight, build-release-candidate]
+    needs: [verify-release-candidate, agent-sdk-preflight, build-release-candidate, stage-release-candidate-runtimes]
     name: Assemble and verify npm packages
     runs-on: ubuntu-latest
     steps:
@@ -212,6 +242,17 @@ jobs:
           merge-multiple: true
           path: .
 
+      - name: Download staged Bun runtimes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bundled-bun-runtimes-candidate
+          path: dist-platform
+
+      - name: Restore executable bits for downloaded Unix artifacts
+        run: |
+          set -euo pipefail
+          find dist-platform -type f \( -name 'claude-rs' -o -name 'claude-rs-bridge-bun' \) -exec chmod 755 {} +
+
       - name: Install root dependencies
         run: npm ci
 
@@ -220,6 +261,11 @@ jobs:
 
       - name: Build agent-sdk bridge
         run: npm --prefix agent-sdk run build
+
+      - name: Verify staged Bun runtimes
+        run: |
+          node scripts/stage-bun-runtime.mjs --check
+          node scripts/verify-staged-bun-runtimes.mjs
 
       - name: Assemble npm packages
         run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
@@ -239,11 +285,14 @@ jobs:
           npm pack ./dist-npm/win32-x64-msvc --pack-destination ./dist-pack --json
           npm pack ./dist-npm/root --pack-destination ./dist-pack --json
 
+      - name: Dry-run npm tarball publish
+        run: node scripts/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify-release-candidate.outputs.version }}"
+
       - name: Generate SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
-          find dist-assets dist-pack -type f -print0 \
+          find dist-assets dist-pack dist-npm/manifests -type f -print0 \
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS
           cat SHA256SUMS
@@ -253,9 +302,9 @@ jobs:
         with:
           name: release-candidate-${{ needs.verify-release-candidate.outputs.version }}
           path: |
-            dist-assets/*
-            dist-npm/manifests/*.json
-            dist-pack/*.tgz
+            dist-assets/
+            dist-npm/manifests/
+            dist-pack/
             SHA256SUMS
           if-no-files-found: error
 
@@ -286,6 +335,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Install root runtime dependencies for registry smoke
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Download release candidate artifact set
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -293,4 +345,7 @@ jobs:
           path: .
 
       - name: Smoke-test installed npm tarballs
-        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary --no-system-runtime
+
+      - name: Smoke-test global npm install from temp registry
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --registry-smoke --real-binary --no-system-runtime

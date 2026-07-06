@@ -7,7 +7,6 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 [![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 
 <p align="center">
   <img src="assets/banner.png" alt="Claude Code Rust running a Read tool call with syntax-highlighted output" width="900">
@@ -19,7 +18,6 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Requisites
 
-- Node.js 18+ (for the Agent SDK bridge)
 - Existing Claude Code authentication (`~/.claude/config.json`)
 
 ## Install
@@ -64,7 +62,7 @@ The stock Claude Code TUI runs on Node.js with React Ink, which renders by redra
 - **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
 - **Paste**: Large pastes can flood stdout and freeze the terminal
 
-Claude Code Rust addresses these by compiling to a single native binary with diffed, direct terminal control via Crossterm and Ratatui — no full-frame redraws, no Node runtime overhead.
+Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui -- no full-frame redraws and no React Ink rendering loop.
 
 ## Documentation
 

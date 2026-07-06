@@ -86,7 +86,7 @@ export type PendingRewindResult = Omit<
 >;
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
-  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
+  process.platform === "win32" ? "claude-rs-bridge-bun.exe" : "claude-rs-bridge-bun";
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
@@ -530,7 +530,7 @@ export async function createSession(params: {
       },
     });
     throw new Error(
-      `query() failed: node_executable=${process.execPath}; cwd=${params.cwd}; ` +
+      `query() failed: runtime_executable=${process.execPath}; cwd=${params.cwd}; ` +
         `resume=${params.resume ?? "<none>"}; ` +
         `CLAUDE_CODE_EXECUTABLE=${claudeCodeExecutable ?? "<unset>"}; error=${message}`,
     );
@@ -756,6 +756,10 @@ function logSdkProcessSpawnStarted(
   });
 }
 
+export function resolveClaudeCodeSpawnCommand(command: string): string {
+  return command === "bun" ? process.execPath : command;
+}
+
 function logSdkProcessSpawned(
   sessionId: string | undefined,
   child: ReturnType<typeof spawnChild>,
@@ -890,7 +894,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     includePartialMessages: true,
     promptSuggestions: true,
     enableFileCheckpointing: true,
-    executable: "node" as const,
+    executable: "bun" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     ...(settings ? { settings } : {}),
     ...modelOption,
@@ -917,8 +921,10 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       env: Record<string, string | undefined>;
       signal: AbortSignal;
     }) => {
-      logSdkProcessSpawnStarted(options, params.enableSpawnDebug);
-      const child = spawnChild(options.command, options.args, {
+      const command = resolveClaudeCodeSpawnCommand(options.command);
+      const spawnOptions = { ...options, command };
+      logSdkProcessSpawnStarted(spawnOptions, params.enableSpawnDebug);
+      const child = spawnChild(command, options.args, {
         cwd: options.cwd,
         env: options.env,
         signal: options.signal,
