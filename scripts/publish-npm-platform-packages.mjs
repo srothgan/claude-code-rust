@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,10 +12,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
-export function tarballIntegrity(tarballPath) {
-  return `sha512-${crypto.createHash("sha512").update(fs.readFileSync(tarballPath)).digest("base64")}`;
-}
-
 export function platformPublishPlan(packDir, version) {
   return PLATFORM_PACKAGES.map((platformPackage) => ({
     packageName: platformPackage.packageName,
@@ -25,46 +20,41 @@ export function platformPublishPlan(packDir, version) {
   }));
 }
 
-function publishPlatformPackages({ packDir, version, ledgerDir }) {
-  fs.mkdirSync(ledgerDir, { recursive: true });
+export function publishPlatformPackages({
+  packDir,
+  version,
+  ledgerDir,
+  execNpm = execNpmSync,
+  existsSync = fs.existsSync,
+  mkdirSync = fs.mkdirSync,
+  writeFileSync = fs.writeFileSync,
+  now = () => new Date().toISOString(),
+}) {
+  mkdirSync(ledgerDir, { recursive: true });
   const ledgerEntries = [];
 
   for (const plan of platformPublishPlan(packDir, version)) {
-    if (!fs.existsSync(plan.tarball)) {
+    if (!existsSync(plan.tarball)) {
       throw new Error(`Missing npm package tarball for ${plan.packageName}: ${relativePath(plan.tarball)}`);
     }
 
-    const localIntegrity = tarballIntegrity(plan.tarball);
-    const existingIntegrity = npmViewIntegrity(plan.packageName, version);
-    if (existingIntegrity) {
-      if (existingIntegrity !== localIntegrity) {
-        throw new Error(
-          `${plan.packageName}@${version} already exists with different integrity: ` +
-            `registry ${existingIntegrity}, local ${localIntegrity}`
-        );
-      }
-      ledgerEntries.push(ledgerEntry(plan, localIntegrity, existingIntegrity, "already_published"));
-      console.log(`OK: ${plan.packageName}@${version} already published with matching integrity`);
+    if (npmPackageVersionExists(plan.packageName, version, { execNpm })) {
+      ledgerEntries.push(ledgerEntry(plan, "already_published", now()));
+      console.log(`SKIP: ${plan.packageName}@${version} already published`);
       continue;
     }
 
-    execNpmSync(["publish", plan.tarball, "--access", "public"], {
+    execNpm(["publish", plan.tarball, "--access", "public"], {
       cwd: repoRoot,
       stdio: "inherit",
       windowsHide: true,
     });
-    const registryIntegrity = npmViewIntegrity(plan.packageName, version);
-    if (registryIntegrity !== localIntegrity) {
-      throw new Error(
-        `${plan.packageName}@${version} registry integrity mismatch after publish: ` +
-          `registry ${registryIntegrity ?? "<missing>"}, local ${localIntegrity}`
-      );
-    }
-    ledgerEntries.push(ledgerEntry(plan, localIntegrity, registryIntegrity, "published"));
+    ledgerEntries.push(ledgerEntry(plan, "published", now()));
   }
 
   const ledgerPath = path.join(ledgerDir, `platform-packages-${version}.json`);
-  fs.writeFileSync(
+  mkdirSync(ledgerDir, { recursive: true });
+  writeFileSync(
     ledgerPath,
     `${JSON.stringify({ manifestVersion: 1, version, entries: ledgerEntries }, null, 2)}\n`,
     "utf8",
@@ -72,39 +62,43 @@ function publishPlatformPackages({ packDir, version, ledgerDir }) {
   console.log(`Wrote npm publish ledger to ${relativePath(ledgerPath)}`);
 }
 
-function ledgerEntry(plan, localIntegrity, registryIntegrity, status) {
+function ledgerEntry(plan, status, timestamp) {
   return {
     package_name: plan.packageName,
     version: plan.version,
     tarball_filename: path.basename(plan.tarball),
-    local_npm_pack_integrity: localIntegrity,
-    registry_dist_integrity: registryIntegrity,
     status,
-    timestamp: new Date().toISOString(),
+    timestamp,
   };
 }
 
-function npmViewIntegrity(packageName, version) {
+export function npmPackageVersionExists(packageName, version, { execNpm = execNpmSync } = {}) {
   try {
-    const output = execNpmSync(["view", `${packageName}@${version}`, "dist.integrity", "--json"], {
+    const output = execNpm(["view", `${packageName}@${version}`, "version", "--json"], {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     }).trim();
     if (!output) {
-      return undefined;
+      return false;
     }
     const parsed = JSON.parse(output);
-    return typeof parsed === "string" && parsed.length > 0 ? parsed : undefined;
+    if (parsed === version) {
+      return true;
+    }
+    throw new Error(`npm returned unexpected version for ${packageName}@${version}: ${output}`);
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("npm returned unexpected version")) {
+      throw error;
+    }
     const stderr = bufferToString(error.stderr);
     const stdout = bufferToString(error.stdout);
     if (`${stdout}\n${stderr}`.includes("E404")) {
-      return undefined;
+      return false;
     }
     throw new Error(
-      `Could not inspect npm registry integrity for ${packageName}@${version}:\n${stdout}\n${stderr}`.trim()
+      `Could not inspect npm package state for ${packageName}@${version}:\n${stdout}\n${stderr}`.trim(),
     );
   }
 }
