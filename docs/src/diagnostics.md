@@ -175,11 +175,13 @@ or:
 CLAUDE_RS_AGENT_BRIDGE=/path/to/agent-sdk/dist/bridge.js
 ```
 
-The bridge Node runtime can be overridden with:
+Debug builds can override the bridge runtime with:
 
 ```bash
-CLAUDE_RS_AGENT_BRIDGE_NODE=/path/to/node
+CLAUDE_RS_AGENT_BRIDGE_RUNTIME=/path/to/bun
 ```
+
+Release npm installs use the root package launcher to start the native platform binary and point it at the bundled bridge script. The native binary resolves the private `claude-rs-bridge-bun` executable from the installed platform package. In `doctor --json`, the runtime checks are reported as `bridge_runtime`, `bridge_runtime_version`, and `bridge_script`.
 
 ## Perf Telemetry
 
@@ -211,6 +213,6 @@ Include:
 - OS and terminal.
 - Install method: npm package, source build, fork build, or manual binary.
 - The exact command used to launch the app.
-- Whether a custom bridge script or Node runtime was used.
+- Whether a custom bridge script or debug bridge runtime override was used.
 - A short reproduction.
 - A `claude-rs logs --bundle --yes` bundle or relevant redacted log snippets, not full secrets or private conversation content.

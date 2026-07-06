@@ -1,7 +1,6 @@
-# Contributing to claude_rust
+# Contributing to claude-code-rust
 
-Thank you for considering contributing to claude_rust! This document provides
-guidelines and information for contributors.
+Thank you for considering contributing to claude-code-rust! This document provides guidelines and information for contributors.
 
 ## Code of Conduct
 
@@ -52,15 +51,14 @@ By participating, you agree to uphold this code.
 ### Prerequisites
 
 - Rust 1.88.0+ (install via https://rustup.rs)
-- Node.js 18+ for the in-repo agent bridge runtime. This follows `@anthropic-ai/claude-agent-sdk`, which currently declares Node `>=18.0.0`.
-- Node.js 24 is recommended for contributor JavaScript tooling and matches CI. Some `agent-sdk` dev dependencies require Node `20.19.x` or `>=22.12.0`, so Node 18 is not sufficient for every local `npm ci` or tooling run.
-- npx (included with Node.js)
+- npm for contributor JavaScript tooling and package scripts.
+- Bun for source runs, bridge runtime checks, and release packaging validation.
 
 ### Clone and Build
 
 ```bash
 git clone https://github.com/srothgan/claude-code-rust.git
-cd claude_rust
+cd claude-code-rust
 cargo build
 ```
 
@@ -108,10 +106,24 @@ Release workflow changes are maintainer-owned and should preserve the package ar
 Important invariants:
 
 - The root npm package must not use `postinstall` or install-time binary downloads.
-- Native binaries live in platform-specific optional npm packages.
+- The root npm package owns the `claude-rs` bin through `bin/claude-rs.js`.
+- Native binaries and private Bun runtimes live in platform-specific optional npm packages.
+- Platform packages must not expose their own npm `claude-rs` bin; otherwise npm can link the payload package over the root resolver.
 - Platform packages must publish before the root package for a given version.
 - npm publication must use Trusted Publishing, not a checked-in token or `NPM_TOKEN`.
 - Release artifacts should be generated, verified, packed, and smoke-tested before publication.
+
+For local package-layout validation, use the platform mapping in `scripts/npm-package-config.mjs` rather than duplicating package names in docs:
+
+```bash
+npm ci
+npm ci --prefix agent-sdk
+npm run build --prefix agent-sdk
+node scripts/generate-npm-packages.mjs
+node scripts/verify-npm-packages.mjs
+node scripts/smoke-npm-package-install.mjs --platform <platform> --real-binary --no-system-runtime
+node scripts/smoke-npm-package-install.mjs --platform <platform> --registry-smoke --real-binary --no-system-runtime
+```
 
 Do not trigger releases, create tags, or publish npm packages from contributor PRs.
 

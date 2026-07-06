@@ -24,7 +24,7 @@ The current runtime uses inline terminal-owned rendering rather than an older fu
 
 ## Agent SDK Bridge
 
-The Rust process spawns a local Node runtime that runs:
+In packaged npm installs, the Rust process resolves a private Bun runtime named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` from the installed package layout. That runtime runs:
 
 ```text
 agent-sdk/dist/bridge.js
@@ -36,38 +36,33 @@ Rust sends commands such as session creation, session resume, prompt submission,
 
 ## Packaging
 
-The npm install is split across a root launcher package and platform-specific optional packages.
+The npm install is split across a root command package and platform payload packages.
 
-The root package is `claude-code-rust`. It exposes the global `claude-rs` JavaScript launcher and includes the built Agent SDK bridge under:
+The root package is `claude-code-rust`. It exposes the `claude-rs` command through the npm launcher and includes the built Agent SDK bridge under:
 
 ```text
+bin/claude-rs.js
 agent-sdk/dist/bridge.js
 ```
 
-The native Rust binaries live in platform packages:
+The platform packages are selected through root package optional dependencies. They include the native Rust binary and private Bun runtime. The exact package mapping lives in `scripts/npm-package-config.mjs`; supported npm payloads currently cover Linux x64/arm64 glibc, Windows x64/arm64, and macOS x64/arm64.
 
-```text
-@srothgan/claude-code-rust-darwin-arm64
-@srothgan/claude-code-rust-darwin-x64
-@srothgan/claude-code-rust-linux-x64-gnu
-@srothgan/claude-code-rust-win32-x64-msvc
-```
-
-The root launcher resolves the package for the current OS and CPU, sets `CLAUDE_RS_AGENT_BRIDGE` to the bundled bridge path in the root package, and forwards CLI arguments to the native binary. There is no npm `postinstall` script and no install-time binary download.
+At runtime, npm's generated shim starts `bin/claude-rs.js`. The launcher selects the matching platform package, sets `CLAUDE_RS_AGENT_BRIDGE` to the root package bridge script, and spawns the native binary. The native binary resolves the bundled Bun runtime from the platform package `bin/` directory. No npm `postinstall` script, install-time binary download, or global Bun is required.
 
 ## Release Model
 
 Release packaging is designed around immutable artifacts:
 
-- Native binaries are built on GitHub-hosted runners for Linux x64 glibc, Windows x64, macOS x64, and macOS arm64.
+- Native binaries are built on GitHub-hosted runners for Linux x64 glibc, Linux arm64 glibc, Windows x64, Windows arm64, macOS x64, and macOS arm64.
+- Private Bun runtime files are staged into each platform package as third-party runtime artifacts.
 - Generated npm package directories are verified against allowlisted package contents before packing.
 - Packed npm tarballs are smoke-tested before publication.
 - GitHub Releases include native binaries, npm tarballs, package-content manifests, build metadata, and `SHA256SUMS`.
 - The release workflow generates and verifies build provenance attestations for native binaries before npm publication.
 - npm publication uses Trusted Publishing rather than a long-lived npm token.
-- Platform packages are published before the root package so users never receive a root package version whose optional native packages do not exist.
+- The root package remains the user-facing npm install package and depends optionally on platform payload packages.
 
-Source builds are different: `cargo build` or `cargo install --path .` produce only the Rust binary. They do not build or install the JavaScript bridge. Build the bridge with npm and provide it through the checkout fallback, `--bridge-script`, or `CLAUDE_RS_AGENT_BRIDGE`.
+Source builds are different: `cargo build` or `cargo install --path .` produce only the Rust binary. They do not build or install the JavaScript bridge or private Bun runtime. Build the bridge with npm and provide it through the checkout fallback, `--bridge-script`, or `CLAUDE_RS_AGENT_BRIDGE`. Debug builds can use `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` to point at a local Bun runtime; release npm installs use only the bundled runtime.
 
 ## Boundaries
 
