@@ -409,7 +409,9 @@ extract_dir="$tmpdir/extract"
 mkdir -p "$extract_dir"
 tar -xzf "$archive_file" -C "$extract_dir"
 set -- "$extract_dir"/*
-[ "$#" -eq 1 ] && [ -d "$1" ] || die "archive extraction did not produce exactly one app directory"
+if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then
+  die "archive extraction did not produce exactly one app directory"
+fi
 extracted_app="$1"
 validate_extracted_app "$extracted_app"
 
