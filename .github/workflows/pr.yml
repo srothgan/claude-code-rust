@@ -50,7 +50,7 @@ jobs:
           agent_sdk=false
           while IFS= read -r path; do
             case "$path" in
-              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/generate-npm-packages.mjs|scripts/npm-package-config.mjs|scripts/smoke-npm-package-install.mjs|scripts/verify-npm-packages.mjs|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
+              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/dry-run-npm-publish.mjs|scripts/dry-run-npm-publish.test.mjs|scripts/generate-npm-packages.mjs|scripts/npm-package-config.mjs|scripts/npm-resolver.test.cjs|scripts/publish-npm-platform-packages.mjs|scripts/publish-npm-platform-packages.test.mjs|scripts/smoke-npm-package-install.mjs|scripts/smoke-npm-package-install.test.mjs|scripts/stage-bun-runtime.mjs|scripts/third-party-notices.mjs|scripts/verify-npm-packages.mjs|scripts/verify-staged-bun-runtimes.mjs|scripts/verify-staged-bun-runtimes.test.mjs|scripts/verify-third-party-notices.mjs|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
                 package=true
                 ;;
             esac
@@ -149,6 +149,12 @@ jobs:
 
       - name: Build agent-sdk bridge
         run: npm --prefix agent-sdk run build
+
+      - name: Run npm packaging script tests
+        run: |
+          node scripts/stage-bun-runtime.mjs --check
+          node scripts/verify-third-party-notices.mjs
+          node --test scripts/npm-resolver.test.cjs scripts/smoke-npm-package-install.test.mjs scripts/verify-staged-bun-runtimes.test.mjs scripts/dry-run-npm-publish.test.mjs scripts/publish-npm-platform-packages.test.mjs
 
       - name: Generate mock npm packages
         run: node scripts/generate-npm-packages.mjs --mock-binaries
