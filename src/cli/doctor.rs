@@ -14,7 +14,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MIN_NODE_MAJOR: u64 = 18;
 const ROOT_NPM_PACKAGE_NAME: &str = "claude-code-rust";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -69,8 +68,8 @@ pub(crate) fn build_report(cli: &Cli) -> DoctorReport {
         binary_version_check(),
         platform_check(),
         current_exe_check(),
-        node_runtime_check(&runtime),
-        node_version_check(runtime.resolved_path.as_deref()),
+        bridge_runtime_check(&runtime),
+        bridge_runtime_version_check(runtime.resolved_path.as_deref()),
         bridge_script_check(&script),
     ];
     checks.extend(config_path_checks(cli.dir.as_deref()));
@@ -280,7 +279,7 @@ impl DoctorSection {
 
     fn for_check(id: &str) -> Self {
         match id {
-            "node_runtime" | "node_version" | "bridge_script" => Self::Runtime,
+            "bridge_runtime" | "bridge_runtime_version" | "bridge_script" => Self::Runtime,
             "config_settings" | "config_local_settings" | "config_preferences" | "config_paths" => {
                 Self::Configuration
             }
@@ -399,7 +398,7 @@ fn current_exe_check() -> DoctorCheck {
     }
 }
 
-fn node_runtime_check(inspection: &BridgeRuntimeInspection) -> DoctorCheck {
+fn bridge_runtime_check(inspection: &BridgeRuntimeInspection) -> DoctorCheck {
     let mut details = BTreeMap::new();
     details.insert(
         BRIDGE_RUNTIME_ENV_VAR.to_owned(),
@@ -408,8 +407,11 @@ fn node_runtime_check(inspection: &BridgeRuntimeInspection) -> DoctorCheck {
             .as_ref()
             .map_or_else(|| "unset".to_owned(), |path| path.display().to_string()),
     );
-    if let Some(path) = &inspection.path_node {
-        details.insert("path_node".to_owned(), path.display().to_string());
+    if let Some(kind) = inspection.resolved_kind {
+        details.insert("runtime_kind".to_owned(), kind.label().to_owned());
+    }
+    if let Some(path) = &inspection.path_bun {
+        details.insert("path_bun".to_owned(), path.display().to_string());
     }
     for (index, candidate) in inspection.packaged_candidates.iter().enumerate() {
         details.insert(
@@ -420,59 +422,59 @@ fn node_runtime_check(inspection: &BridgeRuntimeInspection) -> DoctorCheck {
 
     match (&inspection.resolved_path, &inspection.error) {
         (Some(path), _) => DoctorCheck::pass_with_details(
-            "node_runtime",
-            "Node runtime",
+            "bridge_runtime",
+            "Bridge runtime",
             format!("resolved {}", path.display()),
             details,
         ),
         (None, Some(error)) => DoctorCheck::fail_hard_with_details(
-            "node_runtime",
-            "Node runtime",
+            "bridge_runtime",
+            "Bridge runtime",
             error.clone(),
             details,
         ),
         (None, None) => DoctorCheck::fail_hard_with_details(
-            "node_runtime",
-            "Node runtime",
-            "Node.js runtime not found".to_owned(),
+            "bridge_runtime",
+            "Bridge runtime",
+            "bundled Bun bridge runtime not found".to_owned(),
             details,
         ),
     }
 }
 
-fn node_version_check(runtime: Option<&Path>) -> DoctorCheck {
+fn bridge_runtime_version_check(runtime: Option<&Path>) -> DoctorCheck {
     let Some(runtime) = runtime else {
         return DoctorCheck::fail_hard(
-            "node_version",
-            "Node version",
-            "cannot check Node version because no runtime was resolved",
+            "bridge_runtime_version",
+            "Bridge runtime version",
+            "cannot check Bun version because no runtime was resolved",
         );
     };
 
     match Command::new(runtime).arg("--version").output() {
         Ok(output) if output.status.success() => {
             let raw = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            classify_node_version(&raw, runtime)
+            classify_bun_version(&raw, runtime)
         }
         Ok(output) => DoctorCheck::fail_hard(
-            "node_version",
-            "Node version",
+            "bridge_runtime_version",
+            "Bridge runtime version",
             format!("failed to run `{}` --version: {}", runtime.display(), output.status),
         ),
         Err(error) => DoctorCheck::fail_hard(
-            "node_version",
-            "Node version",
+            "bridge_runtime_version",
+            "Bridge runtime version",
             format!("failed to run `{}` --version: {error}", runtime.display()),
         ),
     }
 }
 
-fn classify_node_version(raw: &str, runtime: &Path) -> DoctorCheck {
-    let Some(major) = parse_node_major(raw) else {
+fn classify_bun_version(raw: &str, runtime: &Path) -> DoctorCheck {
+    let Some(version) = parse_bun_version(raw) else {
         return DoctorCheck::fail_hard_with_detail(
-            "node_version",
-            "Node version",
-            format!("could not parse Node version output `{raw}`"),
+            "bridge_runtime_version",
+            "Bridge runtime version",
+            format!("could not parse Bun version output `{raw}`"),
             "runtime",
             runtime.display().to_string(),
         );
@@ -480,23 +482,38 @@ fn classify_node_version(raw: &str, runtime: &Path) -> DoctorCheck {
 
     let mut details = BTreeMap::new();
     details.insert("runtime".to_owned(), runtime.display().to_string());
-    details.insert("version".to_owned(), raw.to_owned());
-    details.insert("minimum_major".to_owned(), MIN_NODE_MAJOR.to_string());
+    details.insert("version".to_owned(), version.to_owned());
 
-    if major >= MIN_NODE_MAJOR {
-        DoctorCheck::pass_with_details("node_version", "Node version", raw, details)
-    } else {
-        DoctorCheck::fail_hard_with_details(
-            "node_version",
-            "Node version",
-            format!("Node.js {raw} is older than required major version {MIN_NODE_MAJOR}"),
-            details,
-        )
-    }
+    DoctorCheck::pass_with_details(
+        "bridge_runtime_version",
+        "Bridge runtime version",
+        version,
+        details,
+    )
 }
 
-fn parse_node_major(raw: &str) -> Option<u64> {
-    raw.trim().strip_prefix('v').unwrap_or(raw.trim()).split('.').next()?.parse().ok()
+fn parse_bun_version(raw: &str) -> Option<&str> {
+    let version = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    let core_end = version.find(['-', '+']).unwrap_or(version.len());
+    let core = &version[..core_end];
+    let suffix = &version[core_end..];
+    if !suffix.is_empty() && !is_valid_semver_suffix(suffix) {
+        return None;
+    }
+    let mut components = core.split('.');
+    components.next()?.parse::<u64>().ok()?;
+    components.next()?.parse::<u64>().ok()?;
+    components.next()?.parse::<u64>().ok()?;
+    if components.next().is_some() {
+        return None;
+    }
+    Some(version)
+}
+
+fn is_valid_semver_suffix(suffix: &str) -> bool {
+    suffix.len() > 1
+        && matches!(suffix.as_bytes()[0], b'-' | b'+')
+        && suffix[1..].chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '+'))
 }
 
 fn bridge_script_check(inspection: &BridgeScriptInspection) -> DoctorCheck {
@@ -628,6 +645,38 @@ fn root_package_check(script: &BridgeScriptInspection) -> DoctorCheck {
 }
 
 fn platform_package_check(script: &BridgeScriptInspection) -> DoctorCheck {
+    match platform_package_selection() {
+        PlatformPackageSelection::Supported(package_name) => {
+            platform_package_metadata_check(script, package_name)
+        }
+        PlatformPackageSelection::UnsupportedLinuxLibc { arch, libc } => {
+            let mut details = BTreeMap::new();
+            details.insert("os".to_owned(), "linux".to_owned());
+            details.insert("arch".to_owned(), arch.to_owned());
+            details.insert("libc".to_owned(), libc.to_owned());
+            DoctorCheck::warn_with_details(
+                "npm_platform_package",
+                "npm platform package",
+                format!(
+                    "linux/{arch} {libc} is not supported by the current npm packages; Linux npm packages currently require glibc"
+                ),
+                details,
+            )
+        }
+        PlatformPackageSelection::UnsupportedPlatform => package_json_check(
+            "npm_platform_package",
+            "npm platform package",
+            Vec::new(),
+            None,
+            true,
+        ),
+    }
+}
+
+fn platform_package_metadata_check(
+    script: &BridgeScriptInspection,
+    package_name: &'static str,
+) -> DoctorCheck {
     let mut candidates = Vec::new();
     if let Ok(current_exe) = std::env::current_exe()
         && let Some(bin_dir) = current_exe.parent()
@@ -636,7 +685,7 @@ fn platform_package_check(script: &BridgeScriptInspection) -> DoctorCheck {
         candidates.push(package_root.join("package.json"));
     }
 
-    if let (Some(root), Some(package_name)) = (root_package_dir(script), platform_package_name()) {
+    if let Some(root) = root_package_dir(script) {
         candidates.push(root.join("node_modules").join(package_name).join("package.json"));
     }
 
@@ -644,7 +693,7 @@ fn platform_package_check(script: &BridgeScriptInspection) -> DoctorCheck {
         "npm_platform_package",
         "npm platform package",
         candidates,
-        platform_package_name(),
+        Some(package_name),
         true,
     )
 }
@@ -739,16 +788,78 @@ fn unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     unique
 }
 
-fn platform_package_name() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Some("@srothgan/claude-code-rust-darwin-arm64"),
-        ("macos", "x86_64") => Some("@srothgan/claude-code-rust-darwin-x64"),
-        ("linux", "x86_64") => Some("@srothgan/claude-code-rust-linux-x64-gnu"),
-        ("linux", "aarch64") => Some("@srothgan/claude-code-rust-linux-arm64-gnu"),
-        ("windows", "x86_64") => Some("@srothgan/claude-code-rust-win32-x64-msvc"),
-        ("windows", "aarch64") => Some("@srothgan/claude-code-rust-win32-arm64-msvc"),
-        _ => None,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlatformPackageSelection {
+    Supported(&'static str),
+    UnsupportedLinuxLibc { arch: &'static str, libc: &'static str },
+    UnsupportedPlatform,
+}
+
+fn platform_package_selection() -> PlatformPackageSelection {
+    platform_package_selection_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        current_linux_libc_kind(),
+    )
+}
+
+fn platform_package_selection_for(
+    os: &'static str,
+    arch: &'static str,
+    linux_libc: Option<&'static str>,
+) -> PlatformPackageSelection {
+    match (os, arch) {
+        ("macos", "aarch64") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-darwin-arm64")
+        }
+        ("macos", "x86_64") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-darwin-x64")
+        }
+        ("linux", "x86_64") if linux_libc == Some("glibc") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-x64-gnu")
+        }
+        ("linux", "aarch64") if linux_libc == Some("glibc") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-arm64-gnu")
+        }
+        ("linux", "x86_64" | "aarch64") => PlatformPackageSelection::UnsupportedLinuxLibc {
+            arch,
+            libc: linux_libc.unwrap_or("unknown"),
+        },
+        ("windows", "x86_64") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-win32-x64-msvc")
+        }
+        ("windows", "aarch64") => {
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-win32-arm64-msvc")
+        }
+        _ => PlatformPackageSelection::UnsupportedPlatform,
     }
+}
+
+fn current_linux_libc_kind() -> Option<&'static str> {
+    if std::env::consts::OS != "linux" {
+        return None;
+    }
+    current_linux_libc_kind_for_target()
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn current_linux_libc_kind_for_target() -> Option<&'static str> {
+    Some("glibc")
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+fn current_linux_libc_kind_for_target() -> Option<&'static str> {
+    Some("musl")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_linux_libc_kind_for_target() -> Option<&'static str> {
+    None
+}
+
+#[cfg(all(target_os = "linux", not(any(target_env = "gnu", target_env = "musl"))))]
+fn current_linux_libc_kind_for_target() -> Option<&'static str> {
+    None
 }
 
 fn credentials_check() -> DoctorCheck {
@@ -866,23 +977,25 @@ impl DoctorCheck {
 #[cfg(test)]
 mod tests {
     use super::{
-        DoctorReport, DoctorStatus, MIN_NODE_MAJOR, PlatformReport, ROOT_NPM_PACKAGE_NAME,
-        classify_node_version, config_path_checks, package_json_check, parse_node_major,
-        write_human_report,
+        DoctorReport, DoctorStatus, PlatformPackageSelection, PlatformReport,
+        ROOT_NPM_PACKAGE_NAME, classify_bun_version, config_path_checks, package_json_check,
+        parse_bun_version, platform_package_selection_for, write_human_report,
     };
     use std::path::Path;
 
     #[test]
-    fn parses_node_major_versions() {
-        assert_eq!(parse_node_major("v20.11.1"), Some(20));
-        assert_eq!(parse_node_major("18.19.0"), Some(18));
-        assert_eq!(parse_node_major("not-node"), None);
+    fn parses_bun_versions() {
+        assert_eq!(parse_bun_version("1.3.14"), Some("1.3.14"));
+        assert_eq!(parse_bun_version("v1.3.14"), Some("1.3.14"));
+        assert_eq!(parse_bun_version("1.3.14-canary.1"), Some("1.3.14-canary.1"));
+        assert_eq!(parse_bun_version("v1.3.14+20260705"), Some("1.3.14+20260705"));
+        assert_eq!(parse_bun_version("not-bun"), None);
+        assert_eq!(parse_bun_version("1.3.14-"), None);
     }
 
     #[test]
-    fn node_version_below_minimum_is_hard_failure() {
-        let raw = format!("v{}.0.0", MIN_NODE_MAJOR - 1);
-        let check = classify_node_version(&raw, Path::new("node"));
+    fn invalid_bun_version_is_hard_failure() {
+        let check = classify_bun_version("not-bun", Path::new("bun"));
 
         assert_eq!(check.status, DoctorStatus::Fail);
         assert!(check.hard_failure);
@@ -979,5 +1092,33 @@ mod tests {
 
         assert_eq!(check.status, DoctorStatus::Warn);
         assert!(check.message.contains("expected claude-code-rust package metadata"));
+    }
+
+    #[test]
+    fn platform_package_selection_requires_glibc_for_linux_packages() {
+        assert_eq!(
+            platform_package_selection_for("linux", "x86_64", Some("glibc")),
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-x64-gnu")
+        );
+        assert_eq!(
+            platform_package_selection_for("linux", "aarch64", Some("glibc")),
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-arm64-gnu")
+        );
+        assert_eq!(
+            platform_package_selection_for("linux", "x86_64", Some("musl")),
+            PlatformPackageSelection::UnsupportedLinuxLibc { arch: "x86_64", libc: "musl" }
+        );
+    }
+
+    #[test]
+    fn platform_package_selection_handles_non_linux_targets() {
+        assert_eq!(
+            platform_package_selection_for("windows", "x86_64", None),
+            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-win32-x64-msvc")
+        );
+        assert_eq!(
+            platform_package_selection_for("freebsd", "x86_64", None),
+            PlatformPackageSelection::UnsupportedPlatform
+        );
     }
 }
