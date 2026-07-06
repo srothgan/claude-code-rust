@@ -185,6 +185,37 @@ export function buildPlatformPackageJson({ platformPackage, version, rootPackage
   });
 }
 
+export function installArchiveFormat(platformPackage) {
+  return platformPackage.os.includes("win32") ? "zip" : "tar.gz";
+}
+
+export function installArchiveName(platformPackage, version) {
+  return `${ROOT_PACKAGE_NAME}-${version}-${platformPackage.dir}.${installArchiveFormat(platformPackage)}`;
+}
+
+export function installArchiveBaseName(platformPackage, version) {
+  return `${ROOT_PACKAGE_NAME}-${version}-${platformPackage.dir}`;
+}
+
+export function expectedAgentSdkNativePackage(platformPackage) {
+  const osName = platformPackage.os[0];
+  const cpuName = platformPackage.cpu[0];
+  return `@anthropic-ai/claude-agent-sdk-${osName === "linux" ? "linux" : osName}-${cpuName}`;
+}
+
+export function npmInstallPlatformArgs(platformPackage) {
+  return [
+    `--os=${platformPackage.os[0]}`,
+    `--cpu=${platformPackage.cpu[0]}`,
+    platformPackage.libc?.[0] ? `--libc=${platformPackage.libc[0]}` : undefined
+  ].filter(Boolean);
+}
+
+export function nativeReleaseAssetName(platformPackage) {
+  const extension = platformPackage.os.includes("win32") ? ".exe" : "";
+  return `${ROOT_PACKAGE_NAME}-${platformPackage.rustTarget}${extension}`;
+}
+
 function removeUndefined(value) {
   if (Array.isArray(value)) {
     return value.map(removeUndefined);

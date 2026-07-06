@@ -222,7 +222,7 @@ jobs:
 
   assemble-release-candidate:
     needs: [verify-release-candidate, agent-sdk-preflight, build-release-candidate, stage-release-candidate-runtimes]
-    name: Assemble and verify npm packages
+    name: Assemble release candidate package set
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -267,11 +267,17 @@ jobs:
           node scripts/stage-bun-runtime.mjs --check
           node scripts/verify-staged-bun-runtimes.mjs
 
-      - name: Assemble npm packages
+      - name: Assemble npm package directories
         run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
 
       - name: Verify npm package layout
         run: node scripts/verify-npm-packages.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
+      - name: Generate install archives
+        run: node scripts/generate-install-archives.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
+      - name: Verify install archives
+        run: node scripts/verify-install-archives.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
 
       - name: Pack npm tarballs
         run: |
@@ -288,13 +294,20 @@ jobs:
       - name: Dry-run npm tarball publish
         run: node scripts/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify-release-candidate.outputs.version }}"
 
+      - name: Generate release bundle
+        run: node scripts/generate-release-bundle.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
+      - name: Verify release bundle
+        run: node scripts/verify-release-bundle.mjs --version "${{ needs.verify-release-candidate.outputs.version }}"
+
       - name: Generate SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
-          find dist-assets dist-pack dist-npm/manifests -type f -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS
+          VERSION="${{ needs.verify-release-candidate.outputs.version }}"
+          mapfile -t public_assets < <(find dist-install -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          public_assets+=("claude-code-rust-${VERSION}-release-bundle.tar.gz")
+          sha256sum "${public_assets[@]}" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Upload release candidate artifact set
@@ -305,7 +318,11 @@ jobs:
             dist-assets/
             dist-npm/manifests/
             dist-pack/
+            dist-install/
+            claude-code-rust-${{ needs.verify-release-candidate.outputs.version }}-release-bundle.tar.gz
+            release-manifest.json
             SHA256SUMS
+            SHA256SUMS.internal
           if-no-files-found: error
 
   smoke-release-candidate-packages:
@@ -349,3 +366,6 @@ jobs:
 
       - name: Smoke-test global npm install from temp registry
         run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --registry-smoke --real-binary --no-system-runtime
+
+      - name: Smoke-test install archive
+        run: node scripts/smoke-install-archive.mjs --platform "${{ matrix.package_dir }}" --real-binary --no-system-runtime
