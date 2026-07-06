@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.4] - 2026-07-06 [Changes][v0.13.4]
+
+### Features
+
+- **Bundled Bun bridge runtime** (#245, @srothgan): Ship a private Bun runtime in each platform npm package so the Agent SDK bridge no longer needs a separately installed Node runtime to run.
+
+### CI and Dependencies
+
+- **Node 24 maintainer floor** (#254, @srothgan): Raise root and Agent SDK npm engine metadata to Node 24 for source-build tooling.
+
 ## [0.13.3] - 2026-07-04 [Changes][v0.13.3]
 
 ### Features
@@ -714,6 +724,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.13.4]: https://github.com/srothgan/claude-code-rust/compare/v0.13.3...v0.13.4
 [v0.13.3]: https://github.com/srothgan/claude-code-rust/compare/v0.13.2...v0.13.3
 [v0.13.2]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.2
 [v0.13.0]: https://github.com/srothgan/claude-code-rust/compare/v0.12.4...v0.13.0
