@@ -6,17 +6,15 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   BUNDLED_BUN_RUNTIME_VERSION,
   PLATFORM_PACKAGES,
   bunRuntimeAssetUrl,
   readBunRuntimeManifest
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 const options = parseArgs(process.argv.slice(2));
 
 if (options.help) {
@@ -362,10 +360,10 @@ function requireValue(args, index, flag) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/stage-bun-runtime.mjs [options]
+  console.log(`Usage: node scripts/runtime/stage-bun-runtime.mjs [options]
 
 Options:
-  --check                         Validate scripts/bun-runtime-manifest.json.
+  --check                         Validate scripts/runtime/bun-runtime-manifest.json.
   --verify-upstream               Fetch upstream Bun checksums and verify manifest SHA256 values.
   --download                      Download, verify, extract, and stage Bun runtimes.
   --platform <package-dir>        Stage one platform package directory only.

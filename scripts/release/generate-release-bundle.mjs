@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   PLATFORM_PACKAGES,
   ROOT_PACKAGE_NAME,
@@ -10,7 +10,7 @@ import {
   nativeReleaseAssetName,
   readBunRuntimeManifest,
   readCargoPackageMetadata
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 import {
   createTarGzArchive,
   fileSha256,
@@ -18,11 +18,9 @@ import {
   normalizePath,
   readArgValue,
   writeJson
-} from "./install-archive-common.mjs";
+} from "../shared/install-archive-common.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -292,7 +290,7 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/generate-release-bundle.mjs [options]
+  console.log(`Usage: node scripts/release/generate-release-bundle.mjs [options]
 
 Options:
   --version <version>              Override the package version. Defaults to Cargo.toml.

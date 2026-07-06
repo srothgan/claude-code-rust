@@ -113,16 +113,16 @@ Important invariants:
 - npm publication must use Trusted Publishing, not a checked-in token or `NPM_TOKEN`.
 - Release artifacts should be generated, verified, packed, and smoke-tested before publication.
 
-For local package-layout validation, use the platform mapping in `scripts/npm-package-config.mjs` rather than duplicating package names in docs:
+For local package-layout validation, use the platform mapping in `scripts/shared/npm-package-config.mjs` rather than duplicating package names in docs:
 
 ```bash
 npm ci
 npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
-node scripts/generate-npm-packages.mjs
-node scripts/verify-npm-packages.mjs
-node scripts/smoke-npm-package-install.mjs --platform <platform> --real-binary --no-system-runtime
-node scripts/smoke-npm-package-install.mjs --platform <platform> --registry-smoke --real-binary --no-system-runtime
+node scripts/npm/generate-npm-packages.mjs
+node scripts/npm/verify-npm-packages.mjs
+node scripts/npm/smoke-npm-package-install.mjs --platform <platform> --real-binary --no-system-runtime
+node scripts/npm/smoke-npm-package-install.mjs --platform <platform> --registry-smoke --real-binary --no-system-runtime
 ```
 
 Do not trigger releases, create tags, or publish npm packages from contributor PRs.

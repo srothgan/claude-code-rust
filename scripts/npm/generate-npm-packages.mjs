@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   DIST_NPM_DIR,
   PLATFORM_PACKAGES,
@@ -10,12 +10,10 @@ import {
   readCargoPackageMetadata,
   readBunRuntimeManifest,
   readJson
-} from "./npm-package-config.mjs";
-import { buildThirdPartyNotices } from "./third-party-notices.mjs";
+} from "../shared/npm-package-config.mjs";
+import { buildThirdPartyNotices } from "../shared/third-party-notices.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -276,7 +274,7 @@ function readArgValue(args, index, flag) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/generate-npm-packages.mjs [options]
+  console.log(`Usage: node scripts/npm/generate-npm-packages.mjs [options]
 
 Options:
   --version <version>       Override the package version. Defaults to Cargo.toml.

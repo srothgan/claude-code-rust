@@ -50,7 +50,7 @@ jobs:
           agent_sdk=false
           while IFS= read -r path; do
             case "$path" in
-              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/dry-run-npm-publish.mjs|scripts/dry-run-npm-publish.test.mjs|scripts/generate-npm-packages.mjs|scripts/npm-package-config.mjs|scripts/npm-resolver.test.cjs|scripts/publish-npm-platform-packages.mjs|scripts/publish-npm-platform-packages.test.mjs|scripts/smoke-npm-package-install.mjs|scripts/smoke-npm-package-install.test.mjs|scripts/stage-bun-runtime.mjs|scripts/third-party-notices.mjs|scripts/verify-npm-packages.mjs|scripts/verify-staged-bun-runtimes.mjs|scripts/verify-staged-bun-runtimes.test.mjs|scripts/verify-third-party-notices.mjs|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
+              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/npm/*|scripts/runtime/*|scripts/shared/*|scripts/install/*|scripts/release/*|scripts/README.md|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
                 package=true
                 ;;
             esac
@@ -152,21 +152,45 @@ jobs:
 
       - name: Run npm packaging script tests
         run: |
-          node scripts/stage-bun-runtime.mjs --check
-          node scripts/verify-third-party-notices.mjs
-          node --test scripts/npm-resolver.test.cjs scripts/smoke-npm-package-install.test.mjs scripts/verify-staged-bun-runtimes.test.mjs scripts/dry-run-npm-publish.test.mjs scripts/publish-npm-platform-packages.test.mjs
+          node scripts/runtime/stage-bun-runtime.mjs --check
+          node scripts/shared/verify-third-party-notices.mjs
+          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs
+
+      - name: Check public installer syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck -s sh scripts/install/install.sh
+          pwsh -NoLogo -NoProfile -Command '
+            $errors = $null
+            [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw "scripts/install/install.ps1"), [ref]$errors) | Out-Null
+            if ($errors) {
+              $errors | ForEach-Object { Write-Error $_ }
+              exit 1
+            }
+          '
+          pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
 
       - name: Stage bundled Bun runtimes
-        run: node scripts/stage-bun-runtime.mjs --download
+        run: node scripts/runtime/stage-bun-runtime.mjs --download
 
       - name: Generate npm packages with mock native binaries
-        run: node scripts/generate-npm-packages.mjs --mock-native-binary
+        run: node scripts/npm/generate-npm-packages.mjs --mock-native-binary
 
       - name: Verify npm package layout
-        run: node scripts/verify-npm-packages.mjs
+        run: node scripts/npm/verify-npm-packages.mjs
 
       - name: Smoke-test packed npm install
-        run: node scripts/smoke-npm-package-install.mjs
+        run: node scripts/npm/smoke-npm-package-install.mjs
+
+      - name: Generate install archives with mock binaries
+        run: node scripts/install/generate-install-archives.mjs --mock-binaries
+
+      - name: Verify install archives
+        run: node scripts/install/verify-install-archives.mjs
+
+      - name: Smoke-test install archive
+        run: node scripts/install/smoke-install-archive.mjs --platform linux-x64-gnu
 
       - name: Upload package layout artifacts
         if: always()
@@ -176,6 +200,9 @@ jobs:
           path: |
             dist-npm/manifests/*.json
             dist-pack/*.tgz
+            dist-install/manifests/*.json
+            dist-install/*.tar.gz
+            dist-install/*.zip
           if-no-files-found: warn
 
   codeql:

@@ -2,8 +2,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { PLATFORM_PACKAGES, ROOT_PACKAGE_NAME, readCargoPackageMetadata } from "./npm-package-config.mjs";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
+import { PLATFORM_PACKAGES, ROOT_PACKAGE_NAME, readCargoPackageMetadata } from "../shared/npm-package-config.mjs";
 import {
   extractArchive,
   fileSha256,
@@ -11,11 +11,9 @@ import {
   listRelativeFiles,
   readArgValue,
   readJson
-} from "./install-archive-common.mjs";
+} from "../shared/install-archive-common.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
@@ -187,7 +185,7 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/verify-release-bundle.mjs [options]
+  console.log(`Usage: node scripts/release/verify-release-bundle.mjs [options]
 
 Options:
   --version <version>   Expected package version. Defaults to Cargo.toml.

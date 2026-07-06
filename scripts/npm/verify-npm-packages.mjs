@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   BUNDLED_BUN_RUNTIME_VERSION,
   DIST_NPM_DIR,
@@ -14,12 +14,10 @@ import {
   readCargoPackageMetadata,
   readBunRuntimeManifest,
   readJson
-} from "./npm-package-config.mjs";
-import { verifyThirdPartyNoticeCoverage } from "./verify-third-party-notices.mjs";
+} from "../shared/npm-package-config.mjs";
+import { verifyThirdPartyNoticeCoverage } from "../shared/verify-third-party-notices.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 const npmCliPath = resolveNpmCliPath();
 
 const options = parseArgs(process.argv.slice(2));
@@ -570,7 +568,7 @@ function readArgValue(args, index, flag) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/verify-npm-packages.mjs [options]
+  console.log(`Usage: node scripts/npm/verify-npm-packages.mjs [options]
 
 Options:
   --dist-dir <dir>      Generated package directory. Defaults to dist-npm.

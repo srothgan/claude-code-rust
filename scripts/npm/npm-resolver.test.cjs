@@ -7,7 +7,7 @@ const {
   resolveInstall,
   selectTarget,
   supportedPlatformsText
-} = require("../bin/claude-rs.js");
+} = require("../../bin/claude-rs.js");
 
 function processLike(platform, arch, glibcVersionRuntime) {
   return {

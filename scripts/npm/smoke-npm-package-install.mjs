@@ -5,18 +5,17 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   DIST_NPM_DIR,
   PLATFORM_PACKAGES,
   ROOT_PACKAGE_NAME,
   readCargoPackageMetadata,
   readJson
-} from "./npm-package-config.mjs";
+} from "../shared/npm-package-config.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 let npmCliPath;
 
 async function main() {
@@ -1165,7 +1164,7 @@ function readArgValue(args, index, flag) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/smoke-npm-package-install.mjs [options]
+  console.log(`Usage: node scripts/npm/smoke-npm-package-install.mjs [options]
 
 Options:
   --dist-dir <dir>      Generated package directory. Defaults to dist-npm.

@@ -95,7 +95,7 @@ jobs:
           check_recoverable "@srothgan/claude-code-rust-win32-x64-msvc"
 
       - name: Validate Bun runtime manifest
-        run: node scripts/stage-bun-runtime.mjs --check --verify-upstream
+        run: node scripts/runtime/stage-bun-runtime.mjs --check --verify-upstream
 
   agent-sdk-preflight:
     needs: [verify]
@@ -169,7 +169,7 @@ jobs:
           package-manager-cache: false
 
       - name: Download, verify, and stage Bun runtimes
-        run: node scripts/stage-bun-runtime.mjs --download
+        run: node scripts/runtime/stage-bun-runtime.mjs --download
 
       - name: Upload staged Bun runtimes
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -228,20 +228,20 @@ jobs:
 
       - name: Verify staged Bun runtimes
         run: |
-          node scripts/stage-bun-runtime.mjs --check
-          node scripts/verify-staged-bun-runtimes.mjs
+          node scripts/runtime/stage-bun-runtime.mjs --check
+          node scripts/runtime/verify-staged-bun-runtimes.mjs
 
       - name: Assemble npm package directories
-        run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/npm/generate-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Verify npm package layout
-        run: node scripts/verify-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/npm/verify-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Generate install archives
-        run: node scripts/generate-install-archives.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/install/generate-install-archives.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Verify install archives
-        run: node scripts/verify-install-archives.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/install/verify-install-archives.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Pack npm tarballs
         run: |
@@ -256,10 +256,10 @@ jobs:
           npm pack ./dist-npm/root --pack-destination ./dist-pack --json
 
       - name: Generate release bundle
-        run: node scripts/generate-release-bundle.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/release/generate-release-bundle.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Verify release bundle
-        run: node scripts/verify-release-bundle.mjs --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/release/verify-release-bundle.mjs --version "${{ needs.verify.outputs.version }}"
 
       - name: Generate SHA256SUMS
         run: |
@@ -331,13 +331,13 @@ jobs:
           path: .
 
       - name: Smoke-test installed npm tarballs
-        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary --no-system-runtime
+        run: node scripts/npm/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary --no-system-runtime
 
       - name: Smoke-test global npm install from temp registry
-        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --registry-smoke --real-binary --no-system-runtime
+        run: node scripts/npm/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --registry-smoke --real-binary --no-system-runtime
 
       - name: Smoke-test install archive
-        run: node scripts/smoke-install-archive.mjs --platform "${{ matrix.package_dir }}" --real-binary --no-system-runtime
+        run: node scripts/install/smoke-install-archive.mjs --platform "${{ matrix.package_dir }}" --real-binary --no-system-runtime
 
   verify-release-attestations:
     needs: [verify, smoke-test-packages]
@@ -438,10 +438,10 @@ jobs:
           npm --version
 
       - name: Dry-run npm tarball publish
-        run: node scripts/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/npm/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify.outputs.version }}"
 
       - name: Publish platform tarballs
-        run: node scripts/publish-npm-platform-packages.mjs --pack-dir dist-pack --ledger-dir dist-publish-ledger --version "${{ needs.verify.outputs.version }}"
+        run: node scripts/npm/publish-npm-platform-packages.mjs --pack-dir dist-pack --ledger-dir dist-publish-ledger --version "${{ needs.verify.outputs.version }}"
 
       - name: Upload platform publish ledger
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

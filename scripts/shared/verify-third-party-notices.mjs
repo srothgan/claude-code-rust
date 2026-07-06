@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
+import { resolveRepoRoot } from "./repo-root.mjs";
 import { PLATFORM_PACKAGES, readBunRuntimeManifest } from "./npm-package-config.mjs";
 import {
   BUN_EMBEDDED_POLYFILLS,
@@ -9,9 +10,7 @@ import {
   buildThirdPartyNotices
 } from "./third-party-notices.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 
 export function verifyThirdPartyNoticeCoverage({
   manifest = readBunRuntimeManifest(repoRoot),
@@ -60,7 +59,7 @@ function expectIncludes(haystack, needle, label, failures) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/verify-third-party-notices.mjs
+  console.log(`Usage: node scripts/shared/verify-third-party-notices.mjs
 
 Verifies the generated third-party notice content covers the bundled Bun version,
 asset names, checksums, WebKit LGPL/source references, linked libraries, and

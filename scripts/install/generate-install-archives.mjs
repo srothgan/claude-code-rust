@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
   BUNDLED_BUN_RUNTIME_VERSION,
   PLATFORM_PACKAGES,
@@ -17,8 +17,8 @@ import {
   readBunRuntimeManifest,
   readCargoPackageMetadata,
   readJson
-} from "./npm-package-config.mjs";
-import { buildThirdPartyNotices } from "./third-party-notices.mjs";
+} from "../shared/npm-package-config.mjs";
+import { buildThirdPartyNotices } from "../shared/third-party-notices.mjs";
 import {
   assertNoSymlinks,
   commandExists,
@@ -29,11 +29,9 @@ import {
   readArgValue,
   requireCommand,
   writeJson
-} from "./install-archive-common.mjs";
+} from "../shared/install-archive-common.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const repoRoot = path.resolve(__dirname, "..");
+const repoRoot = resolveRepoRoot(import.meta.url);
 const npmCliPath = resolveNpmCliPath();
 
 const options = parseArgs(process.argv.slice(2));
@@ -407,7 +405,7 @@ function parseArgs(args) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/generate-install-archives.mjs [options]
+  console.log(`Usage: node scripts/install/generate-install-archives.mjs [options]
 
 Options:
   --version <version>       Override the package version. Defaults to Cargo.toml.
