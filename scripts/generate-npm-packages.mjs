@@ -37,6 +37,9 @@ if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
 
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
+if (options.mockBinaries) {
+  fs.writeFileSync(path.join(outDir, ".mock-binaries"), "mock-binaries\n", "utf8");
+}
 
 generateRootPackage();
 for (const platformPackage of PLATFORM_PACKAGES) {

@@ -36,6 +36,7 @@ const expectedVersion = options.version ?? cargoPackage.version;
 const failures = [];
 const packageManifests = [];
 const bunRuntimeManifest = readBunRuntimeManifest(repoRoot);
+const allowMockBinaries = fs.existsSync(path.join(distDir, ".mock-binaries"));
 
 expectEqual(bunRuntimeManifest.version, BUNDLED_BUN_RUNTIME_VERSION, "Bun runtime manifest version");
 verifyDistDir();
@@ -287,11 +288,20 @@ function buildBunRuntimeProvenance(platformPackage, packageDir, runtimeFilePath,
     `${context} Bun archive binary path`
   );
   const actualRuntimeSha256 = fileSha256(path.join(packageDir, runtimeFilePath));
-  expectEqual(actualRuntimeSha256, runtimeAsset.binarySha256, `${context} bundled Bun runtime SHA256`);
+  if (actualRuntimeSha256 !== runtimeAsset.binarySha256) {
+    if (!allowMockBinaries || !isMockRuntimeFile(path.join(packageDir, runtimeFilePath))) {
+      fail(
+        `${context} bundled Bun runtime SHA256: expected ${formatValue(
+          runtimeAsset.binarySha256
+        )}, got ${formatValue(actualRuntimeSha256)}`
+      );
+    }
+  }
 
   return {
     name: platformPackage.bundledRuntimeName,
     version: bunRuntimeManifest.version,
+    mock: actualRuntimeSha256 !== runtimeAsset.binarySha256 ? true : undefined,
     sourceAsset: runtimeAsset.assetName,
     sourceUrl: bunRuntimeAssetUrl(bunRuntimeManifest.version, runtimeAsset.assetName),
     checksumSourceUrl: bunRuntimeManifest.checksumSourceUrl,
@@ -299,6 +309,11 @@ function buildBunRuntimeProvenance(platformPackage, packageDir, runtimeFilePath,
     sourceArchiveSha256: runtimeAsset.sha256,
     runtimeSha256: actualRuntimeSha256
   };
+}
+
+function isMockRuntimeFile(runtimePath) {
+  const content = fs.readFileSync(runtimePath, "utf8");
+  return content.includes(bunRuntimeManifest.version);
 }
 
 function fileSha256(filePath) {

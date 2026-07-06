@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Release and Packaging
+
+- **Install scripts** (#259, @srothgan): Add optional macOS/Linux and Windows install scripts that install from GitHub Releases without requiring npm, Node.js, or Bun on the user's machine.
+
 ## [0.13.4] - 2026-07-06 [Changes][v0.13.4]
 
 ### Features
