@@ -72,6 +72,7 @@ import {
   staleMcpAuthCandidates,
 } from "./bridge/mcp.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
+import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -103,7 +104,10 @@ export {
 } from "./bridge/history.js";
 export { handleSdkMessage, handleTaskSystemMessage } from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
-export { buildQueryOptions } from "./bridge/session_lifecycle.js";
+export {
+  buildQueryOptions,
+  resolveClaudeCodeSpawnCommand,
+} from "./bridge/session_lifecycle.js";
 export { mapAvailableModels } from "./bridge/model_metadata.js";
 export {
   bridgeMcpConfigToSdk,
@@ -913,12 +917,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
     }
 
     case "cancel_turn": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await session.query.interrupt();
+      await dispatchCancelTurnCommand(command, { requestId, sessionById, slashError });
       return;
     }
 

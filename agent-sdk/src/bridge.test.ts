@@ -7,6 +7,7 @@ import {
   buildRateLimitUpdate,
   buildRewindConversationPlan,
   buildQueryOptions,
+  resolveClaudeCodeSpawnCommand,
   canGenerateSessionTitle,
   generatePersistedSessionTitle,
   buildSessionMutationOptions,
@@ -72,9 +73,10 @@ import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./br
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import { flushPendingWorkerShutdown, handleResultMessage } from "./bridge/message_handlers.js";
+import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
-  process.platform === "win32" ? "claude-rs-bridge-node.exe" : "claude-rs-bridge-node";
+  process.platform === "win32" ? "claude-rs-bridge-bun.exe" : "claude-rs-bridge-bun";
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
@@ -1298,6 +1300,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.promptSuggestions, true);
   assert.equal(options.enableFileCheckpointing, true);
+  assert.equal(options.executable, "bun");
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.deepEqual(options.toolConfig, {
@@ -1451,6 +1454,104 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
     append: BRIDGE_RUNTIME_GUARD_PROMPT,
   });
   assert.equal("agentProgressSummaries" in options, false);
+});
+
+test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
+  let interruptCount = 0;
+  const slashErrors: Array<{ sessionId: string; message: string; requestId?: string }> = [];
+
+  await dispatchCancelTurnCommand(
+    { command: "cancel_turn", session_id: "session-1" },
+    {
+      requestId: "request-1",
+      sessionById: (sessionId) =>
+        sessionId === "session-1"
+          ? {
+              query: {
+                interrupt: async () => {
+                  interruptCount += 1;
+                },
+              },
+            }
+          : undefined,
+      slashError: (sessionId, message, requestId) => {
+        slashErrors.push({ sessionId, message, requestId });
+      },
+    },
+  );
+
+  assert.equal(interruptCount, 1);
+  assert.deepEqual(slashErrors, []);
+});
+
+test("dispatchCancelTurnCommand emits slash error for unknown session", async () => {
+  const interruptCount = 0;
+  const slashErrors: Array<{ sessionId: string; message: string; requestId?: string }> = [];
+
+  await dispatchCancelTurnCommand(
+    { command: "cancel_turn", session_id: "missing-session" },
+    {
+      requestId: "request-2",
+      sessionById: () => undefined,
+      slashError: (sessionId, message, requestId) => {
+        slashErrors.push({ sessionId, message, requestId });
+      },
+    },
+  );
+
+  assert.equal(interruptCount, 0);
+  assert.deepEqual(slashErrors, [
+    {
+      sessionId: "missing-session",
+      message: "unknown session: missing-session",
+      requestId: "request-2",
+    },
+  ]);
+});
+
+test("resolveClaudeCodeSpawnCommand remaps bare bun to the bridge runtime executable", () => {
+  assert.equal(resolveClaudeCodeSpawnCommand("bun"), process.execPath);
+});
+
+test("resolveClaudeCodeSpawnCommand preserves commands with path separators", () => {
+  assert.equal(resolveClaudeCodeSpawnCommand("/opt/runtime/bun"), "/opt/runtime/bun");
+  assert.equal(resolveClaudeCodeSpawnCommand("C:\\runtime\\bun.exe"), "C:\\runtime\\bun.exe");
+});
+
+test("buildQueryOptions spawn hook remaps bare bun command", async () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {},
+    provisionalSessionId: "session-spawn-bun",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-spawn-bun",
+  });
+
+  const child = options.spawnClaudeCodeProcess({
+    command: "bun",
+    args: ["-e", "process.stdout.write(process.execPath)"],
+    cwd: process.cwd(),
+    env: {},
+    signal: new AbortController().signal,
+  });
+
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code) => resolve(code));
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout, process.execPath);
 });
 
 test("buildQueryOptions forwards SDK-provided spawn env without passing top-level env", async () => {

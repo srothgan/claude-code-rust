@@ -590,6 +590,25 @@ mod tests {
     }
 
     #[test]
+    fn cancel_turn_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: Some("request-1".to_owned()),
+            command: BridgeCommand::CancelTurn { session_id: "s1".to_owned() },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "request_id": "request-1",
+                "command": "cancel_turn",
+                "session_id": "s1"
+            })
+        );
+    }
+
+    #[test]
     fn get_rewind_targets_command_serializes_snake_case() {
         let env = CommandEnvelope {
             request_id: None,

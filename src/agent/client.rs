@@ -5,7 +5,8 @@ use crate::agent::bridge::BridgeLauncher;
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope, SessionLaunchSettings};
 use crate::error::AppError;
 use anyhow::Context as _;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
+use std::fmt;
+use tokio::io::{AsyncBufReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};
@@ -106,53 +107,21 @@ impl BridgeClient {
             anyhow::Error::new(err).context("failed to serialize bridge command")
         })?;
         let size_bytes = line.len() + 1;
-        self.stdin.write_all(line.as_bytes()).await.map_err(|err| {
+        write_command_line(&mut self.stdin, &line).await.map_err(|err| {
             tracing::error!(
                 target: crate::logging::targets::BRIDGE_PROTOCOL,
                 event_name = "bridge_command_send_failed",
-                message = "failed to write bridge command",
+                message = "failed to write bridge command line",
                 outcome = "failure",
                 request_id,
                 bridge_command,
                 session_id,
                 tool_call_id,
                 size_bytes,
-                stage = "write",
+                stage = err.stage,
                 error = %err,
             );
-            anyhow::Error::new(err).context("failed to write bridge command")
-        })?;
-        self.stdin.write_all(b"\n").await.map_err(|err| {
-            tracing::error!(
-                target: crate::logging::targets::BRIDGE_PROTOCOL,
-                event_name = "bridge_command_send_failed",
-                message = "failed to write bridge newline",
-                outcome = "failure",
-                request_id,
-                bridge_command,
-                session_id,
-                tool_call_id,
-                size_bytes,
-                stage = "write_newline",
-                error = %err,
-            );
-            anyhow::Error::new(err).context("failed to write bridge newline")
-        })?;
-        self.stdin.flush().await.map_err(|err| {
-            tracing::error!(
-                target: crate::logging::targets::BRIDGE_PROTOCOL,
-                event_name = "bridge_command_send_failed",
-                message = "failed to flush bridge stdin",
-                outcome = "failure",
-                request_id,
-                bridge_command,
-                session_id,
-                tool_call_id,
-                size_bytes,
-                stage = "flush",
-                error = %err,
-            );
-            anyhow::Error::new(err).context("failed to flush bridge stdin")
+            anyhow::Error::new(err).context("failed to write bridge command line")
         })?;
         log_bridge_command_sent(bridge_command, request_id, session_id, tool_call_id, size_bytes);
         Ok(())
@@ -204,6 +173,39 @@ impl BridgeClient {
 
     pub async fn wait(mut self) -> anyhow::Result<std::process::ExitStatus> {
         self.child.wait().await.context("failed to wait for bridge process")
+    }
+}
+
+async fn write_command_line<W>(writer: &mut W, line: &str) -> Result<(), BridgeCommandWriteError>
+where
+    W: AsyncWrite + Unpin,
+{
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|source| BridgeCommandWriteError { stage: "write_payload", source })?;
+    writer
+        .write_all(b"\n")
+        .await
+        .map_err(|source| BridgeCommandWriteError { stage: "write_newline", source })?;
+    writer.flush().await.map_err(|source| BridgeCommandWriteError { stage: "flush", source })
+}
+
+#[derive(Debug)]
+struct BridgeCommandWriteError {
+    stage: &'static str,
+    source: std::io::Error,
+}
+
+impl fmt::Display for BridgeCommandWriteError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.stage, self.source)
+    }
+}
+
+impl std::error::Error for BridgeCommandWriteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -596,10 +598,11 @@ impl AgentConnection {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentConnection;
+    use super::{AgentConnection, write_command_line};
     use crate::agent::types::ElicitationAction;
     use crate::agent::wire::BridgeCommand;
     use std::collections::BTreeMap;
+    use tokio::io::AsyncReadExt as _;
 
     #[test]
     fn generate_session_title_sends_bridge_command() {
@@ -616,6 +619,24 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 description: "Summarize work".to_owned(),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn write_command_line_appends_exactly_one_newline() {
+        let (mut writer, mut reader) = tokio::io::duplex(128);
+
+        write_command_line(&mut writer, r#"{"command":"cancel_turn","session_id":"s1"}"#)
+            .await
+            .expect("write command");
+        drop(writer);
+
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).await.expect("read command");
+
+        assert_eq!(
+            String::from_utf8(output).expect("utf8"),
+            "{\"command\":\"cancel_turn\",\"session_id\":\"s1\"}\n"
         );
     }
 
