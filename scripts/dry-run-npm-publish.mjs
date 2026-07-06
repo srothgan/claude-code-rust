@@ -63,19 +63,59 @@ export function execNpmSync(args, options) {
   return execFileSync(invocation.command, invocation.args, options);
 }
 
-function dryRunNpmPublish({ packDir, version }) {
+export function dryRunNpmPublish({
+  packDir,
+  version,
+  execNpm = execNpmSync,
+  existsSync = fs.existsSync,
+  spawn = spawnSync,
+}) {
   for (const { packageName, tarball } of expectedPublishTarballs(packDir, version)) {
-    if (!fs.existsSync(tarball)) {
+    if (!existsSync(tarball)) {
       throw new Error(`Missing npm package tarball for ${packageName}: ${relativePath(tarball)}`);
     }
 
-    runNpmPublishDryRun({ packageName, tarball });
+    if (npmPackageVersionExists(packageName, version, { execNpm })) {
+      console.log(`SKIP: ${packageName}@${version} already published`);
+      continue;
+    }
+
+    runNpmPublishDryRun({ packageName, tarball, spawn });
   }
 }
 
-function runNpmPublishDryRun({ packageName, tarball }) {
+export function npmPackageVersionExists(packageName, version, { execNpm = execNpmSync } = {}) {
+  try {
+    const output = execNpm(["view", `${packageName}@${version}`, "version", "--json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
+    if (!output) {
+      return false;
+    }
+    const parsed = JSON.parse(output);
+    if (parsed === version) {
+      return true;
+    }
+    throw new Error(`npm returned unexpected version for ${packageName}@${version}: ${output}`);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("npm returned unexpected version")) {
+      throw error;
+    }
+    const stderr = bufferToString(error.stderr);
+    const stdout = bufferToString(error.stdout);
+    if (`${stdout}\n${stderr}`.includes("E404")) {
+      return false;
+    }
+    throw new Error(`Could not inspect npm package state for ${packageName}@${version}:\n${stdout}\n${stderr}`.trim());
+  }
+}
+
+function runNpmPublishDryRun({ packageName, tarball, spawn = spawnSync }) {
   const invocation = resolveNpmInvocation(["publish", tarball, "--access", "public", "--dry-run"]);
-  const result = spawnSync(invocation.command, invocation.args, {
+  const result = spawn(invocation.command, invocation.args, {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -99,6 +139,13 @@ function runNpmPublishDryRun({ packageName, tarball }) {
   throw new Error(
     `npm publish --dry-run failed for ${packageName} with exit code ${result.status}\n${output}`.trim()
   );
+}
+
+function bufferToString(value) {
+  if (!value) {
+    return "";
+  }
+  return Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
 }
 
 function parseArgs(args) {
