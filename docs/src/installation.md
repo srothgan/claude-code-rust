@@ -5,7 +5,7 @@
 Claude Code Rust needs:
 
 - Existing Claude Code authentication, currently read from `~/.claude/config.json`.
-- Rust 1.88.0 or newer, npm, and Bun only when building or running from source.
+- Rust 1.88.0 or newer, Node.js 24/npm, and Bun only when building or running from source.
 
 ## Install From npm
 
@@ -47,6 +47,8 @@ npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
 cargo run
 ```
+
+Maintainer and source-build npm tooling targets Node.js 24. Packaged npm installs use the bundled private Bun runtime for the Agent SDK bridge.
 
 Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built. They use `bun` from `PATH` unless `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` points at a specific Bun executable.
 

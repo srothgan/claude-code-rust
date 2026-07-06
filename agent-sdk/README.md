@@ -6,6 +6,8 @@ Published npm platform packages run this bridge with the private `claude-rs-brid
 
 ## Local build
 
+Local maintainer builds require Node.js 24.
+
 ```bash
 npm install
 npm run build
