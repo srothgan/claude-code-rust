@@ -31,6 +31,7 @@ if (options.help) {
 const distDir = path.resolve(repoRoot, options.distDir ?? DIST_NPM_DIR);
 const manifestsDir = path.join(distDir, "manifests");
 const cargoPackage = readCargoPackageMetadata(path.join(repoRoot, "Cargo.toml"));
+const rootPackageJson = readJson(path.join(repoRoot, "package.json"));
 const expectedVersion = options.version ?? cargoPackage.version;
 const failures = [];
 const packageManifests = [];
@@ -90,7 +91,7 @@ function verifyRootPackage() {
     expectedPlatformOptionalDependencies(),
     `${context} optionalDependencies`
   );
-  expectDeepEqual(packageJson.engines, { node: ">=18" }, `${context} engines`);
+  expectDeepEqual(packageJson.engines, rootPackageJson.engines, `${context} engines`);
   expectNoLifecycleScripts(packageJson, context);
   expectNoForbiddenManifestFields(packageJson, context);
 

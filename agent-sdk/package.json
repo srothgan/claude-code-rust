@@ -16,6 +16,9 @@
     "audit:raw": "npm audit --audit-level=moderate",
     "test": "npm run build && node --test dist/**/*.test.js"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.198"
   },
