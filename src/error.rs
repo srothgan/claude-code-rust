@@ -3,8 +3,8 @@
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AppError {
-    #[error("Node.js runtime not found")]
-    NodeNotFound,
+    #[error("Bundled bridge runtime not found")]
+    BridgeRuntimeNotFound,
     #[error("Agent bridge process failed to start")]
     BridgeSpawnFailed,
     #[error("Agent bridge initialization failed")]
@@ -26,7 +26,7 @@ pub enum AppError {
 }
 
 impl AppError {
-    pub const NODE_NOT_FOUND_EXIT_CODE: i32 = 20;
+    pub const BRIDGE_RUNTIME_NOT_FOUND_EXIT_CODE: i32 = 20;
     pub const ADAPTER_CRASHED_EXIT_CODE: i32 = 21;
     pub const CONNECTION_FAILED_EXIT_CODE: i32 = 22;
     pub const SESSION_NOT_FOUND_EXIT_CODE: i32 = 23;
@@ -35,7 +35,7 @@ impl AppError {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::NodeNotFound => Self::NODE_NOT_FOUND_EXIT_CODE,
+            Self::BridgeRuntimeNotFound => Self::BRIDGE_RUNTIME_NOT_FOUND_EXIT_CODE,
             Self::BridgeSpawnFailed | Self::AdapterCrashed => Self::ADAPTER_CRASHED_EXIT_CODE,
             Self::BridgeInitializationFailed
             | Self::BridgeStdoutClosed
@@ -50,8 +50,8 @@ impl AppError {
     #[must_use]
     pub fn user_message(&self) -> &'static str {
         match self {
-            Self::NodeNotFound => {
-                "Node.js runtime not found. Install Node.js and ensure `node` is on PATH."
+            Self::BridgeRuntimeNotFound => {
+                "Bundled bridge runtime not found. Reinstall claude-rs or run `claude-rs doctor --strict`."
             }
             Self::BridgeSpawnFailed => {
                 "Agent bridge process failed to start. Run `claude-rs doctor --strict` to inspect the runtime and bridge script."
@@ -82,7 +82,7 @@ impl AppError {
     #[must_use]
     pub fn report_title(&self) -> &'static str {
         match self {
-            Self::NodeNotFound => "Environment problem",
+            Self::BridgeRuntimeNotFound => "Environment problem",
             Self::BridgeSpawnFailed | Self::AdapterCrashed => "Bridge spawn failure",
             Self::BridgeInitializationFailed => "Bridge initialization failure",
             Self::BridgeStdoutClosed => "Bridge process exited",
@@ -96,7 +96,7 @@ impl AppError {
     #[must_use]
     pub fn category_tag(&self) -> &'static str {
         match self {
-            Self::NodeNotFound => "environment",
+            Self::BridgeRuntimeNotFound => "environment",
             Self::BridgeSpawnFailed | Self::AdapterCrashed => "bridge_spawn",
             Self::BridgeInitializationFailed => "bridge_initialization",
             Self::BridgeStdoutClosed => "bridge_stdout_closed",
@@ -110,7 +110,7 @@ impl AppError {
     #[must_use]
     pub fn recommended_command(&self) -> &'static str {
         match self {
-            Self::NodeNotFound
+            Self::BridgeRuntimeNotFound
             | Self::BridgeSpawnFailed
             | Self::AdapterCrashed
             | Self::BridgeTimeout => "claude-rs doctor --strict",

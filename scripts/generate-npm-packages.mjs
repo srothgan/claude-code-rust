@@ -8,8 +8,10 @@ import {
   buildPlatformPackageJson,
   buildRootPackageJson,
   readCargoPackageMetadata,
+  readBunRuntimeManifest,
   readJson
 } from "./npm-package-config.mjs";
+import { buildThirdPartyNotices } from "./third-party-notices.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +29,7 @@ const cargoPackage = readCargoPackageMetadata(path.join(repoRoot, "Cargo.toml"))
 const version = options.version ?? cargoPackage.version;
 const rootPackageJson = readJson(path.join(repoRoot, "package.json"));
 const agentSdkPackageJson = readJson(path.join(repoRoot, "agent-sdk", "package.json"));
+const bunRuntimeManifest = readBunRuntimeManifest(repoRoot);
 
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error(`Invalid package version: ${version}`);
@@ -66,19 +69,40 @@ function generatePlatformPackage(platformPackage) {
   );
   writePlatformReadme(platformPackage, path.join(packageDir, "README.md"));
   copyFileFromRepo("LICENSE", path.join(packageDir, "LICENSE"));
+  writeThirdPartyNotices(path.join(packageDir, "THIRD-PARTY-NOTICES.md"));
 
-  const destination = path.join(packageDir, "bin", platformPackage.binaryName);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const binaryDestination = path.join(packageDir, "bin", platformPackage.binaryName);
+  const runtimeDestination = path.join(packageDir, "bin", platformPackage.bundledRuntimeName);
+  fs.mkdirSync(path.dirname(binaryDestination), { recursive: true });
 
   if (options.mockBinaries) {
-    writeMockBinary(platformPackage, destination);
+    writeMockBinary(platformPackage, binaryDestination, "claude-rs 0.0.0-mock");
+    writeMockBinary(platformPackage, runtimeDestination, bunRuntimeManifest.version);
     return;
   }
 
-  const source = path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.binaryName);
+  if (options.mockNativeBinary) {
+    writeMockBinary(platformPackage, binaryDestination, "claude-rs 0.0.0-mock");
+  } else {
+    copyStagedBinary(
+      platformPackage,
+      path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.binaryName),
+      binaryDestination,
+      "native binary"
+    );
+  }
+  copyStagedBinary(
+    platformPackage,
+    path.join(binaryRoot, platformPackage.dir, "bin", platformPackage.bundledRuntimeName),
+    runtimeDestination,
+    "bundled Bun runtime"
+  );
+}
+
+function copyStagedBinary(platformPackage, source, destination, label) {
   if (!fs.existsSync(source)) {
     throw new Error(
-      `Missing binary for ${platformPackage.packageName}: ${path.relative(repoRoot, source)}. ` +
+      `Missing ${label} for ${platformPackage.packageName}: ${path.relative(repoRoot, source)}. ` +
         "Build/stage binaries first or pass --mock-binaries."
     );
   }
@@ -143,6 +167,8 @@ function writePlatformReadme(platformPackage, destination) {
     `- Rust target: \`${platformPackage.rustTarget}\``,
     `- npm package: [\`${platformPackage.packageName}\`](${npmPackageUrl})`,
     `- npm platform directory: \`${platformPackage.dir}\``,
+    `- Bundled runtime: \`${platformPackage.bundledRuntimeName}\``,
+    `- Bun release asset: \`${platformPackage.bunAssetName}\``,
     `- OS: \`${platformPackage.os.join(", ")}\``,
     `- CPU: \`${platformPackage.cpu.join(", ")}\``
   ];
@@ -155,7 +181,7 @@ function writePlatformReadme(platformPackage, destination) {
 
 This is the **${platformPackage.rustTarget}** native binary package for ${projectReference} version \`${version}\`.
 
-Install \`${projectName}\` instead; this package is selected automatically as an optional dependency on matching platforms.
+This package is selected automatically by the root \`${projectName}\` npm package on matching platforms. It contains the native Rust binary and a private Bun runtime named \`${platformPackage.bundledRuntimeName}\` for the Agent SDK bridge. The bundled runtime is not a user-facing \`bun\` command.
 
 \`\`\`bash
 npm install -g ${projectName}
@@ -168,11 +194,20 @@ ${targetDetails.join("\n")}
   fs.writeFileSync(destination, content, "utf8");
 }
 
-function writeMockBinary(platformPackage, destination) {
+function writeThirdPartyNotices(destination) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(
+    destination,
+    buildThirdPartyNotices({ manifest: bunRuntimeManifest }),
+    "utf8"
+  );
+}
+
+function writeMockBinary(platformPackage, destination, output) {
   const isWindows = platformPackage.os.includes("win32");
   const content = isWindows
-    ? "@echo off\r\necho claude-rs 0.0.0-mock\r\n"
-    : "#!/usr/bin/env sh\necho \"claude-rs 0.0.0-mock\"\n";
+    ? `@echo off\r\necho ${output}\r\n`
+    : `#!/usr/bin/env sh\necho "${output}"\n`;
 
   fs.writeFileSync(destination, content, "utf8");
   ensureExecutableMode(platformPackage, destination);
@@ -193,6 +228,7 @@ function parseArgs(args) {
   const parsed = {
     help: false,
     mockBinaries: false,
+    mockNativeBinary: false,
     version: undefined,
     binaryRoot: undefined,
     outDir: undefined
@@ -207,6 +243,9 @@ function parseArgs(args) {
         break;
       case "--mock-binaries":
         parsed.mockBinaries = true;
+        break;
+      case "--mock-native-binary":
+        parsed.mockNativeBinary = true;
         break;
       case "--version":
         parsed.version = readArgValue(args, ++index, arg);
@@ -241,7 +280,8 @@ Options:
   --binary-root <dir>       Directory containing staged platform binaries.
                             Defaults to dist-platform.
   --out-dir <dir>           Output directory. Defaults to dist-npm.
-  --mock-binaries           Generate placeholder platform binaries for layout tests.
+  --mock-binaries           Generate placeholder native and runtime binaries for layout tests.
+  --mock-native-binary      Generate placeholder native binaries while copying staged runtimes.
   -h, --help                Show this help.
 `);
 }

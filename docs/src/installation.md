@@ -4,13 +4,12 @@
 
 Claude Code Rust needs:
 
-- Node.js 18 or newer for the Agent SDK bridge runtime.
 - Existing Claude Code authentication, currently read from `~/.claude/config.json`.
-- Rust 1.88.0 or newer only when building from source.
+- Rust 1.88.0 or newer, Node.js 24/npm, and Bun only when building or running from source.
 
 ## Install From npm
 
-The recommended install path is the published npm package:
+The recommended npm install path is the root package:
 
 ```bash
 npm install -g claude-code-rust
@@ -18,18 +17,9 @@ claude-rs --version
 claude-rs
 ```
 
-The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary for your OS and architecture. No install-time binary download or `postinstall` script is used.
+The npm package owns the `claude-rs` command, selects the matching platform payload with npm optional dependencies, and includes the private Bun runtime used by the Agent SDK bridge. A separate Bun install is not required for npm installs. No install-time binary download or `postinstall` script is used.
 
-Supported npm platform packages:
-
-| Platform | Package |
-| --- | --- |
-| Linux x64 glibc | `@srothgan/claude-code-rust-linux-x64-gnu` |
-| Windows x64 | `@srothgan/claude-code-rust-win32-x64-msvc` |
-| macOS x64 | `@srothgan/claude-code-rust-darwin-x64` |
-| macOS arm64 | `@srothgan/claude-code-rust-darwin-arm64` |
-
-The root package exposes the global `claude-rs` command. The launcher resolves the matching platform package, passes the bundled Agent SDK bridge path to the Rust binary, and forwards CLI arguments unchanged.
+Supported npm platforms are Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
 
 ## Troubleshooting npm Installs
 
@@ -40,7 +30,9 @@ npm config get omit
 npm install -g claude-code-rust
 ```
 
-Avoid installing with `--omit=optional`; that prevents npm from installing the native binary package.
+If the resolver reports a missing platform package, npm optional dependencies were likely omitted. Check `npm config get omit` and reinstall without `--omit=optional`.
+
+Linux npm packages currently require glibc. On musl-based distributions, build from source until a matching npm package is available.
 
 If `claude-rs` resolves to an older global shim, ensure your npm global bin directory comes first on `PATH` or remove the stale shim before retrying.
 
@@ -56,9 +48,13 @@ npm run build --prefix agent-sdk
 cargo run
 ```
 
-Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built.
+Maintainer and source-build npm tooling targets Node.js 24. Packaged npm installs use the bundled private Bun runtime for the Agent SDK bridge.
 
-For a release-mode source binary:
+Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built. They use `bun` from `PATH` unless `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` points at a specific Bun executable.
+
+For a release-mode source binary, build the bridge and binary, then run the binary with an explicit bridge script:
+
+Release-mode source binaries do not use the debug PATH fallback for Bun. To run a release binary outside the npm package layout, place a Bun executable named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` next to the `claude-rs` binary, or use the generated npm package layout.
 
 ```bash
 npm ci --prefix agent-sdk
@@ -69,34 +65,7 @@ cargo build --release --locked --bin claude-rs
 
 On Windows, run `.\target\release\claude-rs.exe --bridge-script .\agent-sdk\dist\bridge.js`.
 
-## Install A Source Or Fork Build Globally
-
-For a local global install that mirrors the published npm layout, generate local npm tarballs and install the root tarball together with the matching platform tarball.
-
-Build and stage the native binary under `dist-platform/<platform>/bin/`:
-
-| Platform directory | Rust target | Binary |
-| --- | --- | --- |
-| `linux-x64-gnu` | `x86_64-unknown-linux-gnu` | `claude-rs` |
-| `win32-x64-msvc` | `x86_64-pc-windows-msvc` | `claude-rs.exe` |
-| `darwin-x64` | `x86_64-apple-darwin` | `claude-rs` |
-| `darwin-arm64` | `aarch64-apple-darwin` | `claude-rs` |
-
-Then run:
-
-```bash
-npm ci
-npm ci --prefix agent-sdk
-npm run build --prefix agent-sdk
-node scripts/generate-npm-packages.mjs
-node scripts/verify-npm-packages.mjs
-node scripts/smoke-npm-package-install.mjs --platform <platform> --real-binary
-npm install -g ./dist-pack/claude-code-rust-<version>.tgz ./dist-pack/<platform-package-tarball>.tgz
-```
-
-The smoke command packs the generated packages into `dist-pack/` before installing them in a temporary project.
-
-Do not use `cargo install --path .` if you want to test the npm install shape. `cargo install` writes only the Rust binary to Cargo's bin directory and does not install the bundled Agent SDK bridge or platform package layout.
+Do not use `cargo install --path .` if you want to test the npm install shape. `cargo install` writes only the Rust binary to Cargo's bin directory and does not install the bundled Agent SDK bridge, private Bun runtime, or platform package layout.
 
 ## Manual Bridge Overrides
 
@@ -112,11 +81,13 @@ You can also set:
 CLAUDE_RS_AGENT_BRIDGE=/path/to/agent-sdk/dist/bridge.js
 ```
 
-If Node needs an explicit override, set:
+Debug builds can use a local runtime override while developing the bridge:
 
 ```bash
-CLAUDE_RS_AGENT_BRIDGE_NODE=/path/to/node
+CLAUDE_RS_AGENT_BRIDGE_RUNTIME=/path/to/bun
 ```
+
+Release npm installs ignore runtime overrides and use the bundled `claude-rs-bridge-bun` executable from the platform package.
 
 ## Reporting Install Problems
 
@@ -125,8 +96,9 @@ Include:
 - install method
 - OS and architecture
 - terminal
-- `node --version`
+- `npm --version`
 - `npm config get omit`
 - `claude-rs --version`
+- `claude-rs doctor --json`
 - the command you ran
 - the exact error output

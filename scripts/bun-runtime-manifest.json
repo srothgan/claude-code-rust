@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 1,
+  "version": "1.3.14",
+  "checksumSourceUrl": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/SHASUMS256.txt",
+  "assets": {
+    "darwin-arm64": {
+      "assetName": "bun-darwin-aarch64.zip",
+      "archiveBinaryPath": "bun-darwin-aarch64/bun",
+      "sha256": "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
+      "binarySha256": "e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233"
+    },
+    "darwin-x64": {
+      "assetName": "bun-darwin-x64-baseline.zip",
+      "archiveBinaryPath": "bun-darwin-x64-baseline/bun",
+      "sha256": "3e35ad6f53971a9834bf9e6786e2adf72b5f1921cc9a9c5fde073d2972944076",
+      "binarySha256": "ea2f223e94bb2f4bf3050895113c3cf346438f6fa0501c8532284e063f72f7a0"
+    },
+    "linux-x64-gnu": {
+      "assetName": "bun-linux-x64-baseline.zip",
+      "archiveBinaryPath": "bun-linux-x64-baseline/bun",
+      "sha256": "a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7",
+      "binarySha256": "a8f9ebd1770ddc8e55dab7a68d4ec1ec1eebf374bb97cc65cf2c3cb373fc6791"
+    },
+    "linux-arm64-gnu": {
+      "assetName": "bun-linux-aarch64.zip",
+      "archiveBinaryPath": "bun-linux-aarch64/bun",
+      "sha256": "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
+      "binarySha256": "37141662ebed915a2ab89313156e455e2a1374395f5f6760d06407f49406f086"
+    },
+    "win32-x64-msvc": {
+      "assetName": "bun-windows-x64-baseline.zip",
+      "archiveBinaryPath": "bun-windows-x64-baseline/bun.exe",
+      "sha256": "538f9c846355d9e847b2671bc00c47da4229a0befb24df3282b739770f3b475f",
+      "binarySha256": "9005d0d585d80425e9b715690de3e614651124c94458ef3d3a302ca1a6d3d813"
+    },
+    "win32-arm64-msvc": {
+      "assetName": "bun-windows-aarch64.zip",
+      "archiveBinaryPath": "bun-windows-aarch64/bun.exe",
+      "sha256": "89841f5a57f2348b67ec0839b718f4bf4ea7d07c371c9ba4b77b6c790f918953",
+      "binarySha256": "c48ea01208766207606927a320d640371140dca51e9963367779b32d18460716"
+    }
+  }
+}

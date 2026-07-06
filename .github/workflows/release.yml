@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          check_absent() {
+          check_recoverable() {
             local package_name="$1"
             local output
             local status
@@ -75,25 +75,27 @@ jobs:
             status=$?
             set -e
             if [ "$status" -eq 0 ]; then
-              echo "::error::npm package version already exists: ${package_name}@${VERSION}"
-              echo "$output"
-              exit 1
+              echo "NOTICE: ${package_name}@${VERSION} already exists; its publish job will verify tarball integrity before reusing it"
+              return
             fi
             if ! printf '%s\n' "$output" | grep -q 'E404'; then
-              echo "::error::Could not verify npm package absence for ${package_name}@${VERSION}"
+              echo "::error::Could not verify npm package state for ${package_name}@${VERSION}"
               echo "$output"
               exit 1
             fi
             echo "OK: ${package_name}@${VERSION} is not published"
           }
 
-          check_absent "claude-code-rust"
-          check_absent "@srothgan/claude-code-rust-darwin-arm64"
-          check_absent "@srothgan/claude-code-rust-darwin-x64"
-          check_absent "@srothgan/claude-code-rust-linux-arm64-gnu"
-          check_absent "@srothgan/claude-code-rust-linux-x64-gnu"
-          check_absent "@srothgan/claude-code-rust-win32-arm64-msvc"
-          check_absent "@srothgan/claude-code-rust-win32-x64-msvc"
+          check_recoverable "claude-code-rust"
+          check_recoverable "@srothgan/claude-code-rust-darwin-arm64"
+          check_recoverable "@srothgan/claude-code-rust-darwin-x64"
+          check_recoverable "@srothgan/claude-code-rust-linux-arm64-gnu"
+          check_recoverable "@srothgan/claude-code-rust-linux-x64-gnu"
+          check_recoverable "@srothgan/claude-code-rust-win32-arm64-msvc"
+          check_recoverable "@srothgan/claude-code-rust-win32-x64-msvc"
+
+      - name: Validate Bun runtime manifest
+        run: node scripts/stage-bun-runtime.mjs --check --verify-upstream
 
   agent-sdk-preflight:
     needs: [verify]
@@ -109,6 +111,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -153,8 +156,30 @@ jobs:
       artifact_prefix: release-binary
       attest: true
 
+  stage-bun-runtimes:
+    needs: [verify]
+    name: Stage bundled Bun runtimes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Download, verify, and stage Bun runtimes
+        run: node scripts/stage-bun-runtime.mjs --download
+
+      - name: Upload staged Bun runtimes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bundled-bun-runtimes
+          path: dist-platform/*/bin/claude-rs-bridge-bun*
+          if-no-files-found: error
+
   assemble-npm-packages:
-    needs: [verify, agent-sdk-preflight, build-binaries]
+    needs: [verify, agent-sdk-preflight, build-binaries, stage-bun-runtimes]
     name: Assemble npm packages
     runs-on: ubuntu-latest
     steps:
@@ -176,6 +201,17 @@ jobs:
           merge-multiple: true
           path: .
 
+      - name: Download staged Bun runtimes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bundled-bun-runtimes
+          path: dist-platform
+
+      - name: Restore executable bits for downloaded Unix artifacts
+        run: |
+          set -euo pipefail
+          find dist-platform -type f \( -name 'claude-rs' -o -name 'claude-rs-bridge-bun' \) -exec chmod 755 {} +
+
       - name: Install root dependencies
         run: npm ci
 
@@ -184,6 +220,11 @@ jobs:
 
       - name: Build agent-sdk bridge
         run: npm --prefix agent-sdk run build
+
+      - name: Verify staged Bun runtimes
+        run: |
+          node scripts/stage-bun-runtime.mjs --check
+          node scripts/verify-staged-bun-runtimes.mjs
 
       - name: Assemble npm package directories
         run: node scripts/generate-npm-packages.mjs --version "${{ needs.verify.outputs.version }}"
@@ -216,9 +257,9 @@ jobs:
         with:
           name: release-package-set-${{ needs.verify.outputs.version }}
           path: |
-            dist-assets/*
-            dist-npm/manifests/*.json
-            dist-pack/*.tgz
+            dist-assets/
+            dist-npm/manifests/
+            dist-pack/
             SHA256SUMS
           if-no-files-found: error
 
@@ -249,6 +290,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Install root runtime dependencies for registry smoke
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Download release package set
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -256,61 +300,10 @@ jobs:
           path: .
 
       - name: Smoke-test installed npm tarballs
-        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --real-binary --no-system-runtime
 
-  create-draft-github-release:
-    needs: [verify, verify-release-attestations]
-    name: Create draft GitHub Release
-    runs-on: ubuntu-latest
-    environment: npm-release
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          fetch-depth: 0
-
-      - name: Download release package set
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-package-set-${{ needs.verify.outputs.version }}
-          path: .
-
-      - name: Create release notes
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          awk '/^## \['"$VERSION"'\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
-            {
-              echo "Release ${{ needs.verify.outputs.tag }}"
-              echo
-              echo "Automated npm platform-package release for claude-code-rust $VERSION."
-            } > release-notes.md
-          fi
-
-      - name: Create annotated tag
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.verify.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-
-      - name: Create draft GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.verify.outputs.tag }}"
-          mapfile -t release_assets < <(find dist-assets dist-pack dist-npm/manifests -type f | sort)
-          release_assets+=(SHA256SUMS)
-          gh release create "$TAG" "${release_assets[@]}" \
-            --draft \
-            --verify-tag \
-            --title "$TAG" \
-            --notes-file release-notes.md
+      - name: Smoke-test global npm install from temp registry
+        run: node scripts/smoke-npm-package-install.mjs --platform "${{ matrix.package_dir }}" --use-existing-tarballs --registry-smoke --real-binary --no-system-runtime
 
   verify-release-attestations:
     needs: [verify, smoke-test-packages]
@@ -363,7 +356,7 @@ jobs:
             --deny-self-hosted-runners
 
   publish-platform-packages:
-    needs: [verify, create-draft-github-release]
+    needs: [verify, verify-release-attestations]
     name: Publish platform npm packages
     runs-on: ubuntu-latest
     environment: npm-release
@@ -371,6 +364,8 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
@@ -388,49 +383,18 @@ jobs:
           npm install -g npm@11
           npm --version
 
-      - name: Dry-run platform tarball publish
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          publish_package() {
-            local package_name="$1"
-            local filename="${package_name#@}"
-            filename="${filename/\//-}-${VERSION}.tgz"
-            local tarball="./dist-pack/$filename"
-            if [ ! -f "$tarball" ]; then
-              echo "::error::Missing npm package tarball: $tarball"
-              exit 1
-            fi
-            npm publish "$tarball" --access public --dry-run
-          }
-          publish_package "@srothgan/claude-code-rust-darwin-arm64"
-          publish_package "@srothgan/claude-code-rust-darwin-x64"
-          publish_package "@srothgan/claude-code-rust-linux-arm64-gnu"
-          publish_package "@srothgan/claude-code-rust-linux-x64-gnu"
-          publish_package "@srothgan/claude-code-rust-win32-arm64-msvc"
-          publish_package "@srothgan/claude-code-rust-win32-x64-msvc"
+      - name: Dry-run npm tarball publish
+        run: node scripts/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify.outputs.version }}"
 
       - name: Publish platform tarballs
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          publish_package() {
-            local package_name="$1"
-            local filename="${package_name#@}"
-            filename="${filename/\//-}-${VERSION}.tgz"
-            local tarball="./dist-pack/$filename"
-            if [ ! -f "$tarball" ]; then
-              echo "::error::Missing npm package tarball: $tarball"
-              exit 1
-            fi
-            npm publish "$tarball" --access public
-          }
-          publish_package "@srothgan/claude-code-rust-darwin-arm64"
-          publish_package "@srothgan/claude-code-rust-darwin-x64"
-          publish_package "@srothgan/claude-code-rust-linux-arm64-gnu"
-          publish_package "@srothgan/claude-code-rust-linux-x64-gnu"
-          publish_package "@srothgan/claude-code-rust-win32-arm64-msvc"
-          publish_package "@srothgan/claude-code-rust-win32-x64-msvc"
+        run: node scripts/publish-npm-platform-packages.mjs --pack-dir dist-pack --ledger-dir dist-publish-ledger --version "${{ needs.verify.outputs.version }}"
+
+      - name: Upload platform publish ledger
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: npm-platform-publish-ledger-${{ needs.verify.outputs.version }}
+          path: dist-publish-ledger/
+          if-no-files-found: error
 
   publish-root-package:
     needs: [verify, publish-platform-packages]
@@ -458,28 +422,106 @@ jobs:
           npm install -g npm@11
           npm --version
 
-      - name: Dry-run root tarball publish
-        run: |
-          set -euo pipefail
-          tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
-          if [ ! -f "$tarball" ]; then
-            echo "::error::Missing npm package tarball: $tarball"
-            exit 1
-          fi
-          npm publish "$tarball" --access public --dry-run
-
       - name: Publish root tarball
         run: |
           set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
           tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
           if [ ! -f "$tarball" ]; then
             echo "::error::Missing npm package tarball: $tarball"
             exit 1
           fi
+          local_integrity="$(
+            node -e "const fs = require('node:fs'); const crypto = require('node:crypto'); console.log('sha512-' + crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$tarball"
+          )"
+          set +e
+          existing_integrity="$(npm view "claude-code-rust@${VERSION}" dist.integrity --json 2>&1)"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            existing_integrity="$(printf '%s' "$existing_integrity" | node -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => console.log(JSON.parse(input)))")"
+            if [ "$existing_integrity" != "$local_integrity" ]; then
+              echo "::error::claude-code-rust@${VERSION} already exists with different integrity: registry ${existing_integrity}, local ${local_integrity}"
+              exit 1
+            fi
+            echo "OK: claude-code-rust@${VERSION} already published with matching integrity"
+            exit 0
+          fi
+          if ! printf '%s\n' "$existing_integrity" | grep -q 'E404'; then
+            echo "::error::Could not inspect npm registry integrity for claude-code-rust@${VERSION}"
+            echo "$existing_integrity"
+            exit 1
+          fi
           npm publish "$tarball" --access public
+          registry_integrity="$(npm view "claude-code-rust@${VERSION}" dist.integrity --json | node -e "let input=''; process.stdin.on('data', c => input += c); process.stdin.on('end', () => console.log(JSON.parse(input)))")"
+          if [ "$registry_integrity" != "$local_integrity" ]; then
+            echo "::error::claude-code-rust@${VERSION} registry integrity mismatch after publish: registry ${registry_integrity}, local ${local_integrity}"
+            exit 1
+          fi
+
+  create-github-release:
+    needs: [verify, publish-root-package]
+    name: Create draft GitHub Release
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release package set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-package-set-${{ needs.verify.outputs.version }}
+          path: .
+
+      - name: Create release notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          awk '/^## \['"$VERSION"'\]/{found=1; next} found && /^## \[/{exit} found{print}' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            {
+              echo "Release ${{ needs.verify.outputs.tag }}"
+              echo
+              echo "Automated npm platform-package release for claude-code-rust $VERSION."
+            } > release-notes.md
+          fi
+          {
+            echo
+            echo "Bundled runtime provenance:"
+            echo
+            echo "- npm platform packages include private Bun runtime files."
+            echo "- Bun source asset names, source archive SHA256 checksums, runtime SHA256 checksums, and source URLs are recorded in dist-npm/manifests/*.json."
+          } >> release-notes.md
+
+      - name: Create annotated tag
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.verify.outputs.tag }}"
+          mapfile -t release_assets < <(find dist-assets dist-pack dist-npm/manifests -type f | sort)
+          release_assets+=(SHA256SUMS)
+          gh release create "$TAG" "${release_assets[@]}" \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file release-notes.md
 
   publish-github-release:
-    needs: [verify, publish-root-package]
+    needs: [verify, create-github-release]
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     environment: npm-release

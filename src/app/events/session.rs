@@ -443,8 +443,13 @@ pub(super) fn ensure_update_notice_message(app: &mut App) {
 
 fn format_update_available_message(latest_version: &str, current_version: &str) -> String {
     format!(
-        "Update available: current v{current_version}, latest v{latest_version}. Upgrade to latest version via {UPDATE_INSTALL_COMMAND}."
+        "Update available: current v{current_version}, latest v{latest_version}. Upgrade to latest version via {}.",
+        update_install_command()
     )
+}
+
+pub(crate) fn update_install_command() -> &'static str {
+    UPDATE_INSTALL_COMMAND
 }
 
 pub(super) fn handle_service_status_event(

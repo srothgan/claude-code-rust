@@ -1,16 +1,21 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  BUNDLED_BUN_RUNTIME_VERSION,
   DIST_NPM_DIR,
   PLATFORM_PACKAGES,
   ROOT_PACKAGE_NAME,
+  bunRuntimeAssetUrl,
   readCargoPackageMetadata,
+  readBunRuntimeManifest,
   readJson
 } from "./npm-package-config.mjs";
+import { verifyThirdPartyNoticeCoverage } from "./verify-third-party-notices.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,10 +31,13 @@ if (options.help) {
 const distDir = path.resolve(repoRoot, options.distDir ?? DIST_NPM_DIR);
 const manifestsDir = path.join(distDir, "manifests");
 const cargoPackage = readCargoPackageMetadata(path.join(repoRoot, "Cargo.toml"));
+const rootPackageJson = readJson(path.join(repoRoot, "package.json"));
 const expectedVersion = options.version ?? cargoPackage.version;
 const failures = [];
 const packageManifests = [];
+const bunRuntimeManifest = readBunRuntimeManifest(repoRoot);
 
+expectEqual(bunRuntimeManifest.version, BUNDLED_BUN_RUNTIME_VERSION, "Bun runtime manifest version");
 verifyDistDir();
 exitIfFailures();
 fs.rmSync(manifestsDir, { recursive: true, force: true });
@@ -46,12 +54,15 @@ for (const platformPackage of PLATFORM_PACKAGES) {
 writeJson(path.join(manifestsDir, "summary.json"), {
   manifestVersion: 1,
   packageCount: packageManifests.length,
-  packages: packageManifests.map(({ name, version, directory, files }) => ({
-    name,
-    version,
-    directory,
-    fileCount: files.length
-  }))
+  packages: packageManifests.map(({ name, version, directory, files, bundledRuntime }) =>
+    removeUndefined({
+      name,
+      version,
+      directory,
+      fileCount: files.length,
+      bundledRuntime
+    })
+  )
 });
 
 if (failures.length > 0) {
@@ -75,29 +86,21 @@ function verifyRootPackage() {
   expectEqual(packageJson.name, ROOT_PACKAGE_NAME, `${context} name`);
   expectEqual(packageJson.version, expectedVersion, `${context} version`);
   expectDeepEqual(packageJson.bin, { "claude-rs": "bin/claude-rs.js" }, `${context} bin`);
+  expectDeepEqual(
+    packageJson.optionalDependencies,
+    expectedPlatformOptionalDependencies(),
+    `${context} optionalDependencies`
+  );
+  expectDeepEqual(packageJson.engines, rootPackageJson.engines, `${context} engines`);
   expectNoLifecycleScripts(packageJson, context);
   expectNoForbiddenManifestFields(packageJson, context);
-
-  const optionalDependencies = packageJson.optionalDependencies ?? {};
-  for (const platformPackage of PLATFORM_PACKAGES) {
-    expectEqual(
-      optionalDependencies[platformPackage.packageName],
-      expectedVersion,
-      `${context} optional dependency ${platformPackage.packageName}`
-    );
-  }
-  expectEqual(
-    Object.keys(optionalDependencies).length,
-    PLATFORM_PACKAGES.length,
-    `${context} optional dependency count`
-  );
 
   const files = listPackageFiles(packageDir);
   expectFilesExist(files, ["package.json", "bin/claude-rs.js", "agent-sdk/package.json", "README.md", "LICENSE"], context);
   expectFilesExist(files, ["agent-sdk/dist/bridge.js", "agent-sdk/dist/types.js"], context);
   expectOnlyAllowedFiles(files, rootAllowedFile, context);
   expectNoForbiddenFiles(files, context);
-  expectLauncherUsesPlatformPackages(packageDir, context);
+  expectNoNodeShebangs(packageDir, files, context, ["bin/claude-rs.js"]);
 
   const packManifest = packAndVerify(packageDir, context, rootAllowedFile);
   writePackageManifest("root", packageJson, packManifest.files);
@@ -115,6 +118,7 @@ function verifyPlatformPackage(platformPackage) {
   const packageJson = readPackageJson(packageDir);
   const context = `${platformPackage.dir} package`;
   const expectedBinaryPath = `bin/${platformPackage.binaryName}`;
+  const expectedRuntimePath = `bin/${platformPackage.bundledRuntimeName}`;
 
   expectEqual(packageJson.name, platformPackage.packageName, `${context} name`);
   expectEqual(packageJson.version, expectedVersion, `${context} version`);
@@ -122,29 +126,35 @@ function verifyPlatformPackage(platformPackage) {
   expectDeepEqual(packageJson.cpu, platformPackage.cpu, `${context} cpu`);
   expectDeepEqual(packageJson.libc, platformPackage.libc, `${context} libc`);
   expectEqual(packageJson.bin, undefined, `${context} bin`);
+  expectEqual(packageJson.dependencies, undefined, `${context} dependencies`);
   expectNoLifecycleScripts(packageJson, context);
   expectNoForbiddenManifestFields(packageJson, context);
 
   const files = listPackageFiles(packageDir);
   expectDeepEqual(
     files,
-    ["LICENSE", "README.md", expectedBinaryPath, "package.json"].sort(),
+    ["LICENSE", "README.md", "THIRD-PARTY-NOTICES.md", expectedBinaryPath, expectedRuntimePath, "package.json"].sort(),
     `${context} local file list`
   );
   expectNoForbiddenFiles(files, context);
+  expectNoNodeShebangs(packageDir, files, context);
+  expectThirdPartyNoticeCoverage(packageDir, context);
   expectPlatformReadme(packageDir, platformPackage, context);
   expectUnixBinaryExecutable(packageDir, platformPackage, expectedBinaryPath, context);
+  expectUnixBinaryExecutable(packageDir, platformPackage, expectedRuntimePath, context);
+  const bundledRuntime = buildBunRuntimeProvenance(platformPackage, packageDir, expectedRuntimePath, context);
 
   const packManifest = packAndVerify(packageDir, context, (filePath) =>
-    ["LICENSE", "README.md", expectedBinaryPath, "package.json"].includes(filePath)
+    ["LICENSE", "README.md", "THIRD-PARTY-NOTICES.md", expectedBinaryPath, expectedRuntimePath, "package.json"].includes(filePath)
   );
-  writePackageManifest(platformPackage.dir, packageJson, packManifest.files);
+  writePackageManifest(platformPackage.dir, packageJson, packManifest.files, { bundledRuntime });
 
   return {
     directory: platformPackage.dir,
     name: packageJson.name,
     version: packageJson.version,
-    files: packManifest.files
+    files: packManifest.files,
+    bundledRuntime
   };
 }
 
@@ -254,12 +264,67 @@ function resolveNpmCliPath() {
   );
 }
 
-function writePackageManifest(directory, packageJson, files) {
+function writePackageManifest(directory, packageJson, files, extra = {}) {
   writeJson(path.join(manifestsDir, `${directory}.json`), {
     name: packageJson.name,
     version: packageJson.version,
+    ...extra,
     files
   });
+}
+
+function buildBunRuntimeProvenance(platformPackage, packageDir, runtimeFilePath, context) {
+  const runtimeAsset = bunRuntimeManifest.assets?.[platformPackage.dir];
+  if (!runtimeAsset) {
+    fail(`${context} missing Bun runtime manifest entry`);
+    return undefined;
+  }
+
+  expectEqual(runtimeAsset.assetName, platformPackage.bunAssetName, `${context} Bun asset name`);
+  expectEqual(
+    runtimeAsset.archiveBinaryPath,
+    platformPackage.bunArchiveBinaryPath,
+    `${context} Bun archive binary path`
+  );
+  const actualRuntimeSha256 = fileSha256(path.join(packageDir, runtimeFilePath));
+  expectEqual(actualRuntimeSha256, runtimeAsset.binarySha256, `${context} bundled Bun runtime SHA256`);
+
+  return {
+    name: platformPackage.bundledRuntimeName,
+    version: bunRuntimeManifest.version,
+    sourceAsset: runtimeAsset.assetName,
+    sourceUrl: bunRuntimeAssetUrl(bunRuntimeManifest.version, runtimeAsset.assetName),
+    checksumSourceUrl: bunRuntimeManifest.checksumSourceUrl,
+    archiveBinaryPath: runtimeAsset.archiveBinaryPath,
+    sourceArchiveSha256: runtimeAsset.sha256,
+    runtimeSha256: actualRuntimeSha256
+  };
+}
+
+function fileSha256(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function removeUndefined(value) {
+  if (Array.isArray(value)) {
+    return value.map(removeUndefined);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .map(([entryKey, entryValue]) => [entryKey, removeUndefined(entryValue)])
+    );
+  }
+
+  return value;
+}
+
+function expectedPlatformOptionalDependencies() {
+  return Object.fromEntries(
+    PLATFORM_PACKAGES.map((platformPackage) => [platformPackage.packageName, expectedVersion])
+  );
 }
 
 function rootAllowedFile(filePath) {
@@ -326,12 +391,41 @@ function expectNoForbiddenFiles(files, context) {
   }
 }
 
+function expectNoNodeShebangs(packageDir, files, context, allowedFiles = []) {
+  const allowed = new Set(allowedFiles);
+  for (const file of files) {
+    const fullPath = path.join(packageDir, file);
+    if (!fs.statSync(fullPath).isFile()) {
+      continue;
+    }
+    const buffer = fs.readFileSync(fullPath);
+    const prefix = buffer.subarray(0, 64).toString("utf8");
+    if (prefix.startsWith("#!/usr/bin/env node") && !allowed.has(file)) {
+      fail(`${context} contains forbidden Node shebang: ${file}`);
+    }
+  }
+}
+
+function expectThirdPartyNoticeCoverage(packageDir, context) {
+  try {
+    verifyThirdPartyNoticeCoverage({
+      noticesPath: path.join(packageDir, "THIRD-PARTY-NOTICES.md"),
+      manifest: bunRuntimeManifest
+    });
+  } catch (error) {
+    fail(`${context} third-party notices: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function expectPlatformReadme(packageDir, platformPackage, context) {
   const readme = fs.readFileSync(path.join(packageDir, "README.md"), "utf8");
   expectIncludes(readme, `# \`${platformPackage.packageName}\``, `${context} README title`);
   expectIncludes(readme, platformPackage.rustTarget, `${context} README Rust target`);
   expectIncludes(readme, `version \`${expectedVersion}\``, `${context} README version`);
-  expectIncludes(readme, "npm install -g claude-code-rust", `${context} README install command`);
+  expectIncludes(readme, `npm install -g ${ROOT_PACKAGE_NAME}`, `${context} README install command`);
+  expectIncludes(readme, "selected automatically by the root", `${context} README root selection`);
+  expectIncludes(readme, platformPackage.bundledRuntimeName, `${context} README bundled runtime`);
+  expectIncludes(readme, "not a user-facing `bun` command", `${context} README private runtime`);
   expectIncludes(
     readme,
     `https://www.npmjs.com/package/${platformPackage.packageName}`,
@@ -345,25 +439,6 @@ function expectPlatformReadme(packageDir, platformPackage, context) {
   }
 }
 
-function expectLauncherUsesPlatformPackages(packageDir, context) {
-  const launcher = fs.readFileSync(path.join(packageDir, "bin", "claude-rs.js"), "utf8");
-  if (launcher.includes('"vendor"') || launcher.includes("'vendor'")) {
-    fail(`${context} launcher must not resolve vendor binaries`);
-  }
-  if (launcher.includes("refreshBridgeRuntime") || launcher.includes("claude-rs-bridge-node")) {
-    fail(`${context} launcher must not manage a copied Node bridge runtime`);
-  }
-  if (!launcher.includes("CLAUDE_RS_AGENT_BRIDGE") || !launcher.includes("agent-sdk")) {
-    fail(`${context} launcher must pass the bundled agent-sdk bridge path to the native binary`);
-  }
-
-  for (const platformPackage of PLATFORM_PACKAGES) {
-    if (!launcher.includes(platformPackage.packageName)) {
-      fail(`${context} launcher does not reference ${platformPackage.packageName}`);
-    }
-  }
-}
-
 function isForbiddenFile(filePath) {
   const normalized = normalizePath(filePath);
   const segments = normalized.split("/");
@@ -372,6 +447,8 @@ function isForbiddenFile(filePath) {
   return (
     basename === ".env" ||
     basename === ".npmrc" ||
+    basename === "bun" ||
+    basename === "bun.exe" ||
     basename.endsWith(".log") ||
     basename.endsWith(".map") ||
     basename.endsWith(".test.js") ||

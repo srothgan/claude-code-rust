@@ -103,6 +103,11 @@ fn user_msg(text: &str) -> ChatMessage {
     )
 }
 
+#[test]
+fn update_install_command_is_documented_npm_command() {
+    assert_eq!(session::update_install_command(), "npm install -g claude-code-rust");
+}
+
 fn source_text(text: &str, source_message_uuid: &str) -> MessageBlock {
     MessageBlock::Text(
         TextBlock::from_complete(text).with_source_message_uuid(Some(source_message_uuid)),
@@ -356,8 +361,7 @@ fn first_block_text(msg: &ChatMessage) -> &str {
 
 fn is_update_notice_message(msg: &ChatMessage) -> bool {
     matches!(msg.role, MessageRole::System(Some(SystemSeverity::Warning)))
-        && first_block_text(msg)
-            .contains("Upgrade to latest version via npm install -g claude-code-rust.")
+        && first_block_text(msg).contains(session::update_install_command())
 }
 
 // shorten_tool_title
@@ -1666,7 +1670,10 @@ fn update_available_pushes_warning_system_message_with_versions_and_install_comm
     ));
     assert_eq!(
         first_block_text(&app.transcript.messages[0]),
-        "Update available: current v0.2.0, latest v0.3.0. Upgrade to latest version via npm install -g claude-code-rust."
+        format!(
+            "Update available: current v0.2.0, latest v0.3.0. Upgrade to latest version via {}.",
+            session::update_install_command()
+        )
     );
     let Some(update_notice) = app.update_notice.as_ref() else {
         panic!("expected update notice state");
@@ -4323,7 +4330,10 @@ fn update_available_persists_across_connected_session_reset() {
         .expect("expected update notice message after connect");
     assert_eq!(
         first_block_text(notice),
-        "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via npm install -g claude-code-rust."
+        format!(
+            "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via {}.",
+            session::update_install_command()
+        )
     );
     assert_eq!(
         app.update_notice
@@ -4373,7 +4383,10 @@ fn update_available_persists_across_session_replaced_reset() {
         .expect("expected update notice message after replacement");
     assert_eq!(
         first_block_text(notice),
-        "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via npm install -g claude-code-rust."
+        format!(
+            "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via {}.",
+            session::update_install_command()
+        )
     );
     assert_eq!(
         app.update_notice

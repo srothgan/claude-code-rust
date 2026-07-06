@@ -78,6 +78,6 @@ jobs:
         with:
           name: ${{ inputs.artifact_prefix }}-${{ inputs.package_dir }}
           path: |
-            dist-assets/*
-            dist-platform/${{ inputs.package_dir }}/bin/*
+            dist-assets/
+            dist-platform/${{ inputs.package_dir }}/
           if-no-files-found: error

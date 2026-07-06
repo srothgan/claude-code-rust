@@ -2,7 +2,11 @@
 
 NDJSON stdio bridge that connects the Rust TUI (`claude-code-rust`) with `@anthropic-ai/claude-agent-sdk`. Spawned as a child process by the Rust binary and communicates via line-delimited JSON envelopes over stdin/stdout.
 
+Published npm platform packages run this bridge with the private `claude-rs-bridge-bun` runtime bundled beside the native binary. Local contributor builds still use npm/TypeScript tooling to build `dist/bridge.js`.
+
 ## Local build
+
+Local maintainer builds require Node.js 24.
 
 ```bash
 npm install
