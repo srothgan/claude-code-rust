@@ -23,6 +23,7 @@ mod repl;
 mod schedule_wakeup;
 mod standard;
 mod tasks;
+mod typed;
 mod workflow;
 mod worktree;
 

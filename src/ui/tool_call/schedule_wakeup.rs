@@ -6,10 +6,10 @@
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::diff::strip_outer_code_fence;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
-use super::errors::render_failed_tool_text_content;
 use super::fields::{self, ToolField};
+use super::typed;
 
 pub(super) fn is_schedule_wakeup_tool(tc: &ToolCallInfo) -> bool {
     tc.sdk_tool_name == "ScheduleWakeup"
@@ -19,30 +19,30 @@ pub(super) fn has_structured_body(tc: &ToolCallInfo) -> bool {
     tc.raw_input.is_some() || !tc.content.is_empty()
 }
 
-pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
-    if !is_schedule_wakeup_tool(tc) {
-        return None;
-    }
-
+pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let include_requested_delay = !has_completed_output(tc);
     let mut lines = render_input_content(tc, include_requested_delay);
-    lines.extend(render_text_content(tc));
-    Some(lines)
+    lines.extend(typed::render_stripped_text_blocks(tc, render_text_line));
+    lines
 }
 
 fn render_input_content(tc: &ToolCallInfo, include_requested_delay: bool) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut wakeup_fields = Vec::new();
 
     if let Some(input) = input {
-        if include_requested_delay && let Some(delay_seconds) = json_i64(input, "delaySeconds") {
-            wakeup_fields
-                .push(ToolField::new("Requested delay", format_duration_seconds(delay_seconds)));
+        if include_requested_delay
+            && let Some(delay_seconds) = typed::json_i64(input, "delaySeconds")
+        {
+            wakeup_fields.push(ToolField::new(
+                "Requested delay",
+                typed::format_duration_seconds(delay_seconds),
+            ));
         }
-        if let Some(reason) = json_string(input, "reason") {
+        if let Some(reason) = typed::json_string(input, "reason") {
             wakeup_fields.push(ToolField::new("Reason", reason));
         }
-        if let Some(prompt) = json_string(input, "prompt") {
+        if let Some(prompt) = typed::json_string(input, "prompt") {
             wakeup_fields.push(ToolField::new("Prompt", prompt));
         }
     }
@@ -50,42 +50,8 @@ fn render_input_content(tc: &ToolCallInfo, include_requested_delay: bool) -> Vec
     fields::render_fields(wakeup_fields)
 }
 
-fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for content in &tc.content {
-        let model::ToolCallContent::Content(content) = content else {
-            continue;
-        };
-        let model::ContentBlock::Text(text) = &content.content else {
-            continue;
-        };
-        render_text_block(tc, &text.text, &mut lines);
-    }
-    lines
-}
-
-fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    lines.extend(
-        stripped
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .map(render_text_line),
-    );
-}
-
 fn render_text_line(line: &str) -> Line<'static> {
-    if let Some((label, value)) = line.split_once(':')
-        && let Some(label) = field_label(label.trim())
-    {
-        return fields::render_field(label, field_value(label, value.trim_start()));
-    }
-    Line::from(Span::raw(line.to_owned()))
+    typed::render_colon_field_line(line, field_label, field_value)
 }
 
 fn has_completed_output(tc: &ToolCallInfo) -> bool {
@@ -126,50 +92,11 @@ fn field_label(label: &str) -> Option<&'static str> {
 fn field_value(label: &str, value: &str) -> String {
     match label {
         "Actual delay" => {
-            value.parse::<i64>().map_or_else(|_| value.to_owned(), format_duration_seconds)
+            value.parse::<i64>().map_or_else(|_| value.to_owned(), typed::format_duration_seconds)
         }
-        "Clamped" => bool_text_label(value).unwrap_or(value).to_owned(),
+        "Clamped" => typed::bool_text_label(value).unwrap_or(value).to_owned(),
         _ => value.to_owned(),
     }
-}
-
-fn format_duration_seconds(seconds: i64) -> String {
-    let seconds = u64::try_from(seconds.max(0)).unwrap_or_default();
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let remaining_seconds = seconds % 60;
-    let mut parts = Vec::new();
-
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
-    }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
-    }
-    if remaining_seconds > 0 || parts.is_empty() {
-        parts.push(format!("{remaining_seconds}s"));
-    }
-
-    parts.join(" ")
-}
-
-fn bool_text_label(value: &str) -> Option<&'static str> {
-    match value {
-        "true" | "yes" => Some("yes"),
-        "false" | "no" => Some("no"),
-        _ => None,
-    }
-}
-
-fn json_string<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
-}
-
-fn json_i64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<i64> {
-    object.get(key).and_then(serde_json::Value::as_i64)
 }
 
 #[cfg(test)]
@@ -233,7 +160,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         );
 
-        let lines = render_tool_content(&tc).expect("schedule wakeup content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -258,7 +185,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let lines = render_tool_content(&tc).expect("schedule wakeup content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -285,7 +212,7 @@ mod tests {
             model::ToolCallStatus::Failed,
         );
 
-        let rendered = rendered_line_texts(&render_tool_content(&tc).expect("schedule wakeup"));
+        let rendered = rendered_line_texts(&render_tool_content(&tc));
 
         assert!(rendered.iter().any(|line| line.contains("Requested delay: 1h")));
         assert!(rendered.iter().any(|line| line.contains("Could not schedule wakeup")));

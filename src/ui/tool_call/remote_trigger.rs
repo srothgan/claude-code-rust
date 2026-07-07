@@ -3,13 +3,11 @@
 
 //! Rendering helpers for SDK `RemoteTrigger` tool calls.
 
-use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::diff::strip_outer_code_fence;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
-use super::errors::render_failed_tool_text_content;
 use super::fields::{self, ToolField};
+use super::typed;
 
 pub(super) fn is_remote_trigger_tool(tc: &ToolCallInfo) -> bool {
     tc.sdk_tool_name == "RemoteTrigger"
@@ -19,37 +17,33 @@ pub(super) fn has_structured_body(tc: &ToolCallInfo) -> bool {
     input_has_body(tc) || !tc.content.is_empty()
 }
 
-pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
-    if !is_remote_trigger_tool(tc) {
-        return None;
-    }
-
+pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = render_input_content(tc);
-    lines.extend(render_text_content(tc));
-    Some(lines)
+    lines.extend(typed::render_stripped_text_blocks(tc, render_text_line));
+    lines
 }
 
 fn input_has_body(tc: &ToolCallInfo) -> bool {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     input.is_some_and(|input| {
-        json_string(input, "action").is_some()
-            || json_string(input, "trigger_id").is_some()
+        typed::json_string(input, "action").is_some()
+            || typed::json_string(input, "trigger_id").is_some()
             || input.contains_key("body")
     })
 }
 
 fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut remote_fields = Vec::new();
 
     if let Some(input) = input {
-        if let Some(action) = json_string(input, "action") {
+        if let Some(action) = typed::json_string(input, "action") {
             remote_fields.push(ToolField::new("Action", action));
         }
-        if let Some(trigger_id) = json_string(input, "trigger_id") {
+        if let Some(trigger_id) = typed::json_string(input, "trigger_id") {
             remote_fields.push(ToolField::new("Trigger ID", trigger_id));
         }
-        if let Some(body) = input.get("body").and_then(compact_json) {
+        if let Some(body) = input.get("body").and_then(typed::compact_json) {
             remote_fields.push(ToolField::new("Body", body));
         }
     }
@@ -57,42 +51,8 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     fields::render_fields(remote_fields)
 }
 
-fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for content in &tc.content {
-        let model::ToolCallContent::Content(content) = content else {
-            continue;
-        };
-        let model::ContentBlock::Text(text) = &content.content else {
-            continue;
-        };
-        render_text_block(tc, &text.text, &mut lines);
-    }
-    lines
-}
-
-fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    lines.extend(
-        stripped
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .map(render_text_line),
-    );
-}
-
 fn render_text_line(line: &str) -> Line<'static> {
-    if let Some((label, value)) = line.split_once(':')
-        && let Some(label) = field_label(label.trim())
-    {
-        return fields::render_field(label, value.trim_start().to_owned());
-    }
-    Line::from(Span::raw(line.to_owned()))
+    typed::render_colon_field_line(line, field_label, |_, value| value.to_owned())
 }
 
 fn field_label(label: &str) -> Option<&'static str> {
@@ -104,20 +64,10 @@ fn field_label(label: &str) -> Option<&'static str> {
     }
 }
 
-fn compact_json(value: &serde_json::Value) -> Option<String> {
-    serde_json::to_string(value).ok()
-}
-
-fn json_string<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::model;
     use crate::app::{BlockCache, TerminalSnapshotMode};
     use crate::ui::theme;
     use pretty_assertions::assert_eq;
@@ -176,7 +126,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         );
 
-        let lines = render_tool_content(&tc).expect("remote trigger content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -197,7 +147,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let lines = render_tool_content(&tc).expect("remote trigger content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Status: 200", "Summary: Trigger completed"]);
     }
@@ -210,7 +160,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let lines = render_tool_content(&tc).expect("remote trigger content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Response: {\"ok\":true}"]);
     }
@@ -223,7 +173,7 @@ mod tests {
             model::ToolCallStatus::Failed,
         );
 
-        let lines = render_tool_content(&tc).expect("remote trigger content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -239,7 +189,7 @@ mod tests {
             model::ToolCallStatus::Failed,
         );
 
-        let lines = render_tool_content(&tc).expect("remote trigger content");
+        let lines = render_tool_content(&tc);
         let rendered = rendered_line_texts(&lines);
 
         assert_eq!(rendered, vec!["Action: run", "Remote trigger unavailable"]);

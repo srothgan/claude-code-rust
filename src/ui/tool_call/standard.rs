@@ -23,10 +23,8 @@ use super::errors::{
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, artifact, cron, execute, markdown_inline_spans,
-    monitor, projects, push_notification, remote_trigger, repl, schedule_wakeup, status_icon,
-    tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width, workflow,
-    worktree,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, status_icon, tasks,
+    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, typed,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -106,59 +104,8 @@ pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
 
 #[must_use]
 pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
-    if tasks::is_state_tool(tc) {
-        return tasks::has_structured_body(tc)
-            || !tc.content.is_empty()
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if worktree::is_worktree_tool(tc) {
-        return worktree::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if cron::is_cron_tool(tc) {
-        return cron::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if schedule_wakeup::is_schedule_wakeup_tool(tc) {
-        return schedule_wakeup::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if push_notification::is_push_notification_tool(tc) {
-        return push_notification::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if remote_trigger::is_remote_trigger_tool(tc) {
-        return remote_trigger::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if repl::is_repl_tool(tc) {
-        return repl::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if monitor::is_monitor_tool(tc) {
-        return monitor::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if workflow::is_workflow_tool(tc) {
-        return workflow::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if projects::is_projects_tool(tc) {
-        return projects::has_structured_body(tc)
-            || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
-    }
-    if artifact::is_artifact_tool(tc) {
-        return artifact::has_structured_body(tc)
+    if let Some(renderer) = typed::renderer_for(tc) {
+        return (renderer.has_structured_body)(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some();
     }
@@ -324,60 +271,8 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     }
 
-    if tasks::is_state_tool(tc)
-        && let Some(task_lines) = tasks::render_tool_content(tc)
-    {
-        return task_lines;
-    }
-    if worktree::is_worktree_tool(tc)
-        && let Some(worktree_lines) = worktree::render_tool_content(tc)
-    {
-        return worktree_lines;
-    }
-    if cron::is_cron_tool(tc)
-        && let Some(cron_lines) = cron::render_tool_content(tc)
-    {
-        return cron_lines;
-    }
-    if schedule_wakeup::is_schedule_wakeup_tool(tc)
-        && let Some(schedule_wakeup_lines) = schedule_wakeup::render_tool_content(tc)
-    {
-        return schedule_wakeup_lines;
-    }
-    if push_notification::is_push_notification_tool(tc)
-        && let Some(push_notification_lines) = push_notification::render_tool_content(tc)
-    {
-        return push_notification_lines;
-    }
-    if remote_trigger::is_remote_trigger_tool(tc)
-        && let Some(remote_trigger_lines) = remote_trigger::render_tool_content(tc)
-    {
-        return remote_trigger_lines;
-    }
-    if repl::is_repl_tool(tc)
-        && let Some(repl_lines) = repl::render_tool_content(tc)
-    {
-        return repl_lines;
-    }
-    if monitor::is_monitor_tool(tc)
-        && let Some(monitor_lines) = monitor::render_tool_content(tc)
-    {
-        return monitor_lines;
-    }
-    if workflow::is_workflow_tool(tc)
-        && let Some(workflow_lines) = workflow::render_tool_content(tc)
-    {
-        return workflow_lines;
-    }
-    if projects::is_projects_tool(tc)
-        && let Some(projects_lines) = projects::render_tool_content(tc)
-    {
-        return projects_lines;
-    }
-    if artifact::is_artifact_tool(tc)
-        && let Some(artifact_lines) = artifact::render_tool_content(tc)
-    {
-        return artifact_lines;
+    if let Some(renderer) = typed::renderer_for(tc) {
+        return (renderer.render)(tc);
     }
 
     if tc.is_execute_tool() {

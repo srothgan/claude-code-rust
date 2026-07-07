@@ -3,13 +3,11 @@
 
 //! Rendering helpers for SDK `REPL` tool calls.
 
-use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::diff::strip_outer_code_fence;
 use ratatui::text::{Line, Span};
 
-use super::errors::render_failed_tool_text_content;
 use super::fields::{self, ToolField};
+use super::typed;
 
 pub(super) fn is_repl_tool(tc: &ToolCallInfo) -> bool {
     tc.sdk_tool_name == "REPL"
@@ -19,60 +17,34 @@ pub(super) fn has_structured_body(tc: &ToolCallInfo) -> bool {
     input_has_body(tc) || !tc.content.is_empty()
 }
 
-pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
-    if !is_repl_tool(tc) {
-        return None;
-    }
-
+pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = render_input_content(tc);
-    lines.extend(render_text_content(tc));
-    Some(lines)
+    lines.extend(typed::render_processed_text_blocks(tc, render_output_fields));
+    lines
 }
 
 fn input_has_body(tc: &ToolCallInfo) -> bool {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     input.is_some_and(|input| {
-        json_string(input, "description").is_some() || json_i64(input, "timeout").is_some()
+        typed::json_string(input, "description").is_some()
+            || typed::json_i64(input, "timeout").is_some()
     })
 }
 
 fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut repl_fields = Vec::new();
 
     if let Some(input) = input {
-        if let Some(description) = json_string(input, "description") {
+        if let Some(description) = typed::json_string(input, "description") {
             repl_fields.push(ToolField::new("Description", description));
         }
-        if let Some(timeout_ms) = json_i64(input, "timeout") {
+        if let Some(timeout_ms) = typed::json_i64(input, "timeout") {
             repl_fields.push(ToolField::new("Timeout", format_duration_millis(timeout_ms)));
         }
     }
 
     fields::render_fields(repl_fields)
-}
-
-fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for content in &tc.content {
-        let model::ToolCallContent::Content(content) = content else {
-            continue;
-        };
-        let model::ContentBlock::Text(text) = &content.content else {
-            continue;
-        };
-        render_text_block(tc, &text.text, &mut lines);
-    }
-    lines
-}
-
-fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    lines.extend(render_output_fields(&stripped));
 }
 
 fn render_output_fields(text: &str) -> Vec<Line<'static>> {
@@ -204,20 +176,10 @@ fn format_duration_millis(milliseconds: i64) -> String {
     parts.join(" ")
 }
 
-fn json_string<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
-}
-
-fn json_i64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<i64> {
-    object.get(key).and_then(serde_json::Value::as_i64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::model;
     use crate::app::{BlockCache, TerminalSnapshotMode};
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -275,7 +237,7 @@ mod tests {
             model::ToolCallStatus::InProgress,
         );
 
-        let lines = render_tool_content(&tc).expect("repl content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -304,7 +266,7 @@ mod tests {
             model::ToolCallStatus::Failed,
         );
 
-        let lines = render_tool_content(&tc).expect("repl content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -330,7 +292,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let lines = render_tool_content(&tc).expect("repl content");
+        let lines = render_tool_content(&tc);
         let rendered = rendered_line_texts(&lines);
 
         assert_eq!(
