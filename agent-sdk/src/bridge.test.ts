@@ -455,6 +455,38 @@ test("parseCommandEnvelope validates mcp_toggle command", () => {
   assert.equal(parsed.command.enabled, false);
 });
 
+test("parseCommandEnvelope validates mcp_status command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-mcp-status",
+      command: "mcp_status",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-mcp-status");
+  assert.deepEqual(parsed.command, {
+    command: "mcp_status",
+    session_id: "session-123",
+  });
+});
+
+test("parseCommandEnvelope normalizes get_mcp_snapshot command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-mcp-snapshot",
+      command: "get_mcp_snapshot",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-mcp-snapshot");
+  assert.deepEqual(parsed.command, {
+    command: "mcp_status",
+    session_id: "session-123",
+  });
+});
+
 test("parseCommandEnvelope validates mcp_set_servers command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({

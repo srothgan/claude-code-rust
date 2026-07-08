@@ -416,6 +416,7 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           session_id: expectString(raw, "session_id", "reload_plugins"),
         };
       case "mcp_status":
+      // Rust historically sends `get_mcp_snapshot`; normalize it to the bridge-internal command.
       case "get_mcp_snapshot":
         return {
           command: "mcp_status",
