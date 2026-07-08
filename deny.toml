@@ -14,10 +14,6 @@ targets = [
 version = 2
 yanked = "deny"
 unmaintained = "workspace"
-ignore = [
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml remains transitive via syntect/plist; semver-compatible updates do not reach the fixed >=0.41.0 line yet." },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml remains transitive via syntect/plist; semver-compatible updates do not reach the fixed >=0.41.0 line yet." },
-]
 
 [licenses]
 confidence-threshold = 0.8
