@@ -9,8 +9,8 @@ use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -20,7 +20,95 @@ use std::fmt;
 use std::io::{Stdout, Write};
 
 type StdoutBackend = CrosstermBackend<Stdout>;
-type StdoutTerminal = Terminal<StdoutBackend>;
+type StdoutTerminal = Terminal<TrackedCursorBackend>;
+
+/// Crossterm backend wrapper that answers ratatui's cursor-position queries from
+/// tracked state instead of issuing a DSR (`ESC[6n`) query. While the app loop's
+/// `EventStream` owns stdin, the DSR reply is consumed as an input event before
+/// `crossterm::cursor::position()` can read it, so a live query always times out.
+struct TrackedCursorBackend {
+    inner: StdoutBackend,
+    cursor: Position,
+}
+
+impl TrackedCursorBackend {
+    fn new(cursor: Position) -> Self {
+        Self { inner: CrosstermBackend::new(std::io::stdout()), cursor }
+    }
+}
+
+impl Backend for TrackedCursorBackend {
+    type Error = std::io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.inner.draw(content)
+    }
+
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        self.inner.append_lines(n)?;
+        let max_row = self.inner.size()?.height.saturating_sub(1);
+        self.cursor.y = self.cursor.y.saturating_add(n).min(max_row);
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        Ok(self.cursor)
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        let position = position.into();
+        self.inner.set_cursor_position(position)?;
+        self.cursor = position;
+        Ok(())
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+
+    fn scroll_region_up(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> std::io::Result<()> {
+        self.inner.scroll_region_up(region, line_count)
+    }
+
+    fn scroll_region_down(
+        &mut self,
+        region: std::ops::Range<u16>,
+        line_count: u16,
+    ) -> std::io::Result<()> {
+        self.inner.scroll_region_down(region, line_count)
+    }
+}
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const MIN_REPLAY_BATCH_ROWS: usize = 32;
 const MAX_REPLAY_BATCH_ROWS: usize = 160;
@@ -461,10 +549,11 @@ impl ChatTerminal {
             return Ok(());
         }
 
-        let cursor_before = crossterm::cursor::position()
-            .context("failed to read cursor before inline terminal ensure")?;
+        // The app loop's EventStream owns stdin, so a live DSR cursor query here would
+        // never see its reply; fall back to the tracked owned_top row instead.
         let anchor = anchor_area.or(self.state.area);
-        let cursor_y = anchor.map_or(cursor_before.1, |area| area.y);
+        let fallback_row = self.state.owned_top.min(screen_height.saturating_sub(1));
+        let cursor_y = anchor.map_or(fallback_row, |area| area.y);
         let predicted_area = Rect::new(
             0,
             inline_viewport_top_after_create(cursor_y, next_height, screen_height),
@@ -491,8 +580,8 @@ impl ChatTerminal {
             event_name = "inline_chat_terminal_ensure",
             message = "inline terminal viewport ensured inside owned session region",
             outcome = "prepared",
-            cursor_before_x = cursor_before.0,
-            cursor_before_y = cursor_before.1,
+            cursor_before_x = anchor.map(Rect::left),
+            cursor_before_y = cursor_y,
             anchor_top = anchor.map(Rect::top),
             requested_height = desired_height,
             final_height = next_height,
@@ -502,7 +591,10 @@ impl ChatTerminal {
             owned_bottom = self.state.owned_bottom,
         );
 
-        let terminal = create_inline_terminal(next_height)?;
+        let terminal = create_inline_terminal(
+            next_height,
+            Position::new(anchor.map_or(0, |a| a.x), cursor_y),
+        )?;
         self.track_owned_region_scroll(
             inline_viewport_scroll_rows_after_create(cursor_y, next_height, screen_height),
             screen_height,
@@ -1091,9 +1183,9 @@ impl ChatTerminal {
     }
 }
 
-fn create_inline_terminal(height: u16) -> anyhow::Result<StdoutTerminal> {
+fn create_inline_terminal(height: u16, cursor: Position) -> anyhow::Result<StdoutTerminal> {
     Terminal::with_options(
-        CrosstermBackend::new(std::io::stdout()),
+        TrackedCursorBackend::new(cursor),
         TerminalOptions { viewport: Viewport::Inline(height.max(1)) },
     )
     .context("failed to construct ratatui inline chat terminal")

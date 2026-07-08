@@ -31,8 +31,18 @@ impl ChatTerminalSession {
     pub(super) fn new() -> anyhow::Result<Self> {
         let (width, height) =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
-        let (cursor_x, cursor_y) =
-            crossterm::cursor::position().context("failed to read chat terminal cursor")?;
+        // A DSR cursor query can fail when stdout is not a terminal (e.g. piped);
+        // anchor the session at the bottom row instead of aborting startup.
+        let (cursor_x, cursor_y) = crossterm::cursor::position().unwrap_or_else(|err| {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_cursor_probe_failed",
+                message = "failed to read chat terminal cursor; using bottom-row fallback",
+                outcome = "fallback",
+                error_message = %err,
+            );
+            (0, height.saturating_sub(1))
+        });
         let owned_top = cursor_y.min(height.saturating_sub(1));
 
         tracing::debug!(
