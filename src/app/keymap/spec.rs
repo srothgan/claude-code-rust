@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::fmt;

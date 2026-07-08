@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 /// Shared list-dialog navigation state used by autocomplete/dropdown UIs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

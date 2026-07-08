@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 //! Clipboard image reading: extracts image data from the system clipboard
 //! and converts it to a base64-encoded PNG for sending to the agent.

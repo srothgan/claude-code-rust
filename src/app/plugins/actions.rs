@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 use super::overlays::{
     open_installed_plugin_uninstall_confirmation, open_marketplace_remove_confirmation,

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 mod api_retry;
 mod client;
@@ -400,8 +399,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_settings_parse_error(app, file.as_deref(), &path, &message);
         }
         model::SessionUpdate::SessionStatusUpdate(status) => {
-            // TODO(runtime-verification): confirm in real SDK sessions that compaction
-            // status updates are emitted consistently; if not, add a fallback indicator.
             let was_compacting = app.turn.is_compacting;
             if matches!(status, model::SessionStatus::Compacting) {
                 app.turn.is_compacting = true;

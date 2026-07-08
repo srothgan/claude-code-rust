@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::bridge::{
     BRIDGE_RUNTIME_ENV_VAR, BRIDGE_SCRIPT_ENV_VAR, BridgeRuntimeInspection, BridgeScriptInspection,

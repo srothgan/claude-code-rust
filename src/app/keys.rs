@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
 
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, CancelOrigin, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
