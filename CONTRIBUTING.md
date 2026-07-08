@@ -102,6 +102,7 @@ smoke tests, and release packaging validation.
 ### Release And Packaging Changes
 
 Release workflow changes are maintainer-owned and should preserve the package architecture described in `docs/src/architecture.md`.
+Repository protection, workflow permission, and release approval policy are documented in `docs/src/governance.md`.
 
 Important invariants:
 
@@ -111,6 +112,7 @@ Important invariants:
 - Platform packages must not expose their own npm `claude-rs` bin; otherwise npm can link the payload package over the root resolver.
 - Platform packages must publish before the root package for a given version.
 - npm publication must use Trusted Publishing, not a checked-in token or `NPM_TOKEN`.
+- npm and GitHub Release publication must pass through the `npm-release` environment approval gate.
 - Release artifacts should be generated, verified, packed, and smoke-tested before publication.
 
 For local package-layout validation, use the platform mapping in `scripts/shared/npm-package-config.mjs` rather than duplicating package names in docs:

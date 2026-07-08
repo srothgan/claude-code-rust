@@ -9,4 +9,5 @@
   - [Diagnostics](diagnostics.md)
   - [Help](help.md)
 - [Architecture](architecture.md)
+- [Governance](governance.md)
 - [Changelog](changelog.md)
