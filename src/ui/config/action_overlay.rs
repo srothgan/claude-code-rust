@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use std::borrow::Cow;
 
 use ratatui::Frame;

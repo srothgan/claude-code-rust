@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::*;
 use crate::app::terminal_runtime::fullscreen_session::draw_fullscreen_surface_frame;
 use crate::app::view::set_surface_mode;

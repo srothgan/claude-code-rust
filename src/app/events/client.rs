@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::{App, session, turn};
 use crate::agent::{
     events::ClientEvent,

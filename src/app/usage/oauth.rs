@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use crate::app::auth;
 use crate::app::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};

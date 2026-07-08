@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::actions::{installed_action_success_message, plugin_install_success_message};
 use super::*;
 use crate::agent::model;

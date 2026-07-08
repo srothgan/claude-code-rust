@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::theme;
 use crate::app::App;
 use crate::app::plugins::{

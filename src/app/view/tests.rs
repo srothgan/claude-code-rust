@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::*;
 use crate::app::config::{ConfigOverlayState, OutputStyle, OutputStyleOverlayState};
 use crate::app::dialog::DialogState;
