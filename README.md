@@ -18,7 +18,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Requisites
 
-- Existing Claude Code authentication (`~/.claude/config.json`)
+- Installed Claude Code CLI. 
 
 ## Install
 
