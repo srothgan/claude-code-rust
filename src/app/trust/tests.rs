@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
+use crate::app::{FullscreenView, SurfaceMode};
 use serde_json::json;
 
 #[test]
@@ -102,6 +103,33 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
     accept(&mut app).expect("accept");
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+    assert!(app.startup.connection_requested());
+}
+
+#[test]
+fn accept_routes_update_prompt_before_resume_picker() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".claude.json");
+    std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
+
+    let mut app = App::test_default();
+    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
+    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+    app.config.preferences_path = Some(path);
+    app.trust.status = TrustStatus::Untrusted;
+    app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+    app.update_prompt = Some(crate::app::UpdatePromptState {
+        current_version: "0.13.4".to_owned(),
+        latest_version: "0.14.0".to_owned(),
+        release_url: "https://example.invalid".to_owned(),
+        selected: crate::app::UpdatePromptAction::Install,
+        last_error: None,
+    });
+
+    accept(&mut app).expect("accept");
+
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Update));
     assert!(app.startup.connection_requested());
 }
 

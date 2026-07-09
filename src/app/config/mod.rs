@@ -29,7 +29,7 @@ pub(crate) use mcp::{
     apply_removed_config_mcp_server_confirmation_failures, available_mcp_actions,
     filter_removed_config_mcp_servers, filter_stale_plugin_mcp_servers,
     handle_mcp_elicitation_completed, handle_mcp_operation_error, handle_mcp_set_servers_result,
-    is_mcp_action_available, mcp_server_owner_summary,
+    is_mcp_action_available, mcp_server_owner_summary, open_url_in_browser,
     pending_dynamic_mcp_removal_confirmation_from_snapshot, present_mcp_auth_redirect,
     present_mcp_elicitation_request, reconcile_removed_config_mcp_server_guards,
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot,

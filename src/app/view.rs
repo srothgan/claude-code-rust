@@ -10,6 +10,7 @@ pub enum FullscreenView {
     Config,
     Trusted,
     SessionPicker,
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

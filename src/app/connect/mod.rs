@@ -15,6 +15,7 @@ mod type_converters;
 
 use super::config::ConfigState;
 use super::plugins::PluginsState;
+use super::settings;
 use super::state::{
     CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
     SdkInventoryState, SessionPickerState, SessionRuntimeState, StartupState, Transcript,
@@ -121,12 +122,41 @@ pub fn create_app(cli: &Cli) -> App {
         logger
     });
 
+    let loaded_settings = match settings::load_global_settings(env!("CARGO_PKG_VERSION")) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_UPDATE,
+                event_name = "global_settings_load_failed",
+                message = "failed to load app settings",
+                outcome = "failure",
+                error_message = %err,
+            );
+            settings::LoadedAppSettings {
+                path: settings::global_settings_path(),
+                settings: settings::AppSettings::default(),
+            }
+        }
+    };
+    let update_prompt = if super::update_check::update_check_disabled(cli.no_update_check) {
+        None
+    } else {
+        settings::update_prompt_candidate(
+            &loaded_settings.settings,
+            env!("CARGO_PKG_VERSION"),
+            super::update_check::unix_now_secs().unwrap_or(0),
+        )
+        .map(super::UpdatePromptState::from)
+    };
+
     let cwd_display = shorten_cwd(&cwd);
     let mut app = App {
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
         surface_dirty: SurfaceDirtyState::initial_chat(),
         config: ConfigState::default(),
+        global_settings: loaded_settings.settings,
+        global_settings_path: loaded_settings.path,
         trust: trust::TrustState::default(),
         settings_home_override: None,
         transcript: Transcript::new(vec![super::ChatMessage::welcome(
@@ -173,7 +203,8 @@ pub fn create_app(cli: &Cli) -> App {
         paste: super::state::PasteState::default(),
         pending_images: Vec::new(),
         git_context: super::git_context::GitContextState::default(),
-        update_notice: None,
+        update_prompt,
+        post_exit_action: None,
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
         notifications: super::notify::NotificationManager::new(),

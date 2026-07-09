@@ -28,6 +28,7 @@ mod questions;
 mod service_status_check;
 pub(crate) mod session_picker;
 mod session_runtime;
+pub(crate) mod settings;
 pub(crate) mod slash;
 mod state;
 pub(crate) mod subagent;
@@ -36,7 +37,8 @@ pub(crate) mod tasks;
 mod terminal;
 pub(crate) mod terminal_runtime;
 mod trust;
-mod update_check;
+pub(crate) mod update_check;
+mod update_prompt;
 pub(crate) mod usage;
 mod user_dialog;
 mod view;
@@ -61,6 +63,7 @@ pub use lifecycle::{
     TerminalLifecycleState,
 };
 pub use service_status_check::start_service_status_check;
+pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
     App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin, ChatMessage,
@@ -68,17 +71,36 @@ pub use state::{
     HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
     InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
-    RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
+    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
+    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
     SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange,
     TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UpdateNoticeState, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
 pub use view::{FullscreenView, SurfaceMode};
+
+pub fn record_update_install_failure(app: &mut App, message: String) {
+    settings::record_install_failure(&mut app.global_settings, message);
+    save_update_install_result(app);
+}
+
+pub fn clear_update_install_failure(app: &mut App) {
+    settings::clear_install_failure(&mut app.global_settings);
+    save_update_install_result(app);
+}
+
+fn save_update_install_result(app: &App) {
+    let Some(path) = app.global_settings_path.as_ref() else {
+        return;
+    };
+    if let Err(error) = settings::save_global_settings(path, &app.global_settings) {
+        eprintln!("Failed to update app settings after install: {error}");
+    }
+}
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;

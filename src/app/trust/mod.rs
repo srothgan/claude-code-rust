@@ -2,7 +2,7 @@
 pub(crate) mod store;
 
 use super::App;
-use super::view::{self, FullscreenView, SurfaceMode};
+use super::view::{self, FullscreenView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,12 +52,7 @@ pub fn initialize(app: &mut App) {
         app.startup.request_connection();
     }
     if app.trust.is_trusted() {
-        let next_view = if app.startup.session_picker_requested() {
-            SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
-        } else {
-            SurfaceMode::Chat
-        };
-        view::set_surface_mode(app, next_view);
+        view::set_surface_mode(app, super::update_prompt::post_trust_surface(app));
     } else {
         view::set_fullscreen_view(app, FullscreenView::Trusted);
     }
@@ -99,12 +94,7 @@ pub fn accept(app: &mut App) -> Result<(), String> {
     app.trust.status = TrustStatus::Trusted;
     app.trust.last_error = None;
     app.startup.request_connection();
-    let next_view = if app.startup.session_picker_requested() {
-        SurfaceMode::Fullscreen(FullscreenView::SessionPicker)
-    } else {
-        SurfaceMode::Chat
-    };
-    view::set_surface_mode(app, next_view);
+    view::set_surface_mode(app, super::update_prompt::post_trust_surface(app));
     Ok(())
 }
 

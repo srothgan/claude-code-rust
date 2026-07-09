@@ -5,7 +5,7 @@ use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, FullscreenView};
-use super::super::{App, AppStatus, LoginHint, SystemSeverity, UpdateNoticeState};
+use super::super::{App, AppStatus, LoginHint, SystemSeverity};
 use super::push_system_message_with_severity;
 use super::session_reset::{ChatResetRenderMode, load_resume_history, reset_for_new_session};
 use crate::agent::client::AgentConnection;
@@ -16,7 +16,6 @@ use std::rc::Rc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
-const UPDATE_INSTALL_COMMAND: &str = "npm install -g claude-code-rust";
 
 pub(super) struct SessionReplacedEventData {
     pub session_id: model::SessionId,
@@ -57,7 +56,6 @@ pub(super) fn handle_connected_client_event(
     if !history_updates.is_empty() {
         load_resume_history(app, history_updates);
     }
-    ensure_update_notice_message(app);
     clear_pending_command(app);
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
@@ -321,7 +319,6 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     if !history_updates.is_empty() {
         load_resume_history(app, &history_updates);
     }
-    ensure_update_notice_message(app);
     clear_pending_command(app);
     if let Some(restored_input) = restored_input.as_deref() {
         app.input.set_text(restored_input);
@@ -410,12 +407,28 @@ pub(super) fn handle_update_available_event(
     latest_version: &str,
     current_version: &str,
 ) {
-    app.update_notice = Some(UpdateNoticeState {
-        current_version: current_version.to_owned(),
-        latest_version: latest_version.to_owned(),
-        emitted_session_scope_epoch: None,
-    });
-    ensure_update_notice_message(app);
+    let Some(release_url) = crate::app::settings::release_url_for_version(latest_version) else {
+        return;
+    };
+    crate::app::settings::record_update_check_result(
+        &mut app.global_settings,
+        current_version,
+        latest_version,
+        &release_url,
+        crate::app::update_check::unix_now_secs().unwrap_or(0),
+    );
+    if let Some(path) = app.global_settings_path.as_ref()
+        && let Err(err) = crate::app::settings::save_global_settings(path, &app.global_settings)
+    {
+        tracing::warn!(
+            target: crate::logging::targets::APP_UPDATE,
+            event_name = "update_available_settings_save_failed",
+            message = "failed to persist update availability",
+            outcome = "failure",
+            settings_path = %path.display(),
+            error_message = %err,
+        );
+    }
     tracing::info!(
         target: crate::logging::targets::APP_UPDATE,
         event_name = "update_available_applied",
@@ -424,32 +437,6 @@ pub(super) fn handle_update_available_event(
         latest_version = %latest_version,
         current_version = %current_version,
     );
-}
-
-pub(super) fn ensure_update_notice_message(app: &mut App) {
-    let Some(notice) = app.update_notice.as_ref() else {
-        return;
-    };
-    if notice.emitted_session_scope_epoch == Some(app.session_runtime.session_scope_epoch) {
-        return;
-    }
-
-    let message = format_update_available_message(&notice.latest_version, &notice.current_version);
-    push_system_message_with_severity(app, Some(SystemSeverity::Warning), &message);
-    if let Some(notice) = app.update_notice.as_mut() {
-        notice.emitted_session_scope_epoch = Some(app.session_runtime.session_scope_epoch);
-    }
-}
-
-fn format_update_available_message(latest_version: &str, current_version: &str) -> String {
-    format!(
-        "Update available: current v{current_version}, latest v{latest_version}. Upgrade to latest version via {}.",
-        update_install_command()
-    )
-}
-
-pub(crate) fn update_install_command() -> &'static str {
-    UPDATE_INSTALL_COMMAND
 }
 
 pub(super) fn handle_service_status_event(
@@ -550,6 +537,9 @@ fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option
 }
 
 fn maybe_open_startup_session_picker(app: &mut App) {
+    if app.update_prompt.is_some() {
+        return;
+    }
     if app.session_runtime.conn.is_none() || !app.startup.startup_picker_is_ready() {
         return;
     }
