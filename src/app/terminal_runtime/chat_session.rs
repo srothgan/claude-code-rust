@@ -27,13 +27,79 @@ pub(super) struct ChatTerminalSession {
     history: HistoryCommitState,
 }
 
-impl ChatTerminalSession {
-    pub(super) fn new() -> anyhow::Result<Self> {
-        let (width, height) =
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ChatTerminalSeed {
+    terminal_width: u16,
+    terminal_height: u16,
+    cursor_x: u16,
+    cursor_y: u16,
+    provenance: ChatTerminalSeedProvenance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChatTerminalSeedProvenance {
+    PreEventStreamMeasured,
+    CachedBeforeFullscreen,
+    ConservativeAfterResume,
+    ConservativeAfterFullscreen,
+}
+
+impl ChatTerminalSeed {
+    pub(super) fn read_before_event_stream() -> anyhow::Result<Self> {
+        let (terminal_width, terminal_height) =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
-        let (cursor_x, cursor_y) =
-            crossterm::cursor::position().context("failed to read chat terminal cursor")?;
-        let owned_top = cursor_y.min(height.saturating_sub(1));
+        let (cursor_x, cursor_y) = read_cursor_position_before_event_stream()
+            .context("failed to read chat terminal cursor")?;
+        Ok(Self {
+            terminal_width,
+            terminal_height,
+            cursor_x,
+            cursor_y,
+            provenance: ChatTerminalSeedProvenance::PreEventStreamMeasured,
+        })
+    }
+
+    pub(super) fn conservative_current(
+        provenance: ChatTerminalSeedProvenance,
+    ) -> anyhow::Result<Self> {
+        let (terminal_width, terminal_height) =
+            crossterm::terminal::size().context("failed to read chat terminal size")?;
+        Ok(Self {
+            terminal_width,
+            terminal_height,
+            cursor_x: 0,
+            cursor_y: terminal_height.saturating_sub(1),
+            provenance,
+        })
+    }
+
+    pub(super) fn with_current_size(
+        self,
+        provenance: ChatTerminalSeedProvenance,
+    ) -> anyhow::Result<Self> {
+        let (terminal_width, terminal_height) =
+            crossterm::terminal::size().context("failed to read chat terminal size")?;
+        Ok(Self {
+            terminal_width,
+            terminal_height,
+            cursor_x: self.cursor_x.min(terminal_width.saturating_sub(1)),
+            cursor_y: self.cursor_y.min(terminal_height.saturating_sub(1)),
+            provenance,
+        })
+    }
+}
+
+impl ChatTerminalSession {
+    pub(super) fn new_before_event_stream() -> anyhow::Result<Self> {
+        Ok(Self::new_with_seed(ChatTerminalSeed::read_before_event_stream()?))
+    }
+
+    pub(super) fn new_with_seed(seed: ChatTerminalSeed) -> Self {
+        let width = seed.terminal_width.max(1);
+        let height = seed.terminal_height.max(1);
+        let cursor_x = seed.cursor_x.min(width.saturating_sub(1));
+        let cursor_y = seed.cursor_y.min(height.saturating_sub(1));
+        let owned_top = cursor_y;
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -52,9 +118,10 @@ impl ChatTerminalSession {
             cursor_x,
             cursor_y,
             owned_top,
+            seed_provenance = ?seed.provenance,
         );
 
-        Ok(Self { terminal: ChatTerminal::new(owned_top), history: HistoryCommitState::default() })
+        Self { terminal: ChatTerminal::new(owned_top), history: HistoryCommitState::default() }
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
@@ -456,6 +523,12 @@ impl ChatTerminalSession {
 
         ComposerSurface { hint_rows, editor, footer_rows }
     }
+}
+
+fn read_cursor_position_before_event_stream() -> anyhow::Result<(u16, u16)> {
+    crossterm::cursor::position().context(
+        "cursor position may only be read before crossterm EventStream owns terminal input",
+    )
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
