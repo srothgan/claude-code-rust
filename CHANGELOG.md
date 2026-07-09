@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Features
+
+- **Startup update screen** (#264, @srothgan): Show available updates in a startup screen with install, skip, and release-notes actions.
+
 ### Fixes
 
 - **Markdown list rendering** (#263, @srothgan): Keep streamed inline Markdown handoffs mutable only until delimiters resolve, let stable scrollback advance after resolved blocks, and preserve fenced code layout when code lines look like Markdown list items.
