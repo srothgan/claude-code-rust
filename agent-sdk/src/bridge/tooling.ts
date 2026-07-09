@@ -295,7 +295,6 @@ export function toolTitle(
     return label ? `${ARTIFACT_TOOL_NAME}: ${label}` : ARTIFACT_TOOL_NAME;
   }
   if (name === SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME) {
-    // TODO: The TUI accepts this SDK tool call but does not implement an onboarding role flow yet.
     return SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME;
   }
   if (name === "EnterWorktree") {

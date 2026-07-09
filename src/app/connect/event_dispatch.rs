@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 //! Bridge event dispatch: routes incoming `BridgeEvent` envelopes to appropriate
 //! `ClientEvent` messages, and handles permission request/response forwarding.

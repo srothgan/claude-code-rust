@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
     AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DEFAULT_MODEL_ALIAS_ID,

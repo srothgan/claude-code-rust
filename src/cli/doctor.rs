@@ -1,6 +1,7 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
+use super::style::HumanStyle;
 use crate::agent::bridge::{
     BRIDGE_RUNTIME_ENV_VAR, BRIDGE_SCRIPT_ENV_VAR, BridgeRuntimeInspection, BridgeScriptInspection,
     inspect_bridge_runtime, inspect_bridge_script,
@@ -9,7 +10,6 @@ use crate::app::{auth, config};
 use crate::{Cli, DoctorArgs};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::io::IsTerminal as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -158,7 +158,13 @@ fn write_human_check(
     check: &DoctorCheck,
     style: HumanStyle,
 ) -> std::io::Result<()> {
-    writeln!(writer, "  {}  {:<22} {}", style.status(check.status), check.label, check.message)?;
+    writeln!(
+        writer,
+        "  {}  {:<22} {}",
+        style.doctor_status(check.status),
+        check.label,
+        check.message
+    )?;
 
     let mut candidate_details = Vec::new();
     for (key, value) in &check.details {
@@ -291,67 +297,30 @@ impl DoctorSection {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct HumanStyle {
-    color: bool,
-}
-
 impl HumanStyle {
-    fn detect() -> Self {
-        Self { color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() }
-    }
-
-    fn title(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn heading(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn table_header(self, text: &str) -> String {
-        if self.color { format!("\x1b[2m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn detail_label(self, text: &str) -> String {
-        if self.color { format!("\x1b[2m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn status(self, status: DoctorStatus) -> String {
+    fn doctor_status(self, status: DoctorStatus) -> String {
         let label = format!("[{}]", status.as_label());
-        if !self.color {
-            return label;
-        }
-
         match status {
-            DoctorStatus::Pass => format!("\x1b[32m{label}\x1b[0m"),
-            DoctorStatus::Warn => format!("\x1b[33m{label}\x1b[0m"),
-            DoctorStatus::Fail => format!("\x1b[31m{label}\x1b[0m"),
+            DoctorStatus::Pass => self.green(label),
+            DoctorStatus::Warn => self.yellow(label),
+            DoctorStatus::Fail => self.red(label),
         }
     }
 
     fn state(self, state: &str) -> String {
-        if !self.color {
-            return state.to_owned();
-        }
-
         match state {
-            "file" | "directory" | "exists" => format!("\x1b[32m{state}\x1b[0m"),
-            "missing" => format!("\x1b[2m{state}\x1b[0m"),
+            "file" | "directory" | "exists" => self.green(state),
+            "missing" => self.muted(state),
             _ => state.to_owned(),
         }
     }
 
     fn summary_count(self, count: usize, label: &str, status: DoctorStatus) -> String {
         let text = format!("{count} {label}");
-        if !self.color {
-            return text;
-        }
-
         match status {
-            DoctorStatus::Pass => format!("\x1b[32m{text}\x1b[0m"),
-            DoctorStatus::Warn => format!("\x1b[33m{text}\x1b[0m"),
-            DoctorStatus::Fail => format!("\x1b[31m{text}\x1b[0m"),
+            DoctorStatus::Pass => self.green(text),
+            DoctorStatus::Warn => self.yellow(text),
+            DoctorStatus::Fail => self.red(text),
         }
     }
 }

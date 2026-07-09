@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use crate::app::App;
 use crate::app::TrustSelection;
 use ratatui::Frame;

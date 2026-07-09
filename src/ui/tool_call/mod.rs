@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 //! Tool-call rendering: entry points, caching, and shared helpers.
 //!
@@ -23,6 +23,7 @@ mod repl;
 mod schedule_wakeup;
 mod standard;
 mod tasks;
+mod typed;
 mod workflow;
 mod worktree;
 
@@ -280,6 +281,57 @@ fn ask_user_question_display_title(tc: &ToolCallInfo) -> Cow<'static, str> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use crate::agent::model;
+    use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+    use ratatui::text::Line;
+
+    pub(super) fn tool_call(
+        id: &str,
+        title: &str,
+        sdk_tool_name: &str,
+        raw_input: serde_json::Value,
+        content: Option<&str>,
+        status: model::ToolCallStatus,
+    ) -> ToolCallInfo {
+        let mut tc = ToolCallInfo {
+            id: id.to_owned(),
+            source_message_uuids: Vec::new(),
+            title: title.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input: Some(raw_input),
+            raw_input_bytes: 0,
+            locations: Vec::new(),
+            output_metadata: None,
+            task_metadata: None,
+            status,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            cache: BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+        };
+        if let Some(content) = content {
+            tc.content = vec![model::ToolCallContent::from(content)];
+        }
+        tc
+    }
+
+    pub(super) fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+}
 
 #[cfg(test)]
 mod tests;

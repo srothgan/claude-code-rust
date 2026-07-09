@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::type_converters::map_session_update;
 use crate::Cli;
 use crate::agent::model;

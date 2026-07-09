@@ -1,17 +1,16 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 //! Rendering helpers for SDK cron schedule-control tools.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::diff::strip_outer_code_fence;
 use crate::ui::theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::errors::render_failed_tool_text_content;
 use super::fields::{self, ToolField};
+use super::typed;
 
 const CRON_LIST_DIVIDER: &str = "__cron_list_job_divider__";
 
@@ -22,14 +21,14 @@ pub(super) fn is_cron_tool(tc: &ToolCallInfo) -> bool {
 pub(super) fn has_structured_body(tc: &ToolCallInfo) -> bool {
     match tc.sdk_tool_name.as_str() {
         "CronCreate" => tc.raw_input.is_some() || !tc.content.is_empty(),
-        "CronDelete" => input_string(tc, "id").is_some() || !tc.content.is_empty(),
+        "CronDelete" => typed::input_string(tc, "id").is_some() || !tc.content.is_empty(),
         "CronList" => !tc.content.is_empty(),
         _ => false,
     }
 }
 
-pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
-    let text_lines = render_text_content(tc);
+pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let text_lines = typed::render_stripped_text_blocks(tc, render_text_line);
     let has_completed_output =
         matches!(tc.status, model::ToolCallStatus::Completed) && !text_lines.is_empty();
     let mut lines = match tc.sdk_tool_name.as_str() {
@@ -37,25 +36,25 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>
         "CronDelete" if has_completed_output => Vec::new(),
         "CronDelete" => render_delete_content(tc),
         "CronList" => Vec::new(),
-        _ => return None,
+        _ => return Vec::new(),
     };
     lines.extend(text_lines);
-    Some(lines)
+    lines
 }
 
 fn render_create_content(tc: &ToolCallInfo, include_cron: bool) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut cron_fields = Vec::new();
 
     if let Some(input) = input {
-        if include_cron && let Some(cron) = json_string(input, "cron") {
+        if include_cron && let Some(cron) = typed::json_string(input, "cron") {
             cron_fields.push(ToolField::new("Cron", cron));
         }
-        if let Some(prompt) = json_string(input, "prompt") {
+        if let Some(prompt) = typed::json_string(input, "prompt") {
             cron_fields.push(ToolField::new("Prompt", prompt));
         }
         let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        cron_fields.push(ToolField::new("Recurring", bool_label(recurring)));
+        cron_fields.push(ToolField::new("Recurring", typed::bool_label(recurring)));
         if input.get("durable").and_then(serde_json::Value::as_bool) == Some(true) {
             cron_fields.push(ToolField::new("Durable", "yes"));
         }
@@ -66,37 +65,8 @@ fn render_create_content(tc: &ToolCallInfo, include_cron: bool) -> Vec<Line<'sta
 
 fn render_delete_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let fields =
-        input_string(tc, "id").map(|schedule_id| ToolField::new("Schedule ID", schedule_id));
+        typed::input_string(tc, "id").map(|schedule_id| ToolField::new("Schedule ID", schedule_id));
     fields::render_fields(fields)
-}
-
-fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for content in &tc.content {
-        let model::ToolCallContent::Content(content) = content else {
-            continue;
-        };
-        let model::ContentBlock::Text(text) = &content.content else {
-            continue;
-        };
-        render_text_block(tc, &text.text, &mut lines);
-    }
-    lines
-}
-
-fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    lines.extend(
-        stripped
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .map(render_text_line),
-    );
 }
 
 fn render_text_line(line: &str) -> Line<'static> {
@@ -126,44 +96,16 @@ fn field_label(label: &str) -> Option<&'static str> {
 
 fn field_value(label: &str, value: &str) -> String {
     if matches!(label, "Recurring" | "Durable") {
-        bool_text_label(value).unwrap_or(value).to_owned()
+        typed::bool_text_label(value).unwrap_or(value).to_owned()
     } else {
         value.to_owned()
     }
 }
 
-const fn bool_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
-fn bool_text_label(value: &str) -> Option<&'static str> {
-    match value {
-        "true" | "yes" => Some("yes"),
-        "false" | "no" => Some("no"),
-        _ => None,
-    }
-}
-
-fn input_string<'a>(tc: &'a ToolCallInfo, key: &str) -> Option<&'a str> {
-    tc.raw_input
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .and_then(|input| input.get(key))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-}
-
-fn json_string<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{BlockCache, TerminalSnapshotMode};
+    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -172,40 +114,14 @@ mod tests {
         raw_input: serde_json::Value,
         content: Option<&str>,
     ) -> ToolCallInfo {
-        let mut tc = ToolCallInfo {
-            id: "tc-cron".to_owned(),
-            source_message_uuids: Vec::new(),
-            title: "tc-cron".to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
-            raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        };
-        if let Some(content) = content {
-            tc.content = vec![model::ToolCallContent::from(content)];
-        }
-        tc
-    }
-
-    fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect()
+        tool_call(
+            "tc-cron",
+            "tc-cron",
+            sdk_tool_name,
+            raw_input,
+            content,
+            model::ToolCallStatus::Completed,
+        )
     }
 
     #[test]
@@ -248,7 +164,7 @@ mod tests {
             ),
         );
 
-        let rendered = rendered_line_texts(&render_tool_content(&tc).expect("cron content"));
+        let rendered = rendered_line_texts(&render_tool_content(&tc));
 
         assert_eq!(
             rendered,
@@ -271,7 +187,7 @@ mod tests {
             Some("Schedule ID: schedule-1"),
         );
 
-        let rendered = rendered_line_texts(&render_tool_content(&tc).expect("cron content"));
+        let rendered = rendered_line_texts(&render_tool_content(&tc));
 
         assert_eq!(rendered, vec!["Schedule ID: schedule-1"]);
     }
@@ -295,7 +211,7 @@ mod tests {
             ),
         );
 
-        let lines = render_tool_content(&tc).expect("cron content");
+        let lines = render_tool_content(&tc);
 
         assert_eq!(
             rendered_line_texts(&lines),
@@ -315,7 +231,7 @@ mod tests {
         );
         let tc = cron_tool_call("CronList", json!({}), Some(&content));
 
-        let lines = render_tool_content(&tc).expect("cron content");
+        let lines = render_tool_content(&tc);
         let rendered = rendered_line_texts(&lines);
         let divider = "\u{2500}".repeat(16);
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use crate::app::{App, RecentSessionInfo};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};

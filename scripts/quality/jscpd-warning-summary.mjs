@@ -3,6 +3,7 @@ import fs from "node:fs";
 
 const reportPath = process.argv[2] ?? "jscpd-report/jscpd-report.json";
 const warningThreshold = Number.parseFloat(process.env.JSCPD_WARNING_THRESHOLD ?? "3.0");
+const failureThreshold = Number.parseFloat(process.env.JSCPD_FAILURE_THRESHOLD ?? "NaN");
 
 function escapeWorkflowCommand(value) {
   return String(value).replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
@@ -42,6 +43,10 @@ function emitWarning(message) {
   console.log(`::warning title=Duplicate code soft threshold::${escapeWorkflowCommand(message)}`);
 }
 
+function emitError(message) {
+  console.log(`::error title=Duplicate code hard threshold::${escapeWorkflowCommand(message)}`);
+}
+
 if (!fs.existsSync(reportPath)) {
   const message = `jscpd report not found at ${reportPath}; duplicate-code summary was skipped.`;
   emitWarning(message);
@@ -60,9 +65,11 @@ const duplicatedLines = asNumber(total.duplicatedLines);
 const totalLines = asNumber(total.lines);
 const duplicatedTokens = asNumber(total.duplicatedTokens);
 const totalTokens = asNumber(total.tokens);
+const hasFailureThreshold = Number.isFinite(failureThreshold);
 
-const status =
-  percentage >= warningThreshold
+const status = hasFailureThreshold && percentage >= failureThreshold
+  ? `Failure: duplicated lines are ${formatPercent(percentage)}, above the ${formatPercent(failureThreshold)} hard threshold.`
+  : percentage >= warningThreshold
     ? `Warning: duplicated lines are ${formatPercent(percentage)}, above the ${formatPercent(warningThreshold)} soft threshold.`
     : `OK: duplicated lines are ${formatPercent(percentage)}, below the ${formatPercent(warningThreshold)} soft threshold.`;
 
@@ -76,7 +83,16 @@ if (percentage >= warningThreshold) {
   emitWarning(
     `jscpd found ${formatPercent(percentage)} duplicated lines (${clones} clones), ` +
       `above the ${formatPercent(warningThreshold)} advisory threshold. ` +
-      "This workflow is warning-only and does not block the PR.",
+      (hasFailureThreshold
+        ? `The hard failure threshold is ${formatPercent(failureThreshold)}.`
+        : "This workflow is warning-only and does not block the PR."),
+  );
+}
+
+if (hasFailureThreshold && percentage >= failureThreshold) {
+  emitError(
+    `jscpd found ${formatPercent(percentage)} duplicated lines (${clones} clones), ` +
+      `above the ${formatPercent(failureThreshold)} hard failure threshold.`,
   );
 }
 
@@ -116,6 +132,7 @@ const summary = [
   `| Duplicated lines | ${duplicatedLines} / ${totalLines} (${formatPercent(percentage)}) |`,
   `| Duplicated tokens | ${duplicatedTokens} / ${totalTokens} (${formatPercent(total.percentageTokens)}) |`,
   `| Soft threshold | ${formatPercent(warningThreshold)} |`,
+  `| Hard threshold | ${hasFailureThreshold ? formatPercent(failureThreshold) : "disabled"} |`,
   "",
   "| Format | Files | Clones | Duplicated lines | Duplicated lines % |",
   "| --- | ---: | ---: | ---: | ---: |",
@@ -130,3 +147,7 @@ const summary = [
 ].join("\n");
 
 appendSummary(summary);
+
+if (hasFailureThreshold && percentage >= failureThreshold) {
+  process.exit(1);
+}

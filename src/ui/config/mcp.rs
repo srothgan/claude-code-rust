@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::input::render_text_input_field;
 use super::overlay::{
     OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,

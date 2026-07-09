@@ -4,7 +4,7 @@
 
 Claude Code Rust needs:
 
-- Existing Claude Code authentication, currently read from `~/.claude/config.json`.
+- Installed Claude Code CLI for authentication. Use `claude auth login` before starting, or run `/login` inside `claude-rs`.
 - Rust 1.88.0 or newer, Node.js 24/npm, and Bun only when building or running from source.
 
 ## Install From npm
@@ -52,18 +52,22 @@ Maintainer and source-build npm tooling targets Node.js 24. Packaged npm install
 
 Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built. They use `bun` from `PATH` unless `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` points at a specific Bun executable.
 
-For a release-mode source binary, build the bridge and binary, then run the binary with an explicit bridge script:
-
-Release-mode source binaries do not use the debug PATH fallback for Bun. To run a release binary outside the npm package layout, place a Bun executable named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` next to the `claude-rs` binary, or use the generated npm package layout.
+For a release-mode source binary, build the bridge and binary, then provide both an explicit bridge script and a Bun runtime using the bundled-runtime filename. Release-mode source binaries do not use the debug PATH fallback for Bun.
 
 ```bash
 npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
 cargo build --release --locked --bin claude-rs
+cp "$(command -v bun)" ./target/release/claude-rs-bridge-bun
 ./target/release/claude-rs --bridge-script ./agent-sdk/dist/bridge.js
 ```
 
-On Windows, run `.\target\release\claude-rs.exe --bridge-script .\agent-sdk\dist\bridge.js`.
+On Windows, copy `bun.exe` next to the binary as `claude-rs-bridge-bun.exe`, then run:
+
+```powershell
+Copy-Item (Get-Command bun).Source .\target\release\claude-rs-bridge-bun.exe
+.\target\release\claude-rs.exe --bridge-script .\agent-sdk\dist\bridge.js
+```
 
 Do not use `cargo install --path .` if you want to test the npm install shape. `cargo install` writes only the Rust binary to Cargo's bin directory and does not install the bundled Agent SDK bridge, private Bun runtime, or platform package layout.
 

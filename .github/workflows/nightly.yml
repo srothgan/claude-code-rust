@@ -86,11 +86,12 @@ jobs:
         run: cargo rustc --bin claude-rs --all-features -- -W unsafe-code
 
   duplicate-code:
-    name: jscpd warning scan
+    name: jscpd threshold scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      JSCPD_WARNING_THRESHOLD: "3.0"
+      JSCPD_WARNING_THRESHOLD: "1.0"
+      JSCPD_FAILURE_THRESHOLD: "2.0"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

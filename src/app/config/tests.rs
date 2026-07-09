@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::resolve::resolve_setting_document;
 use super::*;
 use crate::agent::model::{

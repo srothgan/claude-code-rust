@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 use super::wrap::{
     StyledChunk, blank_line, pad_line_to_width, wrap_styled_chunks, wrapped_line_count,

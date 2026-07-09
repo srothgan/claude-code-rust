@@ -1,10 +1,11 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 mod config;
 mod doctor;
 mod logs;
 pub mod redaction;
+mod style;
 
 use crate::{Cli, Command};
 use std::io::Write;

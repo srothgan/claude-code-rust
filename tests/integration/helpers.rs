@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::app::App;
 

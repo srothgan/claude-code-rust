@@ -205,6 +205,41 @@ jobs:
             dist-install/*.zip
           if-no-files-found: warn
 
+  duplicate-code:
+    name: Duplicate Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JSCPD_WARNING_THRESHOLD: "1.0"
+      JSCPD_FAILURE_THRESHOLD: "2.0"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run duplicate code scan
+        run: npm run quality:duplicates
+
+      - name: Publish duplicate code threshold summary
+        if: always()
+        run: npm run quality:duplicates:summary
+
+      - name: Upload duplicate code report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: jscpd-report
+          path: jscpd-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
@@ -250,6 +285,7 @@ jobs:
       - cargo-deny-policy
       - agent-sdk-check
       - npm-package-layout
+      - duplicate-code
       - codeql
     steps:
       - name: Verify required jobs
@@ -263,6 +299,7 @@ jobs:
           CARGO_DENY_POLICY: ${{ needs.cargo-deny-policy.result }}
           AGENT_SDK: ${{ needs.agent-sdk-check.result }}
           NPM_PACKAGE_LAYOUT: ${{ needs.npm-package-layout.result }}
+          DUPLICATE_CODE: ${{ needs.duplicate-code.result }}
           CODEQL: ${{ needs.codeql.result }}
         run: |
           set -euo pipefail
@@ -291,6 +328,7 @@ jobs:
           require_success "test-ubuntu" "$TEST_UBUNTU"
           require_success "lockfile" "$LOCKFILE"
           require_success "cargo-deny-policy" "$CARGO_DENY_POLICY"
+          require_success "duplicate-code" "$DUPLICATE_CODE"
           require_success "codeql" "$CODEQL"
 
           allow_success_or_skipped "agent-sdk-check" "$AGENT_SDK"

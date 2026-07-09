@@ -39,18 +39,20 @@ async function main() {
   assertHostCanSmokePlatform(platformPackage);
 
   const cargoPackage = readCargoPackageMetadata(path.join(repoRoot, "Cargo.toml"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-npm-smoke-"));
+  const npmEnv = isolatedNpmEnvironment(tempDir);
   const packedPackages = options.useExistingTarballs
     ? findExistingPackageTarballs({ packDir, cargoPackage })
-    : packGeneratedPackages({ distDir, packDir, cargoPackage });
+    : packGeneratedPackages({ distDir, packDir, cargoPackage, env: npmEnv });
   const rootTarball = packedPackages.get("root");
   const platformTarball = packedPackages.get(platformPackage.dir);
   if (!rootTarball || !platformTarball) {
     throw new Error(`Missing packed root or ${platformPackage.dir} tarball`);
   }
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-npm-smoke-"));
+  const useRegistrySmoke = options.registrySmoke || process.platform === "win32";
   try {
-    if (options.registrySmoke) {
+    if (useRegistrySmoke) {
       await smokeRegistryInstall({
         tempDir,
         packedPackages,
@@ -60,14 +62,15 @@ async function main() {
         noSystemRuntime: options.noSystemRuntime,
       });
     } else {
-      smokeInstall({
+      await smokeInstall({
         projectDir: tempDir,
         rootTarball,
         platformTarball,
         platformPackage,
         cargoPackage,
         realBinary: options.realBinary,
-        noSystemRuntime: options.noSystemRuntime
+        noSystemRuntime: options.noSystemRuntime,
+        npmEnv
       });
     }
   } finally {
@@ -97,7 +100,14 @@ function assertHostCanSmokePlatform(platform) {
   }
 }
 
-function packGeneratedPackages({ distDir, packDir, cargoPackage }) {
+function isolatedNpmEnvironment(tempDir) {
+  return {
+    ...process.env,
+    npm_config_cache: path.join(tempDir, "npm-cache"),
+  };
+}
+
+function packGeneratedPackages({ distDir, packDir, cargoPackage, env = process.env }) {
   const packages = new Map();
   const packageDirs = ["root", ...PLATFORM_PACKAGES.map((entry) => entry.dir)];
 
@@ -107,7 +117,7 @@ function packGeneratedPackages({ distDir, packDir, cargoPackage }) {
   for (const packageDir of packageDirs) {
     const fullPackageDir = path.join(distDir, packageDir);
     const packageJson = readJson(path.join(fullPackageDir, "package.json"));
-    const output = runNpm(["pack", fullPackageDir, "--pack-destination", packDir, "--json"], repoRoot);
+    const output = runNpm(["pack", fullPackageDir, "--pack-destination", packDir, "--json"], repoRoot, { env });
     const [packResult] = JSON.parse(output);
     if (!packResult?.filename) {
       throw new Error(`npm pack did not return a filename for ${packageDir}`);
@@ -152,14 +162,15 @@ function npmTarballName(packageName, version) {
   return `${filenamePrefix}-${version}.tgz`;
 }
 
-function smokeInstall({
+async function smokeInstall({
   projectDir,
   rootTarball,
   platformTarball,
   platformPackage,
   cargoPackage,
   realBinary,
-  noSystemRuntime
+  noSystemRuntime,
+  npmEnv = process.env
 }) {
   writeJson(path.join(projectDir, "package.json"), {
     private: true,
@@ -177,7 +188,8 @@ function smokeInstall({
       "--fund=false",
       "--prefer-offline"
     ],
-    projectDir
+    projectDir,
+    { env: npmEnv }
   );
 
   const installedRoot = readJson(path.join(projectDir, "node_modules", ROOT_PACKAGE_NAME, "package.json"));
@@ -239,7 +251,10 @@ async function smokeRegistryInstall({
   const cacheDir = path.join(tempDir, "npm-cache");
   const dependencyPackDir = path.join(tempDir, "registry-dependencies");
   const npmConfig = createIsolatedNpmConfig(tempDir);
-  const npmEnv = sanitizedNpmEnvironment(process.env);
+  const npmEnv = {
+    ...sanitizedNpmEnvironment(process.env),
+    npm_config_cache: cacheDir,
+  };
   const seededDependencies = packRegistryDependencyTarballs({
     packDir: dependencyPackDir,
     npmConfigArgs: npmConfig.args,
@@ -1180,7 +1195,7 @@ Options:
 `);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
