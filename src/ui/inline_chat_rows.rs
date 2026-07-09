@@ -19,7 +19,7 @@ use crate::ui::spinner_verbs::random_spinner_verb;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
-use crate::ui::wrap::wrap_lines_to_physical_rows;
+use crate::ui::wrap::{wrap_lines_to_physical_rows, wrap_markdown_lines_to_physical_rows};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
@@ -529,10 +529,17 @@ impl PendingAssistantTextRun {
         !self.commit_ready && !commit_ready
     }
 
-    fn append(&mut self, id: HistoryOutputId, text: &str, trailing_spacing: TextBlockSpacing) {
+    fn append(
+        &mut self,
+        id: HistoryOutputId,
+        text: &str,
+        trailing_spacing: TextBlockSpacing,
+        commit_ready: bool,
+    ) {
         self.ids.push(id);
         append_text_run(&mut self.text, self.trailing_spacing, text);
         self.trailing_spacing = trailing_spacing;
+        self.commit_ready = commit_ready;
     }
 
     fn into_render_item(self) -> AssistantRenderItemSpec {
@@ -601,10 +608,17 @@ fn assistant_render_items_from_message(
                 if let Some(pending) = pending_text.as_mut()
                     && pending.can_merge(commit_ready)
                 {
+                    let merged_commit_ready = assistant_text_run_commit_ready(
+                        message,
+                        pending.block_idx,
+                        block_idx,
+                        active_tail_block_idx,
+                    );
                     pending.append(
                         HistoryOutputId::Block(text.id),
                         &text.text,
                         text.trailing_spacing,
+                        merged_commit_ready,
                     );
                 } else {
                     flush_pending_text_run(&mut pending_text, &mut items);
@@ -677,29 +691,91 @@ fn assistant_text_block_commit_ready(
     block_idx: usize,
     active_tail_block_idx: Option<usize>,
 ) -> bool {
+    assistant_text_run_commit_ready(message, block_idx, block_idx, active_tail_block_idx)
+}
+
+fn assistant_text_run_commit_ready(
+    message: &ChatMessage,
+    start_block_idx: usize,
+    end_block_idx: usize,
+    active_tail_block_idx: Option<usize>,
+) -> bool {
     let Some(active_tail_block_idx) = active_tail_block_idx else {
         return true;
     };
-    if active_tail_block_idx == block_idx {
+    if active_tail_block_idx >= start_block_idx && active_tail_block_idx <= end_block_idx {
         return false;
     }
-    if active_tail_block_idx < block_idx {
+    if active_tail_block_idx < start_block_idx {
         return true;
     }
 
-    !assistant_text_handoff_continues_open_table(message, block_idx)
+    !assistant_text_run_handoff_requires_markdown_context(message, start_block_idx, end_block_idx)
 }
 
-fn assistant_text_handoff_continues_open_table(message: &ChatMessage, block_idx: usize) -> bool {
-    let Some(MessageBlock::Text(text)) = message.blocks.get(block_idx) else {
+fn assistant_text_run_handoff_requires_markdown_context(
+    message: &ChatMessage,
+    start_block_idx: usize,
+    end_block_idx: usize,
+) -> bool {
+    let Some((text, trailing_spacing)) =
+        assistant_text_run_source(message, start_block_idx, end_block_idx)
+    else {
         return false;
     };
-    if !markdown_table_tail_is_open(&text.text) {
+    let Some(next) = next_visible_assistant_text(message, end_block_idx) else {
+        return false;
+    };
+
+    assistant_text_handoff_continues_open_table(&text, next)
+        || assistant_text_handoff_continues_list_item(&text, trailing_spacing, next)
+        || markdown_source_has_open_fence(&text)
+        || markdown_source_has_open_inline_delimiter(&text)
+}
+
+fn assistant_text_run_source(
+    message: &ChatMessage,
+    start_block_idx: usize,
+    end_block_idx: usize,
+) -> Option<(String, TextBlockSpacing)> {
+    let mut text = String::new();
+    let mut trailing_spacing = TextBlockSpacing::None;
+
+    for block in message.blocks.get(start_block_idx..=end_block_idx)? {
+        let MessageBlock::Text(block) = block else {
+            continue;
+        };
+        if block.text.is_empty() {
+            continue;
+        }
+        append_text_run(&mut text, trailing_spacing, &block.text);
+        trailing_spacing = block.trailing_spacing;
+    }
+
+    (!text.is_empty()).then_some((text, trailing_spacing))
+}
+
+fn assistant_text_handoff_continues_open_table(current: &str, next: &TextBlock) -> bool {
+    if !markdown_table_tail_is_open(current) {
         return false;
     }
 
-    next_visible_assistant_text(message, block_idx)
-        .is_some_and(|next| starts_with_markdown_table_row(&next.text))
+    starts_with_markdown_table_row(&next.text)
+}
+
+fn assistant_text_handoff_continues_list_item(
+    current: &str,
+    trailing_spacing: TextBlockSpacing,
+    next: &TextBlock,
+) -> bool {
+    trailing_spacing == TextBlockSpacing::None
+        && markdown_source_ends_with_list_item(current)
+        && markdown_source_starts_with_list_continuation(&next.text)
+}
+
+fn markdown_source_starts_with_list_continuation(text: &str) -> bool {
+    markdown_source_boundary_line(text, BoundaryLine::First)
+        .is_some_and(|line| !markdown_source_line_is_list_item(line))
 }
 
 fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Option<&TextBlock> {
@@ -962,6 +1038,49 @@ fn markdown_source_starts_with_ordered_list_marker(text: &str) -> bool {
     digit_count > 0 && text[digit_count..].starts_with(". ")
 }
 
+fn markdown_source_has_open_fence(text: &str) -> bool {
+    let mut in_fenced_code = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fenced_code = !in_fenced_code;
+        }
+    }
+    in_fenced_code
+}
+
+fn markdown_source_has_open_inline_delimiter(text: &str) -> bool {
+    let mut in_code = false;
+    let mut strong_asterisk_open = false;
+    let mut strong_underscore_open = false;
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '\\' {
+            let _ = chars.next();
+            continue;
+        }
+        if ch == '`' {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+
+        let rest = &text[idx..];
+        if rest.starts_with("**") {
+            strong_asterisk_open = !strong_asterisk_open;
+            let _ = chars.next();
+        } else if rest.starts_with("__") {
+            strong_underscore_open = !strong_underscore_open;
+            let _ = chars.next();
+        }
+    }
+
+    in_code || strong_asterisk_open || strong_underscore_open
+}
+
 fn append_assistant_label_rows(
     rows: &mut Vec<Line<'static>>,
     boundaries: &mut Vec<LiveRowBoundary>,
@@ -1086,7 +1205,7 @@ fn render_assistant_text_block(
     } else {
         lines
     };
-    wrap_lines_to_physical_rows(&lines, width)
+    wrap_markdown_lines_to_physical_rows(&lines, width)
 }
 
 fn trim_trailing_blank_rows(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -1196,7 +1315,7 @@ fn segments_to_physical_rows(
         match segment {
             MessageRowSegment::Blank => rows.push(Line::default()),
             MessageRowSegment::Lines { lines } => {
-                rows.extend(wrap_lines_to_physical_rows(lines, width));
+                rows.extend(wrap_markdown_lines_to_physical_rows(lines, width));
             }
         }
     }
@@ -1797,6 +1916,121 @@ mod tests {
         assert!(
             !remaining_text.iter().any(|line| line.trim_start().starts_with("| Slow startup |")),
             "table continuation must not render as a raw pipe row: {remaining_text:?}"
+        );
+    }
+
+    #[test]
+    fn live_assistant_ordered_list_wraps_continuation_with_hanging_indent() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(
+            "3. Keymap survey - mapping the keymap system, focus dispatch, and help generation.",
+        ));
+
+        let rows = serialize_live_rows(&mut app, 38);
+        let text = line_texts(&rows);
+
+        assert!(
+            text.iter().any(|line| line.starts_with("  3. Keymap survey")),
+            "missing ordered list prefix: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.starts_with("     keymap system")),
+            "list continuation lost hanging indent: {text:?}"
+        );
+    }
+
+    #[test]
+    fn active_assistant_list_handoff_keeps_context_prefix_mutable() {
+        let first = TextBlock::from_complete("3. Keymap survey maps the system.");
+        let second = TextBlock::from_complete(" Additional detail keeps streaming.");
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(second),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 38);
+        let committed_ids = serialized
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 38, &committed_ids);
+        let remaining_text = line_texts(remaining.rows());
+
+        assert_eq!(serialized.stable_row_count(), 0);
+        assert!(
+            remaining_text.iter().any(|line| line.starts_with("  3. Keymap survey")),
+            "missing ordered list prefix: {remaining_text:?}"
+        );
+    }
+
+    #[test]
+    fn active_assistant_inline_bold_handoff_keeps_prefix_mutable_until_closed() {
+        let first = TextBlock::from_complete("This is **bold");
+        let second = TextBlock::from_complete(" text** done.");
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(second),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
+        let committed_ids = serialized
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids);
+        let remaining_text = line_texts(remaining.rows());
+
+        assert_eq!(serialized.stable_row_count(), 0);
+        assert!(remaining_text.iter().any(|line| line.contains("This is bold")));
+        assert!(remaining_text.iter().any(|line| line.contains("text done.")));
+        assert!(
+            !remaining_text.iter().any(|line| line.contains("**")),
+            "inline markdown marker leaked through handoff: {remaining_text:?}"
+        );
+    }
+
+    #[test]
+    fn active_assistant_inline_bold_handoff_commits_after_following_block_arrives() {
+        let first = TextBlock::from_complete("This is **bold");
+        let second = TextBlock::from_complete(" text** done.");
+        let third = TextBlock::from_complete("more");
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(second),
+            MessageBlock::Text(third),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
+        let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
+
+        assert!(
+            stable_text.iter().any(|line| line.contains("This is bold")),
+            "closed inline markdown handoff did not commit: {stable_text:?}"
+        );
+        assert!(
+            stable_text.iter().any(|line| line.contains("text done.")),
+            "closed inline markdown suffix did not commit: {stable_text:?}"
+        );
+        assert!(
+            !stable_text.iter().any(|line| line.contains("more")),
+            "active tail should remain mutable: {stable_text:?}"
+        );
+        assert!(
+            !stable_text.iter().any(|line| line.contains("**")),
+            "inline markdown marker leaked through committed handoff: {stable_text:?}"
         );
     }
 
