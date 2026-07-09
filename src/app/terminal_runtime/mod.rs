@@ -39,6 +39,7 @@ enum SurfaceTransitionPlan {
 pub(crate) struct TerminalRuntime {
     session: Option<SurfaceTerminalSession>,
     suspended_chat_session: Option<ChatTerminalSession>,
+    startup_cursor: Option<(u16, u16)>,
     active_surface: SurfaceMode,
     alternate_screen_active: Arc<AtomicBool>,
     panic_hook: Option<PanicRestoreHook>,
@@ -58,8 +59,17 @@ impl TerminalRuntime {
             return Err(err).context("failed to configure terminal startup modes");
         }
 
+        // The only safe moment to issue a DSR cursor query: the app's EventStream
+        // does not exist yet, so the reply cannot be swallowed as an input event.
+        // The alternate screen (entered below for fullscreen surfaces) saves and
+        // restores the main-screen cursor, so this value stays valid for a later
+        // fullscreen-to-chat transition inside the live event loop.
+        let startup_cursor = probe_startup_cursor();
+
         let session = match target_surface {
-            SurfaceMode::Chat => ChatTerminalSession::new().map(SurfaceTerminalSession::Chat),
+            SurfaceMode::Chat => {
+                ChatTerminalSession::new(startup_cursor).map(SurfaceTerminalSession::Chat)
+            }
             SurfaceMode::Fullscreen(_) => {
                 if let Err(err) = apply_enter_fullscreen_actions() {
                     restore_once(restored.as_ref(), || {
@@ -98,6 +108,7 @@ impl TerminalRuntime {
         Ok(Self {
             session: Some(session),
             suspended_chat_session: None,
+            startup_cursor,
             active_surface: target_surface,
             alternate_screen_active,
             panic_hook: Some(panic_hook),
@@ -160,7 +171,7 @@ impl TerminalRuntime {
                 let reused_chat_session = self.suspended_chat_session.is_some();
                 let chat_session = match self.suspended_chat_session.take() {
                     Some(session) => session,
-                    None => ChatTerminalSession::new()?,
+                    None => ChatTerminalSession::new(self.startup_cursor)?,
                 };
                 self.session = Some(SurfaceTerminalSession::Chat(chat_session));
                 self.active_surface = SurfaceMode::Chat;
@@ -235,6 +246,25 @@ impl TerminalRuntime {
 fn apply_startup_actions() -> std::io::Result<()> {
     let mut stdout = std::io::stdout();
     apply_actions(&mut stdout, chat_startup_actions())
+}
+
+/// Must only run before the app's `EventStream` is created; afterwards the DSR
+/// reply would be consumed as an input event and the query would time out.
+/// `None` means the probe failed (e.g. stdout is piped, crossterm #919).
+fn probe_startup_cursor() -> Option<(u16, u16)> {
+    match crossterm::cursor::position() {
+        Ok(position) => Some(position),
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_cursor_probe_failed",
+                message = "failed to read startup cursor position; chat sessions will anchor at the bottom row",
+                outcome = "fallback",
+                error_message = %err,
+            );
+            None
+        }
+    }
 }
 
 fn apply_enter_fullscreen_actions() -> std::io::Result<()> {

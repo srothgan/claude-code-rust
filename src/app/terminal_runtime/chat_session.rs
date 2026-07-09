@@ -28,21 +28,13 @@ pub(super) struct ChatTerminalSession {
 }
 
 impl ChatTerminalSession {
-    pub(super) fn new() -> anyhow::Result<Self> {
+    /// `known_cursor` must come from a probe taken before the app's `EventStream`
+    /// exists (see `TerminalRuntime::bootstrap`); querying here would race the
+    /// stream for the DSR reply. `None` anchors the session at the bottom row.
+    pub(super) fn new(known_cursor: Option<(u16, u16)>) -> anyhow::Result<Self> {
         let (width, height) =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
-        // A DSR cursor query can fail when stdout is not a terminal (e.g. piped);
-        // anchor the session at the bottom row instead of aborting startup.
-        let (cursor_x, cursor_y) = crossterm::cursor::position().unwrap_or_else(|err| {
-            tracing::warn!(
-                target: crate::logging::targets::APP_RENDER,
-                event_name = "inline_chat_cursor_probe_failed",
-                message = "failed to read chat terminal cursor; using bottom-row fallback",
-                outcome = "fallback",
-                error_message = %err,
-            );
-            (0, height.saturating_sub(1))
-        });
+        let (cursor_x, cursor_y) = known_cursor.unwrap_or((0, height.saturating_sub(1)));
         let owned_top = cursor_y.min(height.saturating_sub(1));
 
         tracing::debug!(
