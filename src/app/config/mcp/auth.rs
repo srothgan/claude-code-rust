@@ -74,7 +74,7 @@ pub(crate) fn present_mcp_auth_redirect(
     );
 }
 
-pub(super) fn open_url_in_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut cmd = std::process::Command::new("rundll32.exe");

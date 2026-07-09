@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::{App, FullscreenView, SurfaceMode};
+use crate::app::{App, FullscreenView, SurfaceMode, UpdatePromptAction, UpdatePromptState};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -52,4 +52,24 @@ fn render_fullscreen_surface_draws_session_picker_view() {
 
     let rendered = buffer_text(&terminal);
     assert!(rendered.contains("Resume Session"));
+}
+
+#[test]
+fn render_fullscreen_surface_draws_update_view() {
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    let mut app = App::test_default();
+    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
+    app.update_prompt = Some(UpdatePromptState {
+        current_version: "0.13.4".to_owned(),
+        latest_version: "0.14.0".to_owned(),
+        release_url: "https://example.invalid".to_owned(),
+        selected: UpdatePromptAction::Install,
+        last_error: None,
+    });
+
+    terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
+
+    let rendered = buffer_text(&terminal);
+    assert!(rendered.contains("Update Available"));
 }

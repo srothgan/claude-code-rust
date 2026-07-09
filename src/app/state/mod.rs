@@ -58,9 +58,9 @@ pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
-    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    ToolCallScope, UpdateNoticeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow,
+    PostExitAction, RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState,
+    SessionUsageState, ToolCallScope, UpdatePromptAction, UpdatePromptState, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 
 #[allow(unused_imports)]
@@ -88,7 +88,7 @@ mod prelude {
         AppStatus, CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
         McpState, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
         RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState, ToolCallScope,
-        UpdateNoticeState, UsageState,
+        UpdatePromptState, UsageState,
     };
     pub(super) use super::{BlockCache, CacheMetrics};
     pub(super) use crate::agent::events::ClientEvent;

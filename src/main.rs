@@ -3,7 +3,9 @@
 
 use clap::Parser;
 use claude_code_rust::Cli;
+use claude_code_rust::app::PostExitAction;
 use claude_code_rust::error::AppError;
+use std::process::Stdio;
 use std::time::Instant;
 use tracing::info_span;
 
@@ -83,7 +85,7 @@ fn run() -> anyhow::Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
 
-    rt.block_on(local_set.run_until(async move {
+    let exit_code = rt.block_on(local_set.run_until(async move {
         // Phase 1: create app in Connecting state (instant, no I/O)
         let mut app = claude_code_rust::app::create_app(&cli);
 
@@ -91,7 +93,8 @@ fn run() -> anyhow::Result<i32> {
         // The bridge itself is started from the TUI loop only after trust is accepted.
         claude_code_rust::app::start_update_check(&app, &cli);
         let result = claude_code_rust::app::run_tui(&mut app).await;
-        maybe_print_resume_hint(&app, result.is_ok());
+        let post_exit_action = app.post_exit_action.take();
+        maybe_print_resume_hint(&app, result.is_ok() && post_exit_action.is_none());
 
         // Kill any spawned terminal child processes before exiting
         claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
@@ -100,10 +103,84 @@ fn run() -> anyhow::Result<i32> {
             return Err(anyhow::Error::new(app_error));
         }
 
-        result
+        result?;
+
+        if let Some(action) = post_exit_action {
+            return Ok(run_post_exit_action(&mut app, action));
+        }
+
+        Ok(0)
     }))?;
 
-    Ok(0)
+    Ok(exit_code)
+}
+
+fn run_post_exit_action(app: &mut claude_code_rust::app::App, action: PostExitAction) -> i32 {
+    match action {
+        PostExitAction::InstallUpdate { latest_version } => {
+            run_update_install(app, &latest_version)
+        }
+    }
+}
+
+fn run_update_install(app: &mut claude_code_rust::app::App, latest_version: &str) -> i32 {
+    let npm = match resolve_npm() {
+        Ok(path) => path,
+        Err(error) => {
+            let message = format!("Failed to resolve npm for update install: {error}");
+            eprintln!("{message}");
+            record_install_failure(app, message);
+            return 1;
+        }
+    };
+
+    let status = std::process::Command::new(&npm)
+        .args(["install", "-g", "claude-code-rust"])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            clear_install_failure(app);
+            0
+        }
+        Ok(status) => {
+            let code = status.code().unwrap_or(1);
+            let message =
+                format!("Update install for v{latest_version} exited with status {status}.");
+            eprintln!("{message}");
+            record_install_failure(app, message);
+            code
+        }
+        Err(error) => {
+            let message = format!("Failed to run update install for v{latest_version}: {error}");
+            eprintln!("{message}");
+            record_install_failure(app, message);
+            1
+        }
+    }
+}
+
+fn resolve_npm() -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    let candidates = ["npm.cmd", "npm"];
+    #[cfg(not(target_os = "windows"))]
+    let candidates = ["npm"];
+
+    candidates
+        .iter()
+        .find_map(|candidate| which::which(candidate).ok())
+        .ok_or_else(|| format!("none of {} were found in PATH", candidates.join(", ")))
+}
+
+fn record_install_failure(app: &mut claude_code_rust::app::App, message: String) {
+    claude_code_rust::app::record_update_install_failure(app, message);
+}
+
+fn clear_install_failure(app: &mut claude_code_rust::app::App) {
+    claude_code_rust::app::clear_update_install_failure(app);
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

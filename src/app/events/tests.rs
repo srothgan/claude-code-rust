@@ -104,11 +104,6 @@ fn user_msg(text: &str) -> ChatMessage {
     )
 }
 
-#[test]
-fn update_install_command_is_documented_npm_command() {
-    assert_eq!(session::update_install_command(), "npm install -g claude-code-rust");
-}
-
 fn source_text(text: &str, source_message_uuid: &str) -> MessageBlock {
     MessageBlock::Text(
         TextBlock::from_complete(text).with_source_message_uuid(Some(source_message_uuid)),
@@ -358,11 +353,6 @@ fn first_block_text(msg: &ChatMessage) -> &str {
         }
         None => panic!("expected message block"),
     }
-}
-
-fn is_update_notice_message(msg: &ChatMessage) -> bool {
-    matches!(msg.role, MessageRole::System(Some(SystemSeverity::Warning)))
-        && first_block_text(msg).contains(session::update_install_command())
 }
 
 // shorten_tool_title
@@ -1652,9 +1642,9 @@ fn auth_required_sets_hint_without_prefilling_login_command() {
 }
 
 #[test]
-fn update_available_pushes_warning_system_message_with_versions_and_install_command() {
+fn update_available_records_settings_without_transcript_message() {
     let mut app = make_test_app();
-    assert!(app.update_notice.is_none());
+    assert!(app.global_settings.updates.last_result.is_none());
 
     handle_client_event(
         &mut app,
@@ -1664,26 +1654,15 @@ fn update_available_pushes_warning_system_message_with_versions_and_install_comm
         },
     );
 
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(
-        app.transcript.messages[0].role,
-        MessageRole::System(Some(SystemSeverity::Warning))
-    ));
-    assert_eq!(
-        first_block_text(&app.transcript.messages[0]),
-        format!(
-            "Update available: current v0.2.0, latest v0.3.0. Upgrade to latest version via {}.",
-            session::update_install_command()
-        )
-    );
-    let Some(update_notice) = app.update_notice.as_ref() else {
-        panic!("expected update notice state");
+    assert!(app.transcript.messages.is_empty());
+    let Some(last_result) = app.global_settings.updates.last_result.as_ref() else {
+        panic!("expected update result");
     };
-    assert_eq!(update_notice.current_version, "0.2.0");
-    assert_eq!(update_notice.latest_version, "0.3.0");
+    assert_eq!(last_result.current_version, "0.2.0");
+    assert_eq!(last_result.latest_version, "0.3.0");
     assert_eq!(
-        update_notice.emitted_session_scope_epoch,
-        Some(app.session_runtime.session_scope_epoch)
+        last_result.release_url,
+        "https://github.com/srothgan/claude-code-rust/releases/tag/v0.3.0"
     );
 }
 
@@ -4258,52 +4237,7 @@ fn permission_focus_tab_returns_focus_to_input() {
 }
 
 #[test]
-fn update_notice_is_not_duplicated_within_same_session_epoch() {
-    let mut app = make_test_app();
-    app.update_notice = Some(crate::app::UpdateNoticeState {
-        current_version: "0.11.1".into(),
-        latest_version: "0.11.2".into(),
-        emitted_session_scope_epoch: None,
-    });
-
-    session::ensure_update_notice_message(&mut app);
-    session::ensure_update_notice_message(&mut app);
-
-    assert_eq!(
-        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
-        1
-    );
-    assert_eq!(
-        app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
-        Some(app.session_runtime.session_scope_epoch)
-    );
-}
-
-#[test]
-fn update_notice_is_re_emitted_after_epoch_change() {
-    let mut app = make_test_app();
-    app.update_notice = Some(crate::app::UpdateNoticeState {
-        current_version: "0.11.1".into(),
-        latest_version: "0.11.2".into(),
-        emitted_session_scope_epoch: None,
-    });
-
-    session::ensure_update_notice_message(&mut app);
-    app.bump_session_scope_epoch();
-    session::ensure_update_notice_message(&mut app);
-
-    assert_eq!(
-        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
-        2
-    );
-    assert_eq!(
-        app.update_notice.as_ref().and_then(|notice| notice.emitted_session_scope_epoch),
-        Some(app.session_runtime.session_scope_epoch)
-    );
-}
-
-#[test]
-fn update_available_persists_across_connected_session_reset() {
+fn update_result_persists_across_connected_session_reset_without_notice() {
     let mut app = make_test_app();
 
     handle_client_event(
@@ -4315,37 +4249,18 @@ fn update_available_persists_across_connected_session_reset() {
     );
     handle_client_event(&mut app, connected_event("claude-updated"));
 
-    assert_eq!(
-        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
-        1
-    );
     assert!(matches!(
         app.transcript.messages.first().map(|msg| &msg.role),
         Some(MessageRole::Welcome)
     ));
-    let notice = app
-        .transcript
-        .messages
-        .iter()
-        .find(|msg| is_update_notice_message(msg))
-        .expect("expected update notice message after connect");
-    assert_eq!(
-        first_block_text(notice),
-        format!(
-            "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via {}.",
-            session::update_install_command()
-        )
-    );
-    assert_eq!(
-        app.update_notice
-            .as_ref()
-            .and_then(|update_notice| update_notice.emitted_session_scope_epoch),
-        Some(app.session_runtime.session_scope_epoch)
-    );
+    assert_eq!(app.transcript.messages.len(), 1);
+    let last_result = app.global_settings.updates.last_result.as_ref().expect("update result");
+    assert_eq!(last_result.current_version, "0.11.1");
+    assert_eq!(last_result.latest_version, "0.11.2");
 }
 
 #[test]
-fn update_available_persists_across_session_replaced_reset() {
+fn update_result_persists_across_session_replaced_reset_without_notice() {
     let mut app = make_test_app();
 
     handle_client_event(
@@ -4368,33 +4283,14 @@ fn update_available_persists_across_session_replaced_reset() {
         },
     );
 
-    assert_eq!(
-        app.transcript.messages.iter().filter(|msg| is_update_notice_message(msg)).count(),
-        1
-    );
     assert!(matches!(
         app.transcript.messages.first().map(|msg| &msg.role),
         Some(MessageRole::Welcome)
     ));
-    let notice = app
-        .transcript
-        .messages
-        .iter()
-        .find(|msg| is_update_notice_message(msg))
-        .expect("expected update notice message after replacement");
-    assert_eq!(
-        first_block_text(notice),
-        format!(
-            "Update available: current v0.11.1, latest v0.11.2. Upgrade to latest version via {}.",
-            session::update_install_command()
-        )
-    );
-    assert_eq!(
-        app.update_notice
-            .as_ref()
-            .and_then(|update_notice| update_notice.emitted_session_scope_epoch),
-        Some(app.session_runtime.session_scope_epoch)
-    );
+    assert_eq!(app.transcript.messages.len(), 1);
+    let last_result = app.global_settings.updates.last_result.as_ref().expect("update result");
+    assert_eq!(last_result.current_version, "0.11.1");
+    assert_eq!(last_result.latest_version, "0.11.2");
 }
 
 fn attach_pending_permission(

@@ -22,6 +22,7 @@ mod tool_call;
 pub(crate) mod tool_display;
 mod trusted;
 mod two_column_list;
+mod update;
 mod welcome;
 mod wrap;
 
@@ -38,6 +39,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
             session_picker::render(frame, app);
         }
+        SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

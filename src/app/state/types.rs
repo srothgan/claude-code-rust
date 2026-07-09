@@ -31,11 +31,27 @@ pub enum PendingCommandAck {
     ConfigOption { option_id: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdatePromptAction {
+    #[default]
+    Install,
+    SkipNow,
+    SkipVersion,
+    ReleaseNotes,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateNoticeState {
+pub struct UpdatePromptState {
     pub current_version: String,
     pub latest_version: String,
-    pub emitted_session_scope_epoch: Option<u64>,
+    pub release_url: String,
+    pub selected: UpdatePromptAction,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostExitAction {
+    InstallUpdate { latest_version: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

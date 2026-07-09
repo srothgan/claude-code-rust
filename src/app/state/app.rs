@@ -9,6 +9,8 @@ pub struct App {
     pub terminal_lifecycle: TerminalLifecycleState,
     pub surface_dirty: SurfaceDirtyState,
     pub config: ConfigState,
+    pub global_settings: crate::app::AppSettings,
+    pub global_settings_path: Option<PathBuf>,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub transcript: Transcript,
@@ -76,8 +78,10 @@ pub struct App {
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
-    /// Update availability state for the current app lifetime.
-    pub update_notice: Option<UpdateNoticeState>,
+    /// Update prompt state for the startup fullscreen surface.
+    pub update_prompt: Option<UpdatePromptState>,
+    /// Work to run after the TUI has restored the user's terminal.
+    pub post_exit_action: Option<super::PostExitAction>,
     /// Config > Usage snapshot and refresh lifecycle.
     pub usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
@@ -156,6 +160,8 @@ impl App {
             terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),
             surface_dirty: SurfaceDirtyState::initial_chat(),
             config: ConfigState::default(),
+            global_settings: crate::app::AppSettings::default(),
+            global_settings_path: None,
             trust: TrustState::default(),
             settings_home_override: None,
             transcript: Transcript::default(),
@@ -194,7 +200,8 @@ impl App {
             paste: PasteState::default(),
             pending_images: Vec::new(),
             git_context: GitContextState::default(),
-            update_notice: None,
+            update_prompt: None,
+            post_exit_action: None,
             usage: UsageState::default(),
             mcp: McpState::default(),
             notifications: notify::NotificationManager::new(),
