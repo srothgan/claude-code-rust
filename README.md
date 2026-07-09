@@ -18,7 +18,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Requisites
 
-- Installed Claude Code CLI. 
+- Installed Claude Code CLI, required for authentication and plugin management because the Agent SDK does not yet expose equivalent public APIs.
 
 ## Install
 

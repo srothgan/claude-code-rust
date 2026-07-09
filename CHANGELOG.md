@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixes
+
+- **Markdown list rendering** (#263, @srothgan): Keep streamed inline Markdown handoffs mutable only until delimiters resolve, let stable scrollback advance after resolved blocks, and preserve fenced code layout when code lines look like Markdown list items.
+
 ### Documentation
 
 - **Governance and source install docs** (#262, @srothgan): Document repository release controls and clarify source-build auth/runtime setup.
