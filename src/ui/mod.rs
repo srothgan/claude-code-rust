@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 mod autocomplete;
 mod config;
@@ -11,6 +11,7 @@ mod highlight;
 pub(crate) mod inline_chat_rows;
 pub(crate) mod input;
 pub(crate) mod input_rows;
+pub(crate) mod live_rows;
 mod markdown;
 mod message;
 mod message_rows;

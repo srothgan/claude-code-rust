@@ -1,6 +1,7 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
+use super::style::HumanStyle;
 use super::{doctor, redaction};
 use crate::{Cli, LogsArgs};
 use anyhow::Context as _;
@@ -127,7 +128,7 @@ fn write_status_block(
     label: &str,
     value: &str,
 ) -> std::io::Result<()> {
-    writeln!(stdout, "  {} {}", style.status(status), label)?;
+    writeln!(stdout, "  {} {}", style.log_status(status), label)?;
     writeln!(stdout, "      {value}")
 }
 
@@ -152,52 +153,18 @@ fn path_status(path: &Path) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct HumanStyle {
-    color: bool,
-}
-
 impl HumanStyle {
-    fn detect() -> Self {
-        Self { color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() }
-    }
-
-    fn title(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn heading(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn detail_label(self, text: &str) -> String {
-        if self.color { format!("\x1b[2m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn status(self, status: &str) -> String {
+    fn log_status(self, status: &str) -> String {
         let label = format!("[{status}]");
-        if !self.color {
-            return label;
-        }
-
         match status {
-            "DIR" | "FILE" | "FOUND" | "EXISTS" => format!("\x1b[32m{label}\x1b[0m"),
-            "MISS" => format!("\x1b[2m{label}\x1b[0m"),
+            "DIR" | "FILE" | "FOUND" | "EXISTS" => self.green(label),
+            "MISS" => self.muted(label),
             _ => label,
         }
     }
 
     fn count(self, count: usize, label: &str) -> String {
-        let text = format!("{count} {label}");
-        if self.color { format!("\x1b[32m{text}\x1b[0m") } else { text }
-    }
-
-    fn mode(self, mode: &str) -> String {
-        if self.color { format!("\x1b[2m{mode}\x1b[0m") } else { mode.to_owned() }
-    }
-
-    fn command_block(self, mode: &str, command: &str, purpose: &str) -> String {
-        format!("  {} {}\n      {}", self.mode(mode), command, purpose)
+        self.green(format!("{count} {label}"))
     }
 }
 

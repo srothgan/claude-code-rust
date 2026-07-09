@@ -15,6 +15,7 @@
     "**/.codex/**",
     "**/notes/**",
     "**/analysis/**",
+    "**/scripts/**",
     "**/jscpd-report/**",
     "**/report/**",
     "**/*.test.ts",

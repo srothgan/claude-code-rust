@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use claude_code_rust::app::{App, FullscreenView, SurfaceMode, handle_terminal_event};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 

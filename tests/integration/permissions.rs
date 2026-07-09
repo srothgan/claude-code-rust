@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Permission grant/deny flow integration tests.
 // Validates that PermissionRequest events are correctly attached to tool calls,
 // that the pending_interaction_ids queue is maintained, and that responses

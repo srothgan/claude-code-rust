@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 //! Timing-based paste burst detection for terminals that don't reliably
 //! surface bracketed paste events (notably Windows Terminal with crossterm).

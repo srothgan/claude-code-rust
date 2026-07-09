@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { resolveRepoRoot } from "../shared/repo-root.mjs";
 import {
@@ -206,12 +208,40 @@ function writeThirdPartyNotices(destination) {
 
 function writeMockBinary(platformPackage, destination, output) {
   const isWindows = platformPackage.os.includes("win32");
+  if (isWindows && process.platform === "win32" && platformPackage.cpu.includes(process.arch)) {
+    writeWindowsMockExecutable(destination, output);
+    return;
+  }
+
   const content = isWindows
     ? `@echo off\r\necho ${output}\r\n`
     : `#!/usr/bin/env sh\necho "${output}"\n`;
 
   fs.writeFileSync(destination, content, "utf8");
   ensureExecutableMode(platformPackage, destination);
+}
+
+function writeWindowsMockExecutable(destination, output) {
+  const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-mock-exe-"));
+  const sourcePath = path.join(buildDir, "main.rs");
+  try {
+    fs.writeFileSync(sourcePath, `fn main() {\n    println!(${JSON.stringify(output)});\n}\n`, "utf8");
+    execFileSync("rustc", [sourcePath, "-o", destination], {
+      cwd: buildDir,
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true
+    });
+    fs.rmSync(destination.replace(/\.exe$/i, ".pdb"), { force: true });
+  } catch (error) {
+    const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : "";
+    throw new Error(
+      `Failed to build runnable Windows mock executable at ${path.relative(repoRoot, destination)}. ` +
+        "Install the Rust toolchain or generate real binaries instead.\n" +
+        stderr
+    );
+  } finally {
+    fs.rmSync(buildDir, { recursive: true, force: true });
+  }
 }
 
 function ensureExecutableMode(platformPackage, destination) {

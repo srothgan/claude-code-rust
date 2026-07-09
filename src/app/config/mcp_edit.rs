@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::edit::{
     TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
     insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,

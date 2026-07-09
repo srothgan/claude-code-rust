@@ -1,7 +1,8 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 use super::redaction;
+use super::style::HumanStyle;
 use crate::app::config::store::{
     InspectedConfigDocuments, InspectedConfigFile, InspectedConfigFileKind,
     InspectedConfigFileStatus, inspect_read_only,
@@ -14,7 +15,7 @@ use anyhow::Context as _;
 use serde::Serialize;
 use serde_json::Value;
 use std::fs::{self, OpenOptions, create_dir_all};
-use std::io::{IsTerminal as _, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, macros::format_description};
 
@@ -204,7 +205,7 @@ fn write_show_file(
     style: HumanStyle,
     file: &ConfigFileReport,
 ) -> anyhow::Result<()> {
-    writeln!(stdout, "  {} {}", style.status(file.status), file.label)?;
+    writeln!(stdout, "  {} {}", style.config_status(file.status), file.label)?;
     writeln!(stdout, "      - {} {}", style.detail_label("Scope:"), file.scope)?;
     writeln!(stdout, "      - {} {}", style.detail_label("Path:"), file.path)?;
     writeln!(stdout, "      - {} {}", style.detail_label("State:"), file.status.as_human())?;
@@ -280,7 +281,7 @@ fn write_location(
     style: HumanStyle,
     file: &InspectedConfigFile,
 ) -> std::io::Result<()> {
-    writeln!(stdout, "  {} {}", style.status(file.status), file.label)?;
+    writeln!(stdout, "  {} {}", style.config_status(file.status), file.label)?;
     writeln!(stdout, "      - {} {}", style.detail_label("Scope:"), file.scope)?;
     writeln!(stdout, "      - {} {}", style.detail_label("Path:"), file.path.display())?;
     writeln!(stdout, "      - {} {}", style.detail_label("State:"), file.status.as_human())
@@ -547,49 +548,16 @@ fn timestamp_now() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
 
-#[derive(Clone, Copy, Debug)]
-struct HumanStyle {
-    color: bool,
-}
-
 impl HumanStyle {
-    fn detect() -> Self {
-        Self { color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() }
-    }
-
-    fn title(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn heading(self, text: &str) -> String {
-        if self.color { format!("\x1b[1;36m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn detail_label(self, text: &str) -> String {
-        if self.color { format!("\x1b[2m{text}\x1b[0m") } else { text.to_owned() }
-    }
-
-    fn status(self, status: InspectedConfigFileStatus) -> String {
+    fn config_status(self, status: InspectedConfigFileStatus) -> String {
         let label = format!("[{}]", status.as_tag());
-        if !self.color {
-            return label;
-        }
-
         match status {
-            InspectedConfigFileStatus::Valid => format!("\x1b[32m{label}\x1b[0m"),
-            InspectedConfigFileStatus::Missing => format!("\x1b[2m{label}\x1b[0m"),
+            InspectedConfigFileStatus::Valid => self.green(label),
+            InspectedConfigFileStatus::Missing => self.muted(label),
             InspectedConfigFileStatus::Invalid
             | InspectedConfigFileStatus::Unreadable
-            | InspectedConfigFileStatus::NotFile => format!("\x1b[31m{label}\x1b[0m"),
+            | InspectedConfigFileStatus::NotFile => self.red(label),
         }
-    }
-
-    fn command_block(self, mode: &str, command: &str, purpose: &str) -> String {
-        format!("  {} {}\n      {}", self.mode(mode), command, purpose)
-    }
-
-    fn mode(self, mode: &str) -> String {
-        if self.color { format!("\x1b[2m{mode}\x1b[0m") } else { mode.to_owned() }
     }
 }
 

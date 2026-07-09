@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use super::{
     DEFAULT_MODEL_ALIAS_ID, DEFAULT_PERMISSION_OPTIONS, DefaultPermissionMode, LANGUAGE_MAX_CHARS,
     LANGUAGE_MIN_CHARS, OutputStyle, PreferredNotifChannel, ResolvedChoice, ResolvedSetting,

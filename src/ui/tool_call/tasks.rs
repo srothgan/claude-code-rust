@@ -1,17 +1,16 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 //! Rendering helpers for SDK task-state tools.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::diff::strip_outer_code_fence;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::errors::render_failed_tool_text_content;
 use super::fields::{self, ToolField};
+use super::typed::{self, compact_json, json_bool, json_i64, json_string, json_string_array};
 
 const TASK_OMISSION_MARKER: &str = "...";
 const TASK_MARKER_PENDING: &str = "\u{25a1}";
@@ -56,7 +55,7 @@ pub(super) fn title_marker(tc: &ToolCallInfo) -> Option<(&'static str, Style)> {
     }
 }
 
-pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>>> {
+pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = match tc.sdk_tool_name.as_str() {
         "TaskCreate" => render_create_content(tc),
         "TaskUpdate" => render_update_content(tc),
@@ -64,7 +63,7 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>
         "TaskList" => Vec::new(),
         "TaskOutput" => render_output_content(tc),
         "TaskStop" => render_stop_content(tc),
-        _ => return None,
+        _ => return Vec::new(),
     };
 
     let mut output_lines = render_text_content(tc);
@@ -76,11 +75,11 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Option<Vec<Line<'static>
     }
 
     lines.extend(output_lines);
-    Some(lines)
+    lines
 }
 
 fn render_create_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut task_fields = Vec::new();
 
     if let Some(description) = input.and_then(|input| json_string(input, "description")) {
@@ -93,7 +92,7 @@ fn render_create_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 fn render_update_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut task_fields = Vec::new();
 
     if let Some(input) = input {
@@ -116,7 +115,7 @@ fn render_update_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 fn render_get_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut task_fields = Vec::new();
     if let Some(task_id) = input.and_then(|input| json_string(input, "taskId")) {
         task_fields.push(ToolField::new("Task ID", task_id));
@@ -125,14 +124,14 @@ fn render_get_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 fn render_output_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut task_fields = Vec::new();
     if let Some(input) = input {
         if let Some(task_id) = json_string(input, "task_id") {
             task_fields.push(ToolField::new("Task ID", task_id));
         }
         if let Some(block) = json_bool(input, "block") {
-            task_fields.push(ToolField::new("Block", boolean_label(block)));
+            task_fields.push(ToolField::new("Block", typed::bool_label(block)));
         }
         if let Some(timeout) = json_i64(input, "timeout") {
             task_fields.push(ToolField::new("Timeout", format!("{timeout}ms")));
@@ -142,7 +141,7 @@ fn render_output_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 fn render_stop_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let input = tc.raw_input.as_ref().and_then(serde_json::Value::as_object);
+    let input = typed::input_object(tc);
     let mut task_fields = Vec::new();
     if let Some(input) = input {
         if let Some(task_id) = json_string(input, "task_id") {
@@ -155,32 +154,9 @@ fn render_stop_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 fn render_text_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for content in &tc.content {
-        let model::ToolCallContent::Content(content) = content else {
-            continue;
-        };
-        let model::ContentBlock::Text(text) = &content.content else {
-            continue;
-        };
-        render_text_block(tc, &text.text, &mut lines);
-    }
-    lines
-}
-
-fn render_text_block(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    lines.extend(
-        stripped
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| render_text_line(tc, line)),
-    );
+    typed::render_processed_text_blocks(tc, |stripped| {
+        typed::non_empty_trimmed_lines(stripped).map(|line| render_text_line(tc, line)).collect()
+    })
 }
 
 fn render_text_line(tc: &ToolCallInfo, line: &str) -> Line<'static> {
@@ -238,10 +214,6 @@ fn is_safe_dynamic_label(label: &str) -> bool {
         && label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == ' ')
 }
 
-fn boolean_label(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
 fn status_label(status: &str) -> String {
     match status {
         "pending" => "Pending".to_owned(),
@@ -258,37 +230,6 @@ fn task_update_status(tc: &ToolCallInfo) -> Option<&str> {
 
 fn strip_task_marker_prefix<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
     line.strip_prefix(marker)?.strip_prefix(' ')
-}
-
-fn json_string<'a>(
-    object: &'a serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<&'a str> {
-    object.get(key).and_then(serde_json::Value::as_str).filter(|value| !value.is_empty())
-}
-
-fn json_bool(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<bool> {
-    object.get(key).and_then(serde_json::Value::as_bool)
-}
-
-fn json_i64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<i64> {
-    object.get(key).and_then(serde_json::Value::as_i64)
-}
-
-fn json_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
-    Some(
-        value?
-            .as_array()?
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect(),
-    )
-}
-
-fn compact_json(value: &serde_json::Value) -> Option<String> {
-    serde_json::to_string(value).ok().filter(|value| !value.is_empty())
 }
 
 fn deleted_task_line(text: &str) -> Line<'static> {
@@ -336,7 +277,7 @@ fn omission_line() -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{BlockCache, TerminalSnapshotMode};
+    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -345,40 +286,14 @@ mod tests {
         raw_input: serde_json::Value,
         content: Option<&str>,
     ) -> ToolCallInfo {
-        let mut tc = ToolCallInfo {
-            id: "tc-task".to_owned(),
-            source_message_uuids: Vec::new(),
-            title: "tc-task".to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
-            raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        };
-        if let Some(content) = content {
-            tc.content = vec![model::ToolCallContent::from(content)];
-        }
-        tc
-    }
-
-    fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect()
+        tool_call(
+            "tc-task",
+            "tc-task",
+            sdk_tool_name,
+            raw_input,
+            content,
+            model::ToolCallStatus::Completed,
+        )
     }
 
     fn task_tool_call_title(tc: &ToolCallInfo) -> Line<'static> {

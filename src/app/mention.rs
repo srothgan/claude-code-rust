@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 use super::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget, dialog::DialogState, file_index};
 use std::time::{Duration, Instant};

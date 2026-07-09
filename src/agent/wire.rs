@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::types;
 use serde::{Deserialize, Serialize};
