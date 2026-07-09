@@ -5,6 +5,7 @@ mod config;
 mod doctor;
 mod logs;
 pub mod redaction;
+mod style;
 
 use crate::{Cli, Command};
 use std::io::Write;

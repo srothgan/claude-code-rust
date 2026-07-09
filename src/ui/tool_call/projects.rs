@@ -160,45 +160,19 @@ fn project_method_label(method: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::app::{BlockCache, TerminalSnapshotMode};
+    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     fn projects_tool_call(raw_input: serde_json::Value, content: Option<&str>) -> ToolCallInfo {
-        let mut tc = ToolCallInfo {
-            id: "tc-projects".to_owned(),
-            source_message_uuids: Vec::new(),
-            title: "Projects: search rendering".to_owned(),
-            sdk_tool_name: "Projects".to_owned(),
-            raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        };
-        if let Some(content) = content {
-            tc.content = vec![model::ToolCallContent::from(content)];
-        }
-        tc
-    }
-
-    fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect()
+        tool_call(
+            "tc-projects",
+            "Projects: search rendering",
+            "Projects",
+            raw_input,
+            content,
+            model::ToolCallStatus::Completed,
+        )
     }
 
     #[test]

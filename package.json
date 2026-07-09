@@ -37,7 +37,7 @@
   },
   "scripts": {
     "prepack": "npm --prefix agent-sdk run build",
-    "quality:duplicates": "jscpd --config .jscpd.json src agent-sdk/src scripts bin --no-tips --no-colors",
+    "quality:duplicates": "jscpd --config .jscpd.json src agent-sdk/src bin --no-tips --no-colors",
     "quality:duplicates:summary": "node scripts/quality/jscpd-warning-summary.mjs jscpd-report/jscpd-report.json"
   },
   "devDependencies": {

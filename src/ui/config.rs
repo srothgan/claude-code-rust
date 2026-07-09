@@ -696,16 +696,6 @@ mod tests {
 
     #[test]
     fn language_overlay_renders_inline_validation_message() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -836,16 +826,6 @@ mod tests {
 
     #[test]
     fn compact_settings_list_does_not_inline_warning_for_supported_output_style() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(80, 16);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -868,15 +848,6 @@ mod tests {
 
     #[test]
     fn compact_settings_supported_output_style_does_not_render_warning_lines() {
-        fn buffer_lines(buffer: &Buffer) -> Vec<String> {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect()
-        }
-
         let backend = TestBackend::new(42, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -927,16 +898,6 @@ mod tests {
 
     #[test]
     fn normal_layout_renders_settings_limitation_hint() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(180, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -956,16 +917,6 @@ mod tests {
 
     #[test]
     fn compact_layout_renders_settings_limitation_hint() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -996,16 +947,6 @@ mod tests {
 
     #[test]
     fn status_tab_renders_session_info() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1026,16 +967,6 @@ mod tests {
 
     #[test]
     fn status_tab_help_omits_space_edit() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1056,16 +987,6 @@ mod tests {
 
     #[test]
     fn usage_tab_help_shows_refresh_hint() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1085,16 +1006,6 @@ mod tests {
 
     #[test]
     fn settings_tab_help_shows_edit_keys() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1115,16 +1026,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_renders_inventory_shell() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1166,16 +1067,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_renders_marketplace_plugin_title_and_plugin_id() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1205,16 +1096,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_hides_plugins_from_other_projects() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1251,16 +1132,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1281,16 +1152,6 @@ mod tests {
 
     #[test]
     fn marketplace_tab_renders_configured_heading_and_add_placeholder() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1311,16 +1172,6 @@ mod tests {
 
     #[test]
     fn installed_plugin_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1385,16 +1236,6 @@ mod tests {
 
     #[test]
     fn plugin_install_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1430,16 +1271,6 @@ mod tests {
 
     #[test]
     fn marketplace_actions_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1473,16 +1304,6 @@ mod tests {
 
     #[test]
     fn add_marketplace_overlay_renders_examples() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1525,16 +1346,6 @@ mod tests {
     #[test]
     fn mcp_details_overlay_renders_selected_server_details() {
         use std::collections::BTreeMap;
-
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
 
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1613,16 +1424,6 @@ mod tests {
 
     #[test]
     fn status_tab_help_shows_generate_and_rename_when_session_is_active() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1643,16 +1444,6 @@ mod tests {
 
     #[test]
     fn config_footer_renders_status_message_when_present() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
