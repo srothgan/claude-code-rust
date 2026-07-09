@@ -5,9 +5,9 @@
 use crate::app::ChatMessage;
 use crate::app::{BlockCache, IncrementalMarkdown, MarkdownRenderKey, TextBlock};
 use crate::ui::tool_call;
+use crate::ui::wrap::wrap_markdown_lines_to_physical_rows;
 use ratatui::style::Color;
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::text::Line;
 
 #[cfg(test)]
 use super::message_rows::build_user_system_message_rows;
@@ -135,7 +135,7 @@ pub(super) fn render_text_cached(
     // but for completed messages it persists.
     let h = {
         let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        wrap_markdown_lines_to_physical_rows(&fresh, width).len()
     };
     cache.store(fresh);
     cache.set_height(h, width);
