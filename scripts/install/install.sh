@@ -447,7 +447,7 @@ resolve_npm_install_choice() {
   fi
 
   if [ "$keep_npm" -eq 0 ] &&
-    confirm_default_no 'Remove the npm install so only this installer owns `claude-rs` on PATH?'
+    confirm_default_no "Remove the npm install so only this installer owns \`claude-rs\` on PATH?"
   then
     remove_npm_install
     return
