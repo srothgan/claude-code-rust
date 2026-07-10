@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::UsageSourceKind;
+use crate::app::{ExtraUsage, UsageSourceKind};
 
 #[test]
 fn formats_day_scale_reset() {
@@ -54,4 +54,86 @@ fn collects_only_present_windows() {
     let labels =
         visible_windows(&snapshot).into_iter().map(|window| window.label).collect::<Vec<_>>();
     assert_eq!(labels, vec!["5-hour", "7-day Opus"]);
+}
+
+#[test]
+fn formats_limits_summary_as_markdown_table() {
+    let snapshot = UsageSnapshot {
+        source: UsageSourceKind::Oauth,
+        fetched_at: SystemTime::now(),
+        five_hour: Some(UsageWindow {
+            label: "5-hour",
+            utilization: 47.4,
+            resets_at: None,
+            reset_description: Some("resets in 2h 14m".to_owned()),
+        }),
+        seven_day: Some(UsageWindow {
+            label: "7-day",
+            utilization: 62.0,
+            resets_at: None,
+            reset_description: Some("resets in 4d 11h".to_owned()),
+        }),
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: Some(ExtraUsage {
+            monthly_limit: Some(20.0),
+            used_credits: Some(12.4),
+            utilization: Some(62.0),
+            currency: Some("USD".to_owned()),
+        }),
+    };
+
+    let summary = format_limits_summary(&snapshot);
+
+    assert!(summary.contains("| Window | Used | Reset |"));
+    assert!(summary.contains("| 5-hour | 47% | resets in 2h 14m |"));
+    assert!(summary.contains("| 7-day | 62% | resets in 4d 11h |"));
+    assert!(summary.contains("| Extra credits | Used |"));
+    assert!(summary.contains("| USD | 12.40 / 20.00 |"));
+}
+
+#[test]
+fn limits_summary_omits_absent_optional_sections() {
+    let snapshot = UsageSnapshot {
+        source: UsageSourceKind::Oauth,
+        fetched_at: SystemTime::now(),
+        five_hour: Some(UsageWindow {
+            label: "5-hour",
+            utilization: 10.0,
+            resets_at: None,
+            reset_description: None,
+        }),
+        seven_day: None,
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: None,
+    };
+
+    let summary = format_limits_summary(&snapshot);
+
+    assert!(summary.contains("| 5-hour | 10% | unavailable |"));
+    assert!(!summary.contains("7-day"));
+    assert!(!summary.contains("Extra credits"));
+}
+
+#[test]
+fn limits_summary_escapes_markdown_table_cells() {
+    let snapshot = UsageSnapshot {
+        source: UsageSourceKind::Oauth,
+        fetched_at: SystemTime::now(),
+        five_hour: Some(UsageWindow {
+            label: "5-hour",
+            utilization: 10.0,
+            resets_at: None,
+            reset_description: Some("resets | soon\nreally".to_owned()),
+        }),
+        seven_day: None,
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        extra_usage: None,
+    };
+
+    let summary = format_limits_summary(&snapshot);
+
+    assert!(summary.contains("| 5-hour | 10% | resets \\| soon really |"));
 }

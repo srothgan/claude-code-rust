@@ -414,12 +414,14 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 return;
             }
             crate::app::usage::apply_refresh_success(app, snapshot);
+            crate::app::usage::emit_pending_limits_success(app);
         }
         ClientEvent::UsageRefreshFailed { epoch, message, source } => {
             if app.session_runtime.session_scope_epoch != epoch {
                 return;
             }
-            crate::app::usage::apply_refresh_failure(app, message, source);
+            crate::app::usage::apply_refresh_failure(app, message.clone(), source);
+            crate::app::usage::emit_pending_limits_failure(app, &message);
         }
         ClientEvent::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             if app.cwd_raw != cwd_raw {
