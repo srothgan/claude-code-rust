@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use crossterm::cursor::{Hide, Show};
+use crossterm::cursor::{Hide, SetCursorStyle, Show};
 use crossterm::event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange};
 #[cfg(target_os = "macos")]
 use crossterm::event::{
@@ -24,6 +24,8 @@ pub(super) enum TerminalModeAction {
     DisableFocusChange,
     HideCursor,
     ShowCursor,
+    SetBlinkingBarCursor,
+    RestoreDefaultCursorShape,
     DisableLineWrap,
     EnableLineWrap,
     #[cfg(target_os = "macos")]
@@ -38,10 +40,12 @@ const CHAT_STARTUP_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::PushKeyboardEnhancement,
     TerminalModeAction::EnableFocusChange,
     TerminalModeAction::DisableLineWrap,
+    TerminalModeAction::SetBlinkingBarCursor,
     TerminalModeAction::ShowCursor,
 ];
 
 const ENTER_FULLSCREEN_ACTIONS: &[TerminalModeAction] = &[
+    TerminalModeAction::RestoreDefaultCursorShape,
     TerminalModeAction::HideCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::EnterAlternateScreen,
@@ -50,10 +54,12 @@ const ENTER_FULLSCREEN_ACTIONS: &[TerminalModeAction] = &[
 const EXIT_FULLSCREEN_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::LeaveAlternateScreen,
     TerminalModeAction::DisableLineWrap,
+    TerminalModeAction::SetBlinkingBarCursor,
     TerminalModeAction::ShowCursor,
 ];
 
 const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
+    TerminalModeAction::RestoreDefaultCursorShape,
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableMouseCapture,
@@ -64,6 +70,7 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
 ];
 
 const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
+    TerminalModeAction::RestoreDefaultCursorShape,
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
@@ -115,6 +122,12 @@ pub(super) fn apply_actions(
             TerminalModeAction::DisableFocusChange => execute!(stdout, DisableFocusChange),
             TerminalModeAction::HideCursor => execute!(stdout, Hide),
             TerminalModeAction::ShowCursor => execute!(stdout, Show),
+            TerminalModeAction::SetBlinkingBarCursor => {
+                execute!(stdout, SetCursorStyle::BlinkingBar)
+            }
+            TerminalModeAction::RestoreDefaultCursorShape => {
+                execute!(stdout, SetCursorStyle::DefaultUserShape)
+            }
             TerminalModeAction::DisableLineWrap => execute!(stdout, DisableLineWrap),
             TerminalModeAction::EnableLineWrap => {
                 execute!(stdout, crossterm::terminal::EnableLineWrap)
@@ -161,6 +174,7 @@ mod tests {
                 TerminalModeAction::PushKeyboardEnhancement,
                 TerminalModeAction::EnableFocusChange,
                 TerminalModeAction::DisableLineWrap,
+                TerminalModeAction::SetBlinkingBarCursor,
                 TerminalModeAction::ShowCursor,
             ]
         );
@@ -171,6 +185,7 @@ mod tests {
         assert_eq!(
             enter_fullscreen_actions(),
             &[
+                TerminalModeAction::RestoreDefaultCursorShape,
                 TerminalModeAction::HideCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::EnterAlternateScreen,
@@ -185,6 +200,7 @@ mod tests {
             &[
                 TerminalModeAction::LeaveAlternateScreen,
                 TerminalModeAction::DisableLineWrap,
+                TerminalModeAction::SetBlinkingBarCursor,
                 TerminalModeAction::ShowCursor,
             ]
         );
@@ -195,6 +211,7 @@ mod tests {
         assert_eq!(
             shutdown_restore_actions(),
             &[
+                TerminalModeAction::RestoreDefaultCursorShape,
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableMouseCapture,
@@ -211,6 +228,7 @@ mod tests {
         assert_eq!(
             release_to_child_actions(),
             &[
+                TerminalModeAction::RestoreDefaultCursorShape,
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableFocusChange,
@@ -241,10 +259,29 @@ mod tests {
 
     #[test]
     fn shutdown_restore_actions_restore_shell_friendly_defaults() {
+        assert!(
+            shutdown_restore_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
+        );
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::ShowCursor));
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::EnableLineWrap));
         #[cfg(target_os = "macos")]
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::PopKeyboardEnhancement));
+    }
+
+    #[test]
+    fn chat_cursor_shape_actions_are_restored_on_surface_changes() {
+        assert!(chat_startup_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
+        assert!(return_from_child_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
+        assert!(exit_fullscreen_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
+        assert!(
+            enter_fullscreen_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
+        );
+        assert!(
+            release_to_child_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
+        );
+        assert!(
+            shutdown_restore_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
+        );
     }
 
     #[test]

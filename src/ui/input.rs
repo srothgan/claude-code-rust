@@ -8,7 +8,7 @@ use crate::app::{App, FocusOwner};
 use crate::ui::theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use tui_textarea::TextArea;
+use tui_textarea::{CursorRenderMode, TextArea};
 
 use super::autocomplete;
 
@@ -103,6 +103,7 @@ pub(crate) fn configure_input_textarea(app: &mut App) {
         textarea.set_placeholder_text("Type a message...");
         textarea.set_placeholder_style(Style::default().fg(theme::DIM));
         textarea.set_cursor_line_style(Style::default());
+        textarea.set_cursor_render_mode(CursorRenderMode::Hidden);
         textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     }
 
@@ -123,6 +124,10 @@ pub(crate) fn configure_input_textarea(app: &mut App) {
         );
         app.input.highlight_version = app.input.content_version;
     }
+}
+
+pub(crate) fn should_show_native_textarea_cursor(app: &App) -> bool {
+    app.focus_owner() == FocusOwner::Input
 }
 
 fn apply_textarea_highlights(
@@ -225,6 +230,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier};
     use ratatui::widgets::Widget;
+    use tui_textarea::CursorRenderMode;
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -312,7 +318,16 @@ mod tests {
     }
 
     #[test]
-    fn direct_textarea_render_preserves_cursor_cell_at_line_end() {
+    fn configure_input_textarea_uses_hidden_cursor_render_mode() {
+        let mut app = App::test_default();
+
+        configure_input_textarea(&mut app);
+
+        assert_eq!(app.input.editor().cursor_render_mode(), CursorRenderMode::Hidden);
+    }
+
+    #[test]
+    fn direct_textarea_render_hides_cursor_cell_at_line_end() {
         let mut app = App::test_default();
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
@@ -324,7 +339,8 @@ mod tests {
 
         let cursor_cell = buffer.cell((5, 0)).expect("cursor cell");
         assert_eq!(cursor_cell.symbol(), " ");
-        assert!(cursor_cell.style().add_modifier.contains(Modifier::REVERSED));
+        assert!(!cursor_cell.style().add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(app.input.editor().rendered_cursor_position(), Some((5, 0).into()));
     }
 
     #[test]

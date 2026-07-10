@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **Native textarea cursor** (#268, @srothgan): Use `tui-textarea-2` native cursor positioning for the chat composer, hide the textarea-drawn cursor, and restore terminal cursor shape when leaving chat surfaces.
 - **Startup update screen** (#264, @srothgan): Show available updates in a startup screen with install, skip, and release-notes actions.
 
 ### Fixes
