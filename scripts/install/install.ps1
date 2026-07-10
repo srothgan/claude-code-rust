@@ -3,6 +3,7 @@ param(
     [string]$InstallDir,
     [switch]$Yes,
     [switch]$NoModifyPath,
+    [switch]$Uninstall,
     [switch]$Help
 )
 
@@ -24,6 +25,7 @@ Options:
   -InstallDir <dir>      App install directory.
   -Yes                   Accept prompts.
   -NoModifyPath          Do not update the user PATH.
+  -Uninstall             Remove the script install layout and user PATH entry.
   -Help                  Show this help.
 
 Environment:
@@ -31,6 +33,7 @@ Environment:
   CLAUDE_RS_INSTALL_DIR
   CLAUDE_RS_NON_INTERACTIVE
   CLAUDE_RS_NO_MODIFY_PATH
+  CLAUDE_RS_UNINSTALL
 "@
 }
 
@@ -68,6 +71,9 @@ if ($env:CI) {
 }
 if (Test-TruthyEnv "CLAUDE_RS_NO_MODIFY_PATH") {
     $NoModifyPath = $true
+}
+if (Test-TruthyEnv "CLAUDE_RS_UNINSTALL") {
+    $Uninstall = $true
 }
 
 function Fail {
@@ -181,6 +187,31 @@ function Replace-AppDirectory {
     }
 }
 
+function Test-ScriptInstallDirectory {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $false
+    }
+
+    $packageJsonPath = Join-Path $Path "package.json"
+    if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs.exe") -PathType Leaf)) {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs-bridge-bun.exe") -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
+        return ($packageJson.PSObject.Properties.Name -contains "name") -and $packageJson.name -eq $RootPackage
+    } catch {
+        return $false
+    }
+}
+
 function Split-PathEntries {
     param([string]$PathValue)
     if ([string]::IsNullOrWhiteSpace($PathValue)) {
@@ -196,13 +227,27 @@ function Add-UserPath {
     }
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $entries = @(Split-PathEntries $userPath)
-    $alreadyPresent = $entries | Where-Object { $_.TrimEnd("\") -ieq $Directory.TrimEnd("\") }
-    if ($alreadyPresent) {
+    $normalizedDirectory = $Directory.TrimEnd("\")
+    $remainingEntries = @($entries | Where-Object { $_.TrimEnd("\") -ine $normalizedDirectory })
+    if ($entries.Count -gt 0 -and $entries[0].TrimEnd("\") -ieq $normalizedDirectory) {
         return $false
     }
-    $newEntries = @($entries + $Directory)
+    $newEntries = @($Directory) + $remainingEntries
     [Environment]::SetEnvironmentVariable("Path", ($newEntries -join [IO.Path]::PathSeparator), "User")
     return $true
+}
+
+function Remove-UserPath {
+    param([string]$Directory)
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @(Split-PathEntries $userPath)
+    $normalizedDirectory = $Directory.TrimEnd("\")
+    $newEntries = @($entries | Where-Object { $_.TrimEnd("\") -ine $normalizedDirectory })
+    if ($newEntries.Count -ne $entries.Count) {
+        [Environment]::SetEnvironmentVariable("Path", ($newEntries -join [IO.Path]::PathSeparator), "User")
+        return $true
+    }
+    return $false
 }
 
 function Prepend-ProcessPath {
@@ -213,6 +258,48 @@ function Prepend-ProcessPath {
 function Invoke-ClaudeRs {
     param([string[]]$CommandArgs)
     & "claude-rs" @CommandArgs
+}
+
+function Warn-OtherClaudeRsCommands {
+    param([string]$ExpectedCommand)
+    $commands = @(Get-Command "claude-rs" -All -ErrorAction SilentlyContinue)
+    foreach ($command in $commands) {
+        if (-not $command.Source) {
+            continue
+        }
+        if ($command.Source.TrimEnd("\") -ieq $ExpectedCommand.TrimEnd("\")) {
+            continue
+        }
+        Write-Warning "another claude-rs is on PATH at $($command.Source); remove the old install if it takes precedence in new shells"
+    }
+}
+
+function Uninstall-ScriptInstall {
+    $installParent = Split-Path -Parent $InstallDir
+    $lock = Acquire-InstallLock -InstallParent $installParent
+    try {
+        if (Remove-UserPath -Directory $InstallDir) {
+            Write-Host "Removed $InstallDir from the user PATH. Reopen your shell for new sessions to see the change."
+        }
+
+        if (Test-Path -LiteralPath $InstallDir) {
+            if (Test-ScriptInstallDirectory -Path $InstallDir) {
+                Remove-Item -LiteralPath $InstallDir -Recurse -Force
+                Write-Host "Removed script install directory $InstallDir"
+            } else {
+                Write-Warning "not removing $InstallDir because it does not look like a claude-rs script install"
+            }
+        }
+    } finally {
+        $lock.Dispose()
+    }
+
+    Write-Host "Script install uninstall complete"
+}
+
+if ($Uninstall) {
+    Uninstall-ScriptInstall
+    exit 0
 }
 
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-install-$PID"
@@ -273,8 +360,9 @@ try {
     if ($resolved -and ($resolved.TrimEnd("\") -ine $expectedCommand.TrimEnd("\"))) {
         Write-Warning "claude-rs resolves to $resolved instead of $expectedCommand"
     }
+    Warn-OtherClaudeRsCommands -ExpectedCommand $expectedCommand
     if ($pathChanged) {
-        Write-Host "Updated the user PATH. Reopen your shell to use claude-rs in new sessions."
+        Write-Host "Updated the user PATH. Reopen your shell to use this script install in new sessions."
     }
     Write-Host "Installed claude-rs to $InstallDir"
 } finally {

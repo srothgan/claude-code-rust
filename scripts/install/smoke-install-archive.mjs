@@ -262,8 +262,31 @@ function pathInside(candidate, root) {
 }
 
 function normalizePathForCompare(filePath) {
-  const resolved = path.resolve(filePath);
+  let resolved = path.resolve(stripExtendedLengthPrefix(filePath));
+  try {
+    // Canonicalize so both sides match how `doctor` reports the resolved path:
+    // it resolves the macOS `/var` -> `/private/var` symlink and Windows 8.3
+    // short names, which a plain `path.resolve` leaves divergent from the raw
+    // mkdtemp path.
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // The path may not exist in mock scenarios; fall back to the resolved form.
+  }
+  resolved = stripExtendedLengthPrefix(resolved);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function stripExtendedLengthPrefix(filePath) {
+  if (process.platform !== "win32") {
+    return filePath;
+  }
+  if (filePath.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${filePath.slice("\\\\?\\UNC\\".length)}`;
+  }
+  if (filePath.startsWith("\\\\?\\")) {
+    return filePath.slice("\\\\?\\".length);
+  }
+  return filePath;
 }
 
 function shellQuote(value) {

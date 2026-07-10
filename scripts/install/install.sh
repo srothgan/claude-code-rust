@@ -12,12 +12,16 @@ bin_dir="${CLAUDE_RS_BIN_DIR:-$HOME/.local/bin}"
 yes=0
 non_interactive=0
 no_modify_path=0
+uninstall=0
 
 case "${CLAUDE_RS_NON_INTERACTIVE:-}" in
   1 | true | TRUE | yes | YES) non_interactive=1 ;;
 esac
 case "${CLAUDE_RS_NO_MODIFY_PATH:-}" in
   1 | true | TRUE | yes | YES) no_modify_path=1 ;;
+esac
+case "${CLAUDE_RS_UNINSTALL:-}" in
+  1 | true | TRUE | yes | YES) uninstall=1 ;;
 esac
 if [ -n "${CI:-}" ]; then
   non_interactive=1
@@ -34,6 +38,7 @@ Options:
   --yes, -y                 Accept prompts.
   --non-interactive         Do not prompt.
   --no-modify-path          Do not update shell profile PATH.
+  --uninstall               Remove the script install layout and managed PATH block.
   --help                    Show this help.
 
 Environment:
@@ -42,6 +47,7 @@ Environment:
   CLAUDE_RS_BIN_DIR
   CLAUDE_RS_NON_INTERACTIVE
   CLAUDE_RS_NO_MODIFY_PATH
+  CLAUDE_RS_UNINSTALL
 EOF
 }
 
@@ -70,6 +76,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-modify-path)
       no_modify_path=1
+      ;;
+    --uninstall)
+      uninstall=1
       ;;
     --help | -h)
       usage
@@ -311,6 +320,58 @@ write_launcher() {
   mv "$tmp_launcher" "$launcher"
 }
 
+is_script_install_dir() {
+  app="$1"
+  [ -d "$app" ] || return 1
+  [ -f "$app/package.json" ] || return 1
+  [ -f "$app/claude-rs" ] || return 1
+  [ -f "$app/claude-rs-bridge-bun" ] || return 1
+  grep -q '"name"[ 	]*:[ 	]*"claude-code-rust"' "$app/package.json" 2>/dev/null
+}
+
+remove_launcher_if_owned() {
+  launcher="$bin_dir/claude-rs"
+  app_binary="$install_dir/claude-rs"
+  [ -f "$launcher" ] || return
+  if grep -F "$app_binary" "$launcher" >/dev/null 2>&1; then
+    rm -f "$launcher"
+    info "Removed launcher $launcher"
+  else
+    warn "not removing $launcher because it does not point at $app_binary"
+  fi
+}
+
+remove_managed_path_block() {
+  profile="$HOME/.profile"
+  [ -f "$profile" ] || return
+  tmp_profile="$profile.tmp.$$"
+  awk '
+    /^# claude-rs PATH start$/ { skip = 1; next }
+    /^# claude-rs PATH end$/ { skip = 0; next }
+    skip != 1 { print }
+  ' "$profile" > "$tmp_profile" && mv "$tmp_profile" "$profile"
+}
+
+uninstall_script_install() {
+  install_parent="$(dirname "$install_dir")"
+  mkdir -p "$install_parent"
+  lock_dir="$(acquire_lock "$install_parent")"
+
+  remove_launcher_if_owned
+  remove_managed_path_block
+
+  if [ -e "$install_dir" ]; then
+    if is_script_install_dir "$install_dir"; then
+      rm -rf "$install_dir"
+      info "Removed script install directory $install_dir"
+    else
+      warn "not removing $install_dir because it does not look like a claude-rs script install"
+    fi
+  fi
+
+  info "Script install uninstall complete"
+}
+
 manual_path_line() {
   if [ "$bin_dir" = "$HOME/.local/bin" ]; then
     # shellcheck disable=SC2016
@@ -328,11 +389,21 @@ path_has_bin_dir() {
   esac
 }
 
+path_starts_with_bin_dir() {
+  case "$PATH:" in
+    "$bin_dir:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 maybe_update_path() {
-  path_has_bin_dir && return
+  path_starts_with_bin_dir && return
   [ "$no_modify_path" -eq 1 ] && {
     info "Add this to your shell profile:"
     manual_path_line
+    if path_has_bin_dir; then
+      warn "$bin_dir is already on PATH but not first; another claude-rs may take precedence in new shells"
+    fi
     return
   }
 
@@ -349,6 +420,7 @@ maybe_update_path() {
 
   if [ "$should_modify" -eq 1 ]; then
     profile="$HOME/.profile"
+    remove_managed_path_block
     {
       printf '\n# claude-rs PATH start\n'
       manual_path_line
@@ -361,6 +433,28 @@ maybe_update_path() {
   fi
 }
 
+warn_other_claude_rs_commands() {
+  launcher="$bin_dir/claude-rs"
+  if command -v which >/dev/null 2>&1; then
+    which -a claude-rs 2>/dev/null | while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      [ "$candidate" = "$launcher" ] && continue
+      warn "another claude-rs is on PATH at $candidate; remove the old install if it takes precedence in new shells"
+    done
+  fi
+}
+
+if [ "$uninstall" -eq 1 ]; then
+  need_cmd mkdir
+  need_cmd rm
+  need_cmd grep
+  need_cmd awk
+  need_cmd mv
+  trap 'rm -rf "${lock_dir:-}"' EXIT HUP INT TERM
+  uninstall_script_install
+  exit 0
+fi
+
 need_cmd uname
 need_cmd mktemp
 need_cmd mkdir
@@ -368,6 +462,8 @@ need_cmd mv
 need_cmd rm
 need_cmd tar
 need_cmd chmod
+need_cmd grep
+need_cmd awk
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/claude-rs-install.XXXXXX")"
 cleanup() {
@@ -434,5 +530,6 @@ launcher="$bin_dir/claude-rs"
 if [ "$resolved" != "$launcher" ]; then
   warn "claude-rs resolves to $resolved instead of $launcher"
 fi
+warn_other_claude_rs_commands
 
 info "Installed claude-rs to $install_dir"
