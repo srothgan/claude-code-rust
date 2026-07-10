@@ -21,6 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      should_release: ${{ steps.gate.outputs.should_release }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -53,16 +54,21 @@ jobs:
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
-      - name: Require new git tag
+      - name: Determine whether a release is needed
+        id: gate
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
           if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
-            echo "::error::Release tag already exists: $TAG"
-            exit 1
+            echo "::notice::Crate version matches existing tag $TAG; nothing to release. Skipping."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release tag $TAG is new; proceeding with release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Require new npm versions
+        if: steps.gate.outputs.should_release == 'true'
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
@@ -95,10 +101,12 @@ jobs:
           check_recoverable "@srothgan/claude-code-rust-win32-x64-msvc"
 
       - name: Validate Bun runtime manifest
+        if: steps.gate.outputs.should_release == 'true'
         run: node scripts/runtime/stage-bun-runtime.mjs --check --verify-upstream
 
   agent-sdk-preflight:
     needs: [verify]
+    if: needs.verify.outputs.should_release == 'true'
     uses: ./.github/workflows/_agent-sdk.yml
     permissions:
       contents: read
@@ -158,6 +166,7 @@ jobs:
 
   stage-bun-runtimes:
     needs: [verify]
+    if: needs.verify.outputs.should_release == 'true'
     name: Stage bundled Bun runtimes
     runs-on: ubuntu-latest
     steps:

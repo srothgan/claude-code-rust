@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 
 - **Duplicate-code gate** (#262, @srothgan): Add PR jscpd thresholds with a 1% warning, 2% failure, and `pr-gate` enforcement.
 - **Advisory and tooling updates** (#262, @srothgan): Refresh dependency advisory/tooling locks and remove resolved cargo-deny advisory ignores.
+- **Release skip on unchanged version** (#269, @srothgan): Skip the release workflow with a green no-op when a `Cargo.toml` push leaves the crate version unchanged.
 
 ## [0.13.4] - 2026-07-06 [Changes][v0.13.4]
 
