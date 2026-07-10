@@ -28,7 +28,36 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 npm install -g claude-code-rust
 ```
 
-The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary for your OS and architecture.
+The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary, Agent SDK bridge, and bundled private Bun runtime for your OS and architecture.
+
+### Install script (optional, v0.14.0+)
+
+The install script downloads a complete GitHub Release archive and does not require Node.js, npm, or Bun on the user's machine.
+
+**macOS/Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | sh
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+```
+
+**To pin a release:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | CLAUDE_RS_RELEASE=v0.14.0 sh
+```
+
+```powershell
+$env:CLAUDE_RS_RELEASE = "v0.14.0"
+irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+```
+
+### Troubleshooting npm installs
 
 If `claude-rs` reports a missing platform package, check whether optional dependencies were omitted:
 
