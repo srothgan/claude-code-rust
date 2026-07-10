@@ -25,7 +25,7 @@ Supported npm platforms are Linux x64/arm64 with glibc, Windows x64/arm64, and m
 
 Install scripts are available in GitHub Releases starting with `v0.14.0`. This is an optional install path for users who do not want npm to own the global command. The npm package remains the recommended install path.
 
-The scripts download a complete release archive from GitHub, verify it against the release `SHA256SUMS`, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run `claude-rs doctor --strict`.
+The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Strict runtime diagnostics are available with the opt-in verify flag.
 
 **macOS/Linux:**
 
@@ -93,6 +93,10 @@ The Unix installer also accepts:
 - `--yes` or `-y`
 - `--non-interactive`
 - `--no-modify-path`
+- `--verify`
+- `--run`
+- `--remove-npm`
+- `--keep-npm`
 - `--uninstall`
 
 When using the PowerShell one-liner, configure the installer with environment variables because arguments cannot be passed through `iex`:
@@ -116,13 +120,29 @@ $env:CLAUDE_RS_UNINSTALL = "1"
 irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
 ```
 
+Other PowerShell flags available when the script is downloaded first:
+
+- `-Verify`
+- `-Run`
+- `-RemoveNpm`
+- `-KeepNpm`
+
+With the PowerShell one-liner, use the matching environment variables:
+
+- `CLAUDE_RS_VERIFY=1`
+- `CLAUDE_RS_RUN=1`
+- `CLAUDE_RS_REMOVE_NPM=1`
+- `CLAUDE_RS_KEEP_NPM=1`
+
+After a successful install, an interactive run asks whether to start `claude-rs` immediately. This runs the installed binary directly, so it works even before a new shell picks up PATH changes. Use `--run`, `-Run`, or `CLAUDE_RS_RUN=1` to start it automatically after install.
+
 ### Supported Script Platforms
 
 Install archives are published for Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
 
 Linux musl distributions are not supported by the install archives yet. Use npm if your platform has a matching package, or build from source.
 
-The scripts do not run npm, do not query npm, and do not require user-installed Node.js or Bun. If the selected release does not contain install archives, the installer exits with:
+The scripts do not require user-installed Node.js or Bun. If npm is available and a global `claude-code-rust` install is present, the installer reports it and can remove it after explicit confirmation so the script install owns `claude-rs` on `PATH`. If the selected release does not contain install archives, the installer exits with:
 
 ```text
 install script is currently not available for this release
@@ -145,16 +165,16 @@ To see every visible `claude-rs` on Windows:
 Get-Command claude-rs -All
 ```
 
-To switch from npm to the install script, remove the npm package first when you want a clean handoff:
+To switch from npm to the install script, either let the installer prompt you or pass the explicit removal flag:
 
 ```bash
-npm uninstall -g claude-code-rust
-curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | sh -s -- --remove-npm
 ```
 
 ```powershell
-npm uninstall -g claude-code-rust
+$env:CLAUDE_RS_REMOVE_NPM = "1"
 irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+Remove-Item Env:\CLAUDE_RS_REMOVE_NPM
 ```
 
 To switch from the install script back to npm, uninstall the script layout first:
@@ -173,7 +193,7 @@ npm install -g claude-code-rust
 
 The script uninstall path removes the script install directory, removes the Unix launcher when it points at that directory, and removes installer-managed PATH entries where supported. It refuses to delete an app directory that does not look like a `claude-code-rust` script install.
 
-Simple opposite-method uninstall commands are the safest fix: use `npm uninstall -g claude-code-rust` before switching to the script installer, and use the script installer's uninstall mode before switching to npm. The installers do not silently remove the other install method because that would delete files outside their ownership and can be surprising in managed environments.
+The installers do not silently remove the other install method because that would delete files outside their ownership and can be surprising in managed environments. For non-interactive installs, use `--remove-npm` / `CLAUDE_RS_REMOVE_NPM=1` when you want the script installer to remove the npm install, or `--keep-npm` / `CLAUDE_RS_KEEP_NPM=1` when you want it kept without prompting.
 
 ## Troubleshooting npm Installs
 
