@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **In-chat usage limits** (#270, @srothgan): Add `/limits` to print recent 5-hour, 7-day, and extra-credit usage into the chat from the existing usage snapshot/refresh pipeline, including a loading message for stale data and a concise refresh failure message while keeping `/usage` as the fullscreen Usage tab.
 - **Native textarea cursor** (#268, @srothgan): Use `tui-textarea-2` native cursor positioning for the chat composer, hide the textarea-drawn cursor, and restore terminal cursor shape when leaving chat surfaces.
 - **Startup update screen** (#264, @srothgan): Show available updates in a startup screen with install, skip, and release-notes actions.
 
