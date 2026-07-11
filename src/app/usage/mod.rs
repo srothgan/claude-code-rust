@@ -3,7 +3,10 @@ mod cli;
 mod oauth;
 
 use crate::agent::events::ClientEvent;
-use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
+use crate::app::{
+    App, ExtraUsage, SystemSeverity, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow,
+};
+use std::fmt::Write as _;
 use std::time::{Duration, SystemTime};
 
 const USAGE_REFRESH_TTL: Duration = Duration::from_secs(30);
@@ -17,9 +20,20 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     if app.usage.in_flight {
         return;
     }
-    if app.usage.snapshot.as_ref().is_some_and(is_snapshot_fresh) {
+    if app.usage.snapshot.as_ref().is_some_and(snapshot_is_fresh) {
         return;
     }
+    request_refresh(app);
+}
+
+pub(crate) fn request_limits_summary(app: &mut App) {
+    if app.usage.snapshot.as_ref().is_some_and(snapshot_is_fresh) {
+        push_limits_summary(app);
+        return;
+    }
+
+    app.usage.pending_limits_response = true;
+    push_info_message(app, "Getting recent usage info.");
     request_refresh(app);
 }
 
@@ -76,6 +90,21 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.usage.in_flight = false;
     app.usage.last_error = None;
     app.usage.last_attempted_source = None;
+    app.usage.pending_limits_response = false;
+}
+
+pub(crate) fn emit_pending_limits_success(app: &mut App) {
+    if !std::mem::take(&mut app.usage.pending_limits_response) {
+        return;
+    }
+    push_limits_summary(app);
+}
+
+pub(crate) fn emit_pending_limits_failure(app: &mut App, message: &str) {
+    if !std::mem::take(&mut app.usage.pending_limits_response) {
+        return;
+    }
+    push_error_message(app, &format!("Unable to get recent usage info: {message}"));
 }
 
 pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
@@ -104,8 +133,85 @@ pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
     if description.is_empty() { None } else { Some(description.to_owned()) }
 }
 
-fn is_snapshot_fresh(snapshot: &UsageSnapshot) -> bool {
+pub(crate) fn format_limits_summary(snapshot: &UsageSnapshot) -> String {
+    let mut rows = Vec::new();
+    if let Some(window) = snapshot.five_hour.as_ref() {
+        rows.push(format_limits_window_row(window));
+    }
+    if let Some(window) = snapshot.seven_day.as_ref() {
+        rows.push(format_limits_window_row(window));
+    }
+
+    let mut out = String::new();
+    if rows.is_empty() {
+        out.push_str("No usage data available.");
+    } else {
+        out.push_str("| Window | Used | Reset |\n");
+        out.push_str("| --- | ---: | --- |\n");
+        out.push_str(&rows.join("\n"));
+    }
+
+    if let Some(extra_usage) = snapshot.extra_usage.as_ref() {
+        out.push_str("\n\n");
+        out.push_str("| Extra credits | Used |\n");
+        out.push_str("| --- | ---: |\n");
+        let (label, value) = format_extra_usage_row(extra_usage);
+        let _ = write!(out, "| {} | {} |", markdown_cell(&label), markdown_cell(&value));
+    }
+
+    out
+}
+
+fn snapshot_is_fresh(snapshot: &UsageSnapshot) -> bool {
     snapshot.fetched_at.elapsed().is_ok_and(|age| age < USAGE_REFRESH_TTL)
+}
+
+fn push_limits_summary(app: &mut App) {
+    let message = app
+        .usage
+        .snapshot
+        .as_ref()
+        .map_or_else(|| "No usage data available.".to_owned(), format_limits_summary);
+    push_info_message(app, &message);
+}
+
+fn push_info_message(app: &mut App, message: &str) {
+    crate::app::events::push_system_message_with_severity(app, Some(SystemSeverity::Info), message);
+}
+
+fn push_error_message(app: &mut App, message: &str) {
+    crate::app::events::push_system_message_with_severity(
+        app,
+        Some(SystemSeverity::Error),
+        message,
+    );
+}
+
+fn format_limits_window_row(window: &UsageWindow) -> String {
+    let reset = format_window_reset(window).unwrap_or_else(|| "unavailable".to_owned());
+    format!(
+        "| {} | {:.0}% | {} |",
+        markdown_cell(window.label),
+        window.utilization,
+        markdown_cell(&reset)
+    )
+}
+
+fn format_extra_usage_row(extra_usage: &ExtraUsage) -> (String, String) {
+    let currency = extra_usage.currency.as_deref().unwrap_or("USD").to_owned();
+    match (extra_usage.used_credits, extra_usage.monthly_limit) {
+        (Some(used), Some(limit)) => (currency, format!("{used:.2} / {limit:.2}")),
+        (Some(used), None) => (currency, format!("{used:.2}")),
+        (None, Some(limit)) => (currency, format!("{limit:.2} limit")),
+        (None, None) => match extra_usage.utilization {
+            Some(utilization) => ("Monthly budget".to_owned(), format!("{utilization:.0}%")),
+            None => ("Status".to_owned(), "available".to_owned()),
+        },
+    }
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.trim().replace('|', "\\|").replace('\r', "").replace('\n', " ")
 }
 
 fn format_remaining_until(target: SystemTime) -> String {

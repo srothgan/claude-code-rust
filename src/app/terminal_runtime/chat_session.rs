@@ -1128,6 +1128,11 @@ fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: R
 
     input::configure_input_textarea(app);
     frame.render_widget(app.input.editor(), geometry.text);
+    if input::should_show_native_textarea_cursor(app)
+        && let Some(position) = app.input.editor().rendered_cursor_position()
+    {
+        frame.set_cursor_position(position);
+    }
 }
 
 struct InlineViewportDrawMetrics {
@@ -1260,13 +1265,16 @@ mod tests {
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
     use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
     use crate::app::{
-        App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
-        TextBlock, TextBlockSpacing,
+        App, AppStatus, ChatMessage, ChatMessageId, FocusTarget, HistoryOutputId, MessageBlock,
+        MessageRole, TextBlock, TextBlockSpacing,
     };
     use crate::ui::inline_chat_rows::{
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
         serialize_live_rows_with_boundaries_excluding,
     };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1313,6 +1321,53 @@ mod tests {
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
         ChatTerminalSession { terminal: ChatTerminal::new(0), history }
+    }
+
+    fn render_textarea_to_test_backend(app: &mut App, area: Rect) -> TestBackend {
+        let backend = TestBackend::new(area.width.max(1), area.height.max(1));
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| {
+                super::render_textarea_editor(frame, app, area);
+            })
+            .expect("test draw should succeed");
+        terminal.backend().clone()
+    }
+
+    #[test]
+    fn render_textarea_editor_sets_native_cursor_when_input_has_focus() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        let _ = app.input.set_cursor(0, 5);
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 1));
+
+        assert!(backend.cursor_visible());
+        assert_eq!(backend.cursor_position(), Position { x: 9, y: 0 });
+    }
+
+    #[test]
+    fn render_textarea_editor_hides_native_cursor_when_permission_has_focus() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        let _ = app.input.set_cursor(0, 5);
+        app.turn.pending_interaction_ids.push("perm-1".to_owned());
+        app.claim_focus_target(FocusTarget::Permission);
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 1));
+
+        assert!(!backend.cursor_visible());
+    }
+
+    #[test]
+    fn render_textarea_editor_hides_native_cursor_when_text_area_is_empty() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        let _ = app.input.set_cursor(0, 5);
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 4, 1));
+
+        assert!(!backend.cursor_visible());
     }
 
     #[test]

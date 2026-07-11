@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **In-chat usage limits** (#270, @srothgan): Add `/limits` to print recent 5-hour, 7-day, and extra-credit usage into the chat from the existing usage snapshot/refresh pipeline, including a loading message for stale data and a concise refresh failure message while keeping `/usage` as the fullscreen Usage tab.
+- **Native textarea cursor** (#268, @srothgan): Use `tui-textarea-2` native cursor positioning for the chat composer, hide the textarea-drawn cursor, and restore terminal cursor shape when leaving chat surfaces.
 - **Startup update screen** (#264, @srothgan): Show available updates in a startup screen with install, skip, and release-notes actions.
 
 ### Fixes
@@ -30,6 +32,7 @@ All notable changes to this project will be documented in this file.
 
 - **Duplicate-code gate** (#262, @srothgan): Add PR jscpd thresholds with a 1% warning, 2% failure, and `pr-gate` enforcement.
 - **Advisory and tooling updates** (#262, @srothgan): Refresh dependency advisory/tooling locks and remove resolved cargo-deny advisory ignores.
+- **Release skip on unchanged version** (#269, @srothgan): Skip the release workflow with a green no-op when a `Cargo.toml` push leaves the crate version unchanged.
 
 ## [0.13.4] - 2026-07-06 [Changes][v0.13.4]
 

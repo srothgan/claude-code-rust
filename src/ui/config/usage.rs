@@ -276,6 +276,7 @@ mod tests {
             last_error: None,
             active_source: UsageSourceMode::Auto,
             last_attempted_source: None,
+            pending_limits_response: false,
         };
         app
     }

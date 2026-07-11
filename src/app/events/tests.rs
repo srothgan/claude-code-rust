@@ -16,14 +16,14 @@ use crate::app::{
     BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
     FullscreenView, InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason,
     SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, mention,
+    UsageSnapshot, UsageSourceKind, UsageWindow, mention,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::oneshot;
 
 // Helper: build a minimal ToolCallInfo with given id + status
@@ -2154,6 +2154,106 @@ fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
     );
 
     assert!(app.usage.snapshot.is_none());
+}
+
+#[test]
+fn pending_limits_response_prints_summary_on_usage_refresh_success() {
+    let mut app = make_test_app();
+    app.session_runtime.session_scope_epoch = 5;
+    app.usage.pending_limits_response = true;
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::UsageSnapshotReceived {
+            epoch: 5,
+            snapshot: UsageSnapshot {
+                source: UsageSourceKind::Oauth,
+                fetched_at: SystemTime::now(),
+                five_hour: Some(UsageWindow {
+                    label: "5-hour",
+                    utilization: 47.0,
+                    resets_at: None,
+                    reset_description: Some("resets in 2h 14m".to_owned()),
+                }),
+                seven_day: Some(UsageWindow {
+                    label: "7-day",
+                    utilization: 62.0,
+                    resets_at: None,
+                    reset_description: Some("resets in 4d 11h".to_owned()),
+                }),
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            },
+        },
+    );
+
+    assert!(!app.usage.pending_limits_response);
+    let Some(last) = app.transcript.messages.last() else {
+        panic!("expected limits summary");
+    };
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert!(block.text.contains("| 5-hour | 47% | resets in 2h 14m |"));
+    assert!(block.text.contains("| 7-day | 62% | resets in 4d 11h |"));
+}
+
+#[test]
+fn pending_limits_response_prints_error_on_usage_refresh_failure() {
+    let mut app = make_test_app();
+    app.session_runtime.session_scope_epoch = 5;
+    app.usage.pending_limits_response = true;
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::UsageRefreshFailed {
+            epoch: 5,
+            message: "network timeout".to_owned(),
+            source: UsageSourceKind::Oauth,
+        },
+    );
+
+    assert!(!app.usage.pending_limits_response);
+    let Some(last) = app.transcript.messages.last() else {
+        panic!("expected limits error");
+    };
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Unable to get recent usage info: network timeout");
+}
+
+#[test]
+fn stale_usage_refresh_result_does_not_print_pending_limits_response() {
+    let mut app = make_test_app();
+    app.session_runtime.session_scope_epoch = 5;
+    app.usage.pending_limits_response = true;
+    let message_count = app.transcript.messages.len();
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::UsageSnapshotReceived {
+            epoch: 4,
+            snapshot: UsageSnapshot {
+                source: UsageSourceKind::Oauth,
+                fetched_at: SystemTime::now(),
+                five_hour: Some(UsageWindow {
+                    label: "5-hour",
+                    utilization: 47.0,
+                    resets_at: None,
+                    reset_description: Some("resets in 2h 14m".to_owned()),
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            },
+        },
+    );
+
+    assert!(app.usage.pending_limits_response);
+    assert_eq!(app.transcript.messages.len(), message_count);
 }
 
 #[test]
