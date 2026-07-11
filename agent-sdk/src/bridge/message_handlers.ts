@@ -36,7 +36,7 @@ import {
   taskUpdatedFields,
   type ToolCorrelationMetadata,
 } from "./tool_calls.js";
-import { applyTaskLifecycleState } from "./tasks.js";
+import { applyBackgroundTasksChanged, applyTaskLifecycleState } from "./tasks.js";
 import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
@@ -100,6 +100,7 @@ function sdkCorrelationMetadata(msg: Record<string, unknown>): ToolCorrelationMe
     requestId: typeof msg.request_id === "string" ? msg.request_id : undefined,
     subagentType: typeof msg.subagent_type === "string" ? msg.subagent_type : undefined,
     taskDescription: typeof msg.task_description === "string" ? msg.task_description : undefined,
+    parentAgentId: typeof msg.parent_agent_id === "string" ? msg.parent_agent_id : undefined,
   };
 }
 
@@ -117,12 +118,14 @@ function sdkTaskMetadata(msg: Record<string, unknown>): TaskMetadata | undefined
     ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
     ...(metadata.subagentType ? { subagent_type: metadata.subagentType } : {}),
     ...(metadata.taskDescription ? { task_description: metadata.taskDescription } : {}),
+    ...(metadata.parentAgentId ? { parent_agent_id: metadata.parentAgentId } : {}),
     ...(taskType ? { task_type: taskType } : {}),
     ...(workflowName ? { workflow_name: workflowName } : {}),
     ...(prompt ? { prompt } : {}),
     ...(outputFile ? { output_file: outputFile } : {}),
     ...(summary ? { summary } : {}),
     ...(status ? { terminal_status: status } : {}),
+    ...(typeof msg.blocked === "boolean" ? { blocked: msg.blocked } : {}),
   };
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }
@@ -1026,6 +1029,13 @@ function terminalReasonFromValue(value: unknown): TerminalReason | undefined {
     case "hook_stopped":
     case "tool_deferred":
     case "max_turns":
+    case "background_requested":
+    case "api_error":
+    case "malformed_tool_use_exhausted":
+    case "budget_exhausted":
+    case "structured_output_retry_exhausted":
+    case "tool_deferred_unavailable":
+    case "turn_setup_failed":
     case "completed":
       return value;
     default:
@@ -1054,6 +1064,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
     if (subtype === "commands_changed") {
       updateAvailableCommands(session, "commands_changed", mapSdkSlashCommands(msg.commands));
+      return;
+    }
+
+    if (subtype === "background_tasks_changed") {
+      applyBackgroundTasksChanged(session, msg);
       return;
     }
 

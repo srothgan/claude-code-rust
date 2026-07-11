@@ -30,6 +30,8 @@ export type TaskTitleContext = {
   taskSubject?: string;
 };
 
+const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
+
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
 }
@@ -944,6 +946,8 @@ function lifecycleMetadata(msg: Record<string, unknown>): Record<string, Json> |
     "summary",
     "end_time",
     "total_paused_ms",
+    "blocked",
+    "parent_agent_id",
   ]) {
     copyValue(msg, key);
     copyValue(patch, key);
@@ -1006,6 +1010,48 @@ export function applyTaskLifecycleState(
       source_tool_call_id: sourceToolCallId,
     }),
   ]);
+}
+
+export function applyBackgroundTasksChanged(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): void {
+  const rawTasks = Array.isArray(msg.tasks) ? msg.tasks : [];
+  const nextTasks = rawTasks
+    .map((entry): TaskPatch | undefined => {
+      const task = asRecordOrNull(entry);
+      const taskId = nonEmptyString(task?.task_id);
+      if (!task || !taskId) {
+        return undefined;
+      }
+      const taskType = nonEmptyString(task.task_type);
+      const description = nonEmptyString(task.description);
+      return {
+        task_id: taskId,
+        subject: description ?? taskType ?? taskId,
+        description,
+        status: "in_progress",
+        blocks: [],
+        blocked_by: [],
+        metadata: {
+          [BACKGROUND_TASK_METADATA_KEY]: true,
+          ...(taskType ? { task_type: taskType } : {}),
+        },
+      };
+    })
+    .filter((task): task is TaskPatch => Boolean(task));
+
+  const nextIds = new Set(nextTasks.map((task) => task.task_id));
+  const removedTaskIds = session.taskOrder.filter((taskId) => {
+    if (nextIds.has(taskId)) {
+      return false;
+    }
+    const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
+    return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
+  });
+  const tasks = nextTasks.map((task) => upsertTask(session, task));
+  const removed = removeTasks(session, removedTaskIds);
+  emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }
 
 export function currentTaskSnapshot(session: SessionState): TaskItem[] {

@@ -72,12 +72,19 @@ export type TerminalReason =
   | "prompt_too_long"
   | "image_error"
   | "model_error"
+  | "api_error"
+  | "malformed_tool_use_exhausted"
   | "aborted_streaming"
   | "aborted_tools"
   | "stop_hook_prevented"
   | "hook_stopped"
   | "tool_deferred"
   | "max_turns"
+  | "background_requested"
+  | "budget_exhausted"
+  | "structured_output_retry_exhausted"
+  | "tool_deferred_unavailable"
+  | "turn_setup_failed"
   | "completed";
 
 export interface RateLimitUpdate {
@@ -175,6 +182,8 @@ export interface TaskMetadata {
   output_file?: string;
   summary?: string;
   terminal_status?: string;
+  blocked?: boolean;
+  parent_agent_id?: string;
 }
 
 export interface ToolLocation {
@@ -240,7 +249,8 @@ export type TaskUpdateSource =
   | "task_update"
   | "task_get"
   | "task_list"
-  | "task_lifecycle";
+  | "task_lifecycle"
+  | "background_tasks";
 
 export interface TaskItem {
   task_id: string;

@@ -17,6 +17,8 @@ pub struct TaskMetadata {
     pub output_file: Option<String>,
     pub summary: Option<String>,
     pub terminal_status: Option<String>,
+    pub blocked: Option<bool>,
+    pub parent_agent_id: Option<String>,
 }
 
 impl TaskMetadata {
@@ -102,6 +104,18 @@ impl TaskMetadata {
         self.terminal_status = terminal_status;
         self
     }
+
+    #[must_use]
+    pub fn blocked(mut self, blocked: Option<bool>) -> Self {
+        self.blocked = blocked;
+        self
+    }
+
+    #[must_use]
+    pub fn parent_agent_id(mut self, parent_agent_id: Option<String>) -> Self {
+        self.parent_agent_id = parent_agent_id;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +138,8 @@ pub enum TaskUpdateSource {
     List,
     #[serde(rename = "task_lifecycle")]
     Lifecycle,
+    #[serde(rename = "background_tasks")]
+    BackgroundTasks,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -286,6 +286,12 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.terminal_status.is_some() {
         merged.terminal_status.clone_from(&task_metadata.terminal_status);
     }
+    if task_metadata.blocked.is_some() {
+        merged.blocked = task_metadata.blocked;
+    }
+    if task_metadata.parent_agent_id.is_some() {
+        merged.parent_agent_id.clone_from(&task_metadata.parent_agent_id);
+    }
     if tc.task_metadata.as_ref() == Some(&merged) {
         return false;
     }
@@ -939,6 +945,8 @@ mod tests {
             tool_id,
             model::ToolCallUpdateFields::new().task_metadata(
                 model::TaskMetadata::new()
+                    .blocked(Some(true))
+                    .parent_agent_id(Some("parent-agent-1".to_owned()))
                     .summary(Some("Stopped after validation".to_owned()))
                     .terminal_status(Some("killed".to_owned())),
             ),
@@ -963,6 +971,8 @@ mod tests {
                     .workflow_name(Some("review-flow".to_owned()))
                     .prompt(Some("Review the branch".to_owned()))
                     .output_file(Some("C:/tmp/review.md".to_owned()))
+                    .blocked(Some(true))
+                    .parent_agent_id(Some("parent-agent-1".to_owned()))
                     .summary(Some("Stopped after validation".to_owned()))
                     .terminal_status(Some("killed".to_owned())),
             )

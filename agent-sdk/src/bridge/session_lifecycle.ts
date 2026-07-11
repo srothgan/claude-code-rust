@@ -803,6 +803,8 @@ function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | und
     return undefined;
   }
   switch (rawMode) {
+    case "manual":
+      return "default";
     case "default":
     case "auto":
     case "acceptEdits":

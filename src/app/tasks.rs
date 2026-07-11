@@ -11,6 +11,18 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
         update.removed_task_ids.iter().map(std::string::String::as_str).collect();
 
     if update.is_complete_snapshot {
+        if update.source == model::TaskUpdateSource::BackgroundTasks {
+            app.sdk_inventory.tasks.retain(|task| {
+                !is_sdk_background_task(task) && !removed.contains(task.task_id.as_str())
+            });
+            for task in update.tasks {
+                if !removed.contains(task.task_id.as_str()) {
+                    app.sdk_inventory.tasks.push(task);
+                }
+            }
+            refresh_task_tool_displays_with_previous(app, &previous_tasks);
+            return;
+        }
         app.sdk_inventory.tasks = update
             .tasks
             .into_iter()
@@ -37,6 +49,15 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
         }
     }
     refresh_task_tool_displays_with_previous(app, &previous_tasks);
+}
+
+fn is_sdk_background_task(task: &model::TaskItem) -> bool {
+    task.metadata
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .and_then(|metadata| metadata.get("sdk_background_task"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
@@ -218,6 +239,12 @@ mod tests {
         model::TaskItem::new(id, subject, status)
     }
 
+    fn background_task(id: &str, subject: &str) -> model::TaskItem {
+        let mut task = model::TaskItem::new(id, subject, model::TaskStatus::InProgress);
+        task.metadata = Some(json!({ "sdk_background_task": true }));
+        task
+    }
+
     fn task_tool_call(
         id: &str,
         sdk_tool_name: &str,
@@ -335,6 +362,30 @@ mod tests {
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
         assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-2");
         assert_eq!(app.sdk_inventory.tasks[0].subject, "two updated");
+    }
+
+    #[test]
+    fn background_task_snapshot_replaces_only_background_membership() {
+        let mut app = App::test_default();
+        app.sdk_inventory.tasks.push(task(
+            "task-list",
+            "from task list",
+            model::TaskStatus::Pending,
+        ));
+        app.sdk_inventory.tasks.push(background_task("bg-old", "old background"));
+
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .tasks(vec![background_task("bg-new", "new background")])
+                .removed_task_ids(vec!["bg-old".to_owned()])
+                .complete_snapshot(true),
+        );
+
+        assert_eq!(app.sdk_inventory.tasks.len(), 2);
+        assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "task-list"));
+        assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-new"));
+        assert!(!app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-old"));
     }
 
     #[test]
