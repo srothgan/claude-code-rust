@@ -10,7 +10,7 @@ use crossterm::queue;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -19,6 +19,9 @@ use std::error::Error;
 use std::fmt;
 use std::io::{Stdout, Write};
 
+#[cfg(unix)]
+type StdoutBackend = super::tracked_cursor_backend::TrackedCursorBackend<CrosstermBackend<Stdout>>;
+#[cfg(not(unix))]
 type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
@@ -461,10 +464,10 @@ impl ChatTerminal {
             return Ok(());
         }
 
-        let cursor_before = crossterm::cursor::position()
-            .context("failed to read cursor before inline terminal ensure")?;
         let anchor = anchor_area.or(self.state.area);
-        let cursor_y = anchor.map_or(cursor_before.1, |area| area.y);
+        let cursor_y =
+            anchor.map_or(self.state.owned_top, |area| area.y).min(screen_height.saturating_sub(1));
+        let seed_cursor = Position { x: anchor.map_or(0, |area| area.x), y: cursor_y };
         let predicted_area = Rect::new(
             0,
             inline_viewport_top_after_create(cursor_y, next_height, screen_height),
@@ -482,17 +485,16 @@ impl ChatTerminal {
             )?;
         }
 
-        if let Some(area) = anchor {
-            move_cursor_to(area).context("failed to restore inline viewport anchor")?;
-        }
+        move_cursor_to(Rect::new(seed_cursor.x, seed_cursor.y, snapshot.width, 1))
+            .context("failed to restore inline viewport anchor")?;
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
             event_name = "inline_chat_terminal_ensure",
             message = "inline terminal viewport ensured inside owned session region",
             outcome = "prepared",
-            cursor_before_x = cursor_before.0,
-            cursor_before_y = cursor_before.1,
+            seed_cursor_x = seed_cursor.x,
+            seed_cursor_y = seed_cursor.y,
             anchor_top = anchor.map(Rect::top),
             requested_height = desired_height,
             final_height = next_height,
@@ -502,7 +504,7 @@ impl ChatTerminal {
             owned_bottom = self.state.owned_bottom,
         );
 
-        let terminal = create_inline_terminal(next_height)?;
+        let terminal = create_inline_terminal(next_height, seed_cursor)?;
         self.track_owned_region_scroll(
             inline_viewport_scroll_rows_after_create(cursor_y, next_height, screen_height),
             screen_height,
@@ -1091,12 +1093,20 @@ impl ChatTerminal {
     }
 }
 
-fn create_inline_terminal(height: u16) -> anyhow::Result<StdoutTerminal> {
-    Terminal::with_options(
+fn create_inline_terminal(height: u16, seed_cursor: Position) -> anyhow::Result<StdoutTerminal> {
+    #[cfg(unix)]
+    let backend = super::tracked_cursor_backend::TrackedCursorBackend::new(
         CrosstermBackend::new(std::io::stdout()),
-        TerminalOptions { viewport: Viewport::Inline(height.max(1)) },
-    )
-    .context("failed to construct ratatui inline chat terminal")
+        seed_cursor,
+    );
+    #[cfg(not(unix))]
+    let backend = {
+        let _ = seed_cursor;
+        CrosstermBackend::new(std::io::stdout())
+    };
+
+    Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(height.max(1)) })
+        .context("failed to construct ratatui inline chat terminal")
 }
 
 fn move_cursor_to(area: Rect) -> anyhow::Result<()> {

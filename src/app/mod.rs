@@ -149,7 +149,12 @@ async fn run_tui_loop(
                 handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
             }
             Some(event) = app.event_rx.recv() => {
-                handle_runtime_client_event(app, event, &mut service_status_check_started);
+                handle_runtime_client_event(
+                    app,
+                    terminal_runtime,
+                    event,
+                    &mut service_status_check_started,
+                );
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -177,7 +182,12 @@ async fn run_tui_loop(
             // Then client events
             match app.event_rx.try_recv() {
                 Ok(event) => {
-                    handle_runtime_client_event(app, event, &mut service_status_check_started);
+                    handle_runtime_client_event(
+                        app,
+                        terminal_runtime,
+                        event,
+                        &mut service_status_check_started,
+                    );
                 }
                 Err(_) => break,
             }
@@ -296,7 +306,7 @@ fn suspend_tui_process(
         suspend_current_process();
         Ok(())
     };
-    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap(app)
+    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_after_event_stream(app)
         .context("failed to restore terminal after process resume")?;
     *terminal_runtime = resumed_runtime;
     tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -329,12 +339,20 @@ fn suspend_current_process() {
 
 fn handle_runtime_client_event(
     app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
     event: ClientEvent,
     service_status_check_started: &mut bool,
 ) {
     let start_service_status_check =
         matches!(event, ClientEvent::Connected { .. }) && !*service_status_check_started;
+    let invalidates_cached_chat_seed = matches!(
+        event,
+        ClientEvent::TerminalReleasedToChild { .. } | ClientEvent::TerminalReturnedFromChild { .. }
+    );
     events::handle_client_event(app, event);
+    if invalidates_cached_chat_seed {
+        terminal_runtime.invalidate_cached_chat_seed("external_terminal_owner");
+    }
     if start_service_status_check {
         *service_status_check_started = true;
         service_status_check::start_service_status_check(app);

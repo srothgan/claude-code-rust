@@ -8,8 +8,10 @@ mod history_insert;
 mod modes;
 mod panic_hook;
 mod release_guard;
+#[cfg(any(unix, test))]
+mod tracked_cursor_backend;
 
-use self::chat_session::ChatTerminalSession;
+use self::chat_session::{ChatTerminalSeed, ChatTerminalSeedProvenance, ChatTerminalSession};
 use self::fullscreen_session::FullscreenTerminalSession;
 use self::modes::{
     apply_actions, chat_startup_actions, enter_fullscreen_actions, exit_fullscreen_actions,
@@ -39,14 +41,49 @@ enum SurfaceTransitionPlan {
 pub(crate) struct TerminalRuntime {
     session: Option<SurfaceTerminalSession>,
     suspended_chat_session: Option<ChatTerminalSession>,
+    cached_chat_seed: Option<ChatTerminalSeed>,
     active_surface: SurfaceMode,
     alternate_screen_active: Arc<AtomicBool>,
     panic_hook: Option<PanicRestoreHook>,
     restored: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BootstrapSeedMode {
+    MeasureBeforeEventStream,
+    ConservativeAfterResume,
+}
+
+impl BootstrapSeedMode {
+    fn chat_seed(self) -> anyhow::Result<ChatTerminalSeed> {
+        match self {
+            Self::MeasureBeforeEventStream => ChatTerminalSeed::read_before_event_stream(),
+            Self::ConservativeAfterResume => ChatTerminalSeed::conservative_current(
+                ChatTerminalSeedProvenance::ConservativeAfterResume,
+            ),
+        }
+    }
+
+    fn chat_session(self) -> anyhow::Result<ChatTerminalSession> {
+        match self {
+            Self::MeasureBeforeEventStream => ChatTerminalSession::new_before_event_stream(),
+            Self::ConservativeAfterResume => {
+                Ok(ChatTerminalSession::new_with_seed(self.chat_seed()?))
+            }
+        }
+    }
+}
+
 impl TerminalRuntime {
     pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
+        Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeEventStream)
+    }
+
+    pub(crate) fn bootstrap_after_event_stream(app: &mut App) -> anyhow::Result<Self> {
+        Self::bootstrap_inner(app, BootstrapSeedMode::ConservativeAfterResume)
+    }
+
+    fn bootstrap_inner(app: &mut App, seed_mode: BootstrapSeedMode) -> anyhow::Result<Self> {
         let target_surface = app.surface_mode;
         let restored = Arc::new(AtomicBool::new(false));
         let alternate_screen_active = Arc::new(AtomicBool::new(false));
@@ -58,8 +95,13 @@ impl TerminalRuntime {
             return Err(err).context("failed to configure terminal startup modes");
         }
 
+        let cached_chat_seed = match target_surface {
+            SurfaceMode::Chat => None,
+            SurfaceMode::Fullscreen(_) => Some(seed_mode.chat_seed()?),
+        };
+
         let session = match target_surface {
-            SurfaceMode::Chat => ChatTerminalSession::new().map(SurfaceTerminalSession::Chat),
+            SurfaceMode::Chat => seed_mode.chat_session().map(SurfaceTerminalSession::Chat),
             SurfaceMode::Fullscreen(_) => {
                 if let Err(err) = apply_enter_fullscreen_actions() {
                     restore_once(restored.as_ref(), || {
@@ -98,6 +140,7 @@ impl TerminalRuntime {
         Ok(Self {
             session: Some(session),
             suspended_chat_session: None,
+            cached_chat_seed,
             active_surface: target_surface,
             alternate_screen_active,
             panic_hook: Some(panic_hook),
@@ -158,9 +201,18 @@ impl TerminalRuntime {
                     .context("failed to exit fullscreen terminal mode")?;
                 app.chat_render.line_wrap_disabled = false;
                 let reused_chat_session = self.suspended_chat_session.is_some();
-                let chat_session = match self.suspended_chat_session.take() {
-                    Some(session) => session,
-                    None => ChatTerminalSession::new()?,
+                let chat_session = if let Some(session) = self.suspended_chat_session.take() {
+                    session
+                } else {
+                    let seed = match self.cached_chat_seed.take() {
+                        Some(seed) => seed.with_current_size(
+                            ChatTerminalSeedProvenance::CachedBeforeFullscreen,
+                        )?,
+                        None => ChatTerminalSeed::conservative_current(
+                            ChatTerminalSeedProvenance::ConservativeAfterFullscreen,
+                        )?,
+                    };
+                    ChatTerminalSession::new_with_seed(seed)
                 };
                 self.session = Some(SurfaceTerminalSession::Chat(chat_session));
                 self.active_surface = SurfaceMode::Chat;
@@ -205,6 +257,18 @@ impl TerminalRuntime {
         }
     }
 
+    pub(crate) fn invalidate_cached_chat_seed(&mut self, reason: &'static str) {
+        if self.cached_chat_seed.take().is_some() {
+            tracing::debug!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "inline_chat_seed_invalidated",
+                message = "cached chat terminal seed invalidated",
+                outcome = "success",
+                reason,
+            );
+        }
+    }
+
     pub(crate) fn restore(&mut self, app: &mut App) {
         if !self.restored.load(Ordering::SeqCst) {
             app.terminal_lifecycle = TerminalLifecycleState::Restoring;
@@ -212,6 +276,7 @@ impl TerminalRuntime {
 
         let _session = self.session.take();
         let _suspended_chat_session = self.suspended_chat_session.take();
+        let _cached_chat_seed = self.cached_chat_seed.take();
         restore_once(self.restored.as_ref(), || {
             if let Err(err) = restore_terminal_modes(self.alternate_screen_active.as_ref()) {
                 tracing::warn!(
