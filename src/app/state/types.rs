@@ -140,6 +140,7 @@ pub struct UsageState {
     pub last_error: Option<String>,
     pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
+    pub pending_limits_response: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -43,6 +43,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Cancel => handle_cancel_submit(app),
         AppSlashCommand::Compact => handle_compact_submit(app, &parsed.args),
         AppSlashCommand::Config => handle_config_submit(app, &parsed.args),
+        AppSlashCommand::Limits => handle_limits_submit(app, &parsed.args),
         AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
         AppSlashCommand::Agent => handle_agent_submit(app, &parsed.args),
         AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
@@ -433,6 +434,16 @@ fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     crate::app::config::activate_tab(app, crate::app::ConfigTab::Usage);
+    true
+}
+
+fn handle_limits_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, usage(AppSlashCommand::Limits));
+        return true;
+    }
+
+    crate::app::usage::request_limits_summary(app);
     true
 }
 
