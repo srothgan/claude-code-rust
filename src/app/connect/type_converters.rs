@@ -879,6 +879,8 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .output_file(task_metadata.output_file)
         .summary(task_metadata.summary)
         .terminal_status(task_metadata.terminal_status)
+        .blocked(task_metadata.blocked)
+        .parent_agent_id(task_metadata.parent_agent_id)
 }
 
 fn convert_tool_call_content(
@@ -945,6 +947,7 @@ fn convert_task_update_source(source: types::TaskUpdateSource) -> model::TaskUpd
         types::TaskUpdateSource::Get => model::TaskUpdateSource::Get,
         types::TaskUpdateSource::List => model::TaskUpdateSource::List,
         types::TaskUpdateSource::Lifecycle => model::TaskUpdateSource::Lifecycle,
+        types::TaskUpdateSource::BackgroundTasks => model::TaskUpdateSource::BackgroundTasks,
     }
 }
 
@@ -1500,6 +1503,8 @@ mod tests {
                 output_file: Some("C:/tmp/output.md".to_owned()),
                 summary: Some("Validation complete".to_owned()),
                 terminal_status: Some("completed".to_owned()),
+                blocked: Some(true),
+                parent_agent_id: Some("agent-parent".to_owned()),
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -1520,7 +1525,9 @@ mod tests {
                     .prompt(Some("Run validation".to_owned()))
                     .output_file(Some("C:/tmp/output.md".to_owned()))
                     .summary(Some("Validation complete".to_owned()))
-                    .terminal_status(Some("completed".to_owned())),
+                    .terminal_status(Some("completed".to_owned()))
+                    .blocked(Some(true))
+                    .parent_agent_id(Some("agent-parent".to_owned())),
             )
         );
     }
@@ -1551,6 +1558,8 @@ mod tests {
                 output_file: Some("C:/tmp/review.md".to_owned()),
                 summary: Some("Review stopped".to_owned()),
                 terminal_status: Some("killed".to_owned()),
+                blocked: Some(false),
+                parent_agent_id: Some("agent-root".to_owned()),
             }),
             locations: Vec::new(),
             meta: None,
@@ -1574,7 +1583,9 @@ mod tests {
                     .prompt(Some("Review changes".to_owned()))
                     .output_file(Some("C:/tmp/review.md".to_owned()))
                     .summary(Some("Review stopped".to_owned()))
-                    .terminal_status(Some("killed".to_owned())),
+                    .terminal_status(Some("killed".to_owned()))
+                    .blocked(Some(false))
+                    .parent_agent_id(Some("agent-root".to_owned())),
             )
         );
     }

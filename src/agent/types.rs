@@ -331,6 +331,8 @@ pub struct TaskMetadata {
     pub output_file: Option<String>,
     pub summary: Option<String>,
     pub terminal_status: Option<String>,
+    pub blocked: Option<bool>,
+    pub parent_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +376,8 @@ pub enum TaskUpdateSource {
     List,
     #[serde(rename = "task_lifecycle")]
     Lifecycle,
+    #[serde(rename = "background_tasks")]
+    BackgroundTasks,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,12 +672,19 @@ pub enum TerminalReason {
     PromptTooLong,
     ImageError,
     ModelError,
+    ApiError,
+    MalformedToolUseExhausted,
     AbortedStreaming,
     AbortedTools,
     StopHookPrevented,
     HookStopped,
     ToolDeferred,
     MaxTurns,
+    BackgroundRequested,
+    BudgetExhausted,
+    StructuredOutputRetryExhausted,
+    ToolDeferredUnavailable,
+    TurnSetupFailed,
     Completed,
 }
 
@@ -686,12 +697,19 @@ impl TerminalReason {
             Self::PromptTooLong => "prompt_too_long",
             Self::ImageError => "image_error",
             Self::ModelError => "model_error",
+            Self::ApiError => "api_error",
+            Self::MalformedToolUseExhausted => "malformed_tool_use_exhausted",
             Self::AbortedStreaming => "aborted_streaming",
             Self::AbortedTools => "aborted_tools",
             Self::StopHookPrevented => "stop_hook_prevented",
             Self::HookStopped => "hook_stopped",
             Self::ToolDeferred => "tool_deferred",
             Self::MaxTurns => "max_turns",
+            Self::BackgroundRequested => "background_requested",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::StructuredOutputRetryExhausted => "structured_output_retry_exhausted",
+            Self::ToolDeferredUnavailable => "tool_deferred_unavailable",
+            Self::TurnSetupFailed => "turn_setup_failed",
             Self::Completed => "completed",
         }
     }
@@ -941,7 +959,8 @@ mod tests {
     use super::{
         AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
         McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, RateLimitStatus,
-        SessionStatus, SessionUpdate, SystemNoticeSeverity, TranscriptRetractionReason,
+        SessionStatus, SessionUpdate, SystemNoticeSeverity, TaskUpdateSource, TerminalReason,
+        TranscriptRetractionReason,
     };
 
     #[test]
@@ -1176,7 +1195,9 @@ mod tests {
                         "prompt": "Validate everything",
                         "output_file": "C:/tmp/output.md",
                         "summary": "Validation complete",
-                        "terminal_status": "completed"
+                        "terminal_status": "completed",
+                        "blocked": true,
+                        "parent_agent_id": "agent-parent"
                     }
                 }
             }
@@ -1196,6 +1217,47 @@ mod tests {
         assert_eq!(metadata.output_file.as_deref(), Some("C:/tmp/output.md"));
         assert_eq!(metadata.summary.as_deref(), Some("Validation complete"));
         assert_eq!(metadata.terminal_status.as_deref(), Some("completed"));
+        assert_eq!(metadata.blocked, Some(true));
+        assert_eq!(metadata.parent_agent_id.as_deref(), Some("agent-parent"));
+    }
+
+    #[test]
+    fn new_terminal_reasons_deserialize_and_preserve_stored_names() {
+        let cases = [
+            ("api_error", TerminalReason::ApiError),
+            ("malformed_tool_use_exhausted", TerminalReason::MalformedToolUseExhausted),
+            ("background_requested", TerminalReason::BackgroundRequested),
+            ("budget_exhausted", TerminalReason::BudgetExhausted),
+            ("structured_output_retry_exhausted", TerminalReason::StructuredOutputRetryExhausted),
+            ("tool_deferred_unavailable", TerminalReason::ToolDeferredUnavailable),
+            ("turn_setup_failed", TerminalReason::TurnSetupFailed),
+        ];
+
+        for (stored, expected) in cases {
+            let reason: TerminalReason =
+                serde_json::from_value(serde_json::json!(stored)).expect("terminal reason");
+            assert_eq!(reason, expected);
+            assert_eq!(reason.as_stored(), stored);
+        }
+    }
+
+    #[test]
+    fn background_tasks_source_deserializes() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "task_state_update",
+            "source": "background_tasks",
+            "tasks": [],
+            "removed_task_ids": ["bg-old"],
+            "is_complete_snapshot": true
+        }))
+        .expect("deserialize background task update");
+
+        let SessionUpdate::TaskStateUpdate { update: task_update } = update else {
+            panic!("expected task state update");
+        };
+        assert_eq!(task_update.source, TaskUpdateSource::BackgroundTasks);
+        assert_eq!(task_update.removed_task_ids, vec!["bg-old"]);
+        assert!(task_update.is_complete_snapshot);
     }
 
     #[test]

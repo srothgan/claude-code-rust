@@ -28,6 +28,7 @@ export type ToolCorrelationMetadata = {
   requestId?: string;
   subagentType?: string;
   taskDescription?: string;
+  parentAgentId?: string;
 };
 
 const TOOL_SUMMARY_TOOL_NAMES = new Set(["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"]);
@@ -573,6 +574,12 @@ function buildTaskMetadata(patch: Record<string, unknown>): TaskMetadata | undef
   }
   if (typeof patch.status === "string" && ["completed", "failed", "killed"].includes(patch.status)) {
     taskMetadata.terminal_status = patch.status;
+  }
+  if (typeof patch.blocked === "boolean") {
+    taskMetadata.blocked = patch.blocked;
+  }
+  if (typeof patch.parent_agent_id === "string" && patch.parent_agent_id.length > 0) {
+    taskMetadata.parent_agent_id = patch.parent_agent_id;
   }
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }

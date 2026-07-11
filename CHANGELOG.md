@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- **Inline cursor tracking** (#266, @srothgan): Avoid Unix/macOS live-loop DSR cursor reads in inline chat by using tracked cursor state for the ratatui viewport and invalidating cached seeds after external terminal ownership boundaries.
 - **Markdown list rendering** (#263, @srothgan): Keep streamed inline Markdown handoffs mutable only until delimiters resolve, let stable scrollback advance after resolved blocks, and preserve fenced code layout when code lines look like Markdown list items.
 
 ### Documentation
@@ -32,6 +33,7 @@ All notable changes to this project will be documented in this file.
 
 - **Duplicate-code gate** (#262, @srothgan): Add PR jscpd thresholds with a 1% warning, 2% failure, and `pr-gate` enforcement.
 - **Advisory and tooling updates** (#262, @srothgan): Refresh dependency advisory/tooling locks and remove resolved cargo-deny advisory ignores.
+- **Claude Agent SDK update** (#272, @srothgan): Bump the bundled bridge packages to Agent SDK `0.3.207`, preserve new task metadata and terminal reason values, normalize the new permission-mode alias, and remove the unmatched mouse-capture restore action.
 - **Release skip on unchanged version** (#269, @srothgan): Skip the release workflow with a green no-op when a `Cargo.toml` push leaves the crate version unchanged.
 
 ## [0.13.4] - 2026-07-06 [Changes][v0.13.4]

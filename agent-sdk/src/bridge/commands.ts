@@ -583,6 +583,9 @@ function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: st
 }
 
 export function toPermissionMode(mode: string): PermissionMode | null {
+  if (mode === "manual") {
+    return "default";
+  }
   if (
     mode === "default" ||
     mode === "auto" ||
@@ -603,4 +606,3 @@ export function buildModeState(session: SessionState, mode: PermissionMode): Mod
     available_modes: availableModesForSession(session),
   };
 }
-

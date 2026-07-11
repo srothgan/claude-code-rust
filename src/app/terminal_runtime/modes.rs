@@ -2,7 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crossterm::cursor::{Hide, SetCursorStyle, Show};
-use crossterm::event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange};
+use crossterm::event::{DisableFocusChange, EnableFocusChange};
 #[cfg(target_os = "macos")]
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -19,7 +19,6 @@ pub(super) enum TerminalModeAction {
     DisableRawMode,
     EnterAlternateScreen,
     LeaveAlternateScreen,
-    DisableMouseCapture,
     EnableFocusChange,
     DisableFocusChange,
     HideCursor,
@@ -62,7 +61,6 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::RestoreDefaultCursorShape,
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
-    TerminalModeAction::DisableMouseCapture,
     TerminalModeAction::DisableFocusChange,
     #[cfg(target_os = "macos")]
     TerminalModeAction::PopKeyboardEnhancement,
@@ -117,7 +115,6 @@ pub(super) fn apply_actions(
             TerminalModeAction::DisableRawMode => disable_raw_mode(),
             TerminalModeAction::EnterAlternateScreen => execute!(stdout, EnterAlternateScreen),
             TerminalModeAction::LeaveAlternateScreen => execute!(stdout, LeaveAlternateScreen),
-            TerminalModeAction::DisableMouseCapture => execute!(stdout, DisableMouseCapture),
             TerminalModeAction::EnableFocusChange => execute!(stdout, EnableFocusChange),
             TerminalModeAction::DisableFocusChange => execute!(stdout, DisableFocusChange),
             TerminalModeAction::HideCursor => execute!(stdout, Hide),
@@ -214,7 +211,6 @@ mod tests {
                 TerminalModeAction::RestoreDefaultCursorShape,
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
-                TerminalModeAction::DisableMouseCapture,
                 TerminalModeAction::DisableFocusChange,
                 #[cfg(target_os = "macos")]
                 TerminalModeAction::PopKeyboardEnhancement,

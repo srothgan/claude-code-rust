@@ -1399,6 +1399,26 @@ test("buildQueryOptions forwards settings and maps startup model and permission 
   assert.equal("effort" in options, false);
 });
 
+test("buildQueryOptions normalizes manual startup permission mode to default", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        permissions: { defaultMode: "manual" },
+      },
+    },
+    provisionalSessionId: "session-manual",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-manual",
+  });
+
+  assert.equal(options.permissionMode, "default");
+});
+
 test("buildQueryOptions trims startup model before passing sdk option", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
@@ -1490,6 +1510,7 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
 
 test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
   let interruptCount = 0;
+  let receiptReturned = false;
   const slashErrors: Array<{ sessionId: string; message: string; requestId?: string }> = [];
 
   await dispatchCancelTurnCommand(
@@ -1502,6 +1523,8 @@ test("dispatchCancelTurnCommand interrupts the matching session query", async ()
               query: {
                 interrupt: async () => {
                   interruptCount += 1;
+                  receiptReturned = true;
+                  return { still_queued: ["user-message-1"] };
                 },
               },
             }
@@ -1513,6 +1536,7 @@ test("dispatchCancelTurnCommand interrupts the matching session query", async ()
   );
 
   assert.equal(interruptCount, 1);
+  assert.equal(receiptReturned, true);
   assert.deepEqual(slashErrors, []);
 });
 
@@ -1762,6 +1786,44 @@ test("handleTaskSystemMessage falls back to description and last tool when progr
             content: { type: "text", text: "Inspecting auth code (last tool: Read)" },
           },
         ],
+      },
+    },
+  });
+});
+
+test("handleTaskSystemMessage preserves blocked and parent agent metadata", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-1",
+      tool_use_id: "tool-1",
+      description: "Investigate release blocker",
+      blocked: true,
+      parent_agent_id: "agent-parent",
+    });
+  });
+
+  const lastEvent = events.at(-1);
+  assert.ok(lastEvent);
+  assert.equal(lastEvent.event, "session_update");
+  assert.deepEqual(lastEvent.update, {
+    type: "tool_call_update",
+    tool_call_update: {
+      tool_call_id: "tool-1",
+      fields: {
+        status: "in_progress",
+        raw_output: "Investigate release blocker",
+        content: [
+          {
+            type: "content",
+            content: { type: "text", text: "Investigate release blocker" },
+          },
+        ],
+        task_metadata: {
+          blocked: true,
+          parent_agent_id: "agent-parent",
+        },
       },
     },
   });
@@ -6144,7 +6206,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.198");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.207");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -6155,6 +6217,7 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
       uuid: "u1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "user",
         content: [{ type: "text", text: "Top-level user prompt" }],
@@ -6165,6 +6228,7 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
       uuid: "a1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         id: "msg-1",
         role: "assistant",
@@ -6185,6 +6249,7 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
       uuid: "u2",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "user",
         content: [
@@ -6246,6 +6311,7 @@ test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
       uuid: "a1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "assistant",
         content: [
@@ -6264,6 +6330,7 @@ test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
       uuid: "u1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "user",
         content: [
@@ -6304,6 +6371,7 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
       uuid: "a1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "assistant",
         content: [
@@ -6317,6 +6385,7 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
       uuid: "u1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "user",
         content: [
@@ -6361,6 +6430,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
       uuid: "assistant-agent",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "assistant",
         content: [
@@ -6378,6 +6448,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
       uuid: "system-bg-start",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         type: "system",
         subtype: "task_started",
@@ -6392,6 +6463,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
       uuid: "system-bg-update",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         type: "system",
         subtype: "task_updated",
@@ -6408,6 +6480,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
       uuid: "system-remote-start",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         type: "system",
         subtype: "task_started",
@@ -6423,6 +6496,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
       uuid: "system-mcp-start",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         type: "system",
         subtype: "task_started",
@@ -6502,6 +6576,68 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
   });
 });
 
+test("handleSdkMessage maps background_tasks_changed with background-only replacement semantics", () => {
+  const session = makeSessionState();
+  session.tasksById.set("task-list", {
+    task_id: "task-list",
+    subject: "From task list",
+    status: "pending",
+    blocks: [],
+    blocked_by: [],
+  });
+  session.tasksById.set("bg-old", {
+    task_id: "bg-old",
+    subject: "Old background task",
+    status: "in_progress",
+    blocks: [],
+    blocked_by: [],
+    metadata: { sdk_background_task: true },
+  });
+  session.taskOrder.push("task-list", "bg-old");
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [
+        {
+          task_id: "bg-new",
+          task_type: "workflow_agent",
+          description: "Run release checks",
+        },
+      ],
+    } as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "task_state_update",
+      source: "background_tasks",
+      tasks: [
+        {
+          task_id: "bg-new",
+          subject: "Run release checks",
+          description: "Run release checks",
+          status: "in_progress",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            sdk_background_task: true,
+            task_type: "workflow_agent",
+          },
+        },
+      ],
+      removed_task_ids: ["bg-old"],
+      is_complete_snapshot: true,
+    },
+  });
+  assert.equal(session.tasksById.has("task-list"), true);
+  assert.equal(session.tasksById.has("bg-old"), false);
+  assert.equal(session.tasksById.has("bg-new"), true);
+});
+
 test("handleResultMessage emits terminal reason on successful turn completion", () => {
   const session = makeSessionState();
 
@@ -6519,6 +6655,34 @@ test("handleResultMessage emits terminal reason on successful turn completion", 
     session_id: "session-1",
     terminal_reason: "completed",
   });
+});
+
+test("handleResultMessage preserves new SDK terminal reasons", () => {
+  const terminalReasons = [
+    "api_error",
+    "malformed_tool_use_exhausted",
+    "budget_exhausted",
+    "structured_output_retry_exhausted",
+    "tool_deferred_unavailable",
+    "turn_setup_failed",
+  ] as const;
+
+  for (const terminalReason of terminalReasons) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, {
+        type: "result",
+        subtype: "success",
+        terminal_reason: terminalReason,
+      });
+    });
+
+    assert.equal(events.at(-1)?.event, "turn_complete");
+    assert.equal(
+      (events.at(-1) as { terminal_reason?: string } | undefined)?.terminal_reason,
+      terminalReason,
+    );
+  }
 });
 
 test("handleResultMessage ignores success result telemetry fields", () => {
@@ -6671,6 +6835,7 @@ test("mapSessionMessagesToUpdates ignores unsupported records", () => {
       uuid: "u1",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         role: "assistant",
         content: [{ type: "thinking", thinking: "h" }],
@@ -6681,6 +6846,7 @@ test("mapSessionMessagesToUpdates ignores unsupported records", () => {
       uuid: "system-unsupported",
       session_id: "s1",
       parent_tool_use_id: null,
+      parent_agent_id: null,
       message: {
         type: "system",
         subtype: "compact_boundary",
