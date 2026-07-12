@@ -1,12 +1,15 @@
 param(
     [string]$Release,
     [string]$InstallDir,
+    [switch]$Yes,
     [switch]$NoModifyPath,
     [switch]$Verify,
     [switch]$Run,
     [switch]$RemoveNpm,
     [switch]$KeepNpm,
     [switch]$Uninstall,
+    [switch]$Update,
+    [int]$UpdateParentProcessId,
     [switch]$Help
 )
 
@@ -26,12 +29,14 @@ Usage: install.ps1 [options]
 Options:
   -Release <version>      Release tag or version. Defaults to latest.
   -InstallDir <dir>      App install directory.
+  -Yes                   Skip optional installer prompts.
   -NoModifyPath          Do not update the user PATH.
   -Verify                Run strict runtime diagnostics after install.
   -Run                   Start claude-rs after a successful install.
   -RemoveNpm             Remove an existing global npm install when found.
   -KeepNpm               Keep an existing global npm install without prompting.
   -Uninstall             Remove the script install layout and user PATH entry.
+  -Update                Update an existing script install in place.
   -Help                  Show this help.
 
 Environment:
@@ -44,6 +49,8 @@ Environment:
   CLAUDE_RS_REMOVE_NPM
   CLAUDE_RS_KEEP_NPM
   CLAUDE_RS_UNINSTALL
+  CLAUDE_RS_UPDATE
+  CLAUDE_RS_UPDATE_PARENT_PID
 "@
 }
 
@@ -96,6 +103,21 @@ if (Test-TruthyEnv "CLAUDE_RS_KEEP_NPM") {
 }
 if (Test-TruthyEnv "CLAUDE_RS_UNINSTALL") {
     $Uninstall = $true
+}
+if (Test-TruthyEnv "CLAUDE_RS_UPDATE") {
+    $Update = $true
+}
+if (-not $PSBoundParameters.ContainsKey("UpdateParentProcessId") -and $env:CLAUDE_RS_UPDATE_PARENT_PID) {
+    $UpdateParentProcessId = [int]$env:CLAUDE_RS_UPDATE_PARENT_PID
+}
+if ($Update -and $Uninstall) {
+    throw "-Update and -Uninstall cannot be used together"
+}
+if ($Update) {
+    $Yes = $true
+    $NonInteractive = $true
+    $NoModifyPath = $true
+    $KeepNpm = $true
 }
 if ($RemoveNpm -and $KeepNpm) {
     throw "-RemoveNpm and -KeepNpm cannot be used together"
@@ -254,7 +276,13 @@ function Acquire-InstallLock {
     param([string]$InstallParent)
     New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
     $lockPath = Join-Path $InstallParent ".claude-rs-install.lock"
-    return [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try {
+        # DeleteOnClose removes the lock file when it is released, even when
+        # the installer exits abnormally.
+        return New-Object System.IO.FileStream($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose)
+    } catch {
+        Fail "another claude-rs installer appears to be running: $lockPath"
+    }
 }
 
 function Replace-AppDirectory {
@@ -268,7 +296,23 @@ function Replace-AppDirectory {
     try {
         Move-Item -LiteralPath $SourceApp -Destination $FinalApp
         if ($backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-Item -LiteralPath $backup -Recurse -Force
+            try {
+                Remove-Item -LiteralPath $backup -Recurse -Force
+            } catch {
+                if (-not $Update) {
+                    throw
+                }
+                if ($UpdateParentProcessId -gt 0) {
+                    try {
+                        Start-BackupCleanup -BackupPath $backup -ParentProcessId $UpdateParentProcessId
+                        Write-Ok "Scheduled old install cleanup after claude-rs exits"
+                    } catch {
+                        Write-WarnLine "Updated successfully, but could not schedule cleanup of $backup"
+                    }
+                } else {
+                    Write-WarnLine "Updated successfully. Remove the old install backup after claude-rs exits: $backup"
+                }
+            }
         }
     } catch {
         if ($backup -and (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $FinalApp)) {
@@ -276,6 +320,37 @@ function Replace-AppDirectory {
         }
         throw
     }
+}
+
+function Start-BackupCleanup {
+    param([string]$BackupPath, [int]$ParentProcessId)
+    $workerScript = @'
+$ErrorActionPreference = "SilentlyContinue"
+$parentId = [int]$env:CLAUDE_RS_CLEANUP_PARENT_PID
+Wait-Process -Id $parentId -ErrorAction SilentlyContinue
+$backup = $env:CLAUDE_RS_CLEANUP_BACKUP
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $backup)) {
+        break
+    }
+    Start-Sleep -Milliseconds 250
+}
+'@
+    $encodedWorker = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($workerScript))
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = (Get-Process -Id $PID).Path
+    $startInfo.Arguments = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encodedWorker"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.EnvironmentVariables["CLAUDE_RS_CLEANUP_PARENT_PID"] = [string]$ParentProcessId
+    $startInfo.EnvironmentVariables["CLAUDE_RS_CLEANUP_BACKUP"] = $BackupPath
+    $worker = [System.Diagnostics.Process]::Start($startInfo)
+    if (-not $worker) {
+        throw "could not start update cleanup worker"
+    }
+    $worker.Dispose()
 }
 
 function Test-ScriptInstallDirectory {
@@ -362,9 +437,12 @@ function Get-NpmInstall {
 
 function Remove-NpmInstall {
     param($NpmInstall)
+    # The script install is already complete at this point; a failed npm
+    # removal must not fail the install.
     & $NpmInstall.Npm "uninstall" "-g" $RootPackage | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Fail "could not remove npm install. Run manually: npm uninstall -g $RootPackage"
+        Write-WarnLine "Could not remove npm install. Remove manually: npm uninstall -g $RootPackage"
+        return
     }
     Write-Ok "Removed npm install"
 }
@@ -381,7 +459,7 @@ function Resolve-NpmInstallChoice {
         return
     }
 
-    if (-not $KeepNpm -and (Confirm-DefaultNo "Remove the npm install so only this installer owns ``claude-rs`` on PATH?")) {
+    if (-not $KeepNpm -and -not $Yes -and (Confirm-DefaultNo "Remove the npm install so only this installer owns ``claude-rs`` on PATH?")) {
         Remove-NpmInstall -NpmInstall $npmInstall
         return
     }
@@ -397,31 +475,88 @@ function Split-PathEntries {
     return $PathValue.Split([IO.Path]::PathSeparator, [StringSplitOptions]::RemoveEmptyEntries)
 }
 
+# The user PATH is read and written through the registry with unexpanded
+# values. [Environment]::GetEnvironmentVariable expands %VAR% entries and
+# SetEnvironmentVariable writes plain REG_SZ, which would permanently freeze
+# REG_EXPAND_SZ entries to their current expansion. Writes preserve an existing
+# string value's registry kind.
+function Get-UserPathRaw {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment")
+    if (-not $key) {
+        return ""
+    }
+    try {
+        return [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } finally {
+        $key.Close()
+    }
+}
+
+function Set-UserPathRaw {
+    param([string]$Value)
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    try {
+        if ([string]::IsNullOrEmpty($Value)) {
+            $key.DeleteValue("Path", $false)
+        } else {
+            $valueKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            if ($key.GetValueNames() -contains "Path") {
+                $existingKind = $key.GetValueKind("Path")
+                if ($existingKind -eq [Microsoft.Win32.RegistryValueKind]::String -or
+                    $existingKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+                    $valueKind = $existingKind
+                }
+            }
+            $key.SetValue("Path", $Value, $valueKind)
+        }
+    } finally {
+        $key.Close()
+    }
+    Send-EnvironmentChange
+}
+
+function Send-EnvironmentChange {
+    try {
+        if (-not ("ClaudeRsInstall.NativeMethods" -as [type])) {
+            Add-Type -Namespace ClaudeRsInstall -Name NativeMethods -MemberDefinition '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+        }
+        $result = [UIntPtr]::Zero
+        # HWND_BROADCAST WM_SETTINGCHANGE "Environment" so Explorer and new
+        # shells re-read the user PATH without a logoff. Writing the registry
+        # directly skips the broadcast SetEnvironmentVariable would have sent.
+        [void]([ClaudeRsInstall.NativeMethods]::SendMessageTimeout([IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result))
+    } catch {
+        # Best effort; a missed broadcast only delays PATH pickup until logon.
+    }
+}
+
+function Expand-PathEntry {
+    param([string]$Entry)
+    return [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd("\")
+}
+
 function Add-UserPath {
     param([string]$Directory)
     if ($NoModifyPath) {
         return $false
     }
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $entries = @(Split-PathEntries $userPath)
+    $entries = @(Split-PathEntries (Get-UserPathRaw))
     $normalizedDirectory = $Directory.TrimEnd("\")
-    $remainingEntries = @($entries | Where-Object { $_.TrimEnd("\") -ine $normalizedDirectory })
-    if ($entries.Count -gt 0 -and $entries[0].TrimEnd("\") -ieq $normalizedDirectory) {
+    $remainingEntries = @($entries | Where-Object { (Expand-PathEntry $_) -ine $normalizedDirectory })
+    if ($entries.Count -gt 0 -and (Expand-PathEntry $entries[0]) -ieq $normalizedDirectory) {
         return $false
     }
-    $newEntries = @($Directory) + $remainingEntries
-    [Environment]::SetEnvironmentVariable("Path", ($newEntries -join [IO.Path]::PathSeparator), "User")
+    Set-UserPathRaw -Value ((@($Directory) + $remainingEntries) -join [IO.Path]::PathSeparator)
     return $true
 }
 
 function Remove-UserPath {
     param([string]$Directory)
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $entries = @(Split-PathEntries $userPath)
+    $entries = @(Split-PathEntries (Get-UserPathRaw))
     $normalizedDirectory = $Directory.TrimEnd("\")
-    $newEntries = @($entries | Where-Object { $_.TrimEnd("\") -ine $normalizedDirectory })
+    $newEntries = @($entries | Where-Object { (Expand-PathEntry $_) -ine $normalizedDirectory })
     if ($newEntries.Count -ne $entries.Count) {
-        [Environment]::SetEnvironmentVariable("Path", ($newEntries -join [IO.Path]::PathSeparator), "User")
+        Set-UserPathRaw -Value ($newEntries -join [IO.Path]::PathSeparator)
         return $true
     }
     return $false
@@ -451,7 +586,16 @@ function Assert-InstalledCommand {
 }
 
 function Invoke-InstallDoctor {
-    $doctorOutput = (Invoke-InstalledClaudeRs @("doctor", "--strict") 2>&1 | Out-String).Trim()
+    # Windows PowerShell 5.1 turns native stderr into terminating errors when
+    # merged with 2>&1 under "Stop"; relax the preference while capturing.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $doctorLines = @(Invoke-InstalledClaudeRs @("doctor", "--strict") 2>&1 | ForEach-Object { "$_" })
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    $doctorOutput = ($doctorLines -join [Environment]::NewLine).Trim()
     if ($LASTEXITCODE -ne 0) {
         if (-not [string]::IsNullOrWhiteSpace($doctorOutput)) {
             Write-Host $doctorOutput
@@ -504,6 +648,10 @@ if ($Uninstall) {
     exit 0
 }
 
+if ($Update -and -not (Test-ScriptInstallDirectory -Path $InstallDir)) {
+    Fail "-Update requires an existing claude-rs script install: $InstallDir"
+}
+
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-install-$PID"
 $lockStream = $null
 $pathChanged = $false
@@ -526,7 +674,6 @@ try {
     $archivePath = Join-Path $tempDir $archiveName
 
     Write-Ok "Release $tag selected"
-    Resolve-NpmInstallChoice
 
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
     try {
@@ -560,19 +707,30 @@ try {
     Replace-AppDirectory -SourceApp $extractedApp -FinalApp $InstallDir
     Write-Ok "Installed files"
 
-    $pathChanged = Add-UserPath -Directory $InstallDir
     Prepend-ProcessPath -Directory $InstallDir
-    if ($pathChanged) {
-        Write-Ok "Updated PATH for new shells"
-    } elseif ($NoModifyPath) {
-        Write-WarnLine "PATH update skipped"
+    if ($Update) {
+        Write-Ok "Preserved existing PATH configuration"
     } else {
-        Write-Ok "PATH already points to this script install"
+        $pathChanged = Add-UserPath -Directory $InstallDir
+        if ($pathChanged) {
+            Write-Ok "Updated PATH for new shells"
+        } elseif ($NoModifyPath) {
+            Write-WarnLine "PATH update skipped"
+        } else {
+            Write-Ok "PATH already points to this script install"
+        }
     }
 
     Assert-InstalledCommand
     if ($Verify) {
         Invoke-InstallDoctor
+    }
+
+    # Only offer to remove an existing npm install after the script install
+    # has fully succeeded, so a failed install never leaves the user without
+    # claude-rs.
+    if (-not $Update) {
+        Resolve-NpmInstallChoice
     }
 
     $resolvedCommand = Get-Command "claude-rs" -ErrorAction SilentlyContinue
@@ -584,16 +742,20 @@ try {
     Warn-OtherClaudeRsCommands -ExpectedCommand $expectedCommand
 
     Write-Host
-    Write-Host "claude-rs is installed."
-    if ($pathChanged) {
-        Write-Host "PATH is updated for new shells."
-    }
-    if ($Run -or (Confirm-DefaultNo "Start claude-rs now?")) {
-        Invoke-InstalledClaudeRs @()
-    } elseif ($NoModifyPath) {
-        Write-Host "Run directly: $(Join-Path $InstallDir "claude-rs.exe")"
+    if ($Update) {
+        Write-Host "claude-rs is updated. Start claude-rs again to use v$($tag.TrimStart('v'))."
     } else {
-        Write-Host "Run in a new shell: claude-rs"
+        Write-Host "claude-rs is installed."
+        if ($pathChanged) {
+            Write-Host "PATH is updated for new shells."
+        }
+        if ($Run -or ((-not $Yes) -and (Confirm-DefaultNo "Start claude-rs now?"))) {
+            Invoke-InstalledClaudeRs @()
+        } elseif ($NoModifyPath) {
+            Write-Host "Run directly: $(Join-Path $InstallDir "claude-rs.exe")"
+        } else {
+            Write-Host "Run in a new shell: claude-rs"
+        }
     }
 } finally {
     if ($lockStream) {

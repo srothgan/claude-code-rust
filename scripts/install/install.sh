@@ -17,6 +17,8 @@ run_after_install=0
 remove_npm=0
 keep_npm=0
 uninstall=0
+update=0
+path_updated=0
 
 case "${CLAUDE_RS_NON_INTERACTIVE:-}" in
   1 | true | TRUE | yes | YES) non_interactive=1 ;;
@@ -39,6 +41,9 @@ esac
 case "${CLAUDE_RS_UNINSTALL:-}" in
   1 | true | TRUE | yes | YES) uninstall=1 ;;
 esac
+case "${CLAUDE_RS_UPDATE:-}" in
+  1 | true | TRUE | yes | YES) update=1 ;;
+esac
 if [ -n "${CI:-}" ]; then
   non_interactive=1
 fi
@@ -51,7 +56,7 @@ Options:
   --release <version>       Release tag or version. Defaults to latest.
   --install-dir <dir>       App install directory.
   --bin-dir <dir>           Directory for the claude-rs launcher.
-  --yes, -y                 Accept safe installer prompts.
+  --yes, -y                 Accept safe installer prompts; optional prompts are skipped.
   --non-interactive         Do not prompt.
   --no-modify-path          Do not update shell profile PATH.
   --verify                  Run strict runtime diagnostics after install.
@@ -59,6 +64,7 @@ Options:
   --remove-npm              Remove an existing global npm install when found.
   --keep-npm                Keep an existing global npm install without prompting.
   --uninstall               Remove the script install layout and managed PATH block.
+  --update                  Update an existing script install in place.
   --help                    Show this help.
 
 Environment:
@@ -72,6 +78,7 @@ Environment:
   CLAUDE_RS_REMOVE_NPM
   CLAUDE_RS_KEEP_NPM
   CLAUDE_RS_UNINSTALL
+  CLAUDE_RS_UPDATE
 EOF
 }
 
@@ -116,6 +123,9 @@ while [ "$#" -gt 0 ]; do
     --uninstall)
       uninstall=1
       ;;
+    --update)
+      update=1
+      ;;
     --help | -h)
       usage
       exit 0
@@ -129,6 +139,16 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+[ "$update" -eq 0 ] || [ "$uninstall" -eq 0 ] || {
+  echo "error: --update and --uninstall cannot be used together" >&2
+  exit 1
+}
+if [ "$update" -eq 1 ]; then
+  yes=1
+  non_interactive=1
+  no_modify_path=1
+  keep_npm=1
+fi
 [ "$remove_npm" -eq 0 ] || [ "$keep_npm" -eq 0 ] || {
   echo "error: --remove-npm and --keep-npm cannot be used together" >&2
   exit 1
@@ -382,7 +402,7 @@ acquire_lock() {
     printf '%s\n' "$lock_dir"
     return
   fi
-  die "another claude-rs installer appears to be running: $lock_dir"
+  die "another claude-rs installer appears to be running: $lock_dir (remove this directory if no installer is running)"
 }
 
 replace_app_dir() {
@@ -430,9 +450,13 @@ detect_npm_install() {
 }
 
 remove_npm_install() {
-  npm uninstall -g "$root_package" >/dev/null 2>&1 ||
-    die "could not remove npm install. Run manually: npm uninstall -g $root_package"
-  ok "Removed npm install"
+  # The script install is already complete at this point; a failed npm
+  # removal must not fail the install.
+  if npm uninstall -g "$root_package" >/dev/null 2>&1; then
+    ok "Removed npm install"
+  else
+    warn "could not remove npm install. Remove manually: npm uninstall -g $root_package"
+  fi
 }
 
 resolve_npm_install_choice() {
@@ -446,7 +470,7 @@ resolve_npm_install_choice() {
     return
   fi
 
-  if [ "$keep_npm" -eq 0 ] &&
+  if [ "$keep_npm" -eq 0 ] && [ "$yes" -eq 0 ] &&
     confirm_default_no "Remove the npm install so only this installer owns \`claude-rs\` on PATH?"
   then
     remove_npm_install
@@ -477,9 +501,48 @@ remove_launcher_if_owned() {
   fi
 }
 
+zsh_profile_file() {
+  printf '%s\n' "${ZDOTDIR:-$HOME}/.zprofile"
+}
+
+zsh_rc_file() {
+  printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc"
+}
+
+# Cover login and interactive shells. A guarded managed block prevents a
+# duplicate prepend when a login profile also sources its shell's rc file.
+profile_targets() {
+  printf '%s\n' "$HOME/.profile"
+  if [ -f "$HOME/.bash_profile" ]; then
+    printf '%s\n' "$HOME/.bash_profile"
+  elif [ -f "$HOME/.bash_login" ]; then
+    printf '%s\n' "$HOME/.bash_login"
+  fi
+  case "${SHELL:-}" in
+    */bash) printf '%s\n' "$HOME/.bashrc" ;;
+    *) [ ! -f "$HOME/.bashrc" ] || printf '%s\n' "$HOME/.bashrc" ;;
+  esac
+  zprofile="$(zsh_profile_file)"
+  zshrc="$(zsh_rc_file)"
+  case "${SHELL:-}" in
+    */zsh)
+      printf '%s\n' "$zprofile"
+      printf '%s\n' "$zshrc"
+      ;;
+    *)
+      if [ -f "$zprofile" ]; then
+        printf '%s\n' "$zprofile"
+      fi
+      if [ -f "$zshrc" ]; then
+        printf '%s\n' "$zshrc"
+      fi
+      ;;
+  esac
+}
+
 remove_managed_path_block() {
-  profile="$HOME/.profile"
-  [ -f "$profile" ] || return
+  profile="$1"
+  [ -f "$profile" ] || return 0
   tmp_profile="$profile.tmp.$$"
   awk '
     /^# claude-rs PATH start$/ { skip = 1; next }
@@ -488,13 +551,22 @@ remove_managed_path_block() {
   ' "$profile" > "$tmp_profile" && mv "$tmp_profile" "$profile"
 }
 
+remove_managed_path_blocks() {
+  remove_managed_path_block "$HOME/.profile"
+  remove_managed_path_block "$HOME/.bash_profile"
+  remove_managed_path_block "$HOME/.bash_login"
+  remove_managed_path_block "$HOME/.bashrc"
+  remove_managed_path_block "$(zsh_profile_file)"
+  remove_managed_path_block "$(zsh_rc_file)"
+}
+
 uninstall_script_install() {
   install_parent="$(dirname "$install_dir")"
   mkdir -p "$install_parent"
   lock_dir="$(acquire_lock "$install_parent")"
 
   remove_launcher_if_owned
-  remove_managed_path_block
+  remove_managed_path_blocks
 
   if [ -e "$install_dir" ]; then
     if is_script_install_dir "$install_dir"; then
@@ -518,6 +590,14 @@ manual_path_line() {
   fi
 }
 
+managed_path_lines() {
+  quoted_bin_dir="'$(printf '%s' "$bin_dir" | sed "s/'/'\\\\''/g")'"
+  printf 'case "$PATH:" in\n'
+  printf '  %s:*) ;;\n' "$quoted_bin_dir"
+  printf '  *) export PATH=%s:"$PATH" ;;\n' "$quoted_bin_dir"
+  printf 'esac\n'
+}
+
 path_has_bin_dir() {
   case ":$PATH:" in
     *":$bin_dir:"*) return 0 ;;
@@ -534,6 +614,7 @@ path_starts_with_bin_dir() {
 
 maybe_update_path() {
   if path_starts_with_bin_dir; then
+    path_updated=1
     ok "PATH already points to this script install"
     return
   fi
@@ -551,7 +632,7 @@ maybe_update_path() {
   if [ "$yes" -eq 1 ]; then
     should_modify=1
   elif [ "$non_interactive" -eq 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf 'Add %s to PATH in %s? [y/N] ' "$bin_dir" "$HOME/.profile" > /dev/tty
+    printf 'Add %s to PATH in your shell profile? [y/N] ' "$bin_dir" > /dev/tty
     IFS= read -r answer < /dev/tty || answer=
     case "$answer" in
       y | Y | yes | YES) should_modify=1 ;;
@@ -559,13 +640,15 @@ maybe_update_path() {
   fi
 
   if [ "$should_modify" -eq 1 ]; then
-    profile="$HOME/.profile"
-    remove_managed_path_block
-    {
-      printf '\n# claude-rs PATH start\n'
-      manual_path_line
-      printf '# claude-rs PATH end\n'
-    } >> "$profile"
+    remove_managed_path_blocks
+    profile_targets | while IFS= read -r profile_file; do
+      {
+        printf '\n# claude-rs PATH start\n'
+        managed_path_lines
+        printf '# claude-rs PATH end\n'
+      } >> "$profile_file"
+    done
+    path_updated=1
     ok "Updated PATH for new shells"
   else
     warn "PATH update skipped"
@@ -595,6 +678,10 @@ if [ "$uninstall" -eq 1 ]; then
   trap 'rm -rf "${lock_dir:-}"' EXIT HUP INT TERM
   uninstall_script_install
   exit 0
+fi
+
+if [ "$update" -eq 1 ] && ! is_script_install_dir "$install_dir"; then
+  die "--update requires an existing claude-rs script install: $install_dir"
 fi
 
 need_cmd uname
@@ -653,7 +740,6 @@ checksum_file="$tmpdir/SHA256SUMS"
 archive_file="$tmpdir/$archive_name"
 
 ok "Release $tag selected"
-resolve_npm_install_choice
 
 download "$base_url/SHA256SUMS" "$checksum_file" || die "could not download SHA256SUMS for $tag"
 if ! download "$base_url/$archive_name" "$archive_file"; then
@@ -682,10 +768,17 @@ install_parent="$(dirname "$install_dir")"
 mkdir -p "$install_parent"
 lock_dir="$(acquire_lock "$install_parent")"
 replace_app_dir "$extracted_app" "$install_dir"
-write_launcher
+if [ "$update" -eq 0 ]; then
+  write_launcher
+fi
 ok "Installed files"
 
-maybe_update_path
+if [ "$update" -eq 0 ]; then
+  maybe_update_path
+else
+  path_updated=1
+  ok "Preserved existing launcher and PATH configuration"
+fi
 PATH="$bin_dir:$PATH"
 export PATH
 
@@ -704,6 +797,12 @@ if [ "$verify" -eq 1 ]; then
   ok "Runtime diagnostics passed"
 fi
 
+# Only offer to remove an existing npm install after the script install has
+# fully succeeded, so a failed install never leaves the user without claude-rs.
+if [ "$update" -eq 0 ]; then
+  resolve_npm_install_choice
+fi
+
 resolved="$(command -v claude-rs || true)"
 launcher="$bin_dir/claude-rs"
 if [ "$resolved" != "$launcher" ]; then
@@ -712,13 +811,17 @@ fi
 warn_other_claude_rs_commands
 
 info ""
-info "claude-rs is installed."
-if [ "$run_after_install" -eq 1 ] || confirm_default_no "Start claude-rs now?"; then
-  launch_installed
+if [ "$update" -eq 1 ]; then
+  info "claude-rs is updated. Start claude-rs again to use ${tag#v}."
 else
-  if [ "$no_modify_path" -eq 1 ]; then
-    info "Run directly: $install_dir/$binary_name"
+  info "claude-rs is installed."
+  if [ "$run_after_install" -eq 1 ] || { [ "$yes" -eq 0 ] && confirm_default_no "Start claude-rs now?"; }; then
+    launch_installed
   else
-    info "Run in a new shell: claude-rs"
+    if [ "$path_updated" -eq 1 ]; then
+      info "Run in a new shell: claude-rs"
+    else
+      info "Run directly: $install_dir/$binary_name"
+    fi
   fi
 fi
