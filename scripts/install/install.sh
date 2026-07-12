@@ -592,9 +592,9 @@ manual_path_line() {
 
 managed_path_lines() {
   quoted_bin_dir="'$(printf '%s' "$bin_dir" | sed "s/'/'\\\\''/g")'"
-  printf 'case "$PATH:" in\n'
+  printf "case \"\$PATH:\" in\n"
   printf '  %s:*) ;;\n' "$quoted_bin_dir"
-  printf '  *) export PATH=%s:"$PATH" ;;\n' "$quoted_bin_dir"
+  printf "  *) export PATH=%s:\"\$PATH\" ;;\n" "$quoted_bin_dir"
   printf 'esac\n'
 }
 
