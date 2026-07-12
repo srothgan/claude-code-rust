@@ -16,23 +16,15 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
-## Requisites
+## Prerequisite
 
-- Installed Claude Code CLI, required for authentication and plugin management because the Agent SDK does not yet expose equivalent public APIs.
+- Install the Claude Code CLI. You do not need to authenticate before installing or starting `claude-rs`; sign in later with `/login` or `claude auth login` when needed.
 
 ## Install
 
-### npm (global, recommended)
+### Install script (recommended, v0.14.0+)
 
-```bash
-npm install -g claude-code-rust
-```
-
-The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary, Agent SDK bridge, and bundled private Bun runtime for your OS and architecture.
-
-### Install script (optional, v0.14.0+)
-
-The install script downloads a complete GitHub Release archive and does not require Node.js, npm, or Bun on the user's machine.
+The install script downloads a complete GitHub Release archive. It does not require Rust, Node.js, npm, or Bun on the user's machine.
 
 **macOS/Linux:**
 
@@ -43,30 +35,20 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 **Windows PowerShell:**
 
 ```powershell
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
-**To pin a release:**
+### npm (global)
+
+npm remains supported for users who prefer package-manager ownership of the global command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | CLAUDE_RS_RELEASE=v0.14.0 sh
-```
-
-```powershell
-$env:CLAUDE_RS_RELEASE = "v0.14.0"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
-```
-
-### Troubleshooting npm installs
-
-If `claude-rs` reports a missing platform package, check whether optional dependencies were omitted:
-
-```bash
-npm config get omit
 npm install -g claude-code-rust
 ```
 
-If `claude-rs` resolves to an older global shim, ensure your npm global bin directory comes first on `PATH` or remove the stale shim before retrying.
+This option requires Node.js 24 and npm. The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary, Agent SDK bridge, and bundled private Bun runtime for your OS and architecture. A separate Rust toolchain or Bun installation is not required.
+
+See the [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) for release pinning, custom locations, switching install methods, and troubleshooting.
 
 ## Usage
 
@@ -95,7 +77,7 @@ Claude Code Rust addresses these with a native terminal UI that uses diffed, dir
 
 ## Documentation
 
-The manual covers installation from npm and source, help, slash commands, keyboard shortcuts, settings, diagnostics, architecture, and the changelog:
+The manual covers installation with scripts, npm, and source builds, plus help, slash commands, keyboard shortcuts, settings, diagnostics, architecture, and the changelog:
 
 - [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
 - [Usage](https://srothgan.github.io/claude-code-rust/usage.html)

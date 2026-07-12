@@ -1,29 +1,14 @@
 # Installation
 
-## Prerequisites
+## User Prerequisite
 
-Claude Code Rust needs:
+Install the Claude Code CLI before using Claude Code Rust. Authentication is not required before installation or startup; if you are not already signed in, use `/login` inside `claude-rs` or run `claude auth login` when needed.
 
-- Installed Claude Code CLI for authentication. Use `claude auth login` before starting, or run `/login` inside `claude-rs`.
-- Rust 1.88.0 or newer, Node.js 24/npm, and Bun only when building or running from source.
-
-## Install From npm
-
-The recommended npm install path is the root package:
-
-```bash
-npm install -g claude-code-rust
-claude-rs --version
-claude-rs
-```
-
-The npm package owns the `claude-rs` command, selects the matching platform payload with npm optional dependencies, and includes the private Bun runtime used by the Agent SDK bridge. A separate Bun install is not required for npm installs. No install-time binary download or `postinstall` script is used.
-
-Supported npm platforms are Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
+The recommended script install includes the application and its runtime dependencies. It does not require a Rust toolchain, Node.js, npm, or a separate Bun installation.
 
 ## Install Script
 
-Install scripts are available in GitHub Releases starting with `v0.14.0`. This is an optional install path for users who do not want npm to own the global command. The npm package remains the recommended install path.
+Install scripts are available in GitHub Releases starting with `v0.14.0` and are the recommended install path. They install a self-contained release without requiring npm, Node.js, or Bun on the user's machine.
 
 The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Strict runtime diagnostics are available with the opt-in verify flag.
 
@@ -36,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 **Windows PowerShell:**
 
 ```powershell
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
 **The default Unix install layout is:**
@@ -56,6 +41,20 @@ The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, an
 
 The Windows app directory is added to the user `Path` unless path modification is disabled.
 
+## Install From npm
+
+npm remains supported for users who prefer package-manager ownership of the global command:
+
+```bash
+npm install -g claude-code-rust
+claude-rs --version
+claude-rs
+```
+
+The npm option requires Node.js 24 and npm to install and run its JavaScript launcher. The package owns the `claude-rs` command, selects the matching platform payload with npm optional dependencies, and includes the private Bun runtime used by the Agent SDK bridge. A Rust toolchain and separate Bun installation are not required. No install-time binary download or `postinstall` script is used.
+
+Supported npm platforms are Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
+
 ### Pinning a Release
 
 Use `CLAUDE_RS_RELEASE` to install a specific release:
@@ -66,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 
 ```powershell
 $env:CLAUDE_RS_RELEASE = "v0.14.0"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
 The version can include or omit the `v` prefix.
@@ -98,13 +97,14 @@ The Unix installer also accepts:
 - `--remove-npm`
 - `--keep-npm`
 - `--uninstall`
+- `--update`
 
 When using the PowerShell one-liner, configure the installer with environment variables because arguments cannot be passed through `iex`:
 
 ```powershell
 $env:CLAUDE_RS_INSTALL_DIR = "$env:LOCALAPPDATA\Programs\claude-rs"
 $env:CLAUDE_RS_NO_MODIFY_PATH = "1"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
 If you download the script first, PowerShell flags are also available:
@@ -117,15 +117,17 @@ PowerShell also supports `-Uninstall` when the script is downloaded first. With 
 
 ```powershell
 $env:CLAUDE_RS_UNINSTALL = "1"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
 Other PowerShell flags available when the script is downloaded first:
 
+- `-Yes`
 - `-Verify`
 - `-Run`
 - `-RemoveNpm`
 - `-KeepNpm`
+- `-Update`
 
 With the PowerShell one-liner, use the matching environment variables:
 
@@ -135,6 +137,8 @@ With the PowerShell one-liner, use the matching environment variables:
 - `CLAUDE_RS_KEEP_NPM=1`
 
 After a successful install, an interactive run asks whether to start `claude-rs` immediately. This runs the installed binary directly, so it works even before a new shell picks up PATH changes. Use `--run`, `-Run`, or `CLAUDE_RS_RUN=1` to start it automatically after install.
+
+When the startup update screen offers **Install update**, it detects whether the running executable is owned by a script or npm install and uses the same method. Script updates replace the existing app directory while preserving its launcher and PATH configuration. If the executable is not in a recognized install layout, the screen offers separate script and npm choices instead of guessing from PATH order.
 
 ### Supported Script Platforms
 
@@ -173,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 
 ```powershell
 $env:CLAUDE_RS_REMOVE_NPM = "1"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 Remove-Item Env:\CLAUDE_RS_REMOVE_NPM
 ```
 
@@ -186,7 +190,7 @@ npm install -g claude-code-rust
 
 ```powershell
 $env:CLAUDE_RS_UNINSTALL = "1"
-irm https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1 | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 Remove-Item Env:\CLAUDE_RS_UNINSTALL
 npm install -g claude-code-rust
 ```
@@ -214,6 +218,8 @@ If `claude-rs` resolves to an older global shim, ensure your npm global bin dire
 
 Use this path when developing the project or testing a fork without installing a global `claude-rs` command:
 
+Source development requires Rust 1.88.0 or newer, Node.js 24 with npm, and Bun. These are developer toolchain requirements, not requirements for script-installed users.
+
 ```bash
 git clone https://github.com/srothgan/claude-code-rust.git
 cd claude-code-rust
@@ -222,7 +228,7 @@ npm run build --prefix agent-sdk
 cargo run
 ```
 
-Maintainer and source-build npm tooling targets Node.js 24. Packaged npm installs use the bundled private Bun runtime for the Agent SDK bridge.
+Maintainer and source-build npm tooling targets Node.js 24. Packaged installs use the bundled private Bun runtime for the Agent SDK bridge.
 
 Debug builds resolve `agent-sdk/dist/bridge.js` from the checkout after the bridge is built. They use `bun` from `PATH` unless `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` points at a specific Bun executable.
 
