@@ -4,15 +4,23 @@
 use super::settings;
 use super::view::{self, FullscreenView, SurfaceMode};
 use super::{App, PostExitAction, UpdatePrompt, UpdatePromptAction, UpdatePromptState};
+use crate::install_method::{InstallMethod, detect_install_method};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl From<UpdatePrompt> for UpdatePromptState {
     fn from(prompt: UpdatePrompt) -> Self {
+        let install_method = detect_install_method();
+        let selected = if install_method == InstallMethod::Unknown {
+            UpdatePromptAction::InstallScript
+        } else {
+            UpdatePromptAction::Install
+        };
         Self {
             current_version: prompt.current_version,
             latest_version: prompt.latest_version,
             release_url: prompt.release_url,
-            selected: UpdatePromptAction::Install,
+            install_method,
+            selected,
             last_error: prompt.last_error,
         }
     }
@@ -47,9 +55,10 @@ fn move_selection(app: &mut App, delta: isize) {
     let Some(prompt) = app.update_prompt.as_mut() else {
         return;
     };
-    let current = action_index(prompt.selected);
-    let next = current.saturating_add_signed(delta).min(ACTIONS.len().saturating_sub(1));
-    prompt.selected = ACTIONS[next];
+    let actions = actions_for(&prompt.install_method);
+    let current = action_index(actions, prompt.selected);
+    let next = current.saturating_add_signed(delta).min(actions.len().saturating_sub(1));
+    prompt.selected = actions[next];
 }
 
 fn activate_selection(app: &mut App) {
@@ -59,19 +68,29 @@ fn activate_selection(app: &mut App) {
     };
 
     match selected {
-        UpdatePromptAction::Install => install(app),
+        UpdatePromptAction::Install => install(app, None),
+        UpdatePromptAction::InstallScript => {
+            install(app, Some(InstallMethod::Script { install_dir: None }));
+        }
+        UpdatePromptAction::InstallNpm => install(app, Some(InstallMethod::Npm)),
         UpdatePromptAction::SkipNow => skip_now(app),
         UpdatePromptAction::SkipVersion => skip_version(app),
         UpdatePromptAction::ReleaseNotes => open_release_notes(app),
     }
 }
 
-fn install(app: &mut App) {
+fn install(app: &mut App, method_override: Option<InstallMethod>) {
     let Some(prompt) = app.update_prompt.as_ref() else {
         return;
     };
-    app.post_exit_action =
-        Some(PostExitAction::InstallUpdate { latest_version: prompt.latest_version.clone() });
+    let method = method_override.unwrap_or_else(|| prompt.install_method.clone());
+    if method == InstallMethod::Unknown {
+        return;
+    }
+    app.post_exit_action = Some(PostExitAction::InstallUpdate {
+        latest_version: prompt.latest_version.clone(),
+        method,
+    });
     app.should_quit = true;
 }
 
@@ -143,12 +162,24 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(c) if c == ch) && key.modifiers == KeyModifiers::CONTROL
 }
 
-fn action_index(action: UpdatePromptAction) -> usize {
-    ACTIONS.iter().position(|candidate| *candidate == action).unwrap_or(0)
+fn action_index(actions: &[UpdatePromptAction], action: UpdatePromptAction) -> usize {
+    actions.iter().position(|candidate| *candidate == action).unwrap_or(0)
 }
 
-const ACTIONS: [UpdatePromptAction; 4] = [
+pub(crate) fn actions_for(method: &InstallMethod) -> &'static [UpdatePromptAction] {
+    if *method == InstallMethod::Unknown { &UNKNOWN_ACTIONS } else { &KNOWN_ACTIONS }
+}
+
+const KNOWN_ACTIONS: [UpdatePromptAction; 4] = [
     UpdatePromptAction::Install,
+    UpdatePromptAction::SkipNow,
+    UpdatePromptAction::SkipVersion,
+    UpdatePromptAction::ReleaseNotes,
+];
+
+const UNKNOWN_ACTIONS: [UpdatePromptAction; 5] = [
+    UpdatePromptAction::InstallScript,
+    UpdatePromptAction::InstallNpm,
     UpdatePromptAction::SkipNow,
     UpdatePromptAction::SkipVersion,
     UpdatePromptAction::ReleaseNotes,
@@ -165,6 +196,7 @@ mod tests {
             current_version: "0.13.4".to_owned(),
             latest_version: "0.14.0".to_owned(),
             release_url: "https://example.invalid/v0.14.0".to_owned(),
+            install_method: InstallMethod::Npm,
             selected: UpdatePromptAction::Install,
             last_error: None,
         });
@@ -181,7 +213,34 @@ mod tests {
         assert!(app.should_quit);
         assert_eq!(
             app.post_exit_action,
-            Some(PostExitAction::InstallUpdate { latest_version: "0.14.0".to_owned() })
+            Some(PostExitAction::InstallUpdate {
+                latest_version: "0.14.0".to_owned(),
+                method: InstallMethod::Npm,
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_layout_offers_script_and_npm_install_actions() {
+        let mut app = app_with_prompt();
+        let prompt = app.update_prompt.as_mut().expect("prompt");
+        prompt.install_method = InstallMethod::Unknown;
+        prompt.selected = UpdatePromptAction::InstallScript;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.update_prompt.as_ref().map(|prompt| prompt.selected),
+            Some(UpdatePromptAction::InstallNpm)
+        );
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.post_exit_action,
+            Some(PostExitAction::InstallUpdate {
+                latest_version: "0.14.0".to_owned(),
+                method: InstallMethod::Script { install_dir: None },
+            })
         );
     }
 

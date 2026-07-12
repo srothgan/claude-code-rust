@@ -123,6 +123,7 @@ fn accept_routes_update_prompt_before_resume_picker() {
         current_version: "0.13.4".to_owned(),
         latest_version: "0.14.0".to_owned(),
         release_url: "https://example.invalid".to_owned(),
+        install_method: crate::install_method::InstallMethod::Npm,
         selected: crate::app::UpdatePromptAction::Install,
         last_error: None,
     });

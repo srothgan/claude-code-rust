@@ -35,6 +35,8 @@ pub enum PendingCommandAck {
 pub enum UpdatePromptAction {
     #[default]
     Install,
+    InstallScript,
+    InstallNpm,
     SkipNow,
     SkipVersion,
     ReleaseNotes,
@@ -45,13 +47,14 @@ pub struct UpdatePromptState {
     pub current_version: String,
     pub latest_version: String,
     pub release_url: String,
+    pub install_method: crate::install_method::InstallMethod,
     pub selected: UpdatePromptAction,
     pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostExitAction {
-    InstallUpdate { latest_version: String },
+    InstallUpdate { latest_version: String, method: crate::install_method::InstallMethod },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
