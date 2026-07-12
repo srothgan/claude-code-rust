@@ -10,8 +10,6 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::theme;
 
-const INSTALL_COMMAND: &str = "npm install -g claude-code-rust";
-
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let outer = Block::default()
@@ -33,7 +31,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let detail = vec![
         Line::from(format!("Current version: v{}", prompt.current_version)),
         Line::from(format!("Latest version:  v{}", prompt.latest_version)),
-        Line::from(format!("Install command: {INSTALL_COMMAND}")),
+        Line::from(format!("Install method:  {}", prompt.install_method.label())),
     ];
     let error_height = prompt.last_error.as_deref().map_or(0, |error| {
         wrapped_line_count(Text::from(Line::from(error.to_owned())), inner.width)
@@ -73,25 +71,31 @@ fn action_lines(app: &App) -> Vec<Line<'static>> {
     let Some(prompt) = app.update_prompt.as_ref() else {
         return Vec::new();
     };
-    [
-        (UpdatePromptAction::Install, "Install update".to_owned()),
-        (UpdatePromptAction::SkipNow, "Skip now".to_owned()),
-        (UpdatePromptAction::SkipVersion, "Skip this version".to_owned()),
-        (
-            UpdatePromptAction::ReleaseNotes,
-            format!("Read release notes for v{} (on GitHub)", prompt.latest_version),
-        ),
-    ]
-    .into_iter()
-    .flat_map(|(action, label)| {
-        let mut lines = Vec::with_capacity(2);
-        if action == UpdatePromptAction::ReleaseNotes {
-            lines.push(Line::default());
-        }
-        lines.push(action_line(&label, prompt.selected == action));
-        lines
-    })
-    .collect()
+    crate::app::update_prompt_actions(&prompt.install_method)
+        .iter()
+        .copied()
+        .map(|action| {
+            let label = match action {
+                UpdatePromptAction::Install => "Install update".to_owned(),
+                UpdatePromptAction::InstallScript => "Install update with script".to_owned(),
+                UpdatePromptAction::InstallNpm => "Install update with npm".to_owned(),
+                UpdatePromptAction::SkipNow => "Skip now".to_owned(),
+                UpdatePromptAction::SkipVersion => "Skip this version".to_owned(),
+                UpdatePromptAction::ReleaseNotes => {
+                    format!("Read release notes for v{} (on GitHub)", prompt.latest_version)
+                }
+            };
+            (action, label)
+        })
+        .flat_map(|(action, label)| {
+            let mut lines = Vec::with_capacity(2);
+            if action == UpdatePromptAction::ReleaseNotes {
+                lines.push(Line::default());
+            }
+            lines.push(action_line(&label, prompt.selected == action));
+            lines
+        })
+        .collect()
 }
 
 fn action_line(label: &str, selected: bool) -> Line<'static> {
@@ -141,6 +145,7 @@ mod tests {
             current_version: "0.13.4".to_owned(),
             latest_version: "0.14.0".to_owned(),
             release_url: "https://example.invalid".to_owned(),
+            install_method: crate::install_method::InstallMethod::Npm,
             selected: UpdatePromptAction::Install,
             last_error: None,
         });
@@ -150,7 +155,26 @@ mod tests {
         assert!(text.contains("Update Available!"));
         assert!(text.contains("Current version: v0.13.4"));
         assert!(text.contains("Latest version:  v0.14.0"));
-        assert!(text.contains(INSTALL_COMMAND));
+        assert!(text.contains("Install method:  npm"));
         assert!(text.contains("Read release notes for v0.14.0 (on GitHub)"));
+    }
+
+    #[test]
+    fn unknown_install_method_renders_both_install_options() {
+        let mut app = App::test_default();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
+        app.update_prompt = Some(UpdatePromptState {
+            current_version: "0.13.4".to_owned(),
+            latest_version: "0.14.0".to_owned(),
+            release_url: "https://example.invalid".to_owned(),
+            install_method: crate::install_method::InstallMethod::Unknown,
+            selected: UpdatePromptAction::InstallScript,
+            last_error: None,
+        });
+
+        let text = draw_text(&mut app);
+
+        assert!(text.contains("Install update with script"));
+        assert!(text.contains("Install update with npm"));
     }
 }

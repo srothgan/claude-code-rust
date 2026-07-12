@@ -81,6 +81,7 @@ pub use state::{
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
+pub(crate) use update_prompt::actions_for as update_prompt_actions;
 pub use view::{FullscreenView, SurfaceMode};
 
 pub fn record_update_install_failure(app: &mut App, message: String) {
