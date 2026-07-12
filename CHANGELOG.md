@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [0.14.0] - 2026-07-12 [Changes][v0.14.0]
 
 ### Features
 
@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 
 - **Governance and source install docs** (#262, @srothgan): Document repository release controls and clarify source-build auth/runtime setup.
+- **Private conduct reporting** (@srothgan): Add a dedicated private contact for code of conduct reports and keep security advisories focused on vulnerability disclosure.
 
 ### Maintenance
 
@@ -758,6 +759,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.0]: https://github.com/srothgan/claude-code-rust/compare/v0.13.4...v0.14.0
 [v0.13.4]: https://github.com/srothgan/claude-code-rust/compare/v0.13.3...v0.13.4
 [v0.13.3]: https://github.com/srothgan/claude-code-rust/compare/v0.13.2...v0.13.3
 [v0.13.2]: https://github.com/srothgan/claude-code-rust/compare/v0.13.0...v0.13.2
