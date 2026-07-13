@@ -126,6 +126,161 @@ if ($RemoveNpm -and $KeepNpm) {
 $UseColor = -not $env:NO_COLOR
 $OkMark = [char]0x2713
 $FailMark = [char]0x2717
+$script:InstallerProgressSupported = $false
+$script:InstallerProgressActive = $false
+$script:InstallerProgressWorker = $null
+
+if (-not $env:CI -and $env:TERM -ne "dumb") {
+    try {
+        if (-not [Console]::IsOutputRedirected) {
+            # Accessing cursor state throws in hosts without a real console.
+            $null = [Console]::CursorLeft
+            $script:InstallerProgressSupported = $true
+        }
+    } catch {
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function New-InstallerProgressWorker {
+    param([string]$Message)
+
+    $stopEvent = $null
+    $renderedEvent = $null
+    $runspace = $null
+    $powerShell = $null
+    try {
+        $stopEvent = New-Object System.Threading.ManualResetEvent($false)
+        $renderedEvent = New-Object System.Threading.ManualResetEvent($false)
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.Open()
+
+        $renderer = {
+            param(
+                [string]$Message,
+                [System.Threading.ManualResetEvent]$StopEvent,
+                [System.Threading.ManualResetEvent]$RenderedEvent,
+                [bool]$UseColor
+            )
+
+            $frames = @("|", "/", "-", "\")
+            $frameIndex = 0
+            if ($StopEvent.WaitOne(200)) {
+                return
+            }
+            while (-not $StopEvent.WaitOne(0)) {
+                [Console]::Write("`r")
+                if ($UseColor) {
+                    $previousColor = [Console]::ForegroundColor
+                    try {
+                        [Console]::ForegroundColor = [ConsoleColor]::Cyan
+                        [Console]::Write($frames[$frameIndex])
+                    } finally {
+                        [Console]::ForegroundColor = $previousColor
+                    }
+                } else {
+                    [Console]::Write($frames[$frameIndex])
+                }
+                [Console]::Write(" $Message")
+                $null = $RenderedEvent.Set()
+
+                $frameIndex = ($frameIndex + 1) % $frames.Count
+                if ($StopEvent.WaitOne(150)) {
+                    break
+                }
+            }
+        }
+
+        $powerShell = [System.Management.Automation.PowerShell]::Create()
+        $powerShell.Runspace = $runspace
+        $null = $powerShell.AddScript($renderer.ToString())
+        $null = $powerShell.AddArgument($Message)
+        $null = $powerShell.AddArgument($stopEvent)
+        $null = $powerShell.AddArgument($renderedEvent)
+        $null = $powerShell.AddArgument($UseColor)
+        $asyncResult = $powerShell.BeginInvoke()
+
+        return [pscustomobject]@{
+            PowerShell = $powerShell
+            AsyncResult = $asyncResult
+            Runspace = $runspace
+            StopEvent = $stopEvent
+            RenderedEvent = $renderedEvent
+            Width = $Message.Length + 2
+        }
+    } catch {
+        if ($powerShell) {
+            $powerShell.Dispose()
+        }
+        if ($runspace) {
+            $runspace.Dispose()
+        }
+        if ($stopEvent) {
+            $stopEvent.Dispose()
+        }
+        if ($renderedEvent) {
+            $renderedEvent.Dispose()
+        }
+        throw
+    }
+}
+
+function Close-InstallerProgressWorker {
+    param($Worker)
+
+    $rendered = $false
+    try {
+        $null = $Worker.StopEvent.Set()
+        $null = $Worker.PowerShell.EndInvoke($Worker.AsyncResult)
+    } finally {
+        $rendered = $Worker.RenderedEvent.WaitOne(0)
+        $Worker.PowerShell.Dispose()
+        $Worker.Runspace.Dispose()
+        $Worker.StopEvent.Dispose()
+        $Worker.RenderedEvent.Dispose()
+        if ($rendered) {
+            [Console]::Write("`r" + (" " * $Worker.Width) + "`r")
+        }
+    }
+}
+
+function Stop-InstallerProgress {
+    $worker = $script:InstallerProgressWorker
+    $script:InstallerProgressWorker = $null
+    $script:InstallerProgressActive = $false
+    if (-not $worker) {
+        return
+    }
+
+    try {
+        Close-InstallerProgressWorker $worker
+    } catch {
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function Start-InstallerProgress {
+    param([string]$Message)
+    Stop-InstallerProgress
+    if (-not $script:InstallerProgressSupported) {
+        return
+    }
+
+    try {
+        $script:InstallerProgressWorker = New-InstallerProgressWorker $Message
+        $script:InstallerProgressActive = $true
+    } catch {
+        $script:InstallerProgressWorker = $null
+        $script:InstallerProgressActive = $false
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function Complete-InstallerProgress {
+    param([string]$Message)
+    Stop-InstallerProgress
+    Write-Ok $Message
+}
 
 function Write-InstallerLine {
     param(
@@ -133,6 +288,7 @@ function Write-InstallerLine {
         [string]$Message,
         [ConsoleColor]$Color
     )
+    Stop-InstallerProgress
     if ($UseColor) {
         Write-Host "$Mark $Message" -ForegroundColor $Color
     } else {
@@ -147,6 +303,7 @@ function Write-Ok {
 
 function Write-WarnLine {
     param([string]$Message)
+    Stop-InstallerProgress
     if ($UseColor) {
         $previousColor = [Console]::ForegroundColor
         [Console]::ForegroundColor = [ConsoleColor]::Yellow
@@ -159,11 +316,13 @@ function Write-WarnLine {
 
 function Write-WarnDetail {
     param([string]$Message)
+    Stop-InstallerProgress
     [Console]::Error.WriteLine($Message)
 }
 
 function Write-FailLine {
     param([string]$Message)
+    Stop-InstallerProgress
     if ($UseColor) {
         $previousColor = [Console]::ForegroundColor
         [Console]::ForegroundColor = [ConsoleColor]::Red
@@ -174,12 +333,19 @@ function Write-FailLine {
     }
 }
 
+function Write-InstallerDiagnostic {
+    param([string]$Message)
+    Stop-InstallerProgress
+    Write-Host $Message
+}
+
 function Test-CanPrompt {
     return (-not $NonInteractive) -and (-not [Console]::IsInputRedirected)
 }
 
 function Confirm-DefaultNo {
     param([string]$Prompt)
+    Stop-InstallerProgress
     if (-not (Test-CanPrompt)) {
         return $false
     }
@@ -195,6 +361,7 @@ function Fail {
 }
 
 function Fail-Unavailable {
+    Stop-InstallerProgress
     [Console]::Error.WriteLine("install script is currently not available for this release")
     exit 1
 }
@@ -582,7 +749,7 @@ function Assert-InstalledCommand {
     if ($LASTEXITCODE -ne 0) {
         Fail "installed claude-rs help check failed"
     }
-    Write-Ok "Verified $versionOutput"
+    Complete-InstallerProgress "Verified $versionOutput"
 }
 
 function Invoke-InstallDoctor {
@@ -598,11 +765,11 @@ function Invoke-InstallDoctor {
     $doctorOutput = ($doctorLines -join [Environment]::NewLine).Trim()
     if ($LASTEXITCODE -ne 0) {
         if (-not [string]::IsNullOrWhiteSpace($doctorOutput)) {
-            Write-Host $doctorOutput
+            Write-InstallerDiagnostic $doctorOutput
         }
         Fail "runtime diagnostics failed"
     }
-    Write-Ok "Runtime diagnostics passed"
+    Complete-InstallerProgress "Runtime diagnostics passed"
 }
 
 function Warn-OtherClaudeRsCommands {
@@ -667,29 +834,33 @@ try {
     Write-Ok "$targetLabel detected"
     Write-Ok "Install location: $InstallDir"
 
+    Start-InstallerProgress "Resolving release"
     $tag = Resolve-ReleaseTag -RequestedRelease $Release -TempDir $tempDir
     $archiveName = Get-ArchiveName -Target $target -Tag $tag
     $baseUrl = "https://github.com/$RepoSlug/releases/download/$tag"
     $checksumsPath = Join-Path $tempDir "SHA256SUMS"
     $archivePath = Join-Path $tempDir $archiveName
 
-    Write-Ok "Release $tag selected"
+    Complete-InstallerProgress "Release $tag selected"
 
+    Start-InstallerProgress "Downloading release archive"
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
     try {
         Invoke-WebRequest -Uri "$baseUrl/$archiveName" -OutFile $archivePath
     } catch {
         Fail-Unavailable
     }
-    Write-Ok "Downloaded release archive"
+    Complete-InstallerProgress "Downloaded release archive"
 
+    Start-InstallerProgress "Verifying release archive"
     $expectedSha = Get-ExpectedSha256 -ChecksumsPath $checksumsPath -ArchiveName $archiveName
     $actualSha = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha -ne $expectedSha) {
         Fail "checksum mismatch for $archiveName"
     }
-    Write-Ok "Verified release archive integrity"
+    Complete-InstallerProgress "Verified release archive integrity"
 
+    Start-InstallerProgress "Installing files"
     $extractDir = Join-Path $tempDir "extract"
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
     $topLevelDirs = @(Get-ChildItem -LiteralPath $extractDir -Directory)
@@ -705,7 +876,7 @@ try {
     $installParent = Split-Path -Parent $InstallDir
     $lockStream = Acquire-InstallLock -InstallParent $installParent
     Replace-AppDirectory -SourceApp $extractedApp -FinalApp $InstallDir
-    Write-Ok "Installed files"
+    Complete-InstallerProgress "Installed files"
 
     Prepend-ProcessPath -Directory $InstallDir
     if ($Update) {
@@ -721,8 +892,10 @@ try {
         }
     }
 
+    Start-InstallerProgress "Verifying installed command"
     Assert-InstalledCommand
     if ($Verify) {
+        Start-InstallerProgress "Running runtime diagnostics"
         Invoke-InstallDoctor
     }
 
@@ -750,6 +923,7 @@ try {
             Write-Host "PATH is updated for new shells."
         }
         if ($Run -or ((-not $Yes) -and (Confirm-DefaultNo "Start claude-rs now?"))) {
+            Stop-InstallerProgress
             Invoke-InstalledClaudeRs @()
         } elseif ($NoModifyPath) {
             Write-Host "Run directly: $(Join-Path $InstallDir "claude-rs.exe")"
@@ -758,6 +932,7 @@ try {
         }
     }
 } finally {
+    Stop-InstallerProgress
     if ($lockStream) {
         $lockStream.Dispose()
     }

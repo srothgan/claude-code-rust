@@ -170,6 +170,7 @@ jobs:
             }
           '
           pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
+          pwsh -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1
 
       - name: Stage bundled Bun runtimes
         run: node scripts/runtime/stage-bun-runtime.mjs --download
@@ -188,6 +189,9 @@ jobs:
 
       - name: Verify install archives
         run: node scripts/install/verify-install-archives.mjs
+
+      - name: Test redirected Unix installer progress
+        run: node --test scripts/install/install-progress.test.mjs
 
       - name: Smoke-test install archive
         run: node scripts/install/smoke-install-archive.mjs --platform linux-x64-gnu

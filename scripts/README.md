@@ -38,6 +38,10 @@ active release tooling and are validated by PR, release, or nightly workflows.
   for verifying install archive contents and manifests.
 - `install/smoke-install-archive.mjs` is a maintainer and workflow entry point
   for archive extraction and startup smoke tests.
+- `install/install-progress.test.mjs` executes the Unix installer with redirected
+  output and local release fixtures to verify progress suppression and cleanup.
+- `install/test-install-progress.ps1` validates the PowerShell progress and
+  output-helper behavior without executing the installer body.
 - `install/install.sh` and `install/install.ps1` are maintained public installer
   assets. Keep syntax checks and help text current before publishing them.
 
@@ -90,13 +94,21 @@ node scripts/shared/verify-third-party-notices.mjs
 node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs
 shellcheck -s sh scripts/install/install.sh
 pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
+pwsh -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1
 node scripts/runtime/stage-bun-runtime.mjs --download
 node scripts/npm/generate-npm-packages.mjs --mock-native-binary
 node scripts/npm/verify-npm-packages.mjs
 node scripts/npm/smoke-npm-package-install.mjs
 node scripts/install/generate-install-archives.mjs --mock-binaries
 node scripts/install/verify-install-archives.mjs
+node --test scripts/install/install-progress.test.mjs
 node scripts/install/smoke-install-archive.mjs --platform linux-x64-gnu
+```
+
+On Windows, also run the progress-helper test under Windows PowerShell 5.1:
+
+```powershell
+powershell -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1
 ```
 
 Repository-wide validation after script changes:

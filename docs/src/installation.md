@@ -12,6 +12,8 @@ Install scripts are available in GitHub Releases starting with `v0.14.0` and are
 
 The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Strict runtime diagnostics are available with the opt-in verify flag.
 
+Interactive terminals display live progress for longer installation steps. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
+
 **macOS/Linux:**
 
 ```bash
