@@ -4,8 +4,5 @@ contact_links:
     url: https://github.com/srothgan/claude-code-rust/discussions
     about: Use GitHub Discussions for questions, help, and general conversation
   - name: Code of Conduct Report
-    url: mailto:simonrothgang@icloud.com
+    url: https://srothgan.github.io/claude-code-rust/governance.html#community-conduct-and-reporting
     about: Report code of conduct concerns privately to the project maintainer
-  - name: Security Vulnerability
-    url: https://github.com/srothgan/claude-code-rust/security/advisories/new
-    about: Report security vulnerabilities privately via GitHub Security Advisories
