@@ -56,20 +56,21 @@ By participating, you agree to uphold this code.
 
 ### Clone and Build
 
+The Agent SDK bridge must be built before the app can spawn it:
+
 ```bash
 git clone https://github.com/srothgan/claude-code-rust.git
 cd claude-code-rust
-cargo build
-```
-
-### Run
-
-```bash
+npm ci --prefix agent-sdk
+npm run build --prefix agent-sdk
 cargo run
 
 # Run with debug logging
 RUST_LOG=debug cargo run
 ```
+
+See [Development](docs/src/development.md) for release-mode source builds, the bundled Bun
+runtime layout, and manual bridge overrides.
 
 ### Running CI Checks Locally
 

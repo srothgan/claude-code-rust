@@ -6,7 +6,7 @@ The goal is a faster, lower-memory terminal experience with reliable scrollback,
 
 ## Project Status
 
-The project is pre-1.0. The current release line is `0.14.x`, and the crate version is tracked in the root `Cargo.toml`.
+The project is pre-1.0. The crate version in the root `Cargo.toml` and the [Changelog](changelog.md) are the source of truth for the current release.
 
 The project is useful today, but the runtime still depends on the upstream Claude Agent SDK bridge. Startup readiness, authentication behavior, billing, model availability, and service limits are controlled by Anthropic.
 
