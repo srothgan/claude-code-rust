@@ -40,8 +40,12 @@ active release tooling and are validated by PR, release, or nightly workflows.
   for archive extraction and startup smoke tests.
 - `install/install-progress.test.mjs` executes the Unix installer with redirected
   output and local release fixtures to verify progress suppression and cleanup.
+- `install/install-version-guard.test.mjs` verifies Unix same-version no-op,
+  explicit reinstall, update, exact-version, and `latest` metadata behavior.
 - `install/test-install-progress.ps1` validates the PowerShell progress and
   output-helper behavior without executing the installer body.
+- `install/test-install-version-guard.ps1` validates PowerShell version metadata,
+  decision precedence, and release-download boundaries under Windows PowerShell.
 - `install/install.sh` and `install/install.ps1` are maintained public installer
   assets. Keep syntax checks and help text current before publishing them.
 
@@ -95,13 +99,14 @@ node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-inst
 shellcheck -s sh scripts/install/install.sh
 pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
 pwsh -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1
+pwsh -NoLogo -NoProfile -File scripts/install/test-install-version-guard.ps1
 node scripts/runtime/stage-bun-runtime.mjs --download
 node scripts/npm/generate-npm-packages.mjs --mock-native-binary
 node scripts/npm/verify-npm-packages.mjs
 node scripts/npm/smoke-npm-package-install.mjs
 node scripts/install/generate-install-archives.mjs --mock-binaries
 node scripts/install/verify-install-archives.mjs
-node --test scripts/install/install-progress.test.mjs
+node --test scripts/install/install-progress.test.mjs scripts/install/install-version-guard.test.mjs
 node scripts/install/smoke-install-archive.mjs --platform linux-x64-gnu
 ```
 
@@ -109,6 +114,7 @@ On Windows, also run the progress-helper test under Windows PowerShell 5.1:
 
 ```powershell
 powershell -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1
+powershell -NoLogo -NoProfile -File scripts/install/test-install-version-guard.ps1
 ```
 
 Repository-wide validation after script changes:

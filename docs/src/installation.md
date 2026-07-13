@@ -72,6 +72,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 
 The version can include or omit the `v` prefix.
 
+### Reinstalling the Same Version
+
+Before downloading release checksums or an archive, the installer compares the selected release with the version recorded in an existing script-owned install at the configured install directory. It does not compare with an npm install or another `claude-rs` found on `PATH`, because those may represent a different installation method or location.
+
+When the selected version is already installed, an interactive installation asks whether to reinstall it and defaults to no. Declining is a successful no-op and leaves the existing files unchanged. In CI or another non-interactive environment, the same-version check also exits successfully without reinstalling.
+
+Use `--yes` or `-Yes` to approve an intentional same-version reinstall, for example to repair an installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | sh -s -- --release v0.14.0 --yes
+```
+
+```powershell
+.\install.ps1 -Release v0.14.0 -Yes
+```
+
+Update mode always treats an already-installed selected version as a successful no-op, even though update mode otherwise runs non-interactively. With the default `latest` selection, the installer must first request GitHub Release metadata to resolve the release tag; the same-version guard still runs before downloading `SHA256SUMS` or the release archive.
+
 ### Custom Install Locations
 
 On macOS/Linux, pass installer flags after `sh -s --`:

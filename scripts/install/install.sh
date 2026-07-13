@@ -56,7 +56,8 @@ Options:
   --release <version>       Release tag or version. Defaults to latest.
   --install-dir <dir>       App install directory.
   --bin-dir <dir>           Directory for the claude-rs launcher.
-  --yes, -y                 Accept safe installer prompts; optional prompts are skipped.
+  --yes, -y                 Reinstall the selected version when already installed;
+                            accept safe prompts; optional prompts are skipped.
   --non-interactive         Do not prompt.
   --no-modify-path          Do not update shell profile PATH.
   --verify                  Run strict runtime diagnostics after install.
@@ -575,6 +576,63 @@ is_script_install_dir() {
   grep -q '"name"[ 	]*:[ 	]*"claude-code-rust"' "$app/package.json" 2>/dev/null
 }
 
+script_install_version() {
+  app="$1"
+  is_script_install_dir "$app" || return 1
+  sed -n 's/.*"version"[ 	]*:[ 	]*"\([^"]*\)".*/\1/p' "$app/package.json" | sed -n '1p'
+}
+
+release_version() {
+  selected_tag="$1"
+  printf '%s\n' "${selected_tag#v}"
+}
+
+approve_same_version_reinstall() {
+  selected_version="$1"
+  if [ "$update" -eq 1 ]; then
+    return 1
+  fi
+  if [ "$yes" -eq 1 ]; then
+    return 0
+  fi
+  confirm_default_no "claude-rs $selected_version is already installed at $install_dir. Reinstall the same version?"
+}
+
+guard_same_version_before_download() {
+  selected_version="$1"
+  is_script_install_dir "$install_dir" || return 0
+
+  installed_version="$(script_install_version "$install_dir" || true)"
+  if [ -z "$installed_version" ]; then
+    warn "could not determine the version of the existing script install; continuing with installation"
+    return 0
+  fi
+  [ "$installed_version" = "$selected_version" ] || return 0
+
+  if approve_same_version_reinstall "$selected_version"; then
+    same_version_reinstall_approved=1
+    ok "Reinstalling claude-rs $selected_version"
+    return 0
+  fi
+
+  ok "claude-rs $selected_version is already installed; no changes made"
+  exit 0
+}
+
+stop_if_selected_version_became_installed() {
+  selected_version="$1"
+  [ "$same_version_reinstall_approved" -eq 0 ] || return 0
+  is_script_install_dir "$install_dir" || return 0
+
+  installed_version="$(script_install_version "$install_dir" || true)"
+  [ -n "$installed_version" ] || return 0
+  [ "$installed_version" = "$selected_version" ] || return 0
+
+  progress_stop
+  ok "claude-rs $selected_version was installed by another installer; no changes made"
+  exit 0
+}
+
 remove_launcher_if_owned() {
   launcher="$bin_dir/claude-rs"
   app_binary="$install_dir/claude-rs"
@@ -777,6 +835,7 @@ need_cmd grep
 need_cmd awk
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/claude-rs-install.XXXXXX")"
+same_version_reinstall_approved=0
 cleanup() {
   progress_stop
   [ -z "${lock_dir:-}" ] || rm -rf "$lock_dir"
@@ -818,12 +877,15 @@ ok "Install location: $install_dir"
 
 progress_start "Resolving release"
 tag="$(resolve_tag "$release")"
+selected_version="$(release_version "$tag")"
 archive_name="$(archive_name_for_target "$target")"
 base_url="https://github.com/$repo_slug/releases/download/$tag"
 checksum_file="$tmpdir/SHA256SUMS"
 archive_file="$tmpdir/$archive_name"
 
 progress_done "Release $tag selected"
+
+guard_same_version_before_download "$selected_version"
 
 progress_start "Downloading release archive"
 download "$base_url/SHA256SUMS" "$checksum_file" || die "could not download SHA256SUMS for $tag"
@@ -854,6 +916,7 @@ validate_extracted_app "$extracted_app"
 install_parent="$(dirname "$install_dir")"
 mkdir -p "$install_parent"
 lock_dir="$(acquire_lock "$install_parent")"
+stop_if_selected_version_became_installed "$selected_version"
 replace_app_dir "$extracted_app" "$install_dir"
 if [ "$update" -eq 0 ]; then
   write_launcher

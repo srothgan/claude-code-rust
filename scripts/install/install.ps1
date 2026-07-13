@@ -29,7 +29,8 @@ Usage: install.ps1 [options]
 Options:
   -Release <version>      Release tag or version. Defaults to latest.
   -InstallDir <dir>      App install directory.
-  -Yes                   Skip optional installer prompts.
+  -Yes                   Reinstall the selected version when already installed;
+                         skip optional installer prompts.
   -NoModifyPath          Do not update the user PATH.
   -Verify                Run strict runtime diagnostics after install.
   -Run                   Start claude-rs after a successful install.
@@ -394,8 +395,16 @@ function Get-Target {
 
 function Get-ArchiveName {
     param([string]$Target, [string]$Tag)
-    $version = $Tag.TrimStart("v")
+    $version = Get-ReleaseVersion -Tag $Tag
     return "$RootPackage-$version-$Target.zip"
+}
+
+function Get-ReleaseVersion {
+    param([string]$Tag)
+    if ($Tag.StartsWith("v", [StringComparison]::Ordinal)) {
+        return $Tag.Substring(1)
+    }
+    return $Tag
 }
 
 function Get-ExpectedSha256 {
@@ -520,29 +529,57 @@ for ($attempt = 0; $attempt -lt 20; $attempt++) {
     $worker.Dispose()
 }
 
-function Test-ScriptInstallDirectory {
+function Get-ScriptInstallInfo {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
+        return $null
     }
 
     $packageJsonPath = Join-Path $Path "package.json"
     if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
-        return $false
+        return $null
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs.exe") -PathType Leaf)) {
-        return $false
+        return $null
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs-bridge-bun.exe") -PathType Leaf)) {
-        return $false
+        return $null
     }
 
     try {
         $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
-        return ($packageJson.PSObject.Properties.Name -contains "name") -and $packageJson.name -eq $RootPackage
+        if (-not ($packageJson.PSObject.Properties.Name -contains "name") -or $packageJson.name -cne $RootPackage) {
+            return $null
+        }
+        $version = if ($packageJson.PSObject.Properties.Name -contains "version") {
+            [string]$packageJson.version
+        } else {
+            $null
+        }
+        return [pscustomobject]@{
+            Path = $Path
+            PackageJson = $packageJsonPath
+            Version = $version
+        }
     } catch {
+        return $null
+    }
+}
+
+function Test-ScriptInstallDirectory {
+    param([string]$Path)
+    return $null -ne (Get-ScriptInstallInfo -Path $Path)
+}
+
+function Confirm-SameVersionReinstall {
+    param([string]$Version)
+    if ($Update) {
         return $false
     }
+    if ($Yes) {
+        return $true
+    }
+    return Confirm-DefaultNo "claude-rs $Version is already installed at $InstallDir. Reinstall the same version?"
 }
 
 function Get-NpmCommand {
@@ -822,6 +859,7 @@ if ($Update -and -not (Test-ScriptInstallDirectory -Path $InstallDir)) {
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-install-$PID"
 $lockStream = $null
 $pathChanged = $false
+$sameVersionReinstallApproved = $false
 
 try {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -836,12 +874,28 @@ try {
 
     Start-InstallerProgress "Resolving release"
     $tag = Resolve-ReleaseTag -RequestedRelease $Release -TempDir $tempDir
+    $selectedVersion = Get-ReleaseVersion -Tag $tag
     $archiveName = Get-ArchiveName -Target $target -Tag $tag
     $baseUrl = "https://github.com/$RepoSlug/releases/download/$tag"
     $checksumsPath = Join-Path $tempDir "SHA256SUMS"
     $archivePath = Join-Path $tempDir $archiveName
 
     Complete-InstallerProgress "Release $tag selected"
+
+    $existingInstall = Get-ScriptInstallInfo -Path $InstallDir
+    if ($existingInstall) {
+        if ([string]::IsNullOrWhiteSpace($existingInstall.Version)) {
+            Write-WarnLine "Could not determine the version of the existing script install; continuing with installation"
+        } elseif ([string]::Equals($existingInstall.Version, $selectedVersion, [StringComparison]::Ordinal)) {
+            if (Confirm-SameVersionReinstall -Version $selectedVersion) {
+                $sameVersionReinstallApproved = $true
+                Write-Ok "Reinstalling claude-rs $selectedVersion"
+            } else {
+                Write-Ok "claude-rs $selectedVersion is already installed; no changes made"
+                exit 0
+            }
+        }
+    }
 
     Start-InstallerProgress "Downloading release archive"
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
@@ -875,6 +929,16 @@ try {
 
     $installParent = Split-Path -Parent $InstallDir
     $lockStream = Acquire-InstallLock -InstallParent $installParent
+    if (-not $sameVersionReinstallApproved) {
+        $lockedInstall = Get-ScriptInstallInfo -Path $InstallDir
+        if ($lockedInstall -and
+            -not [string]::IsNullOrWhiteSpace($lockedInstall.Version) -and
+            [string]::Equals($lockedInstall.Version, $selectedVersion, [StringComparison]::Ordinal)) {
+            Stop-InstallerProgress
+            Write-Ok "claude-rs $selectedVersion was installed by another installer; no changes made"
+            exit 0
+        }
+    }
     Replace-AppDirectory -SourceApp $extractedApp -FinalApp $InstallDir
     Complete-InstallerProgress "Installed files"
 
@@ -916,7 +980,7 @@ try {
 
     Write-Host
     if ($Update) {
-        Write-Host "claude-rs is updated. Start claude-rs again to use v$($tag.TrimStart('v'))."
+        Write-Host "claude-rs is updated. Start claude-rs again to use v$selectedVersion."
     } else {
         Write-Host "claude-rs is installed."
         if ($pathChanged) {
