@@ -56,7 +56,8 @@ Options:
   --release <version>       Release tag or version. Defaults to latest.
   --install-dir <dir>       App install directory.
   --bin-dir <dir>           Directory for the claude-rs launcher.
-  --yes, -y                 Accept safe installer prompts; optional prompts are skipped.
+  --yes, -y                 Reinstall the selected version when already installed;
+                            accept safe prompts; optional prompts are skipped.
   --non-interactive         Do not prompt.
   --no-modify-path          Do not update shell profile PATH.
   --verify                  Run strict runtime diagnostics after install.
@@ -157,11 +158,13 @@ fi
 green=""
 yellow=""
 red=""
+cyan=""
 reset=""
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   green="$(printf '\033[32m')"
   yellow="$(printf '\033[33m')"
   red="$(printf '\033[31m')"
+  cyan="$(printf '\033[36m')"
   reset="$(printf '\033[0m')"
 fi
 
@@ -177,24 +180,81 @@ case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
     fail_mark="$(printf '\342\234\227')"
     ;;
 esac
+progress_frames="$(printf '| / - \134')"
+
+progress_enabled=0
+progress_pid=""
+progress_rendered_file=""
+if [ -t 1 ] && [ -z "${CI:-}" ] && [ "${TERM:-}" != "dumb" ] && [ -w /dev/tty ]; then
+  progress_enabled=1
+fi
+
+progress_render() {
+  progress_message="$1"
+  sleep 0.2
+  while :; do
+    # shellcheck disable=SC2086 # Frames are intentionally split on spaces.
+    for progress_frame in $progress_frames; do
+      : > "$progress_rendered_file"
+      printf '\r\033[2K%s%s%s %s' "$cyan" "$progress_frame" "$reset" "$progress_message" > /dev/tty
+      sleep 0.15
+    done
+  done
+}
+
+progress_stop() {
+  saved_progress_pid="${progress_pid:-}"
+  saved_progress_rendered_file="${progress_rendered_file:-}"
+  progress_pid=""
+  progress_rendered_file=""
+
+  if [ -n "$saved_progress_pid" ]; then
+    kill "$saved_progress_pid" 2>/dev/null || :
+    wait "$saved_progress_pid" 2>/dev/null || :
+  fi
+  if [ "$progress_enabled" -eq 1 ] && [ -n "$saved_progress_rendered_file" ] && [ -f "$saved_progress_rendered_file" ]; then
+    printf '\r\033[2K' > /dev/tty 2>/dev/null || :
+  fi
+  [ -z "$saved_progress_rendered_file" ] || rm -f "$saved_progress_rendered_file"
+}
+
+progress_start() {
+  progress_stop
+  [ "$progress_enabled" -eq 1 ] || return 0
+
+  progress_rendered_file="$tmpdir/.progress-rendered"
+  rm -f "$progress_rendered_file"
+  progress_render "$1" &
+  progress_pid=$!
+}
+
+progress_done() {
+  progress_stop
+  ok "$1"
+}
 
 info() {
+  progress_stop
   printf '%s\n' "$*"
 }
 
 ok() {
+  progress_stop
   printf '%s%s%s %s\n' "$green" "$ok_mark" "$reset" "$*"
 }
 
 warn() {
+  progress_stop
   printf '%s%s%s %s\n' "$yellow" "$warn_mark" "$reset" "$*" >&2
 }
 
 warn_detail() {
+  progress_stop
   printf '%s\n' "$*" >&2
 }
 
 die() {
+  progress_stop
   printf '%s%s%s %s\n' "$red" "$fail_mark" "$reset" "$*" >&2
   exit 1
 }
@@ -204,6 +264,7 @@ can_prompt() {
 }
 
 launch_installed() {
+  progress_stop
   if [ -r /dev/tty ]; then
     "$install_dir/$binary_name" < /dev/tty
   else
@@ -213,6 +274,7 @@ launch_installed() {
 
 confirm_default_no() {
   prompt="$1"
+  progress_stop
   can_prompt || return 1
   printf '%s [y/N] ' "$prompt" > /dev/tty
   IFS= read -r answer < /dev/tty || answer=
@@ -223,6 +285,7 @@ confirm_default_no() {
 }
 
 die_unavailable() {
+  progress_stop
   printf '%s\n' "install script is currently not available for this release" >&2
   exit 1
 }
@@ -235,12 +298,36 @@ download() {
   url="$1"
   destination="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$destination"
-    return $?
+    if [ "$progress_enabled" -eq 0 ]; then
+      curl -fsSL "$url" -o "$destination"
+      return $?
+    fi
+    if curl -fsSL "$url" -o "$destination" 2>"$tmpdir/download.stderr"; then
+      return 0
+    else
+      download_status=$?
+    fi
+    progress_stop
+    while IFS= read -r download_detail || [ -n "$download_detail" ]; do
+      warn_detail "$download_detail"
+    done < "$tmpdir/download.stderr"
+    return "$download_status"
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O "$destination" "$url"
-    return $?
+    if [ "$progress_enabled" -eq 0 ]; then
+      wget -q -O "$destination" "$url"
+      return $?
+    fi
+    if wget -q -O "$destination" "$url" 2>"$tmpdir/download.stderr"; then
+      return 0
+    else
+      download_status=$?
+    fi
+    progress_stop
+    while IFS= read -r download_detail || [ -n "$download_detail" ]; do
+      warn_detail "$download_detail"
+    done < "$tmpdir/download.stderr"
+    return "$download_status"
   fi
   die "required command not found: curl or wget"
 }
@@ -361,7 +448,7 @@ validate_tar_listing() {
   tar -tzf "$archive" | while IFS= read -r entry; do
     case "$entry" in
       "" | /* | ../* | */../* | */..)
-        echo "unsafe archive path: $entry" >&2
+        warn_detail "unsafe archive path: $entry"
         exit 1
         ;;
     esac
@@ -487,6 +574,63 @@ is_script_install_dir() {
   [ -f "$app/claude-rs" ] || return 1
   [ -f "$app/claude-rs-bridge-bun" ] || return 1
   grep -q '"name"[ 	]*:[ 	]*"claude-code-rust"' "$app/package.json" 2>/dev/null
+}
+
+script_install_version() {
+  app="$1"
+  is_script_install_dir "$app" || return 1
+  sed -n 's/.*"version"[ 	]*:[ 	]*"\([^"]*\)".*/\1/p' "$app/package.json" | sed -n '1p'
+}
+
+release_version() {
+  selected_tag="$1"
+  printf '%s\n' "${selected_tag#v}"
+}
+
+approve_same_version_reinstall() {
+  selected_version="$1"
+  if [ "$update" -eq 1 ]; then
+    return 1
+  fi
+  if [ "$yes" -eq 1 ]; then
+    return 0
+  fi
+  confirm_default_no "claude-rs $selected_version is already installed at $install_dir. Reinstall the same version?"
+}
+
+guard_same_version_before_download() {
+  selected_version="$1"
+  is_script_install_dir "$install_dir" || return 0
+
+  installed_version="$(script_install_version "$install_dir" || true)"
+  if [ -z "$installed_version" ]; then
+    warn "could not determine the version of the existing script install; continuing with installation"
+    return 0
+  fi
+  [ "$installed_version" = "$selected_version" ] || return 0
+
+  if approve_same_version_reinstall "$selected_version"; then
+    same_version_reinstall_approved=1
+    ok "Reinstalling claude-rs $selected_version"
+    return 0
+  fi
+
+  ok "claude-rs $selected_version is already installed; no changes made"
+  exit 0
+}
+
+stop_if_selected_version_became_installed() {
+  selected_version="$1"
+  [ "$same_version_reinstall_approved" -eq 0 ] || return 0
+  is_script_install_dir "$install_dir" || return 0
+
+  installed_version="$(script_install_version "$install_dir" || true)"
+  [ -n "$installed_version" ] || return 0
+  [ "$installed_version" = "$selected_version" ] || return 0
+
+  progress_stop
+  ok "claude-rs $selected_version was installed by another installer; no changes made"
+  exit 0
 }
 
 remove_launcher_if_owned() {
@@ -631,12 +775,8 @@ maybe_update_path() {
   should_modify=0
   if [ "$yes" -eq 1 ]; then
     should_modify=1
-  elif [ "$non_interactive" -eq 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf 'Add %s to PATH in your shell profile? [y/N] ' "$bin_dir" > /dev/tty
-    IFS= read -r answer < /dev/tty || answer=
-    case "$answer" in
-      y | Y | yes | YES) should_modify=1 ;;
-    esac
+  elif confirm_default_no "Add $bin_dir to PATH in your shell profile?"; then
+    should_modify=1
   fi
 
   if [ "$should_modify" -eq 1 ]; then
@@ -695,7 +835,9 @@ need_cmd grep
 need_cmd awk
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/claude-rs-install.XXXXXX")"
+same_version_reinstall_approved=0
 cleanup() {
+  progress_stop
   [ -z "${lock_dir:-}" ] || rm -rf "$lock_dir"
   rm -rf "$tmpdir"
 }
@@ -733,26 +875,33 @@ info ""
 ok "$target_label detected"
 ok "Install location: $install_dir"
 
+progress_start "Resolving release"
 tag="$(resolve_tag "$release")"
+selected_version="$(release_version "$tag")"
 archive_name="$(archive_name_for_target "$target")"
 base_url="https://github.com/$repo_slug/releases/download/$tag"
 checksum_file="$tmpdir/SHA256SUMS"
 archive_file="$tmpdir/$archive_name"
 
-ok "Release $tag selected"
+progress_done "Release $tag selected"
 
+guard_same_version_before_download "$selected_version"
+
+progress_start "Downloading release archive"
 download "$base_url/SHA256SUMS" "$checksum_file" || die "could not download SHA256SUMS for $tag"
 if ! download "$base_url/$archive_name" "$archive_file"; then
   die_unavailable
 fi
-ok "Downloaded release archive"
+progress_done "Downloaded release archive"
 
+progress_start "Verifying release archive"
 expected_sha="$(checksum_for_archive "$checksum_file" "$archive_name")"
 [ -n "$expected_sha" ] || die "SHA256SUMS does not contain dist-install/$archive_name"
 actual_sha="$(sha256_file "$archive_file")"
 [ "$actual_sha" = "$expected_sha" ] || die "checksum mismatch for $archive_name"
-ok "Verified release archive integrity"
+progress_done "Verified release archive integrity"
 
+progress_start "Installing files"
 validate_tar_listing "$archive_file"
 extract_dir="$tmpdir/extract"
 mkdir -p "$extract_dir"
@@ -767,11 +916,12 @@ validate_extracted_app "$extracted_app"
 install_parent="$(dirname "$install_dir")"
 mkdir -p "$install_parent"
 lock_dir="$(acquire_lock "$install_parent")"
+stop_if_selected_version_became_installed "$selected_version"
 replace_app_dir "$extracted_app" "$install_dir"
 if [ "$update" -eq 0 ]; then
   write_launcher
 fi
-ok "Installed files"
+progress_done "Installed files"
 
 if [ "$update" -eq 0 ]; then
   maybe_update_path
@@ -782,19 +932,21 @@ fi
 PATH="$bin_dir:$PATH"
 export PATH
 
+progress_start "Verifying installed command"
 version_output="$("$install_dir/$binary_name" --version)" ||
   die "installed claude-rs did not run successfully"
 [ -n "$version_output" ] || die "installed claude-rs did not print a version"
 "$install_dir/$binary_name" --help >/dev/null ||
   die "installed claude-rs help check failed"
-ok "Verified $version_output"
+progress_done "Verified $version_output"
 
 if [ "$verify" -eq 1 ]; then
+  progress_start "Running runtime diagnostics"
   doctor_output="$("$install_dir/$binary_name" doctor --strict 2>&1)" || {
-    [ -z "$doctor_output" ] || printf '%s\n' "$doctor_output"
+    [ -z "$doctor_output" ] || info "$doctor_output"
     die "runtime diagnostics failed"
   }
-  ok "Runtime diagnostics passed"
+  progress_done "Runtime diagnostics passed"
 fi
 
 # Only offer to remove an existing npm install after the script install has

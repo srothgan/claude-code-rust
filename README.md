@@ -24,7 +24,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ### Install script (recommended, v0.14.0+)
 
-The install script downloads a complete GitHub Release archive. It does not require Rust, Node.js, npm, or Bun on the user's machine.
+The install script downloads a complete GitHub Release archive. It does not require Rust, Node.js, npm, or Bun on the user's machine. If the selected release is already present in the script-owned install directory, the installer asks before downloading the release payload; pass `--yes` or `-Yes` to reinstall it intentionally.
 
 **macOS/Linux:**
 

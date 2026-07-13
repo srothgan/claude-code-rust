@@ -29,7 +29,8 @@ Usage: install.ps1 [options]
 Options:
   -Release <version>      Release tag or version. Defaults to latest.
   -InstallDir <dir>      App install directory.
-  -Yes                   Skip optional installer prompts.
+  -Yes                   Reinstall the selected version when already installed;
+                         skip optional installer prompts.
   -NoModifyPath          Do not update the user PATH.
   -Verify                Run strict runtime diagnostics after install.
   -Run                   Start claude-rs after a successful install.
@@ -126,6 +127,161 @@ if ($RemoveNpm -and $KeepNpm) {
 $UseColor = -not $env:NO_COLOR
 $OkMark = [char]0x2713
 $FailMark = [char]0x2717
+$script:InstallerProgressSupported = $false
+$script:InstallerProgressActive = $false
+$script:InstallerProgressWorker = $null
+
+if (-not $env:CI -and $env:TERM -ne "dumb") {
+    try {
+        if (-not [Console]::IsOutputRedirected) {
+            # Accessing cursor state throws in hosts without a real console.
+            $null = [Console]::CursorLeft
+            $script:InstallerProgressSupported = $true
+        }
+    } catch {
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function New-InstallerProgressWorker {
+    param([string]$Message)
+
+    $stopEvent = $null
+    $renderedEvent = $null
+    $runspace = $null
+    $powerShell = $null
+    try {
+        $stopEvent = New-Object System.Threading.ManualResetEvent($false)
+        $renderedEvent = New-Object System.Threading.ManualResetEvent($false)
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.Open()
+
+        $renderer = {
+            param(
+                [string]$Message,
+                [System.Threading.ManualResetEvent]$StopEvent,
+                [System.Threading.ManualResetEvent]$RenderedEvent,
+                [bool]$UseColor
+            )
+
+            $frames = @("|", "/", "-", "\")
+            $frameIndex = 0
+            if ($StopEvent.WaitOne(200)) {
+                return
+            }
+            while (-not $StopEvent.WaitOne(0)) {
+                [Console]::Write("`r")
+                if ($UseColor) {
+                    $previousColor = [Console]::ForegroundColor
+                    try {
+                        [Console]::ForegroundColor = [ConsoleColor]::Cyan
+                        [Console]::Write($frames[$frameIndex])
+                    } finally {
+                        [Console]::ForegroundColor = $previousColor
+                    }
+                } else {
+                    [Console]::Write($frames[$frameIndex])
+                }
+                [Console]::Write(" $Message")
+                $null = $RenderedEvent.Set()
+
+                $frameIndex = ($frameIndex + 1) % $frames.Count
+                if ($StopEvent.WaitOne(150)) {
+                    break
+                }
+            }
+        }
+
+        $powerShell = [System.Management.Automation.PowerShell]::Create()
+        $powerShell.Runspace = $runspace
+        $null = $powerShell.AddScript($renderer.ToString())
+        $null = $powerShell.AddArgument($Message)
+        $null = $powerShell.AddArgument($stopEvent)
+        $null = $powerShell.AddArgument($renderedEvent)
+        $null = $powerShell.AddArgument($UseColor)
+        $asyncResult = $powerShell.BeginInvoke()
+
+        return [pscustomobject]@{
+            PowerShell = $powerShell
+            AsyncResult = $asyncResult
+            Runspace = $runspace
+            StopEvent = $stopEvent
+            RenderedEvent = $renderedEvent
+            Width = $Message.Length + 2
+        }
+    } catch {
+        if ($powerShell) {
+            $powerShell.Dispose()
+        }
+        if ($runspace) {
+            $runspace.Dispose()
+        }
+        if ($stopEvent) {
+            $stopEvent.Dispose()
+        }
+        if ($renderedEvent) {
+            $renderedEvent.Dispose()
+        }
+        throw
+    }
+}
+
+function Close-InstallerProgressWorker {
+    param($Worker)
+
+    $rendered = $false
+    try {
+        $null = $Worker.StopEvent.Set()
+        $null = $Worker.PowerShell.EndInvoke($Worker.AsyncResult)
+    } finally {
+        $rendered = $Worker.RenderedEvent.WaitOne(0)
+        $Worker.PowerShell.Dispose()
+        $Worker.Runspace.Dispose()
+        $Worker.StopEvent.Dispose()
+        $Worker.RenderedEvent.Dispose()
+        if ($rendered) {
+            [Console]::Write("`r" + (" " * $Worker.Width) + "`r")
+        }
+    }
+}
+
+function Stop-InstallerProgress {
+    $worker = $script:InstallerProgressWorker
+    $script:InstallerProgressWorker = $null
+    $script:InstallerProgressActive = $false
+    if (-not $worker) {
+        return
+    }
+
+    try {
+        Close-InstallerProgressWorker $worker
+    } catch {
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function Start-InstallerProgress {
+    param([string]$Message)
+    Stop-InstallerProgress
+    if (-not $script:InstallerProgressSupported) {
+        return
+    }
+
+    try {
+        $script:InstallerProgressWorker = New-InstallerProgressWorker $Message
+        $script:InstallerProgressActive = $true
+    } catch {
+        $script:InstallerProgressWorker = $null
+        $script:InstallerProgressActive = $false
+        $script:InstallerProgressSupported = $false
+    }
+}
+
+function Complete-InstallerProgress {
+    param([string]$Message)
+    Stop-InstallerProgress
+    Write-Ok $Message
+}
 
 function Write-InstallerLine {
     param(
@@ -133,6 +289,7 @@ function Write-InstallerLine {
         [string]$Message,
         [ConsoleColor]$Color
     )
+    Stop-InstallerProgress
     if ($UseColor) {
         Write-Host "$Mark $Message" -ForegroundColor $Color
     } else {
@@ -147,6 +304,7 @@ function Write-Ok {
 
 function Write-WarnLine {
     param([string]$Message)
+    Stop-InstallerProgress
     if ($UseColor) {
         $previousColor = [Console]::ForegroundColor
         [Console]::ForegroundColor = [ConsoleColor]::Yellow
@@ -159,11 +317,13 @@ function Write-WarnLine {
 
 function Write-WarnDetail {
     param([string]$Message)
+    Stop-InstallerProgress
     [Console]::Error.WriteLine($Message)
 }
 
 function Write-FailLine {
     param([string]$Message)
+    Stop-InstallerProgress
     if ($UseColor) {
         $previousColor = [Console]::ForegroundColor
         [Console]::ForegroundColor = [ConsoleColor]::Red
@@ -174,12 +334,19 @@ function Write-FailLine {
     }
 }
 
+function Write-InstallerDiagnostic {
+    param([string]$Message)
+    Stop-InstallerProgress
+    Write-Host $Message
+}
+
 function Test-CanPrompt {
     return (-not $NonInteractive) -and (-not [Console]::IsInputRedirected)
 }
 
 function Confirm-DefaultNo {
     param([string]$Prompt)
+    Stop-InstallerProgress
     if (-not (Test-CanPrompt)) {
         return $false
     }
@@ -195,6 +362,7 @@ function Fail {
 }
 
 function Fail-Unavailable {
+    Stop-InstallerProgress
     [Console]::Error.WriteLine("install script is currently not available for this release")
     exit 1
 }
@@ -227,8 +395,16 @@ function Get-Target {
 
 function Get-ArchiveName {
     param([string]$Target, [string]$Tag)
-    $version = $Tag.TrimStart("v")
+    $version = Get-ReleaseVersion -Tag $Tag
     return "$RootPackage-$version-$Target.zip"
+}
+
+function Get-ReleaseVersion {
+    param([string]$Tag)
+    if ($Tag.StartsWith("v", [StringComparison]::Ordinal)) {
+        return $Tag.Substring(1)
+    }
+    return $Tag
 }
 
 function Get-ExpectedSha256 {
@@ -353,29 +529,57 @@ for ($attempt = 0; $attempt -lt 20; $attempt++) {
     $worker.Dispose()
 }
 
-function Test-ScriptInstallDirectory {
+function Get-ScriptInstallInfo {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
+        return $null
     }
 
     $packageJsonPath = Join-Path $Path "package.json"
     if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
-        return $false
+        return $null
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs.exe") -PathType Leaf)) {
-        return $false
+        return $null
     }
     if (-not (Test-Path -LiteralPath (Join-Path $Path "claude-rs-bridge-bun.exe") -PathType Leaf)) {
-        return $false
+        return $null
     }
 
     try {
         $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
-        return ($packageJson.PSObject.Properties.Name -contains "name") -and $packageJson.name -eq $RootPackage
+        if (-not ($packageJson.PSObject.Properties.Name -contains "name") -or $packageJson.name -cne $RootPackage) {
+            return $null
+        }
+        $version = if ($packageJson.PSObject.Properties.Name -contains "version") {
+            [string]$packageJson.version
+        } else {
+            $null
+        }
+        return [pscustomobject]@{
+            Path = $Path
+            PackageJson = $packageJsonPath
+            Version = $version
+        }
     } catch {
+        return $null
+    }
+}
+
+function Test-ScriptInstallDirectory {
+    param([string]$Path)
+    return $null -ne (Get-ScriptInstallInfo -Path $Path)
+}
+
+function Confirm-SameVersionReinstall {
+    param([string]$Version)
+    if ($Update) {
         return $false
     }
+    if ($Yes) {
+        return $true
+    }
+    return Confirm-DefaultNo "claude-rs $Version is already installed at $InstallDir. Reinstall the same version?"
 }
 
 function Get-NpmCommand {
@@ -582,7 +786,7 @@ function Assert-InstalledCommand {
     if ($LASTEXITCODE -ne 0) {
         Fail "installed claude-rs help check failed"
     }
-    Write-Ok "Verified $versionOutput"
+    Complete-InstallerProgress "Verified $versionOutput"
 }
 
 function Invoke-InstallDoctor {
@@ -598,11 +802,11 @@ function Invoke-InstallDoctor {
     $doctorOutput = ($doctorLines -join [Environment]::NewLine).Trim()
     if ($LASTEXITCODE -ne 0) {
         if (-not [string]::IsNullOrWhiteSpace($doctorOutput)) {
-            Write-Host $doctorOutput
+            Write-InstallerDiagnostic $doctorOutput
         }
         Fail "runtime diagnostics failed"
     }
-    Write-Ok "Runtime diagnostics passed"
+    Complete-InstallerProgress "Runtime diagnostics passed"
 }
 
 function Warn-OtherClaudeRsCommands {
@@ -655,6 +859,7 @@ if ($Update -and -not (Test-ScriptInstallDirectory -Path $InstallDir)) {
 $tempDir = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-install-$PID"
 $lockStream = $null
 $pathChanged = $false
+$sameVersionReinstallApproved = $false
 
 try {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -667,29 +872,49 @@ try {
     Write-Ok "$targetLabel detected"
     Write-Ok "Install location: $InstallDir"
 
+    Start-InstallerProgress "Resolving release"
     $tag = Resolve-ReleaseTag -RequestedRelease $Release -TempDir $tempDir
+    $selectedVersion = Get-ReleaseVersion -Tag $tag
     $archiveName = Get-ArchiveName -Target $target -Tag $tag
     $baseUrl = "https://github.com/$RepoSlug/releases/download/$tag"
     $checksumsPath = Join-Path $tempDir "SHA256SUMS"
     $archivePath = Join-Path $tempDir $archiveName
 
-    Write-Ok "Release $tag selected"
+    Complete-InstallerProgress "Release $tag selected"
 
+    $existingInstall = Get-ScriptInstallInfo -Path $InstallDir
+    if ($existingInstall) {
+        if ([string]::IsNullOrWhiteSpace($existingInstall.Version)) {
+            Write-WarnLine "Could not determine the version of the existing script install; continuing with installation"
+        } elseif ([string]::Equals($existingInstall.Version, $selectedVersion, [StringComparison]::Ordinal)) {
+            if (Confirm-SameVersionReinstall -Version $selectedVersion) {
+                $sameVersionReinstallApproved = $true
+                Write-Ok "Reinstalling claude-rs $selectedVersion"
+            } else {
+                Write-Ok "claude-rs $selectedVersion is already installed; no changes made"
+                exit 0
+            }
+        }
+    }
+
+    Start-InstallerProgress "Downloading release archive"
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
     try {
         Invoke-WebRequest -Uri "$baseUrl/$archiveName" -OutFile $archivePath
     } catch {
         Fail-Unavailable
     }
-    Write-Ok "Downloaded release archive"
+    Complete-InstallerProgress "Downloaded release archive"
 
+    Start-InstallerProgress "Verifying release archive"
     $expectedSha = Get-ExpectedSha256 -ChecksumsPath $checksumsPath -ArchiveName $archiveName
     $actualSha = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha -ne $expectedSha) {
         Fail "checksum mismatch for $archiveName"
     }
-    Write-Ok "Verified release archive integrity"
+    Complete-InstallerProgress "Verified release archive integrity"
 
+    Start-InstallerProgress "Installing files"
     $extractDir = Join-Path $tempDir "extract"
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
     $topLevelDirs = @(Get-ChildItem -LiteralPath $extractDir -Directory)
@@ -704,8 +929,18 @@ try {
 
     $installParent = Split-Path -Parent $InstallDir
     $lockStream = Acquire-InstallLock -InstallParent $installParent
+    if (-not $sameVersionReinstallApproved) {
+        $lockedInstall = Get-ScriptInstallInfo -Path $InstallDir
+        if ($lockedInstall -and
+            -not [string]::IsNullOrWhiteSpace($lockedInstall.Version) -and
+            [string]::Equals($lockedInstall.Version, $selectedVersion, [StringComparison]::Ordinal)) {
+            Stop-InstallerProgress
+            Write-Ok "claude-rs $selectedVersion was installed by another installer; no changes made"
+            exit 0
+        }
+    }
     Replace-AppDirectory -SourceApp $extractedApp -FinalApp $InstallDir
-    Write-Ok "Installed files"
+    Complete-InstallerProgress "Installed files"
 
     Prepend-ProcessPath -Directory $InstallDir
     if ($Update) {
@@ -721,8 +956,10 @@ try {
         }
     }
 
+    Start-InstallerProgress "Verifying installed command"
     Assert-InstalledCommand
     if ($Verify) {
+        Start-InstallerProgress "Running runtime diagnostics"
         Invoke-InstallDoctor
     }
 
@@ -743,13 +980,14 @@ try {
 
     Write-Host
     if ($Update) {
-        Write-Host "claude-rs is updated. Start claude-rs again to use v$($tag.TrimStart('v'))."
+        Write-Host "claude-rs is updated. Start claude-rs again to use v$selectedVersion."
     } else {
         Write-Host "claude-rs is installed."
         if ($pathChanged) {
             Write-Host "PATH is updated for new shells."
         }
         if ($Run -or ((-not $Yes) -and (Confirm-DefaultNo "Start claude-rs now?"))) {
+            Stop-InstallerProgress
             Invoke-InstalledClaudeRs @()
         } elseif ($NoModifyPath) {
             Write-Host "Run directly: $(Join-Path $InstallDir "claude-rs.exe")"
@@ -758,6 +996,7 @@ try {
         }
     }
 } finally {
+    Stop-InstallerProgress
     if ($lockStream) {
         $lockStream.Dispose()
     }
