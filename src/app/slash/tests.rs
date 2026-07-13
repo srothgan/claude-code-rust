@@ -68,6 +68,64 @@ fn app_slash_catalog_roundtrips_command_names() {
     }
 }
 
+/// Collect the first column of the App-Owned Commands table in the manual.
+///
+/// The header and separator rows carry no backticked cell, so they are skipped.
+fn documented_app_slash_commands(markdown: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_table_section = false;
+
+    for line in markdown.lines() {
+        let line = line.trim();
+        if let Some(heading) = line.strip_prefix("## ") {
+            in_table_section = heading == "App-Owned Commands";
+            continue;
+        }
+        if !in_table_section || !line.starts_with('|') {
+            continue;
+        }
+        let Some(cell) = line.split('|').nth(1) else {
+            continue;
+        };
+        if let Some(name) = cell.trim().strip_prefix('`').and_then(|inner| inner.strip_suffix('`'))
+        {
+            names.push(name.to_owned());
+        }
+    }
+
+    names
+}
+
+/// The manual is read from disk rather than with `include_str!` so docs are not
+/// embedded in the shipped binary. Only names and order are enforced; prose in
+/// the other columns is free to diverge.
+#[test]
+fn docs_app_owned_command_table_matches_catalog() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/commands.md");
+    let markdown = std::fs::read_to_string(path).expect("read docs/src/commands.md");
+
+    let documented = documented_app_slash_commands(&markdown);
+    let documented: Vec<&str> = documented.iter().map(String::as_str).collect();
+    let expected: Vec<&str> = APP_SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
+
+    for name in &expected {
+        assert!(
+            documented.contains(name),
+            "{name} is in APP_SLASH_COMMANDS but missing from the App-Owned Commands table in docs/src/commands.md"
+        );
+    }
+    for name in &documented {
+        assert!(
+            expected.contains(name),
+            "{name} is listed in the App-Owned Commands table in docs/src/commands.md but is not in APP_SLASH_COMMANDS"
+        );
+    }
+    assert_eq!(
+        documented, expected,
+        "the App-Owned Commands table in docs/src/commands.md must list commands in APP_SLASH_COMMANDS order"
+    );
+}
+
 #[test]
 fn config_without_args_opens_settings_view() {
     let dir = tempfile::tempdir().expect("tempdir");
