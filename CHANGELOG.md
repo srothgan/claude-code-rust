@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Documentation
+
+- **Manual restructure** (#282, @srothgan): Split installation into end-user install, development, and troubleshooting pages, document `/agent`, restore the conduct report contact in the issue chooser, and add tests keeping the slash command and CLI tables in sync with the code.
+
+### Release and Packaging
+
+- **Installer progress and idempotency** (#281, @srothgan): Add inline installer progress across PowerShell, macOS, and Linux while keeping CI output plain, and make same-version reinstalls a prompted opt-in with `--yes`/`-Yes` approval.
+
 ## [0.14.0] - 2026-07-12 [Changes][v0.14.0]
 
 ### Features

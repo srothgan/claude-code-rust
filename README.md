@@ -18,13 +18,11 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Prerequisite
 
-- Install the Claude Code CLI. You do not need to authenticate before installing or starting `claude-rs`; sign in later with `/login` or `claude auth login` when needed.
+- The Claude Code CLI must be installed as fallback for some SDK-unsupported features.
 
 ## Install
 
 ### Install script (recommended, v0.14.0+)
-
-The install script downloads a complete GitHub Release archive. It does not require Rust, Node.js, npm, or Bun on the user's machine. If the selected release is already present in the script-owned install directory, the installer asks before downloading the release payload; pass `--yes` or `-Yes` to reinstall it intentionally.
 
 **macOS/Linux:**
 
@@ -40,15 +38,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 
 ### npm (global)
 
-npm remains supported for users who prefer package-manager ownership of the global command:
-
 ```bash
 npm install -g claude-code-rust
 ```
 
-This option requires Node.js 24 and npm. The npm package installs a small launcher plus a platform-specific optional dependency containing the prebuilt Rust binary, Agent SDK bridge, and bundled private Bun runtime for your OS and architecture. A separate Rust toolchain or Bun installation is not required.
-
-See the [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) for release pinning, custom locations, switching install methods, and troubleshooting.
+See the [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) for release pinning, custom install locations, switching install methods, uninstall, and troubleshooting.
 
 ## Usage
 
@@ -77,13 +71,15 @@ Claude Code Rust addresses these with a native terminal UI that uses diffed, dir
 
 ## Documentation
 
-The manual covers installation with scripts, npm, and source builds, plus help, slash commands, keyboard shortcuts, settings, diagnostics, architecture, and the changelog:
+The manual covers installation with scripts and npm, plus help, slash commands, keyboard shortcuts, settings, diagnostics, troubleshooting, building from source, architecture, and the changelog:
 
 - [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
 - [Usage](https://srothgan.github.io/claude-code-rust/usage.html)
 - [Help](https://srothgan.github.io/claude-code-rust/help.html)
 - [Slash commands](https://srothgan.github.io/claude-code-rust/commands.html)
 - [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
+- [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html)
+- [Development](https://srothgan.github.io/claude-code-rust/development.html)
 
 ## Status
 

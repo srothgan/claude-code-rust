@@ -8,17 +8,18 @@ Use `/docs commands` in the app to render the live merged command list into chat
 
 | Command | Usage | Purpose |
 | --- | --- | --- |
-| `/1m-context` | `/1m-context <enable|disable|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
+| `/1m-context` | `/1m-context <enable\|disable\|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
 | `/limits` | `/limits` | Print recent usage limits into chat. |
-| `/docs` | `/docs <mode|models|shortcuts|commands|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
-| `/effort` | `/effort <low|medium|high|xhigh|max>` | Change thinking effort for the active session. |
+| `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
+| `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
+| `/effort` | `/effort <low\|medium\|high\|xhigh\|max>` | Change thinking effort for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
 | `/plugins` | `/plugins` | Open plugin management. |
-| `/opus-version` | `/opus-version <4.5|4.6|4.7|4.8|default|status>` | Set, clear, or inspect the project-local Opus alias pin for future sessions. |
+| `/opus-version` | `/opus-version <4.5\|4.6\|4.7\|4.8\|default\|status>` | Set, clear, or inspect the project-local Opus alias pin for future sessions. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
